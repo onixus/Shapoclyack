@@ -560,17 +560,32 @@ def download_agent_release(
     principal: Annotated[AgentPrincipal, Depends(require_agent)],
     package_kind: Literal["binary", "deb", "rpm", "msi", "pkg"] | None = None,
 ) -> Response:
-    """Hand the build to an agent that has been told to move to it.
+    """Hand native bytes only to an active endpoint with signed-update support.
 
-    Authenticated as the agent, with the same token it heartbeats with, so the
-    digest and the bytes come from one channel rather than two: an attacker who
-    could substitute the download would have had to substitute the heartbeat
-    that named its digest.
+    Enforce registered capability on downloads too: legacy executable updaters
+    can retain a URL/digest from before the unsigned prohibition. The endpoint
+    and its supervisor independently verify publisher trust before installation.
     """
     hit, agent = cached_agent_info(request, principal, principal.agent_id)
     if not hit and principal.agent_id:
         agent = agents_service.get_agent(principal.agent_id)
     agents_service.require_active_info(agent)
+    # A legacy client may retain a pre-upgrade URL/digest. Native promotion
+    # removes the binary row, but envelope presence alone does not establish
+    # signing trust: the API deliberately does not verify Ed25519. Never send
+    # package bytes to executable-only update code, even through a cached URL.
+    if (
+        agent is None
+        or agent.agent_kind != agents_service.KIND_ENDPOINT
+        or "signed_updates" not in (agent.capabilities or [])
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "downloads require an endpoint with signed native update support; "
+                + endpoint_agent_mgmt.UNSIGNED_RELEASE_BLOCKED
+            ),
+        )
     try:
         found = endpoint_agent_mgmt.get_release_bytes(
             version=version, platform=platform, package_kind=package_kind

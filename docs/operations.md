@@ -2904,6 +2904,11 @@ trust authority. TLS and the response's SHA-256 do not replace this verification
   cached URLs and `?package_kind=binary`) return HTTP 409. There is no managed
   policy or environment switch that re-enables them. Inventory and collection
   settings remain available to legacy agents.
+  Native downloads additionally require an active endpoint whose registered
+  capabilities include `signed_updates`. A legacy endpoint or scanner receives
+  HTTP 409 even if it retains a pre-upgrade URL and the release has since been
+  replaced by a native variant. Re-registration after rollback clears the
+  capability when the legacy client omits it.
 
 Upload the exact native package and its publisher-produced envelope:
 

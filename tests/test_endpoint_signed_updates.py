@@ -315,3 +315,77 @@ def test_old_unsigned_row_cannot_be_offered_or_downloaded(
         _audit(settings, "endpoint_agent.release.delete")[-1].before["package_kind"]
         == "binary"
     )
+
+
+@requires_postgres
+@pytest.mark.parametrize("prefix", ["/api", "/api/v1"])
+@pytest.mark.parametrize(
+    "declaration", [{}, {"signed_updates": False}, {"capabilities": ["self_update"]}]
+)
+def test_cached_legacy_url_requires_native_capability_after_release_promotion(
+    tmp_path, monkeypatch, prefix, declaration
+):
+    _, client, key = _setup(tmp_path, monkeypatch)
+    _legacy_release()
+    headers = _agent_token(client, key, "cached-legacy")
+    registration = dict(
+        agent_id="cached-legacy",
+        hostname="host",
+        agent_kind="endpoint",
+        version="0.4.0",
+        platform=PLATFORM,
+    )
+
+    def register(**fields):
+        response = client.post(
+            "/api/agent/register", headers=headers, json={**registration, **fields}
+        )
+        assert response.status_code == 200, response.text
+
+    register(**declaration)
+    # A pre-upgrade heartbeat can retain this unqualified URL and digest.
+    # Promotion retires the binary row but the API checks envelope shape, not
+    # publisher trust: unchanged executable bytes can have a native envelope.
+    admin = auth_headers(client, username="admin")
+    uploaded = client.post(
+        "/api/endpoint/agent/releases",
+        headers=admin,
+        data=dict(
+            version="0.5.0",
+            platform=PLATFORM,
+            signed_manifest=json.dumps(_envelope()),
+        ),
+        files={"binary": ("lariska.msi", BUILD, "application/octet-stream")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    assert uploaded.json()["sha256"] == hashlib.sha256(BUILD).hexdigest()
+    base = f"{prefix}/endpoint/agent/releases/0.5.0/{PLATFORM}/download"
+
+    def refused():
+        for suffix in ("", "?package_kind=msi"):
+            response = client.get(base + suffix, headers=headers)
+            assert response.status_code == 409, response.text
+            assert "signed native update support" in response.json()["detail"]
+            assert BUILD not in response.content
+
+    refused()
+    register(signed_updates=True)
+    for suffix in ("", "?package_kind=msi"):
+        response = client.get(base + suffix, headers=headers)
+        assert response.status_code == 200, response.text
+        assert response.content == BUILD
+    heartbeat = client.post(
+        "/api/agent/heartbeat", headers=headers,
+        json=dict(agent_id="cached-legacy", platform=PLATFORM, signed_updates=False),
+    )
+    assert heartbeat.status_code == 200, heartbeat.text
+    refused()
+    register(signed_updates=True)
+    # A rolled-back endpoint retains its token and URL but loses native trust.
+    register(**declaration)
+    refused()
+    # Endpoint identities cannot demote themselves into the scanning fleet.
+    # Use a distinct scanner identity to check the download kind boundary.
+    headers = _agent_token(client, key, "scanner-download")
+    register(agent_id="scanner-download", agent_kind="scanner", signed_updates=True)
+    refused()
