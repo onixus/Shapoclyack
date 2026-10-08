@@ -3089,24 +3089,34 @@ replica still accepts a tenant's upload, and a check made earlier misses it.
    Get-FileHash "C:\Program Files\Lariska\lariska.exe"
    ```
 
-   A managed update keeps the binary it replaced beside the new one, with
-   `.old` appended to the full name (`/usr/bin/lariska.old`,
+   The legacy executable updater kept the replaced binary beside the new one,
+   with `.old` appended to the full name (`/usr/bin/lariska.old`,
    `/usr/local/bin/lariska.old`, `C:\Program Files\Lariska\lariska.exe.old`),
-   until the next update overwrites it. Hash that file too: an endpoint that
-   ran the foreign build and was then moved on can still have it there. A
+   until the next legacy update overwrote it. Hash that file if present: an
+   endpoint that ran the foreign build and was then moved on can still have it there. A
    match on the running binary does not clear a host whose `.old` is foreign.
+   Native managed updates instead retain signed rollback packages in the
+   protected supervisor cache and record transactions in its journal; inspect
+   those records too. Absence of a `.old` file does not establish a clean host.
 
 6. Then fix the build and the endpoints. Re-uploading the official bytes under
    the same version repairs neither: an endpoint already running the foreign
    binary reports that version, and the heartbeat offers no update when
    `desired_version` equals the version the agent reports.
 
-   - **The build.** `DELETE` every row whose current `sha256` is not yours, and
-     publish the official build under a **new** version (bump the patch, e.g.
-     `0.3.0` -> `0.3.1`). Do not reuse the compromised version number.
+   - **The build.** `DELETE` every row whose current `sha256` is not yours,
+     qualifying the native format with `?package_kind=...` when necessary,
+     and publish the official signed native package and its envelope under a
+     **new** version (bump the patch, e.g. `0.3.0` -> `0.3.1`) with a sequence
+     above the fleet's floors. Do not reuse the compromised version number.
    - **Endpoints that never ran the foreign bytes** (the host check in step 5
-     came back clean, `.old` included): point their tenant's policy at the new
-     version with `desired_version` and let the managed update move them.
+     came back clean, legacy `.old` and native recovery state included): first
+     migrate any legacy executable installation through the independent
+     administrative procedure above. Unsigned uploads/downloads are blocked,
+     and a legacy updater cannot consume a signed native package. After local
+     trust and the signed rollback seed are provisioned and native update
+     support is confirmed, point the tenant's `desired_version` at the new
+     version and verify installation and authenticated health on the host.
    - **Endpoints that ran the foreign binary**, or that you cannot check:
      treat the host as compromised. That binary ran as the agent's service
      account with the agent's token, and nothing it reports is trustworthy —
@@ -3119,8 +3129,11 @@ replica still accepts a tenant's upload, and a check made earlier misses it.
      enrol the reinstalled agent with a fresh key. Handle the host under your
      incident process.
 
-Builds are not signed yet: the API is the endpoint's only source of trust for
-what it executes, which is why the write is the platform admin's alone.
+The API transports publisher-signed native packages and their byte-bound
+envelopes. Execution trust comes from administrator-provisioned local keys,
+verified independently by the endpoint and privileged supervisor. Platform
+release permission and step-up protect publication; neither replaces signature
+verification or authorizes an unsigned legacy update.
 
 ## Tenant-defined roles
 
