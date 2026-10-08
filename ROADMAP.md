@@ -8,32 +8,34 @@ This file tracks delivery status and is not a deployment manual.
 
 Visual overview: [shapoclyack.html](shapoclyack.html) · Release history: [CHANGELOG.md](CHANGELOG.md)
 
-> **Status as of 2026-10-06** — checked against the code at `main @ 3ade4529`, not against
-> issue titles or `CHANGELOG.md`. The last tag is `shapoclyack-0.46-0922`; `main` is that tag
-> plus 482 commits, all under `## Unreleased`. Two merge waves landed since the previous
-> revision of this file: on 2026-10-04 —
-> custom compliance catalogues, БДУ and signed evidence ([#497](https://github.com/onixus/Shapoclyack/pull/497), W11/~~#356~~),
-> shared rate limiting and a body cap on every route ([#499](https://github.com/onixus/Shapoclyack/pull/499), ~~#320~~),
-> tenant-defined roles ([#501](https://github.com/onixus/Shapoclyack/pull/501), ~~#318~~, migration `0070`),
-> CMDB/AD *file* import ([#502](https://github.com/onixus/Shapoclyack/pull/502), #350 stage 1 only, migration `0071`);
-> and on 2026-10-05 —
-> MFA and step-up by authority in a tenant ([#508](https://github.com/onixus/Shapoclyack/pull/508), ~~#504~~, migration `0073`),
-> scan priority, per-tenant concurrency and queue admission ([#505](https://github.com/onixus/Shapoclyack/pull/505), ~~#365~~, migration `0074`),
-> IdP-authoritative resync and SCIM 2.0 ([#507](https://github.com/onixus/Shapoclyack/pull/507), ~~#316~~, migration `0076`),
-> sensor client certificates ([#509](https://github.com/onixus/Shapoclyack/pull/509), ~~#309~~, migration `0077`),
-> Lariska build upload/delete for the platform admin only ([#511](https://github.com/onixus/Shapoclyack/pull/511), ~~#510~~, migration `0078`)
-> and the signed sensor update bundle ([#506](https://github.com/onixus/Shapoclyack/pull/506), ~~#363~~, no migration).
-> There is no migration `0075`. What each of them leaves open is in
-> [the EPIC #370 table](#enterprise-readiness-review-epic-370). CI for the 2026-10-05 wave is
-> **not verified**: the last finished `main` builds are SUCCESS on `365ae2c` (merge of #500) and
-> FAILURE on `a596351` (merge of #503, one test, see [below](#current-baseline-done)); the build
-> for `3ade4529` had not run when this was written.
+## Delivery snapshot
+
+Source baseline: `main @ 706ead80`, reviewed **2026-10-09**. The documented
+published baseline remains `shapoclyack-0.46-0922`; later source changes belong
+to `Unreleased` in [CHANGELOG.md](CHANGELOG.md). This snapshot records source
+behavior, not a completed deployment, release publication or CI result.
+
+| Read this for | Section |
+|---|---|
+| Track definitions and terminology | [How to read this file](#how-to-read-this-file) |
+| Published baseline and historical implementation | [Current baseline](#current-baseline-done), [execution phases](#execution-phases) |
+| Remaining platform work | [Track A](#track-a--what-is-actually-left) |
+| Historical production and VM milestones | [Track B](#track-b--production-readiness-ga-blockers), [Track C](#track-c--vulnerability-management-product) |
+| Current enterprise delivery and acceptance gaps | [Enterprise-readiness review](#enterprise-readiness-review-epic-370) |
+| Product priorities and exclusions | [Track E](#track-e--product-direction), [Not doing](#not-doing-and-why) |
+
+Recent endpoint work on this baseline accepts inventory schemas **v1 and v2**
+(`api/schemas.py`, `api/services/endpoint_inventory.py`) and requires signed
+native update packages (`api/services/endpoint_agent_mgmt.py`,
+[#533](https://github.com/onixus/Shapoclyack/pull/533)). Legacy unsigned
+executable updates are disabled. External Lariska packaging and fleet rollout
+still need operator acceptance; see [migration guidance](docs/operations.md#migrating-legacy-lariska-installations).
 
 ---
 
 ## How to read this file
 
-The project runs **three tracks**, and this file historically described only the first —
+The project tracks **six workstreams (A–F)**. This file historically described only the first —
 which is why a nearly all-**Done** roadmap can coexist with an installation that is not
 yet production-ready.
 
@@ -42,7 +44,7 @@ yet production-ready.
 | **A — Platform capability** | *What can the platform do?* | This file: [Phases 1–6](#execution-phases), [7–11](#easm-evolution-phases-711), [P0–P4](#next-priority-order-post-phase-11) | Nearly complete — see [remaining scope](#track-a--what-is-actually-left) |
 | **B — Production readiness** | *May it be run for real?* | [EPIC #154](https://github.com/onixus/Shapoclyack/issues/154) → summarized [below](#track-b--production-readiness-ga-blockers) | **Done** — EPIC #154 closed; Waves 0–2 shipped in `0.43-0828`. The next readiness pass is the enterprise-readiness review, [EPIC #370](https://github.com/onixus/Shapoclyack/issues/370) (Track E) |
 | **C — VM/Exposure product** | *Is it a vulnerability-management product, or a scanner?* | [EPIC #134](https://github.com/onixus/Shapoclyack/issues/134), [docs/ui-ux-redesign-roadmap.md](docs/ui-ux-redesign-roadmap.md) → summarized [below](#track-c--vulnerability-management-product) | **Done** — EPIC #134 closed; the historical score snapshots leftover of #144 is merged (migration `0023`, `/api/vulnerabilities/risk-history`) |
-| **D — Endpoint inventory (Lariska)** | *What is installed on the endpoints?* | [Agent_plan.md](Agent_plan.md) — its own design record, not a phase | **Done** — S1–S10 merged; extended by the Track E assessment layer (software→CVE M1, patch gap M2, Windows/MSRC matching and console-driven Agent management, migration `0057`) recorded in the same file. Since 2026-10-05 Agent builds are written by the platform admin only (~~[#510](https://github.com/onixus/Shapoclyack/issues/510)~~, migration `0078`). Open on the Agent side: the builds are not signed (the API is the endpoint's only source of trust), and Lariska cannot present a client certificate yet, so `OCTO_AGENT_MTLS_MODE=required` refuses every Agent |
+| **D — Endpoint inventory (Lariska)** | *What is installed on the endpoints?* | [Agent_plan.md](Agent_plan.md) — its own design record, not a phase | **Done** — S1–S10 merged; extended by the Track E assessment layer (software→CVE M1, patch gap M2, Windows/MSRC matching and console-driven Agent management, migration `0057`) recorded in the same file. Since 2026-10-05 Agent builds are written by the platform admin only (~~[#510](https://github.com/onixus/Shapoclyack/issues/510)~~, migration `0078`). The API accepts inventory v1/v2 and requires signed native update packages; unsigned executable updates are disabled ([#533](https://github.com/onixus/Shapoclyack/pull/533)). Fleet migration requires operator acceptance. Lariska client certificates remain a separate gap; `OCTO_AGENT_MTLS_MODE=required` refuses Agents without a certificate |
 | **E — Product direction** | *What is worth building once the base is complete?* | [below](#track-e--product-direction) | In progress — `org_profile` M1–M5, software→CVE M1–M3, closed-loop remediation (#183), the Sprint 4 report factory / compliance mapping, and the enterprise-readiness review ([EPIC #370](https://github.com/onixus/Shapoclyack/issues/370)): of its 61 original issues (#308–#368) 39 are closed and 22 open on 2026-10-06 — see [its table](#enterprise-readiness-review-epic-370). Everything after `0.46-0922` is in `## Unreleased` |
 | **F — FSTEC certification** | *Can a frozen Shapoclyack profile be prepared for formal FSTEC conformity assessment?* | [docs/fstec-certification.ru.md](docs/fstec-certification.ru.md) | Planned — certification boundary, УД4 gap analysis, certified release train, supply-chain inventory and traceability |
 
@@ -748,7 +750,7 @@ below is closed in code, not in a release — everything since `0.46-0922` is un
 | ~~[#504](https://github.com/onixus/Shapoclyack/issues/504)~~ | [#508](https://github.com/onixus/Shapoclyack/pull/508) | MFA policy and step-up by permissions held in any tenant (`OCTO_MFA_REQUIRED_PERMISSIONS`, `OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS`); step-up on member and tenant-role administration; migration `0073` | Nothing filed. **Behaviour change on upgrade:** with `OCTO_MFA_REQUIRED_ROLES=admin` the permission list is derived, and unenrolled holders are confined to the Security page — staging is in [operations.md](docs/operations.md#upgrading-with-an-mfa-policy-tenant-admins-are-now-covered-504) |
 | ~~[#365](https://github.com/onixus/Shapoclyack/issues/365)~~ | [#505](https://github.com/onixus/Shapoclyack/pull/505) | `jobs.priority` and `PUT /api/jobs/{id}/priority` (`scan.priority.raise`), per-tenant `max_concurrent_scans` at claim under an advisory lock, `max_queued_scans` and `OCTO_SCAN_QUEUE_MAX_DEPTH` at admission (429 + `Retry-After`); migration `0074` | The NATS offer is FIFO — priority orders the HTTP claim only; admission is a soft bound (simultaneous starts can overshoot). Both stated in `api/services/scan_queue.py` |
 | ~~[#316](https://github.com/onixus/Shapoclyack/issues/316)~~ | [#507](https://github.com/onixus/Shapoclyack/pull/507) | `OCTO_IDP_AUTHORITATIVE` recomputes role and memberships from groups at every SSO login; `/scim/v2` Users and Groups under `octo_scim_` tokens; membership `source` (`local`/`idp`); migration `0076` | The resync happens at login and on SCIM pushes, not on a schedule; SAML/LDAP is [#317](https://github.com/onixus/Shapoclyack/issues/317) |
-| ~~[#510](https://github.com/onixus/Shapoclyack/issues/510)~~ (P0) | [#511](https://github.com/onixus/Shapoclyack/pull/511) | Lariska build upload/delete needs `platform.endpoint_agent_release.manage` (platform admin only, not grantable to a tenant role) + step-up; migration `0078` | **Signing the Lariska builds** — the API is still the endpoint's only source of trust for a build; not filed as an issue. Operators should review the `endpoint_agent.release.upload` history ([operations.md](docs/operations.md#endpoint-agent-lariska-builds)) |
+| ~~[#510](https://github.com/onixus/Shapoclyack/issues/510)~~ (P0) | [#511](https://github.com/onixus/Shapoclyack/pull/511) | Lariska build upload/delete needs `platform.endpoint_agent_release.manage` (platform admin only, not grantable to a tenant role) + step-up; migration `0078` | Signed native package manifests are now required; unsigned binary uploads and downloads are disabled ([#533](https://github.com/onixus/Shapoclyack/pull/533)). Remaining acceptance: publisher key provisioning, native packaging and migration of legacy installations ([operations.md](docs/operations.md#endpoint-agent-lariska-builds)) |
 | ~~[#363](https://github.com/onixus/Shapoclyack/issues/363)~~ | [#506](https://github.com/onixus/Shapoclyack/pull/506) | `Sensor bundle` stage in `Jenkinsfile.publish`, manifest signed with the release key; `GET /api/agent/bundle[/download]` with `OCTO_AGENT_BUNDLE_DIR`; `agent/update.py` verifies against the key pinned in the package, refuses downgrades and `OCTO_AGENT_MIN_VERSION`; atomic symlink swap with health check and rollback; `update-agent.sh --bundle-url` removed | **Updates are operator-run**: automatic update needs a timer the operator installs *and* `OCTO_AGENT_AUTO_UPDATE=true`. Only the `agent` package is in the bundle (not `scanner/` or the venv); the first native install is not signature-checked; prerelease bundles are unsigned; container sensors update by image. No release has published a signed bundle yet — the first one is the next tag |
 | ~~[#309](https://github.com/onixus/Shapoclyack/issues/309)~~ | [#509](https://github.com/onixus/Shapoclyack/pull/509) | Client certificates bound to the sensor's token (`OCTO_AGENT_MTLS_MODE=off\|optional\|required`, default `off`), SPIFFE URI or pinned fingerprint, API-side issuance at `POST /api/agent/certificate`, revocation and enrolment lock; migration `0077` | **Lariska cannot present a certificate yet**, so `required` refuses every Agent (the API contract is in [operations.md](docs/operations.md#sensor-client-certificates)); revocation is the API's own table — no CRL or OCSP, and the ingress does not consult it; the NATS link authenticates a NATS user (`OCTO_NATS_TLS_CERT`), not the sensor; datastore TLS stays a warning, not a refusal. None of these is filed as an issue |
 | ~~[#318](https://github.com/onixus/Shapoclyack/issues/318)~~ | [#501](https://github.com/onixus/Shapoclyack/pull/501) | Tenant-defined roles (name, rank, named permissions); migration `0070` | — |
@@ -766,8 +768,9 @@ below is closed in code, not in a release — everything since `0.46-0922` is un
 | Integrations | [#350](https://github.com/onixus/Shapoclyack/issues/350), [#353](https://github.com/onixus/Shapoclyack/issues/353), [#354](https://github.com/onixus/Shapoclyack/issues/354), [#355](https://github.com/onixus/Shapoclyack/issues/355), [#357](https://github.com/onixus/Shapoclyack/issues/357) | CMDB/AD connectors (above); ticket transports are Jira/ServiceNow/DefectDojo with a fixed field mapping; `/api/v1` is an alias for the auth, sensor and endpoint routers only, with no deprecation policy, finding/asset export or client; reports are PDF/HTML/JSON only, with no S3/SFTP delivery; saved views and a WCAG pass |
 | Fleet and scanning | [#358](https://github.com/onixus/Shapoclyack/issues/358), [#366](https://github.com/onixus/Shapoclyack/issues/366), [#367](https://github.com/onixus/Shapoclyack/issues/367), [#368](https://github.com/onixus/Shapoclyack/issues/368) | RPM providers are merged, feed and fleet acceptance is not; uploaded results are not schema-validated or signed and the sensor has no `/metrics`; the images ship no Playwright, so screenshots never run; credentialed scanning still needs a do-or-don't decision |
 
-Follow-ups that the 2026-10-05 wave named but nobody filed: signed Lariska builds, client-certificate
-support in Lariska, and certificate revocation beyond the API's own list (CRL/OCSP).
+Follow-ups from the 2026-10-05 wave: signed Lariska native package support has landed
+in the API; publisher/fleet acceptance, client-certificate support in Lariska and
+certificate revocation beyond the API's own list (CRL/OCSP) remain separate work.
 
 ### Not doing, and why
 
