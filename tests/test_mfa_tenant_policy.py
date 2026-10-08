@@ -17,6 +17,7 @@ clock starts from the real present so no test carries a calendar date.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -920,8 +921,14 @@ def test_the_endpoint_agent_build_and_policy_need_a_step_up(tmp_path, monkeypatc
     client, _ = _setup(tmp_path, monkeypatch)
     endpoint_agent_mgmt.reset_for_tests()
     stale, fresh = _platform_admin_sessions(client, clock)
+    from tests.test_endpoint_agent_management import _envelope
+
     upload = {
-        "data": {"version": "9.9.9", "platform": "x86_64-pc-windows-msvc"},
+        "data": {
+            "version": "9.9.9",
+            "platform": "x86_64-pc-windows-msvc",
+            "signed_manifest": json.dumps(_envelope(b"MZ-step-up", version="9.9.9")),
+        },
         "files": {"binary": ("a.exe", b"MZ-step-up", "application/octet-stream")},
     }
     policy = {"settings": {"log_level": "debug"}}

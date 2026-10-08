@@ -12,13 +12,12 @@ report somewhere else, and the channel carrying that instruction is the very
 thing an attacker who reached the API would use. The knobs here change how
 noisy and how frequent an agent is, and nothing about who it trusts.
 
-**Why the binary is served from here.** An upgrade is remote code execution by
-construction, so the digest and the bytes come from one authenticated channel:
-the heartbeat names a version and its sha256, and the download is the same API
-with the same agent token. The agent refuses a download whose digest does not
-match, and refuses the whole mechanism over plain HTTP unless its own config
-opts in — see the Lariska side. Nothing here can make an agent upgrade that
-has not asked; an installation that uploads no release never answers with one.
+**Why signed native packages are required.** An upgrade executes new code.
+The API transports a byte-bound publisher envelope and package over the agent's
+authenticated channel; the endpoint and its privileged supervisor independently
+verify the signature against locally provisioned trust. Unsigned executable
+uploads, offers and downloads are prohibited, including rows stored by older
+API releases. Legacy endpoints require administrative native migration.
 """
 
 from __future__ import annotations
@@ -59,6 +58,11 @@ SETTABLE: dict[str, tuple[int, int]] = {
 }
 
 LOG_LEVELS = ("error", "warn", "info", "debug", "trace")
+
+UNSIGNED_RELEASE_BLOCKED = (
+    "unsigned executable updates are disabled; migrate legacy agents to a "
+    "native installation with locally provisioned signing keys"
+)
 
 
 class PolicyError(ValueError):
@@ -346,9 +350,9 @@ def store_release(
         digest=digest,
         size_bytes=len(content),
     )
-    package_kind = (
-        signed_manifest["manifest"]["package_kind"] if signed_manifest else "binary"
-    )
+    if signed_manifest is None:
+        raise ReleaseError(UNSIGNED_RELEASE_BLOCKED)
+    package_kind = signed_manifest["manifest"]["package_kind"]
     app_settings = _require_settings()
     now = _now()
     with get_session(app_settings.postgres_url) as session:
@@ -361,16 +365,11 @@ def store_release(
             )
             .with_for_update()
         ).all()
-        if not signed_manifest and any(variant.signed_manifest for variant in variants):
-            raise ReleaseError(
-                "a signed release cannot be replaced with an unsigned release"
-            )
         # Promotion to native updates retires the old unsigned executable.
         # Other signed installer formats retain their own sequence and bytes.
-        if signed_manifest:
-            for variant in variants:
-                if variant.package_kind == "binary":
-                    session.delete(variant)
+        for variant in variants:
+            if variant.package_kind == "binary":
+                session.delete(variant)
         row = next(
             (variant for variant in variants if variant.package_kind == package_kind),
             None,
@@ -391,10 +390,6 @@ def store_release(
             session.add(row)
         else:
             if row.signed_manifest:
-                if not signed_manifest:
-                    raise ReleaseError(
-                        "a signed release cannot be replaced with an unsigned release"
-                    )
                 if (
                     signed_manifest["manifest"]["sequence"]
                     < row.signed_manifest["manifest"]["sequence"]
@@ -487,6 +482,10 @@ def get_release_bytes(
         )
         if row is None:
             return None
+        # Old rows remain available for inspection/deletion, but a cached URL
+        # must not bypass the same prohibition enforced on heartbeat offers.
+        if not row.signed_manifest or row.package_kind == "binary":
+            raise ReleaseError(UNSIGNED_RELEASE_BLOCKED)
         return bytes(row.content), row.sha256
 
 
@@ -669,6 +668,14 @@ def plan_for_agent(
                 ),
             )
 
+        if not release.signed_manifest or release.package_kind == "binary":
+            return AgentPlan(
+                settings=merged,
+                revision=revision,
+                update=None,
+                update_blocked=UNSIGNED_RELEASE_BLOCKED,
+            )
+
         if release.signed_manifest and "signed_updates" not in (capabilities or []):
             return AgentPlan(
                 settings=merged,
@@ -680,13 +687,6 @@ def plan_for_agent(
                 ),
             )
 
-        if "signed_updates" in (capabilities or []) and not release.signed_manifest:
-            return AgentPlan(
-                settings=merged,
-                revision=revision,
-                update=None,
-                update_blocked="this agent requires a signed native package manifest",
-            )
         if release.signed_manifest and release.signed_manifest["manifest"][
             "expires_at"
         ] <= int(time.time()):

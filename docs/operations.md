@@ -2877,34 +2877,135 @@ failed update leaves the running release in place.
 
 ### Endpoint Agent (Lariska) builds
 
-Unlike a sensor, the endpoint Agent (Lariska) is upgraded by the API: a tenant's
-policy names a version (`PUT /api/endpoint/agent/policy`, `desired_version`),
-the heartbeat hands the agent that build's sha256 and URL, and the agent
-downloads it with its own token and refuses bytes that do not match. The
-builds themselves are stored once for the installation, one per
-`(version, platform)`, so:
+The endpoint Agent (Lariska) uses signed native updates. A tenant's policy
+names a version (`PUT /api/endpoint/agent/policy`, `desired_version`); agents
+declare `signed_updates` on registration and heartbeat before an installer can
+be offered in a heartbeat response.
+The API stores one release per `(version, platform, package_kind)`, so DEB and
+RPM can coexist for the same Linux version and target triple. Windows/macOS
+select MSI/PKG; Linux requires a reported package kind or unambiguous package
+inventory. The endpoint and the independent privileged supervisor verify the
+Ed25519 envelope against **administrator-provisioned local keys**, including
+version, platform, kind, size, digest, expiry and the durable sequence floor.
+The API checks envelope structure and byte binding; it is not the signing
+trust authority. TLS and the response's SHA-256 do not replace this verification.
 
-- **Uploading and deleting a build is the platform admin's**
-  (`platform.endpoint_agent_release.manage`, behind a step-up, #510). A
-  re-upload of the same pair replaces the bytes every tenant's endpoints are
-  handed; a delete stops every tenant's upgrade to it.
-- **A tenant admin** (`endpoint_agent.manage`) lists the builds and decides
-  which one its own endpoints run. It cannot upload, replace or delete one, and
-  the list it reads carries no `uploaded_by`.
+- **Uploading and deleting a release is the platform admin's**
+  (`platform.endpoint_agent_release.manage`, behind a step-up, #510).
+  A signed variant cannot be replaced by an unsigned build or a lower sequence;
+  changed bytes require a higher sequence. Deletion is installation-wide.
+- **A tenant admin** (`endpoint_agent.manage`) lists the releases and decides
+  which version its endpoints run. It cannot upload, replace or delete one;
+  its list carries no `uploaded_by`.
+- **Unsigned executable updates are prohibited installation-wide** (#513).
+  Uploads without a native signed envelope return HTTP 422. Existing unsigned
+  rows remain visible for investigation and audited deletion, but heartbeat
+  does not offer them, and direct downloads (including previously
+  cached URLs and `?package_kind=binary`) return HTTP 409. There is no managed
+  policy or environment switch that re-enables them. Inventory and collection
+  settings remain available to legacy agents.
+  Native downloads additionally require an active endpoint whose registered
+  capabilities include `signed_updates`. A legacy endpoint or scanner receives
+  HTTP 409 even if it retains a pre-upgrade URL and the release has since been
+  replaced by a native variant. Re-registration after rollback clears the
+  capability when the legacy client omits it.
+
+Upload the exact native package and its publisher-produced envelope:
 
 ```bash
-curl -sS -X POST https://<api-host>/api/endpoint/agent/releases \
+curl --fail-with-body -sS -X POST https://<api-host>/api/endpoint/agent/releases \
   -H "Authorization: Bearer <platform-admin token, recently re-verified>" \
-  -F version=0.3.0 -F platform=x86_64-pc-windows-msvc \
-  -F binary=@lariska.exe -F notes="release notes or build id"
+  -F version=0.5.0 -F platform=x86_64-pc-windows-msvc \
+  -F binary=@lariska.msi -F 'signed_manifest=<lariska.msi.manifest.json' \
+  -F notes="release notes or build id"
 ```
 
-Compare the `sha256` in the response with the digest of the build you meant to
-publish before any tenant names that version.
+Compare the response's digest and envelope with the intended release before
+setting a desired version. If a version has multiple formats, qualify downloads
+and deletion with `?package_kind=deb` or `rpm`; omission returns HTTP 409.
+
+#### Migrating legacy Lariska installations
+
+Upgrade **every API replica** before relying on the unsigned prohibition; old
+replicas can still serve old rows. Export release upload/delete audit history
+and investigate unsigned rows, then remove them through the platform-admin
+release API with `?package_kind=binary`. Do not erase the audit trail.
+
+Migrate archive/executable installations through an independent administrative
+channel (configuration management or local administration), using verified
+native packages from the publisher. Pause remote update policy during the move.
+Stop the old agent and supervisor if present; back up and preserve protected
+enrollment, stable agent/installation identity and state. Follow the native
+installer's ownership requirements, particularly for legacy root-owned macOS
+state; do not recursively change ownership of untrusted state files.
+
+Provision the protected local keyring and native signer trust outside the API.
+Seed the **currently installed version's** signed rollback package using the
+stable supervisor's `update-seed` command, then start both services. Confirm
+registration reports `signed_updates`, the same identity and tenant, successful
+inventory, and an unambiguous native package kind. Test a signed update and a
+failed-health rollback on a canary before resuming fleet policy. A native package
+must never be handed to legacy executable self-update code. The authoritative
+paths and platform commands are in
+[Lariska's signed-update guide](https://github.com/onixus/Lariska/blob/main/docs/SIGNED_UPDATES.md).
+
+#### Rotating the Lariska Ed25519 release key
+
+This procedure rotates the **Lariska manifest key**, independently of the sensor
+cosign key and the Windows/macOS installer-signing certificates. Record old/new
+key IDs, public-key fingerprints, sequence floors, fleet coverage and canary
+results in the change record. Never send a private signing key or a new trust
+key through managed API policy.
+
+1. Create the next key in the release signing secret store and assign a new,
+   unique `key_id`. Distribute its public key through the independent
+   administrative channel. Add a second `[[updates.trusted_keys]]` entry with
+   `id`, `public_key` (64 hex characters), and `revoked = false`, retaining the
+   old entry. Keep the config administrator-owned and unwritable by Lariska;
+   replace it atomically. Inventory actual config coverage, including offline
+   hosts, rather than inferring trust from the API's capabilities field.
+2. Ensure no transaction is pending before stopping/restarting the supervisor
+   to reload configuration: it reads the file at process startup. Restart the
+   endpoint as well. Verify the canary loads both keys and still recovers with
+   its existing old-key rollback package. Do not interrupt a pending health
+   check to rotate trust.
+3. Switch the publisher's `LARISKA_RELEASE_ED25519_KEY` and
+   `LARISKA_RELEASE_KEY_ID` to the new pair. Use a sequence greater than all
+   previous release and device floors; changing key ID never resets a floor.
+   Publish a fresh unexpired envelope for each native variant. The current
+   Lariska native-packages workflow passes a fixed key ID to the signer, so
+   update that workflow's ID together with the secret when adopting this
+   rotation. Merely changing a repository secret for the ID is insufficient.
+4. Exercise new-key installation and authenticated-health acknowledgement,
+   restart recovery, and deliberately failed-health rollback on canaries for
+   every supported native kind. During overlap retain both public keys, since
+   cached rollback packages may still have old-key manifests. Check the
+   protected updater journal, not merely a successful download or running UI.
+5. Before revoking the old key, replace each device's active rollback seed with
+   a verified **new-key signed package for its currently installed version**.
+   Pause update policy, wait for `pending = null`, stop the supervisor to
+   release its lock, and run the stable supervisor's `update-seed` with the
+   protected config and matching manifest/artifact. Respect the stored sequence
+   floor, expiry and native signer checks. Restart both services and test
+   recovery. Do not edit protected journals/caches or lower floors by hand.
+6. Revoke the old entry (`revoked = true`) through the administrative channel
+   only after trust coverage and reseeding are confirmed. Reload both services
+   with no pending transaction; verify an old-key manifest is refused and a
+   new-key update and rollback succeed. Retire the old publisher secret and
+   withdraw old-key releases from API policy. Offline/unconfirmed machines
+   require administrative recovery before managed updates resume.
+
+For a suspected key compromise, freeze remote update policy and withdraw the
+affected releases immediately. Revocation can invalidate the cached recovery
+package: prioritize independent administrative installation/reseeding of a
+known-good new-key package rather than retaining a compromised key for overlap.
+Neither an emergency version exception nor a server policy can authorize an
+unknown/revoked signing key. Keep incident evidence and verify hosts that may
+have executed affected packages.
 
 **On upgrade to the release that made this platform-only.** Builds already
-stored stay as they are and stay downloadable — nothing is migrated or
-re-hashed. Before it, any tenant's admin could have uploaded one, and the row
+stored stay available for audit inspection; unsigned builds are now blocked
+from download by the #513 policy above. No bytes are migrated or re-hashed. Before it, any tenant's admin could have uploaded one, and the row
 would be served to every tenant. Check this once, as the platform admin, and
 check it **from the audit trail, not from the current rows**: the rows show
 only the last write, so a build a tenant replaced, that endpoints downloaded,
@@ -2993,24 +3094,34 @@ replica still accepts a tenant's upload, and a check made earlier misses it.
    Get-FileHash "C:\Program Files\Lariska\lariska.exe"
    ```
 
-   A managed update keeps the binary it replaced beside the new one, with
-   `.old` appended to the full name (`/usr/bin/lariska.old`,
+   The legacy executable updater kept the replaced binary beside the new one,
+   with `.old` appended to the full name (`/usr/bin/lariska.old`,
    `/usr/local/bin/lariska.old`, `C:\Program Files\Lariska\lariska.exe.old`),
-   until the next update overwrites it. Hash that file too: an endpoint that
-   ran the foreign build and was then moved on can still have it there. A
+   until the next legacy update overwrote it. Hash that file if present: an
+   endpoint that ran the foreign build and was then moved on can still have it there. A
    match on the running binary does not clear a host whose `.old` is foreign.
+   Native managed updates instead retain signed rollback packages in the
+   protected supervisor cache and record transactions in its journal; inspect
+   those records too. Absence of a `.old` file does not establish a clean host.
 
 6. Then fix the build and the endpoints. Re-uploading the official bytes under
    the same version repairs neither: an endpoint already running the foreign
    binary reports that version, and the heartbeat offers no update when
    `desired_version` equals the version the agent reports.
 
-   - **The build.** `DELETE` every row whose current `sha256` is not yours, and
-     publish the official build under a **new** version (bump the patch, e.g.
-     `0.3.0` -> `0.3.1`). Do not reuse the compromised version number.
+   - **The build.** `DELETE` every row whose current `sha256` is not yours,
+     qualifying the native format with `?package_kind=...` when necessary,
+     and publish the official signed native package and its envelope under a
+     **new** version (bump the patch, e.g. `0.3.0` -> `0.3.1`) with a sequence
+     above the fleet's floors. Do not reuse the compromised version number.
    - **Endpoints that never ran the foreign bytes** (the host check in step 5
-     came back clean, `.old` included): point their tenant's policy at the new
-     version with `desired_version` and let the managed update move them.
+     came back clean, legacy `.old` and native recovery state included): first
+     migrate any legacy executable installation through the independent
+     administrative procedure above. Unsigned uploads/downloads are blocked,
+     and a legacy updater cannot consume a signed native package. After local
+     trust and the signed rollback seed are provisioned and native update
+     support is confirmed, point the tenant's `desired_version` at the new
+     version and verify installation and authenticated health on the host.
    - **Endpoints that ran the foreign binary**, or that you cannot check:
      treat the host as compromised. That binary ran as the agent's service
      account with the agent's token, and nothing it reports is trustworthy —
@@ -3023,8 +3134,11 @@ replica still accepts a tenant's upload, and a check made earlier misses it.
      enrol the reinstalled agent with a fresh key. Handle the host under your
      incident process.
 
-Builds are not signed yet: the API is the endpoint's only source of trust for
-what it executes, which is why the write is the platform admin's alone.
+The API transports publisher-signed native packages and their byte-bound
+envelopes. Execution trust comes from administrator-provisioned local keys,
+verified independently by the endpoint and privileged supervisor. Platform
+release permission and step-up protect publication; neither replaces signature
+verification or authorizes an unsigned legacy update.
 
 ## Tenant-defined roles
 
