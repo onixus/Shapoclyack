@@ -26,7 +26,7 @@ Two rules run through all of it:
 | Sensor | NATS broker | 4222 | TLS over TCP (`tls://`) | No | Job *push*. The sensor falls back to HTTP claim polling |
 | Sensor | NATS broker | 443 | TLS over TCP through a stream ingress | No | Alternative to 4222 where the firewall only passes 443 |
 | Sensor | NATS broker | 443 | WebSocket over TLS (`wss://`) | No | Alternative again, where a raw TCP ingress is not available |
-| Sensor | DNS resolver | 53 | UDP/TCP | **Yes** | Name resolution for the API host and for every scan target. nuclei uses the host's own resolver or `dns.resolvers`. dnsx still asks public resolvers; see [DNS resolvers](#dns-resolvers) |
+| Sensor | DNS resolver | 53 | UDP/TCP | **Yes** | Name resolution for the API host and for every scan target. nuclei and dnsx receive `dns.resolvers`, or the host's configured resolver list when empty; see [DNS resolvers](#dns-resolvers) |
 | Sensor | scan targets | as scoped | TCP/UDP/ICMP | **Yes** | The scan itself. The tenant's approved scan scope decides the range |
 | Sensor | address an in-scope name's CNAME resolves to (a SaaS or cloud provider) | 443, then 80 | HTTPS/HTTP, direct | No | Subdomain-takeover confirmation (`discovery.domain_monitor.takeover_http_confirm`). Without it, a resolving takeover candidate stays unconfirmed. Never through the proxy: the address is pinned |
 
@@ -147,12 +147,15 @@ fixed and say nothing about the targets. The scanner now runs nuclei with
 `[2001:db8::53]:5353`). Names are refused, because a resolver given by name
 would need a resolver first.
 
-dnsx does not read the setting yet. It runs the `resolve`, `hostnames` and
-org_profile DNS stages. Left to its defaults, dnsx v1.2.3 asks only its eight
-built-in public resolvers and never the system one. Run the way `resolve`
-runs it on the stand, dnsx sent an internal-only name to 8.8.8.8 and 1.0.0.1
-and returned nothing. With `-r` pointed at the cluster resolver, it resolved
-the name.
+The scanner also passes dnsx an explicit `-r` list through
+`scanner/pipeline/dnsx.py`: `dns.resolvers`, or the configured system
+resolvers when empty. This applies to `resolve`, `hostnames`, domain monitoring
+and org-profile DNS/mail stages. dnsx's built-in public defaults are therefore
+not the scanner's current behavior. Resolver order is round-robin, not a
+primary/fallback chain: do not mix an internal resolver with a public one.
+Use a plain recursive resolver for takeover confirmation; filtering NXDOMAIN
+can look like a dangling name. This does not change the separate interactsh
+client behavior below.
 
 ### Out-of-band testing (interactsh)
 

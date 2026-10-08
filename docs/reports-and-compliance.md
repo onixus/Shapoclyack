@@ -363,7 +363,8 @@ separate trusted channel. The verifier is one file that needs only Python and
 the `cryptography` package, not the platform:
 
 ```bash
-python3 scripts/verify-compliance-evidence.py evidence.json --key-id <trusted-key-id>
+TRUSTED_KEY_ID="REPLACE_WITH_INDEPENDENTLY_VERIFIED_KEY_ID"
+python3 scripts/verify-compliance-evidence.py evidence.json --key-id "$TRUSTED_KEY_ID"
 ```
 
 ---

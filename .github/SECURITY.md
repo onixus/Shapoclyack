@@ -106,7 +106,8 @@ Official release workflows include these controls:
 - Web UI formatting, linting, type checking, tests, and static-export build;
 - Kubernetes manifest validation;
 - image build, smoke, end-to-end, and synthetic load checks;
-- Trivy reporting and a gate for fixable critical vulnerabilities;
+- Trivy reporting and a gate for fixable HIGH and CRITICAL vulnerabilities
+  under the reviewed exception policy;
 - release images signed by digest with cosign, with signed SLSA provenance and
   an SPDX SBOM in the image index — how to verify them, and admission policy
   examples, are in [Supply chain](../docs/supply-chain.md);

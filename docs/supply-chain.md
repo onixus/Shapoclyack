@@ -334,10 +334,12 @@ or when any image or pipeline installs something other than a lock; the CI
 pip cache is keyed on the lock, too. A local development environment may keep
 installing the `.txt` files.
 
-One install is deliberately not locked: the Jenkins `Smoke` stage puts pytest
-into the throwaway container it tests the just-built image in (`pip install
---user pytest`). Nothing it installs ships, and the image's own dependencies
-came from the lock; `tests/test_python_locks.py` lists it as the one exception.
+The Jenkins `Smoke` stage extracts pytest and its dependencies from
+`requirements-dev.lock` and installs them with hashes into a temporary
+`.ci-smoke-pytest` directory. It mounts that directory read-only into the
+image under test through `PYTHONPATH`; no package manager or unlocked pytest
+install is added to that runtime image. Production scanner, API and all-in-one
+images remove both pip and ensurepip after the locked build-time installs.
 
 The web console's `npm ci` already verifies every package against the sha512
 integrity in `web-next/package-lock.json`, and Go modules built in the images
@@ -383,8 +385,10 @@ on its branch.
   been signed against ghcr.io or Fulcio. The local Jenkins release identity
   is provisioned, and its signing check records and verifies real public
   Rekor entries. A full production release remains a separate validation.
-- **pip's vendored copies.** The pip in the images vendors msgpack and
-  setuptools versions with advisories; see `requirements-pip.txt`.
+- **Build-time package installation.** pip is pinned for locked installs,
+  then pip and ensurepip are removed from production images. They remain
+  tools in development/CI containers; a clean runtime scan does not audit
+  every build-time dependency.
 - **Debian packages** come from Debian's signed repositories at whatever
   version the pinned base image's sources resolve; they are not pinned
   individually.

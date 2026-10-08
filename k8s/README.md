@@ -436,7 +436,7 @@ the upgrade path for an existing cluster are in
 Ingress to Postgres, ClickHouse and NATS is additionally restricted by
 `base/networkpolicy-datastores.yaml` (base, not an example — see
 [operations.md § NetworkPolicy decision](../docs/operations.md#networkpolicy-decision);
-`scripts/verify-networkpolicy.sh` proves the policies drop and admit what they
+`k8s/scripts/verify-networkpolicy.sh` probes the policies drop and admit what they
 say on a kind cluster with Calico).
 Egress policy remains an overlay concern.
 
