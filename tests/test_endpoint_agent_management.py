@@ -9,6 +9,8 @@ reaches a running agent — what settings to use and which build to move to.
 from __future__ import annotations
 
 import hashlib
+import json
+import time
 from pathlib import Path
 
 import pytest
@@ -31,6 +33,23 @@ pytestmark = requires_postgres
 
 BUILD = b"MZ\x90\x00 not really a PE, but bytes are bytes"
 PLATFORM = "x86_64-pc-windows-msvc"
+
+
+def _envelope(content=BUILD, **overrides):
+    """Wire envelope for server tests; signature authenticity is checked by Lariska."""
+    manifest = dict(
+        schema=1,
+        key_id="test-publisher",
+        version="0.5.0",
+        platform=PLATFORM,
+        package_kind="msi",
+        size_bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        expires_at=int(time.time()) + 3600,
+        sequence=7,
+    )
+    manifest.update(overrides)
+    return dict(manifest=manifest, signature="ab" * 64)
 
 
 def _setup(tmp_path: Path, monkeypatch, tenant: str = "acme"):
@@ -68,6 +87,7 @@ def _register(client, headers, agent_id: str, *, kind: str, version: str = "0.2.
             "hostname": "workstation-01",
             "version": version,
             "agent_kind": kind,
+            "signed_updates": True,
             "labels": {"agent.platform": PLATFORM},
         },
         headers=headers,
@@ -218,6 +238,8 @@ def test_a_scanning_agent_is_told_nothing(tmp_path: Path, monkeypatch) -> None:
         ({"server_url": "http://attacker.example"}, "not a setting"),
         ({"provisioning_key_file": "C:\\x"}, "not a setting"),
         ({"allow_plain_http": True}, "not a setting"),
+        ({"allow_unsigned_updates": True}, "not a setting"),
+        ({"updates": {"trusted_keys": []}}, "not a setting"),
         ({"inventory_interval_secs": 3}, "between"),
         ({"inventory_interval_secs": 100000}, "between"),
         ({"log_level": "shout"}, "log_level must be one of"),
@@ -272,8 +294,12 @@ def test_an_upgrade_is_offered_only_when_the_build_exists(
 
     upload = client.post(
         "/api/endpoint/agent/releases",
-        data={"version": "0.3.0", "platform": PLATFORM},
-        files={"binary": ("lariska.exe", BUILD, "application/octet-stream")},
+        data={
+            "version": "0.3.0",
+            "platform": PLATFORM,
+            "signed_manifest": json.dumps(_envelope(version="0.3.0")),
+        },
+        files={"binary": ("lariska.msi", BUILD, "application/octet-stream")},
         headers=admin,
         params={"tenant_id": "acme"},
     )
@@ -309,8 +335,12 @@ def test_an_agent_already_on_the_version_is_not_told_to_upgrade(
     admin = auth_headers(client, username="admin")
     client.post(
         "/api/endpoint/agent/releases",
-        data={"version": "0.3.0", "platform": PLATFORM},
-        files={"binary": ("lariska.exe", BUILD, "application/octet-stream")},
+        data={
+            "version": "0.3.0",
+            "platform": PLATFORM,
+            "signed_manifest": json.dumps(_envelope(version="0.3.0")),
+        },
+        files={"binary": ("lariska.msi", BUILD, "application/octet-stream")},
         headers=admin,
         params={"tenant_id": "acme"},
     )
@@ -338,8 +368,12 @@ def test_an_agent_without_a_platform_is_not_handed_someone_elses_binary(
     admin = auth_headers(client, username="admin")
     client.post(
         "/api/endpoint/agent/releases",
-        data={"version": "0.3.0", "platform": PLATFORM},
-        files={"binary": ("lariska.exe", BUILD, "application/octet-stream")},
+        data={
+            "version": "0.3.0",
+            "platform": PLATFORM,
+            "signed_manifest": json.dumps(_envelope(version="0.3.0")),
+        },
+        files={"binary": ("lariska.msi", BUILD, "application/octet-stream")},
         headers=admin,
         params={"tenant_id": "acme"},
     )
@@ -372,8 +406,12 @@ RELEASE_PERMISSION = "platform.endpoint_agent_release.manage"
 def _upload(client, headers, tenant: str, content: bytes = BUILD, version: str = "0.3.0"):
     return client.post(
         "/api/endpoint/agent/releases",
-        data={"version": version, "platform": PLATFORM},
-        files={"binary": ("lariska.exe", content, "application/octet-stream")},
+        data={
+            "version": version,
+            "platform": PLATFORM,
+            "signed_manifest": json.dumps(_envelope(content, version=version)),
+        },
+        files={"binary": ("lariska.msi", content, "application/octet-stream")},
         headers=headers,
         params={"tenant_id": tenant},
     )
@@ -522,7 +560,7 @@ def test_deleting_a_build_records_what_was_deleted(tmp_path: Path, monkeypatch) 
     assert event.before == {
         "version": "0.3.0",
         "platform": PLATFORM,
-        "package_kind": "binary",
+        "package_kind": "msi",
         "sha256": hashlib.sha256(BUILD).hexdigest(),
         "size_bytes": len(BUILD),
         "uploaded_by": "admin",

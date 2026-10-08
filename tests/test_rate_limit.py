@@ -988,10 +988,16 @@ def test_an_endpoint_agent_build_past_one_mib_is_stored(tmp_path, monkeypatch):
 
     client = configured_client(tmp_path, monkeypatch)
     endpoint_agent_mgmt.reset_for_tests()
+    from tests.test_endpoint_agent_management import _envelope
+
     build = b"MZ" + b"\x00" * (ONE_MIB + ONE_MIB // 2)
     uploaded = client.post(
         "/api/endpoint/agent/releases",
-        data={"version": "0.3.0", "platform": "x86_64-pc-windows-msvc"},
+        data={
+            "version": "0.3.0",
+            "platform": "x86_64-pc-windows-msvc",
+            "signed_manifest": json.dumps(_envelope(build, version="0.3.0")),
+        },
         files={"binary": ("lariska.exe", build, "application/octet-stream")},
         headers=auth_headers(client, "admin"),
     )
