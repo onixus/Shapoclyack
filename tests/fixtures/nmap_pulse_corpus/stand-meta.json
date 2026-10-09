@@ -1,0 +1,73 @@
+{
+  "issue": "onixus/Shapoclyack#541",
+  "services": {
+    "apache": {
+      "build_base": null,
+      "image": "docker.io/library/httpd:2.4.62@sha256:4c7788695c832bf415a662dfb5160f1895e65fc65c025e85f436ee2c9e7d7f3e"
+    },
+    "ftp": {
+      "build_base": "docker.io/library/debian:12-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587",
+      "image": "shapo-corpus/ftp"
+    },
+    "iis-stub": {
+      "build_base": null,
+      "image": "docker.io/library/python:3.12.7-alpine3.20@sha256:5049c050bdc68575a10bcb1885baa0689b6c15152d8a56a7e399fb49f783bf98"
+    },
+    "mysql": {
+      "build_base": null,
+      "image": "docker.io/library/mysql:8.0.39@sha256:ccb8f749bb5e59f9f8f03bf7282c7ef27a93a1814a24f0a8a926fb4e19b7fb97"
+    },
+    "nginx-legacy": {
+      "build_base": null,
+      "image": "docker.io/library/nginx:1.18.0@sha256:e90ac5331fe095cea01b121a3627174b2e33e06e83720e9a934c7b8ccc9c55a0"
+    },
+    "nginx-modern": {
+      "build_base": null,
+      "image": "docker.io/library/nginx:1.27.2@sha256:bc5eac5eafc581aeda3008b4b1f07ebba230de2f27d47767129a6a905c84f470"
+    },
+    "postgres": {
+      "build_base": null,
+      "image": "docker.io/library/postgres:16.4@sha256:e62fbf9d3e2b49816a32c400ed2dba83e3b361e6833e624024309c35d334b412"
+    },
+    "rdp-stub": {
+      "build_base": null,
+      "image": "docker.io/library/python:3.12.7-alpine3.20@sha256:5049c050bdc68575a10bcb1885baa0689b6c15152d8a56a7e399fb49f783bf98"
+    },
+    "redis": {
+      "build_base": null,
+      "image": "docker.io/library/redis:7.2.5@sha256:3aaec283e6e593bde528077d60280ac1589887067a39273348860837c9346d7e"
+    },
+    "samba": {
+      "build_base": "docker.io/library/debian:12-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587",
+      "image": "shapo-corpus/samba"
+    },
+    "scanner": {
+      "build_base": "docker.io/library/debian:12-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587",
+      "image": "shapo-corpus/scanner"
+    },
+    "snmp": {
+      "build_base": "docker.io/library/debian:12-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587",
+      "image": "shapo-corpus/snmp"
+    },
+    "ssh-debian12": {
+      "build_base": "docker.io/library/debian:12-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587",
+      "image": "shapo-corpus/ssh-debian12"
+    },
+    "ssh-rocky9": {
+      "build_base": "docker.io/library/rockylinux:9@sha256:d7be1c094cc5845ee815d4632fe377514ee6ebcf8efaed6892889657e5ddaaa6",
+      "image": "shapo-corpus/ssh-rocky9"
+    },
+    "ssh-ubuntu2004": {
+      "build_base": "docker.io/library/ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214",
+      "image": "shapo-corpus/ssh-ubuntu2004"
+    },
+    "ssh-ubuntu2204": {
+      "build_base": "docker.io/library/ubuntu:22.04@sha256:5ec03bb3441e8b0bf3b4f9cd4629a1ae763010dc3035bb8da3ae6cf026486401",
+      "image": "shapo-corpus/ssh-ubuntu2204"
+    }
+  },
+  "stub_services": [
+    "iis-stub (172.29.41.23)",
+    "rdp-stub (172.29.41.24)"
+  ]
+}

@@ -1,0 +1,132 @@
+# Reference stand for the Nmap/Pulse golden corpus (#541, ADR 0002).
+#
+# Every service has a fixed address on one bridge, and the scanner container sits
+# on the same bridge, so OS fingerprinting and banner grabs talk to real TCP/IP
+# stacks. Nothing is published to the host and no named volume is created:
+# `docker compose down -v` leaves nothing behind.
+#
+# Images are pinned by tag AND digest (the digest is the multi-arch index, so it
+# is the same on amd64 and arm64). MIRROR only changes where the bytes are
+# fetched from (e.g. MIRROR=mirror.gcr.io/library when Docker Hub is unreachable);
+# the digest still has to match. Use through ../record.sh.
+name: shapo-corpus
+
+networks:
+  stand:
+    ipam:
+      config:
+        - subnet: 172.29.41.0/24
+
+services:
+  # --- OpenSSH: distribution package, so the banner carries the revision ---
+  ssh-ubuntu2004:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd
+      args:
+        BASE: ${MIRROR:-docker.io/library}/ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214
+    image: shapo-corpus/ssh-ubuntu2004
+    networks: { stand: { ipv4_address: 172.29.41.10 } }
+  ssh-ubuntu2204:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd
+      args:
+        BASE: ${MIRROR:-docker.io/library}/ubuntu:22.04@sha256:5ec03bb3441e8b0bf3b4f9cd4629a1ae763010dc3035bb8da3ae6cf026486401
+    image: shapo-corpus/ssh-ubuntu2204
+    networks: { stand: { ipv4_address: 172.29.41.11 } }
+  ssh-debian12:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd
+      args:
+        BASE: ${MIRROR:-docker.io/library}/debian:12-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+    image: shapo-corpus/ssh-debian12
+    networks: { stand: { ipv4_address: 172.29.41.12 } }
+  ssh-rocky9:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd
+      args:
+        BASE: ${MIRROR:-docker.io/library}/rockylinux:9@sha256:d7be1c094cc5845ee815d4632fe377514ee6ebcf8efaed6892889657e5ddaaa6
+    image: shapo-corpus/ssh-rocky9
+    networks: { stand: { ipv4_address: 172.29.41.13 } }
+
+  # --- HTTP and TLS endpoints ---
+  nginx-modern:   # nginx 1.27, TLS 1.2 + 1.3
+    image: ${MIRROR:-docker.io/library}/nginx:1.27.2@sha256:bc5eac5eafc581aeda3008b4b1f07ebba230de2f27d47767129a6a905c84f470
+    volumes:
+      - ./conf/nginx-modern.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/certs:ro
+    networks: { stand: { ipv4_address: 172.29.41.20 } }
+  nginx-legacy:   # nginx 1.18, TLS 1.0/1.1/1.2, SECLEVEL=0 suites
+    image: ${MIRROR:-docker.io/library}/nginx:1.18.0@sha256:e90ac5331fe095cea01b121a3627174b2e33e06e83720e9a934c7b8ccc9c55a0
+    volumes:
+      - ./conf/nginx-legacy.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/certs:ro
+    networks: { stand: { ipv4_address: 172.29.41.21 } }
+  apache:         # httpd 2.4, TLS 1.2 only
+    image: ${MIRROR:-docker.io/library}/httpd:2.4.62@sha256:4c7788695c832bf415a662dfb5160f1895e65fc65c025e85f436ee2c9e7d7f3e
+    volumes:
+      - ./conf/httpd.conf:/usr/local/apache2/conf/httpd.conf:ro
+      - ./certs:/certs:ro
+    networks: { stand: { ipv4_address: 172.29.41.22 } }
+  iis-stub:       # STUB: Python socket server sending IIS 10 headers. Not IIS.
+    image: ${MIRROR:-docker.io/library}/python:3.12.7-alpine3.20@sha256:5049c050bdc68575a10bcb1885baa0689b6c15152d8a56a7e399fb49f783bf98
+    command: ["python", "/stub.py", "iis", "80"]
+    volumes: ["./stubs/stub.py:/stub.py:ro"]
+    networks: { stand: { ipv4_address: 172.29.41.23 } }
+  rdp-stub:       # STUB: answers an X.224 connection request with RDP_NEG_RSP. Not Windows.
+    image: ${MIRROR:-docker.io/library}/python:3.12.7-alpine3.20@sha256:5049c050bdc68575a10bcb1885baa0689b6c15152d8a56a7e399fb49f783bf98
+    command: ["python", "/stub.py", "rdp", "3389"]
+    volumes: ["./stubs/stub.py:/stub.py:ro"]
+    networks: { stand: { ipv4_address: 172.29.41.24 } }
+
+  # --- Databases ---
+  postgres:
+    image: ${MIRROR:-docker.io/library}/postgres:16.4@sha256:e62fbf9d3e2b49816a32c400ed2dba83e3b361e6833e624024309c35d334b412
+    environment: { POSTGRES_HOST_AUTH_METHOD: trust }
+    tmpfs: ["/var/lib/postgresql/data"]   # keeps the image's anonymous VOLUME out of the host
+    networks: { stand: { ipv4_address: 172.29.41.30 } }
+  mysql:
+    image: ${MIRROR:-docker.io/library}/mysql:8.0.39@sha256:ccb8f749bb5e59f9f8f03bf7282c7ef27a93a1814a24f0a8a926fb4e19b7fb97
+    environment: { MYSQL_ALLOW_EMPTY_PASSWORD: "yes" }
+    tmpfs: ["/var/lib/mysql"]
+    networks: { stand: { ipv4_address: 172.29.41.31 } }
+  redis:
+    image: ${MIRROR:-docker.io/library}/redis:7.2.5@sha256:3aaec283e6e593bde528077d60280ac1589887067a39273348860837c9346d7e
+    command: ["redis-server", "--protected-mode", "no", "--save", "", "--appendonly", "no"]
+    tmpfs: ["/data"]
+    networks: { stand: { ipv4_address: 172.29.41.32 } }
+
+  # --- File sharing, management, FTP: Debian 12 packages ---
+  samba:
+    build:
+      context: .
+      dockerfile: Dockerfile.debian-svc
+      target: samba
+      args: &debian { BASE: "${MIRROR:-docker.io/library}/debian:12-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587" }
+    image: shapo-corpus/samba
+    networks: { stand: { ipv4_address: 172.29.41.40 } }
+  snmp:
+    build: { context: ., dockerfile: Dockerfile.debian-svc, target: snmp, args: *debian }
+    image: shapo-corpus/snmp
+    networks: { stand: { ipv4_address: 172.29.41.41 } }
+  ftp:
+    build: { context: ., dockerfile: Dockerfile.debian-svc, target: ftp, args: *debian }
+    image: shapo-corpus/ftp
+    networks: { stand: { ipv4_address: 172.29.41.42 } }
+
+  # --- The scanner: same bridge, raw sockets, nmap from the distribution ---
+  scanner:
+    build:
+      context: .
+      dockerfile: Dockerfile.scanner
+      args: *debian
+    image: shapo-corpus/scanner
+    cap_add: [NET_RAW, NET_ADMIN]
+    command: ["sleep", "infinity"]
+    volumes:
+      - ${PULSE_BIN:?set PULSE_BIN to a linux Pulse binary (see ../record.sh)}:/usr/local/bin/pulse:ro
+      - ..:/corpus
+    networks: { stand: { ipv4_address: 172.29.41.250 } }

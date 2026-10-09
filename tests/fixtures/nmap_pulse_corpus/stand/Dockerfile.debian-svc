@@ -1,0 +1,22 @@
+# Distribution packages of the file/management services that have no widely
+# used official image: samba, snmpd, vsftpd. One Debian base, one target each.
+ARG BASE
+FROM ${BASE} AS samba
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive \
+    apt-get install -y --no-install-recommends samba && rm -rf /var/lib/apt/lists/*
+COPY conf/smb.conf /etc/samba/smb.conf
+RUN mkdir -p /srv/share
+CMD ["smbd", "--foreground", "--no-process-group", "--debug-stdout"]
+
+FROM ${BASE} AS snmp
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive \
+    apt-get install -y --no-install-recommends snmpd && rm -rf /var/lib/apt/lists/*
+COPY conf/snmpd.conf /etc/snmp/snmpd.conf
+CMD ["snmpd", "-f", "-Lo", "-C", "-c", "/etc/snmp/snmpd.conf"]
+
+FROM ${BASE} AS ftp
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive \
+    apt-get install -y --no-install-recommends vsftpd && rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /var/run/vsftpd/empty /srv/ftp
+COPY conf/vsftpd.conf /etc/vsftpd.conf
+CMD ["vsftpd", "/etc/vsftpd.conf"]

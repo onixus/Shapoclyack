@@ -75,6 +75,14 @@ Homebrew Nmap installed on the same host; `HOME` pointed at an empty directory.
    "Ubuntu package — upstream version…", i.e. it knows it cannot judge
    backports.
 
+Starting gap against the recorded corpus (work item 1, [#541](https://github.com/onixus/Shapoclyack/issues/541);
+Nmap 7.93, Pulse 1.3.0, 15 stand hosts): service names agree on 18 of 19
+endpoints, product on 14 of 18, version exactly on 11 of 17 (3 more lack the
+distribution revision, 3 are missing); CPE on 0 of 17; OS family on 14 of 14;
+TLS cipher suites 0 of 122 enumerated, TLS protocol sets equal on 2 of 3 shared
+endpoints and one endpoint (MySQL) absent. Table, method and caveats:
+[pulse-backend.md](../pulse-backend.md#reference-corpus-nmap-versus-pulse-541).
+
 Not measured: whether `pulse -D --discover-method arp` reports MAC addresses
 and NetBIOS/mDNS names in its JSON, and whether it honours a rate cap. That
 needs a directly attached segment and is the first step of work item 2.

@@ -49,11 +49,33 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- Nmap/Pulse golden corpus (#541, ADR 0002): a docker-compose stand
+  (`tests/fixtures/nmap_pulse_corpus/stand/`), the recorded Nmap XML and Pulse
+  JSON, `record.sh`, an offline comparison (`scripts/pulse_corpus.py`,
+  `scripts/compare-nmap-pulse-corpus.py`) and a pytest that pins the starting
+  gap (`docs/pulse-backend.md`).
 - `scripts/check-pulse-latest.sh` and a *Pulse is latest* stage in
   `Jenkinsfile.publish`: a real publish fails when `PULSE_VERSION` is not
   GenDec's latest release (a `DRY_RUN` only warns), so a release cannot silently
   ship an outdated Pulse. It reuses the `GENDEC_READ_TOKEN` credential
   (`docs/release-contract.md`, `docs/pulse-backend.md`).
+
+### Fixed
+
+- `tls_posture` mis-parsed Nmap's `ssl-enum-ciphers` output in two ways. Real
+  output indents every version header and the parser was anchored at column 0,
+  so only the first protocol block was read and TLSv1.0/1.1 behind another
+  version were dropped. And Nmap prints a single script-level `least strength:`
+  after the last version, which was attached to that last version only; each
+  version's grade is now the worst grade among its own ciphers.
+  **Effect on existing deployments:** scans of servers that still offer
+  TLSv1.0/1.1 will now report `weak_protocol` (high) for them, plus
+  `weak_cipher_grade` (medium) and `weak_cipher_name` for their suites, where
+  before they were silently missing. Conversely a `weak_cipher_grade` that was
+  hung on the last version only because of the trailing line is gone unless that
+  version's own ciphers earn it. On the corpus, 172.29.41.21:443 went from
+  1 grade finding on TLSv1.2 to F on TLSv1.0, TLSv1.1 and TLSv1.2 (each has an F
+  suite).
 
 ## [0.47-1009-rc1] — 2026-10-09
 

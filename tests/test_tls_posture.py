@@ -8,6 +8,7 @@ from xml.sax.saxutils import quoteattr
 from scanner.pipeline.config_schema import TlsPostureConfig
 from scanner.pipeline.tls_posture import (
     _apply_hostname_mismatch,
+    _iter_ssl_scripts,
     _parse_ssl_cert_output,
     _parse_ssl_enum_ciphers_output,
     check_tls_posture,
@@ -181,6 +182,45 @@ def test_weak_cipher_blob_flags_weak_and_not_strong(tmp_path: Path):
     assert "weak_cipher_grade" in kinds_by_version["TLSv1.0"]
     assert "weak_cipher_name" in kinds_by_version["TLSv1.0"]
     assert "TLSv1.2" not in kinds_by_version
+
+
+def _corpus_enum_ciphers(host: str, port: int) -> str:
+    """Real Nmap 7.93 ssl-enum-ciphers output from the golden corpus (#541)."""
+    corpus = Path(__file__).parent / "fixtures" / "nmap_pulse_corpus" / "nmap"
+    return next(
+        out
+        for h, p, sid, out in _iter_ssl_scripts(corpus)
+        if (h, p, sid) == (host, str(port), "ssl-enum-ciphers")
+    )
+
+
+def test_enum_ciphers_real_output_all_versions_and_per_version_grade():
+    # nginx 1.18 with TLS 1.0-1.2. Real Nmap indents every version header (only
+    # the first loses its indent after .strip()) and prints ONE script-level
+    # "least strength: F" after the last version. Both used to go wrong: only
+    # the first block was read, then the grade was hung on the last version.
+    output = _corpus_enum_ciphers("172.29.41.21", 443)
+    assert output.rstrip().endswith("least strength: F")
+    versions = _parse_ssl_enum_ciphers_output(output)
+    assert [v["version"] for v in versions] == ["TLSv1.0", "TLSv1.1", "TLSv1.2"]
+    assert [len(v["ciphers"]) for v in versions] == [9, 9, 30]
+    # Graded from each version's own ciphers (every one of them has an F suite).
+    assert [v["least_strength"] for v in versions] == ["F", "F", "F"]
+
+
+def test_enum_ciphers_grade_is_not_borrowed_from_the_script_level_line():
+    # nginx 1.27: every cipher is A on TLS 1.2 and 1.3.
+    versions = _parse_ssl_enum_ciphers_output(_corpus_enum_ciphers("172.29.41.20", 443))
+    assert [(v["version"], v["least_strength"]) for v in versions] == [("TLSv1.2", "A"), ("TLSv1.3", "A")]
+    # A version's grade follows its own ciphers even when the single trailing
+    # script-level line (the worst over all versions) says otherwise.
+    mixed = (
+        "TLSv1.2: \n    ciphers: \n      TLS_RSA_WITH_AES_128_CBC_SHA (rsa 2048) - A\n"
+        "  TLSv1.0: \n    ciphers: \n      TLS_RSA_WITH_3DES_EDE_CBC_SHA (rsa 2048) - C\n"
+        "  least strength: C"
+    )
+    got = {v["version"]: v["least_strength"] for v in _parse_ssl_enum_ciphers_output(mixed)}
+    assert got == {"TLSv1.2": "A", "TLSv1.0": "C"}
 
 
 def test_port_with_unrelated_script_excluded(tmp_path: Path):
