@@ -7,7 +7,7 @@ from pathlib import Path
 from scanner.pipeline.nse import run_nse
 
 
-def test_run_nse_skips_when_nmap_missing(tmp_path: Path, monkeypatch):
+def test_run_nse_skips_when_nmap_missing(tmp_path: Path, monkeypatch, caplog):
     monkeypatch.setattr("scanner.pipeline.nse.shutil.which", lambda _: None)
     out = run_nse(
         ["10.0.0.1:443/tcp"],
@@ -23,6 +23,7 @@ def test_run_nse_skips_when_nmap_missing(tmp_path: Path, monkeypatch):
     assert out == tmp_path / "nmap"
     assert (out / "SKIPPED_NMAP_MISSING").exists()
     assert not list(out.glob("*.xml"))
+    assert "docs/nmap-external.md" in caplog.text
 
 
 def test_run_nse_empty_targets_no_skip_marker_when_nmap_present(tmp_path: Path, monkeypatch):

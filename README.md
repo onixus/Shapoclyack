@@ -141,4 +141,4 @@ Use reviewed `tag@sha256:<digest>` references in production. Installer defaults 
 
 Shapoclyack is licensed under [Apache 2.0](LICENSE). See the [security policy](.github/SECURITY.md) for disclosure and supported versions, and [third-party licences](docs/third-party.md) for dependency terms.
 
-Default images (`INSTALL_NMAP=0`) use Pulse and contain no Nmap binaries or NSE data. The optional `-nmap` image or your own Nmap installation is subject to NPSL; see [Pulse backend](docs/pulse-backend.md).
+The images use Pulse and contain no Nmap binaries or NSE data (the last release with an `-nmap` image tag is `0.47-1009-rc1`). Nmap is subject to the NPSL; if you need it, install your own next to the sensor: [Using your own Nmap](docs/nmap-external.md).

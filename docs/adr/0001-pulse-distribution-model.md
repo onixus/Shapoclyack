@@ -16,7 +16,7 @@
 - `service_probe.backend: pulse` is the default
   ([`scanner/config/default.yaml`](../../scanner/config/default.yaml)). On that
   path Pulse is the only source of services, OS guesses and version-matched
-  CVEs; Nmap is not in the default images at all, because the Nmap Public Source
+  CVEs; Nmap is not in the images at all, because the Nmap Public Source
   License makes redistributing it a risk
   ([#97](https://github.com/onixus/Shapoclyack/issues/97),
   [third-party.md](../third-party.md#scanner-tools)).
@@ -53,7 +53,9 @@
 
 ### What the published images contain
 
-[`Jenkinsfile.publish`](../../Jenkinsfile.publish) builds five images and never
+[`Jenkinsfile.publish`](../../Jenkinsfile.publish) built five images (the table
+below, as of 0.47-1009-rc1; afterwards three: the `-nmap` variants were dropped,
+see [nmap-external.md](../nmap-external.md)) and never
 passes `INSTALL_PULSE=0`; the Dockerfiles default it to `1`, and the stage fails
 the build if no binary came out (`test -x`). So:
 

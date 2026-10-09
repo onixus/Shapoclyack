@@ -340,10 +340,10 @@ said nothing about `main` — [#248](https://github.com/onixus/Shapoclyack/pull/
 
 ### What differs between a branch build and `main`
 
-The load test and the `nmap-legacy` image build run **only on `main`**. A branch
+The load test runs **only on `main`**. A branch
 build exists to catch a regression before the merge, not to re-measure load.
 The guard keys on `BRANCH_NAME`, which only a multibranch job sets, so a
-single-branch job would still run both.
+single-branch job would still run it.
 
 ### Rules the Jenkinsfile has to keep
 

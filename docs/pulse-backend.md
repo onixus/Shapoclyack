@@ -146,7 +146,6 @@ COPY --from=pulse-bin /out/share/ /usr/local/share/
 | `PULSE_VERSION` | `v1.3.0` | GenDec release tag |
 | `PULSE_GITHUB_REPO` | `onixus/GenDec` | release owner/repo |
 | BuildKit secret `github_token` | — | PAT for **private** GenDec releases (`GENDEC_READ_TOKEN` in CI) |
-| `INSTALL_NMAP` | `1` | set `0` for lean image without nmap |
 | `INSTALL_PULSE` | `1` | set `0` to build without Pulse — and without a token for the private GenDec repo |
 | `PULSE_PINS` (script only) | `scripts/pulse-pinned.sha256` | file of reviewed per-platform digests |
 | `PULSE_RECORD` (script only) | empty — no record | where to write the install record; the images set `/usr/local/share/shapoclyack/pulse-install.txt` (#340) |
@@ -230,8 +229,8 @@ entirely, so the image builds with no GenDec token at all. That image has no
 service-probe backend of its own: with the default `service_probe.backend:
 pulse` the scanner aborts the run with an error naming both fixes, rather than
 silently falling back to nmap and producing a different finding set under the
-same profile. Run such an image with `OCTO_SERVICE_BACKEND=nmap` on an
-`INSTALL_NMAP=1` build.
+same profile. Run such an image with `OCTO_SERVICE_BACKEND=nmap` with a
+self-installed Nmap ([Using your own Nmap](nmap-external.md)).
 
 Local image build (GenDec is private, so pass a token with `contents:read`):
 
@@ -560,18 +559,16 @@ Nuclei skips cleanly if the binary or `templates_dir` is missing
 (host installs without the Docker bake). Disable with
 `nuclei.enabled: false`.
 
-## Optional nmap (Phase 5)
+## Optional nmap
 
-nmap remains in the default image for `backend: nmap|hybrid` and
-`vuln_legacy`, but is **not required** for the default Pulse path.
+Nmap is not bundled in the images (NPSL, [#97](https://github.com/onixus/Shapoclyack/issues/97));
+`0.47-1009-rc1` is the last release that published `-nmap` tags. It is not
+required for the default Pulse path. For `backend: nmap|hybrid`, `vuln_legacy`
+and the L2 ARP sweep, install your own and let it be found on `PATH`:
+[Using your own Nmap](nmap-external.md).
 
-| Build | Command |
-|-------|---------|
-| Full (default) | `docker build -f Dockerfile …` (`INSTALL_NMAP=1`) |
-| Pulse-only lean | `docker build --build-arg INSTALL_NMAP=0 …` |
-
-When nmap is absent, `run_nse` writes `nmap/SKIPPED_NMAP_MISSING` and
-continues (Pulse + Nuclei + TLS probe still run).
+When nmap is absent, `run_nse` logs a warning, writes `nmap/SKIPPED_NMAP_MISSING`
+and continues (Pulse + Nuclei + TLS probe still run).
 
 System UI marks **nmap** as optional and shows `service_probe.backend`.
 

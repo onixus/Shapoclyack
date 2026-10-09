@@ -212,6 +212,11 @@ def run_l2_discovery(
         save_json(artifact, result)
         return result
     if shutil.which("nmap") is None:
+        LOG.warning(
+            "nmap binary not found on PATH; skipping L2 discovery. Nmap is not "
+            "bundled with Shapoclyack, install it next to the sensor "
+            "(docs/nmap-external.md)."
+        )
         result["skipped_reason"] = "nmap.unavailable"
         save_json(artifact, result)
         return result

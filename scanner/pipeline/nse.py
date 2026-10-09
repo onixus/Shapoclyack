@@ -3,7 +3,7 @@
 Default service enrichment is Pulse (``service_probe.backend: pulse``).
 This module remains the escape hatch for ``backend: nmap|hybrid`` and
 ``nse_profiles.vuln_legacy``. When the ``nmap`` binary is not installed
-(Pulse-only image: ``INSTALL_NMAP=0``), ``run_nse`` logs and returns an
+(Nmap is not bundled with Shapoclyack, docs/nmap-external.md), ``run_nse`` logs and returns an
 empty ``nmap/`` directory instead of failing the scan.
 """
 
@@ -255,9 +255,10 @@ def run_nse(
 
     if shutil.which("nmap") is None:
         logging.warning(
-            "nmap binary not found; skipping NSE stage "
-            "(Pulse-only image or PATH). Use service_probe.backend=pulse "
-            "or install nmap for hybrid/nmap backends."
+            "nmap binary not found on PATH; skipping NSE stage. Nmap is not "
+            "bundled with Shapoclyack: use service_probe.backend=pulse, or "
+            "install nmap next to the sensor for the hybrid/nmap backends "
+            "(docs/nmap-external.md)."
         )
         (nmap_root / "SKIPPED_NMAP_MISSING").write_text(
             "nmap not installed\n", encoding="utf-8"

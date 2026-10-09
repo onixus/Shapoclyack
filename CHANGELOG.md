@@ -4,6 +4,19 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Removed
+
+- **Breaking:** Shapoclyack no longer builds or distributes Nmap (NPSL, #97).
+  `shapoclyack-0.47-1009-rc1` is the last release with the `-nmap` image tags
+  (`shapoclyack-scanner:<tag>-nmap`, `shapoclyack-aio:<tag>-nmap`,
+  `latest-nmap`). The `INSTALL_NMAP` build argument, the `nmap-vulners` and
+  Vulscan clones, the `scanner-nmap` / `aio-nmap` publish matrix entries
+  (`Jenkinsfile.publish`, `docker-publish.yml`) and the `nmap-legacy` CI image
+  job are gone. Deployments that run `service_probe.backend: nmap|hybrid`, the
+  `vuln_legacy` NSE profile or `discovery.l2` must install `nmap` themselves
+  next to the sensor or in a derived image; the scanner uses it whenever it is
+  on `PATH`. See [docs/nmap-external.md](docs/nmap-external.md).
+
 ### Changed
 
 - Pulse is bumped from `v1.1.0` to `v1.3.0` in `scripts/install-pulse.sh`, both
@@ -15,6 +28,8 @@ All notable changes to Shapoclyack are documented in this file.
   writer, and probe scheduling and port scanning were reworked, so scans can
   differ in timing and in what is reported on busy hosts. Verified against a
   live `127.0.0.1:8081/tcp` probe with `run_pulse_probe`.
+- The L2 discovery and NSE stages now log a warning that points to
+  `docs/nmap-external.md` when `nmap` is not on `PATH`.
 
 ### Added
 
