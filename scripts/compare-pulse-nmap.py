@@ -33,7 +33,12 @@ from defusedxml.ElementTree import fromstring as safe_fromstring
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scanner.pipeline.pulse_probe import parse_pulse_json, write_pulse_artifacts  # noqa: E402
+from scanner.pipeline.pulse_probe import (  # noqa: E402
+    build_pulse_command,
+    parse_pulse_json,
+    pulse_env,
+    write_pulse_artifacts,
+)
 from scanner.pipeline.pulse_shadow import write_pulse_nmap_diff  # noqa: E402
 
 
@@ -96,6 +101,18 @@ def resolve_targets(targets: list[str], *, one_ip_per_host: bool) -> list[str]:
     return out
 
 
+def _expand_ports(spec: str) -> list[int]:
+    """``"22,80,8000-8010"`` -> sorted port list for ``build_pulse_command``."""
+    ports: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        lo, _, hi = part.partition("-")
+        ports.update(range(int(lo), int(hi or lo) + 1))
+    return sorted(p for p in ports if 0 < p < 65536)
+
+
 def run_pulse(
     pulse_bin: str,
     targets: list[str],
@@ -106,34 +123,39 @@ def run_pulse(
     os_detect: bool,
 ) -> dict:
     raw_path = out_dir / "pulse_raw.json"
-    # Pulse takes one TARGET arg (comma-separated hosts) or --targets-file.
-    target_arg = ",".join(targets)
-    cmd = [
-        pulse_bin,
-        target_arg,
-        "-p",
-        ports,
-        "-c",
-        "200",
-        "--rate",
-        "500",
-        "-b",
-        "--cve",
-        "-f",
-        "json",
-        "-q",
-    ]
-    # OS fingerprint needs raw sockets (root / setcap); skip when unprivileged.
-    if os_detect:
-        cmd.extend(["--os", "--os-mode", "sinfp"])
-    t0 = time.perf_counter()
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
+    hosts_file = out_dir / "pulse_targets.txt"
+    hosts_file.write_text("\n".join(targets) + "\n", encoding="utf-8")
+    # The adapter's own builder, so every pinned input it passes (ADR 0002,
+    # #543: --services-db, --os-mode sinfp; later --probe-db, --script-dir)
+    # is in the comparison too.
+    cmd = build_pulse_command(
+        bin_path=pulse_bin,
+        hosts_file=hosts_file,
+        ports=_expand_ports(ports),
+        concurrency=200,
+        rate=500,
+        adaptive=False,
+        host_parallel=0,
+        timeout_ms=800,
+        banner=True,
+        # OS fingerprint needs raw sockets (root / setcap); skip when unprivileged.
+        os_detect=os_detect,
+        cve=True,
+        cve_online=False,
+        syn=False,
+        checkpoint=None,
+        max_hosts=len(targets) + 1,
     )
+    t0 = time.perf_counter()
+    with tempfile.TemporaryDirectory(prefix="pulse-home-") as home:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=pulse_env(Path(home)),
+        )
     elapsed = time.perf_counter() - t0
     if proc.returncode != 0 and not proc.stdout.strip():
         raise RuntimeError(f"pulse failed ({proc.returncode}): {proc.stderr[-500:]}")

@@ -4463,6 +4463,18 @@ bundle, what stays unavailable — is [air-gap.md](air-gap.md).
 > multi-replica profile that turns them into a genuinely non-disruptive rollout
 > is [high-availability.md](high-availability.md#rolling-upgrade-without-5xx).
 
+### Before upgrading to the release that pins Pulse's inputs
+
+[#543](https://github.com/onixus/Shapoclyack/issues/543). Search your own sensor
+configs and ConfigMaps (and any `config/*.yaml` you mount over the bundled one)
+for `os_mode:` under `service_probe.pulse` and under `profiles.*.pulse`. A value
+of `nmap` makes config validation fail at start, so every scan on that sensor
+stops until you replace it with `sinfp`; `auto` keeps loading as `sinfp` with a
+deprecation warning, but set `sinfp` anyway. The bundled `default.yaml` and
+`k8s.yaml` already say `sinfp`; the API's config overrides never carried the key.
+`~/.pulse/` of the sensor user is no longer read either: see
+[Pulse backend](pulse-backend.md#pinned-inputs).
+
 ### Probes, and what a rollout costs
 
 Three probes on the API pod, with three different questions (#331):

@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,7 @@ def run_command(
     retries: int,
     check: bool = True,
     capture_output: bool = True,
+    env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     last_exc: Exception | None = None
     for attempt in range(1, retries + 2):
@@ -52,6 +54,7 @@ def run_command(
                 capture_output=capture_output,
                 timeout=timeout,
                 check=check,
+                env=env,
             )
             if capture_output:
                 if completed.stdout and completed.stdout.strip():

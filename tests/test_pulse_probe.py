@@ -339,7 +339,6 @@ def test_build_pulse_command_flags():
         timeout_ms=800,
         banner=True,
         os_detect=True,
-        os_mode="auto",
         cve=True,
         cve_online=False,
         syn=False,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -140,6 +141,22 @@ class DnsConfig(BaseModel):
         return normalized
 
 
+def _reject_nmap_os_mode(value: object) -> object:
+    """Map the removed ``auto`` OS engine to ``sinfp``; reject ``nmap``.
+
+    Both make Pulse read ``nmap-os-db`` from the host's Nmap install, which is
+    NPSL-licensed data we do not ship or depend on (ADR 0002, #543). ``auto``
+    was the shipped default and already meant "sinfp first", so configs copied
+    from an older release keep loading; ``nmap`` asked for exactly that data.
+    """
+    if value == "auto":
+        logging.warning("os_mode 'auto' is deprecated and runs as 'sinfp'; set os_mode: sinfp")
+        return "sinfp"
+    if value == "nmap":
+        raise ValueError(f"os_mode {value!r} is no longer supported; replace it with 'sinfp'")
+    return value
+
+
 class ProfilePulseConfig(BaseModel):
     """Optional per-speed-profile Pulse knobs (override ``service_probe.pulse``).
 
@@ -153,7 +170,8 @@ class ProfilePulseConfig(BaseModel):
     timeout_ms: int | None = Field(default=None, ge=50, le=60_000)
     banner: bool | None = None
     os_detect: bool | None = None
-    os_mode: Literal["sinfp", "nmap", "auto"] | None = None
+    os_mode: Literal["sinfp"] | None = None
+    _check_os_mode = field_validator("os_mode", mode="before")(_reject_nmap_os_mode)
     cve: bool | None = None
     cve_online: bool | None = None
     syn: bool | None = None
@@ -547,7 +565,8 @@ class PulseProbeConfig(BaseModel):
     timeout_ms: int = Field(default=800, ge=50, le=60_000)
     banner: bool = True
     os_detect: bool = True
-    os_mode: Literal["sinfp", "nmap", "auto"] = "auto"
+    os_mode: Literal["sinfp"] = "sinfp"
+    _check_os_mode = field_validator("os_mode", mode="before")(_reject_nmap_os_mode)
     cve: bool = True
     cve_online: bool = False
     syn: bool = False

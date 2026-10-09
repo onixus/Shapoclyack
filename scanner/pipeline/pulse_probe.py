@@ -29,9 +29,16 @@ Does **not** replace NSE scripts (ssl-enum-ciphers, vulners, …). Use
 Does **not** invoke Pulse product features that duplicate Shapoclyack:
 ``pulse monitor``, ``--server``, ``--alert-*``, ``--scripts``, ``--inventory``.
 
+Pinned inputs (docs/adr/0002-replacing-nmap-functions.md, #543): every
+invocation gets ``--services-db`` pointing at our own IANA-derived table, OS
+detection is always ``--os-mode sinfp``, and the process runs with a private,
+empty ``HOME``. Without that, Pulse reads ``~/.pulse/`` and the NPSL-licensed
+``nmap-services`` / ``nmap-os-db`` of whatever Nmap the host has installed.
+
 Environment:
   OCTO_PULSE_BIN     — path to pulse binary (default: ``pulse`` on PATH)
-  NVD_API_KEY        — optional; pulse also reads ~/.pulse/nvd_api_key
+  NVD_API_KEY        — optional; passed through (``~/.pulse/nvd_api_key`` is not read);
+                       the rest of the environment is allow-listed, see ``_ENV_ALLOW``
 """
 
 from __future__ import annotations
@@ -42,6 +49,7 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable
@@ -73,6 +81,56 @@ from .utils import run_command, save_json, write_lines
 #: pulse's ruleset id: ``YYYY.MM.DD`` with an optional ``-hN`` hotfix
 #: (pulse 1.1.0 prints ``2026.07.29-h1``).
 _RULESET = re.compile(r"(\d{4})\.(\d{1,2})\.(\d{1,2})(?:-h(\d+))?")
+
+
+#: Port-to-name table handed to ``--services-db``. Built from the IANA registry
+#: (scripts/build-pulse-services.py), never from nmap-services. Lives beside the
+#: code, not under scanner/data: an enrichment volume mounted there would hide it.
+SERVICES_DB = Path(__file__).resolve().parent / "pulse_data" / "services.tsv"
+
+#: The only OS engine the adapter runs. ``nmap``/``auto`` make Pulse read
+#: ``nmap-os-db`` from the host.
+OS_MODE = "sinfp"
+
+
+def resolve_services_db() -> str:
+    """Path for ``--services-db``; ``/dev/null`` when our table is missing.
+
+    An empty file makes Pulse use its embedded table. That is the right
+    degradation: omitting the flag would send it hunting for the host's Nmap
+    install, which is exactly what pinning the input prevents.
+    """
+    if SERVICES_DB.is_file():
+        return str(SERVICES_DB)
+    logging.warning("pulse_probe: %s is missing; Pulse falls back to its embedded port table", SERVICES_DB)
+    return os.devnull
+
+
+#: Variables Pulse may inherit. Everything else is dropped: GenDec v1.3.0 reads
+#: SHODAN_API_KEY / CENSYS_API_KEY itself (clap ``env =``) and would send every
+#: scanned IP to those services, and PULSE_* switch on alerting, a server token
+#: and alternative data files. ``NVD_API_KEY`` is the one secret it needs.
+_ENV_ALLOW = frozenset(
+    {
+        "PATH", "LANG", "LANGUAGE", "TZ", "TMPDIR", "NVD_API_KEY",
+        "SSL_CERT_FILE", "SSL_CERT_DIR",
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    }
+)
+
+
+def pulse_env(home: Path) -> dict[str, str]:
+    """Allow-listed environment for Pulse with a private ``HOME``.
+
+    Pulse looks in ``$HOME/.pulse/`` for ``nmap-services``, ``nmap-os-db``,
+    ``kev.txt``, ``epss.csv``, ``config`` and an NVD key. The operator's files
+    must not leak into a scan, so ``HOME`` is an empty directory owned by the
+    run, and only ``_ENV_ALLOW`` (plus ``LC_*``) passes through.
+    """
+    env = {k: v for k, v in os.environ.items() if k in _ENV_ALLOW or k.startswith("LC_")}
+    env["HOME"] = str(home)
+    return env
 
 
 def parse_ruleset(value: str | None) -> tuple[int, int, int, int] | None:
@@ -229,12 +287,12 @@ def build_pulse_command(
     timeout_ms: int,
     banner: bool,
     os_detect: bool,
-    os_mode: str,
     cve: bool,
     cve_online: bool,
     syn: bool,
     checkpoint: Path | None,
     max_hosts: int,
+    services_db: str | None = None,
 ) -> list[str]:
     cmd = [
         bin_path,
@@ -251,6 +309,8 @@ def build_pulse_command(
         "-f",
         "json",
         "-q",
+        "--services-db",
+        services_db or resolve_services_db(),
     ]
     if rate > 0:
         cmd += ["--rate", str(rate)]
@@ -264,7 +324,7 @@ def build_pulse_command(
     if banner:
         cmd.append("-b")
     if os_detect:
-        cmd += ["--os", "--os-mode", os_mode]
+        cmd += ["--os", "--os-mode", OS_MODE]
     if cve:
         cmd.append("--cve")
     if cve_online:
@@ -591,13 +651,15 @@ def _probe_chunk(
     cmd: list[str], *, timeout_seconds: int, retries: int, idx: int
 ) -> tuple[dict[str, Any], int, str]:
     """Run one pulse invocation; return (parsed payload, exit code, stderr)."""
-    completed = run_command(
-        cmd,
-        timeout=timeout_seconds,
-        retries=retries,
-        check=False,
-        capture_output=True,
-    )
+    with tempfile.TemporaryDirectory(prefix="pulse-home-") as home:
+        completed = run_command(
+            cmd,
+            timeout=timeout_seconds,
+            retries=retries,
+            check=False,
+            capture_output=True,
+            env=pulse_env(Path(home)),
+        )
     stdout = (completed.stdout or "").strip()
     stderr = (completed.stderr or "").strip()
     if completed.returncode != 0:
@@ -635,7 +697,6 @@ def run_pulse_probe(
     timeout_ms: int = 800,
     banner: bool = True,
     os_detect: bool = True,
-    os_mode: str = "auto",
     cve: bool = True,
     cve_online: bool = False,
     syn: bool = False,
@@ -691,7 +752,11 @@ def run_pulse_probe(
     size = max(1, chunk_hosts)
     chunks = plan_tcp_probe(grouped, chunk_hosts=size, done_hosts=done)
     planned_endpoints = sum(chunk.endpoint_count for chunk in chunks)
+    # Resolved once per run, and recorded: a sensor that lost the table names
+    # services from Pulse's embedded one, and that must be traceable.
+    services_db = resolve_services_db()
     diagnostics = {
+        "services_db": services_db,
         "input_unique_tcp_endpoints": sum(len(ports) for ports in grouped.values()),
         "pending_unique_tcp_endpoints": sum(len(ports) for host, ports in grouped.items() if host not in done),
         "planned_tcp_combinations": planned_endpoints,
@@ -799,7 +864,7 @@ def run_pulse_probe(
                 timeout_ms=timeout_ms,
                 banner=banner,
                 os_detect=with_os,
-                os_mode=os_mode,
+                services_db=services_db,
                 cve=cve,
                 cve_online=cve_online,
                 syn=syn,
