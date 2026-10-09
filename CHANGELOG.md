@@ -4,6 +4,26 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Pulse is bumped from `v1.1.0` to `v1.3.0` in `scripts/install-pulse.sh`, both
+  Dockerfiles, `Jenkinsfile.publish`, the manual Actions publisher and
+  `scripts/verify-pulse-image.py`; `scripts/pulse-pinned.sha256` carries the
+  `v1.3.0` digests, taken with `scripts/pulse-pin.sh` after its cosign signature
+  check (the first signed pin). GenDec's CLI flags and JSON shape that the
+  adapter uses are unchanged; the checkpoint is now written by a single async
+  writer, and probe scheduling and port scanning were reworked, so scans can
+  differ in timing and in what is reported on busy hosts. Verified against a
+  live `127.0.0.1:8081/tcp` probe with `run_pulse_probe`.
+
+### Added
+
+- `scripts/check-pulse-latest.sh` and a *Pulse is latest* stage in
+  `Jenkinsfile.publish`: a real publish fails when `PULSE_VERSION` is not
+  GenDec's latest release (a `DRY_RUN` only warns), so a release cannot silently
+  ship an outdated Pulse. It reuses the `GENDEC_READ_TOKEN` credential
+  (`docs/release-contract.md`, `docs/pulse-backend.md`).
+
 ## [0.47-1009-rc1] — 2026-10-09
 
 Release candidate for validation, not the current stable release. API and sensor
