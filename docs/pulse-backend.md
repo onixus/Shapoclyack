@@ -114,7 +114,7 @@ Left alone, Pulse reads `~/.pulse/` and the NPSL-licensed `nmap-services` and
 config could name services differently. The adapter therefore pins the inputs
 ([ADR 0002](adr/0002-replacing-nmap-functions.md), #543):
 
-- `--services-db scanner/data/pulse/services.tsv` on every invocation: a
+- `--services-db scanner/pipeline/pulse_data/services.tsv` on every invocation: a
   port-to-name table built from the IANA registry (source and terms in
   [third-party.md](third-party.md)). If the file is missing the adapter passes
   `/dev/null` and Pulse uses its embedded table; it never falls back to the
@@ -122,9 +122,30 @@ config could name services differently. The adapter therefore pins the inputs
 - `--os-mode sinfp` whenever `--os` is on. `os_mode: nmap` and `os_mode: auto`
   are rejected at config load with a message to switch to `sinfp`; edit any
   sensor config or ConfigMap that still sets them.
-- A private, empty `HOME` per Pulse process (and `PULSE_SERVICES_DB` removed
-  from its environment), so `~/.pulse/nmap-services`, `nmap-os-db`, `kev.txt`,
-  `epss.csv` and `nvd_api_key` of the sensor user cannot change a scan.
+- A private, empty `HOME` per Pulse process, and an allow-listed environment:
+  `PATH`, `LANG`/`LC_*`, `TZ`, `TMPDIR`, `NVD_API_KEY`, the proxy variables
+  (`HTTP(S)_PROXY`, `ALL_PROXY`, `NO_PROXY`, both cases) and `SSL_CERT_FILE/DIR`.
+  Everything else is dropped: Pulse reads `SHODAN_API_KEY` and `CENSYS_API_KEY`
+  on its own and would send every scanned address to those services, and
+  `PULSE_*` variables switch on alerting, a server token and alternative data
+  files.
+
+What the sensor user's `~/.pulse/` used to contribute and no longer does:
+`kev.txt` and `epss.csv` (Pulse's `--cve` now uses its embedded KEV subset and
+fallback scores; Shapoclyack's own KEV/EPSS overlays under `scanner/data` are
+JSON and are not in the text/CSV format `--kev-file`/`--epss-file` expect, so
+they are not passed), `nvd_api_key` and `config` (use `NVD_API_KEY`), and any
+`nmap-services`/`nmap-os-db`. The port table lives in
+`scanner/pipeline/pulse_data/`, next to the code, because `scanner/data` is
+replaced by the enrichment volume in deployments that mount one.
+
+The table has no frequency column (every entry reads as 0.0), so `--top` on it
+is numeric order; the adapter always passes explicit `-p` lists. In Pulse
+v1.3.0 about 80 well-known ports (135, 445, 3389, 5900, 8080, ...) have names
+hard-coded in the engine that `--services-db` does not override, so the table
+only decides the names of the remaining ports (3389 is `rdp` from the engine,
+5985 is `wsman` from the table). Both limits go away when the engine derives
+the name from the matched probe (onixus/GenDec#31).
 
 The service name is still taken from the port table, not from the probe that
 matched (GenDec#31): port 2222 is named `ethernet-ip-1` even when the banner

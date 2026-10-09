@@ -16,7 +16,11 @@ echo "==> pulse: ${PULSE_BIN}"
 "${PULSE_BIN}" --version || "${PULSE_BIN}" --help | head -3
 
 echo "==> pulse localhost top-10 JSON"
-OUT="$("${PULSE_BIN}" 127.0.0.1 --top 10 -f json -q 2>/dev/null || true)"
+# Same pinned inputs as the adapter (ADR 0002, #543): our port table, private HOME.
+SERVICES_DB="$(cd "$(dirname "$0")/.." && pwd)/scanner/pipeline/pulse_data/services.tsv"
+PULSE_HOME="$(mktemp -d)"
+trap 'rm -rf "${PULSE_HOME}"' EXIT
+OUT="$(HOME="${PULSE_HOME}" env -u PULSE_SERVICES_DB "${PULSE_BIN}" 127.0.0.1 --top 10 --services-db "${SERVICES_DB}" -f json -q 2>/dev/null || true)"
 if ! echo "$OUT" | grep -q '"stats"'; then
   echo "FAIL: pulse JSON missing stats"
   echo "$OUT" | head -20

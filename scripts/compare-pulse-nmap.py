@@ -33,7 +33,12 @@ from defusedxml.ElementTree import fromstring as safe_fromstring
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scanner.pipeline.pulse_probe import parse_pulse_json, write_pulse_artifacts  # noqa: E402
+from scanner.pipeline.pulse_probe import (  # noqa: E402
+    parse_pulse_json,
+    pulse_env,
+    resolve_services_db,
+    write_pulse_artifacts,
+)
 from scanner.pipeline.pulse_shadow import write_pulse_nmap_diff  # noqa: E402
 
 
@@ -122,18 +127,24 @@ def run_pulse(
         "-f",
         "json",
         "-q",
+        # Same pinned inputs as the adapter, so the comparison is not run on
+        # the host's Nmap data files or ~/.pulse (ADR 0002, #543).
+        "--services-db",
+        resolve_services_db(),
     ]
     # OS fingerprint needs raw sockets (root / setcap); skip when unprivileged.
     if os_detect:
         cmd.extend(["--os", "--os-mode", "sinfp"])
     t0 = time.perf_counter()
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
+    with tempfile.TemporaryDirectory(prefix="pulse-home-") as home:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=pulse_env(Path(home)),
+        )
     elapsed = time.perf_counter() - t0
     if proc.returncode != 0 and not proc.stdout.strip():
         raise RuntimeError(f"pulse failed ({proc.returncode}): {proc.stderr[-500:]}")

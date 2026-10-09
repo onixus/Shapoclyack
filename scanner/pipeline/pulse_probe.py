@@ -37,7 +37,8 @@ empty ``HOME``. Without that, Pulse reads ``~/.pulse/`` and the NPSL-licensed
 
 Environment:
   OCTO_PULSE_BIN     — path to pulse binary (default: ``pulse`` on PATH)
-  NVD_API_KEY        — optional; passed through (``~/.pulse/nvd_api_key`` is not read)
+  NVD_API_KEY        — optional; passed through (``~/.pulse/nvd_api_key`` is not read);
+                       the rest of the environment is allow-listed, see ``_ENV_ALLOW``
 """
 
 from __future__ import annotations
@@ -83,8 +84,9 @@ _RULESET = re.compile(r"(\d{4})\.(\d{1,2})\.(\d{1,2})(?:-h(\d+))?")
 
 
 #: Port-to-name table handed to ``--services-db``. Built from the IANA registry
-#: (scripts/build-pulse-services.py), never from nmap-services.
-SERVICES_DB = Path(__file__).resolve().parents[1] / "data" / "pulse" / "services.tsv"
+#: (scripts/build-pulse-services.py), never from nmap-services. Lives beside the
+#: code, not under scanner/data: an enrichment volume mounted there would hide it.
+SERVICES_DB = Path(__file__).resolve().parent / "pulse_data" / "services.tsv"
 
 #: The only OS engine the adapter runs. ``nmap``/``auto`` make Pulse read
 #: ``nmap-os-db`` from the host.
@@ -104,14 +106,29 @@ def resolve_services_db() -> str:
     return os.devnull
 
 
+#: Variables Pulse may inherit. Everything else is dropped: GenDec v1.3.0 reads
+#: SHODAN_API_KEY / CENSYS_API_KEY itself (clap ``env =``) and would send every
+#: scanned IP to those services, and PULSE_* switch on alerting, a server token
+#: and alternative data files. ``NVD_API_KEY`` is the one secret it needs.
+_ENV_ALLOW = frozenset(
+    {
+        "PATH", "LANG", "LANGUAGE", "TZ", "TMPDIR", "NVD_API_KEY",
+        "SSL_CERT_FILE", "SSL_CERT_DIR",
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    }
+)
+
+
 def pulse_env(home: Path) -> dict[str, str]:
-    """Environment for Pulse with a private ``HOME``.
+    """Allow-listed environment for Pulse with a private ``HOME``.
 
     Pulse looks in ``$HOME/.pulse/`` for ``nmap-services``, ``nmap-os-db``,
-    ``kev.txt``, ``epss.csv`` and an NVD key. The operator's files must not
-    leak into a scan, so ``HOME`` is an empty directory owned by the run.
+    ``kev.txt``, ``epss.csv``, ``config`` and an NVD key. The operator's files
+    must not leak into a scan, so ``HOME`` is an empty directory owned by the
+    run, and only ``_ENV_ALLOW`` (plus ``LC_*``) passes through.
     """
-    env = {k: v for k, v in os.environ.items() if k != "PULSE_SERVICES_DB"}
+    env = {k: v for k, v in os.environ.items() if k in _ENV_ALLOW or k.startswith("LC_")}
     env["HOME"] = str(home)
     return env
 

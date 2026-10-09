@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build scanner/data/pulse/services.tsv from the IANA service-name registry.
+"""Build scanner/pipeline/pulse_data/services.tsv from the IANA service-name registry.
 
 Pulse takes a port-to-name table through ``--services-db``. Without one it
 looks for the Nmap data files on the host, which are under the NPSL, so the
@@ -9,7 +9,7 @@ Source: https://www.iana.org/assignments/service-names-port-numbers/service-name
 (IANA registry, public domain; see docs/third-party.md). The file is NOT derived
 from nmap-services.
 
-Usage: build-pulse-services.py service-names-port-numbers.csv > scanner/data/pulse/services.tsv
+Usage: build-pulse-services.py service-names-port-numbers.csv > scanner/pipeline/pulse_data/services.tsv
 """
 
 from __future__ import annotations

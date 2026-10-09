@@ -115,3 +115,45 @@ def test_config_rejects_nmap_os_modes(mode):
 def test_config_default_is_sinfp():
     assert PulseProbeConfig().os_mode == "sinfp"
     assert ProfilePulseConfig().os_mode is None
+
+
+_LEAKY = (
+    "SHODAN_API_KEY",
+    "CENSYS_API_KEY",
+    "PULSE_API_TOKEN",
+    "PULSE_ALERT_SLACK",
+    "PULSE_NVD_API_KEY",
+    "PULSE_OS_DB",
+    "PULSE_SERVICES_DB",
+    "OCTO_SECRET_THING",
+    "AWS_SECRET_ACCESS_KEY",
+)
+
+
+def test_pulse_env_is_an_allowlist(monkeypatch, tmp_path):
+    """Pulse reads SHODAN_API_KEY/CENSYS_API_KEY itself and would send every target out."""
+    for name in _LEAKY:
+        monkeypatch.setenv(name, "leak")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("NVD_API_KEY", "nvd-key")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy:3128")
+    monkeypatch.setenv("no_proxy", "localhost")
+    monkeypatch.setenv("LC_ALL", "C.UTF-8")
+    monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/ca.pem")
+
+    env = pp.pulse_env(tmp_path)
+
+    assert env["HOME"] == str(tmp_path)
+    assert env["PATH"] == "/usr/bin:/bin"
+    assert env["NVD_API_KEY"] == "nvd-key"
+    assert env["HTTPS_PROXY"] == "http://proxy:3128"
+    assert env["no_proxy"] == "localhost"
+    assert env["LC_ALL"] == "C.UTF-8"
+    assert env["SSL_CERT_FILE"] == "/etc/ssl/ca.pem"
+    assert set(_LEAKY).isdisjoint(env)
+
+
+def test_services_table_is_outside_the_enrichment_volume():
+    """scanner/data is shadowed by the enrichment PVC; the table must live elsewhere."""
+    data_dir = Path(pp.__file__).resolve().parents[1] / "data"
+    assert data_dir not in pp.SERVICES_DB.parents

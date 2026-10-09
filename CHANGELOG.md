@@ -8,13 +8,16 @@ All notable changes to Shapoclyack are documented in this file.
 
 - **Breaking:** the Pulse adapter pins its inputs
   ([#543](https://github.com/onixus/Shapoclyack/issues/543)). Every Pulse
-  invocation gets `--services-db scanner/data/pulse/services.tsv` (an
+  invocation gets `--services-db scanner/pipeline/pulse_data/services.tsv` (an
   IANA-derived port table, `scripts/build-pulse-services.py`), `--os-mode sinfp`,
   and runs with a private empty `HOME`, so `~/.pulse/` and a host Nmap install's
   `nmap-services` / `nmap-os-db` no longer influence results.
   `pulse.os_mode: nmap` and `auto` (also in speed profiles) are rejected at
   config load; the bundled `default.yaml` and `k8s.yaml` now say `sinfp`.
   Custom configs and ConfigMaps that set `nmap`/`auto` must be edited.
+  Pulse now also runs with an allow-listed environment (no `SHODAN_API_KEY`,
+  `CENSYS_API_KEY`, `PULSE_*`), and no longer reads `~/.pulse/{kev.txt,epss.csv,
+  nvd_api_key,config}`; set `NVD_API_KEY` instead.
 
 ### Removed
 
