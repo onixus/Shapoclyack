@@ -20,7 +20,14 @@ echo "==> pulse localhost top-10 JSON"
 SERVICES_DB="$(cd "$(dirname "$0")/.." && pwd)/scanner/pipeline/pulse_data/services.tsv"
 PULSE_HOME="$(mktemp -d)"
 trap 'rm -rf "${PULSE_HOME}"' EXIT
-OUT="$(HOME="${PULSE_HOME}" env -u PULSE_SERVICES_DB "${PULSE_BIN}" 127.0.0.1 --top 10 --services-db "${SERVICES_DB}" -f json -q 2>/dev/null || true)"
+# Empty environment plus the adapter's allow-list (scanner/pipeline/pulse_probe.py
+# _ENV_ALLOW), only those that are set.
+PULSE_ENV=("HOME=${PULSE_HOME}")
+for v in PATH LANG LANGUAGE TZ TMPDIR NVD_API_KEY SSL_CERT_FILE SSL_CERT_DIR \
+  HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy; do
+  if [[ -n "${!v:-}" ]]; then PULSE_ENV+=("${v}=${!v}"); fi
+done
+OUT="$(env -i "${PULSE_ENV[@]}" "${PULSE_BIN}" 127.0.0.1 --top 10 --services-db "${SERVICES_DB}" -f json -q 2>/dev/null || true)"
 if ! echo "$OUT" | grep -q '"stats"'; then
   echo "FAIL: pulse JSON missing stats"
   echo "$OUT" | head -20

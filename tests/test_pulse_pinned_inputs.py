@@ -153,6 +153,20 @@ def test_pulse_env_is_an_allowlist(monkeypatch, tmp_path):
     assert set(_LEAKY).isdisjoint(env)
 
 
+# Spelled out, not derived from pp._ENV_ALLOW: trimming the list must go red.
+_EXPECTED_ALLOWED = (
+    "PATH", "LANG", "LANGUAGE", "TZ", "TMPDIR", "NVD_API_KEY", "SSL_CERT_FILE", "SSL_CERT_DIR",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+)  # fmt: skip
+
+
+@pytest.mark.parametrize("name", _EXPECTED_ALLOWED)
+def test_every_allowed_variable_reaches_pulse(name, monkeypatch, tmp_path):
+    monkeypatch.setenv(name, "value-for-" + name)
+    assert pp.pulse_env(tmp_path)[name] == "value-for-" + name
+
+
 def test_services_table_is_outside_the_enrichment_volume():
     """scanner/data is shadowed by the enrichment PVC; the table must live elsewhere."""
     data_dir = Path(pp.__file__).resolve().parents[1] / "data"
