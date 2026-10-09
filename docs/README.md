@@ -41,7 +41,8 @@ The bare word "agent" always means the Lariska endpoint Agent; anything that cla
 
 Where the procedures for the enterprise features live. Each row links the
 operator procedure first, then the API contract and the variables; all of it is
-on `main` after `shapoclyack-0.46-0922` (see `## Unreleased` in the changelog).
+on `main` after `shapoclyack-0.46-0922` and included in the prepared
+`0.47-1009-rc1` candidate (see the changelog).
 
 | Task | Procedure | API and configuration |
 |---|---|---|
@@ -203,7 +204,13 @@ on **2026-10-09**. The documented published baseline is
 every feature described on `main`. Use the tagged documentation and
 [CHANGELOG.md](../CHANGELOG.md) for its release contract.
 
-Recent additions on `main`, still under `Unreleased`:
+The `0.47-1009-rc1` candidate is prepared from `main` at `274310a1` plus the
+release-preparation change on **2026-10-09**. See
+[candidate notes and validation checklist](releases/0.47-1009-rc1.md).
+The stable-release references remain `0.46-0922` until a stable successor is
+published.
+
+Recent additions included in the candidate:
 
 | Area | Current guide |
 |---|---|
