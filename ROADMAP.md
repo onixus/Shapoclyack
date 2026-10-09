@@ -104,13 +104,13 @@ reads (~~[#227](https://github.com/onixus/Shapoclyack/issues/227)~~, corrected i
 unless an operator runs the script or installs a timer and sets `OCTO_AGENT_AUTO_UPDATE=true`, and
 `upgrade_requested` is still only a marker for the console.
 
-`CHANGELOG.md` has an open `## Unreleased` section: `main` is the `0.46-0922` tag plus 647
-commits at this checked revision — migrations `0060`–`0082` (`0058`/`0059`, the ingest lease and the NATS outbox, shipped
+`CHANGELOG.md` has an open `## Unreleased` section: `main` is the `0.46-0922` tag plus subsequent
+changes — migrations `0060`–`0083` (`0058`/`0059`, the ingest lease and the NATS outbox, shipped
 in `0.46-0922`; there is no `0075`; refresh tokens, WebAuthn, run publication lease, retro CVE matching, retention and legal hold, tenant lifecycle,
 tenant RLS, compliance frameworks, rate-limit buckets, tenant-defined roles, asset-import
 permission, the rank-3 credential permission, scan queue admission, IdP resync and SCIM, sensor
 client certificates, the Lariska release permission, installation-aware inventory,
-native installer variants and caller-owned idempotency contraction), plus the signed sensor bundle and
+native installer variants, caller-owned idempotency contraction and CRL certificate material), plus the signed sensor bundle and
 release-image signing. An enterprise-readiness issue is closed when its PR merges; the code is
 still the arbiter, not the issue state — several closed issues leave a named remainder, listed
 in [the EPIC #370 table](#enterprise-readiness-review-epic-370).
