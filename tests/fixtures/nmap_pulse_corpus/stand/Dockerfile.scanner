@@ -1,0 +1,9 @@
+# The scanner sits on the same bridge as the services so -O and banner grabs see
+# real TCP/IP stacks, not Docker Desktop's published-port proxy. Nmap comes from
+# the distribution; the Pulse binary is bind-mounted by record.sh (it is not
+# committed), after scripts/install-pulse.sh has checked it against the pin.
+ARG BASE
+FROM ${BASE}
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive \
+    apt-get install -y --no-install-recommends nmap ca-certificates && \
+    rm -rf /var/lib/apt/lists/*

@@ -183,6 +183,24 @@ def test_weak_cipher_blob_flags_weak_and_not_strong(tmp_path: Path):
     assert "TLSv1.2" not in kinds_by_version
 
 
+def test_enum_ciphers_parser_reads_indented_version_headers():
+    # Real Nmap indents every version header by two spaces; only the first one
+    # loses its indent (the XML output is .strip()ped), so a parser anchored at
+    # column 0 saw TLSv1.2 and silently dropped TLSv1.0/1.1 behind it (#541).
+    output = (
+        "\n  TLSv1.2: \n    ciphers: \n"
+        "      TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 (secp256r1) - A\n"
+        "    least strength: A\n"
+        "  TLSv1.1: \n    ciphers: \n"
+        "      TLS_RSA_WITH_3DES_EDE_CBC_SHA (rsa 2048) - C\n"
+        "    least strength: C\n"
+    ).strip()
+    versions = _parse_ssl_enum_ciphers_output(output)
+    assert [v["version"] for v in versions] == ["TLSv1.2", "TLSv1.1"]
+    assert versions[1]["least_strength"] == "C"
+    assert versions[1]["ciphers"][0]["name"] == "TLS_RSA_WITH_3DES_EDE_CBC_SHA"
+
+
 def test_port_with_unrelated_script_excluded(tmp_path: Path):
     nmap_dir = tmp_path / "nmap" / "tcp"
     nmap_dir.mkdir(parents=True)

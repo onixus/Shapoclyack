@@ -1,0 +1,14 @@
+# OpenSSH from the distribution's own package, so the banner carries the
+# distribution revision (Ubuntu/Debian) or none (RHEL family) exactly as a
+# real host's does. BASE is pinned by tag and digest in docker-compose.yml.
+ARG BASE
+FROM ${BASE}
+RUN if command -v apt-get >/dev/null 2>&1; then \
+      apt-get update && DEBIAN_FRONTEND=noninteractive \
+      apt-get install -y --no-install-recommends openssh-server && \
+      mkdir -p /run/sshd && rm -rf /var/lib/apt/lists/*; \
+    else \
+      dnf install -y openssh-server && dnf clean all && ssh-keygen -A; \
+    fi
+EXPOSE 22
+CMD ["/usr/sbin/sshd", "-D", "-e"]

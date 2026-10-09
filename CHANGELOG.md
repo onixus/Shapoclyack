@@ -33,11 +33,22 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- Nmap/Pulse golden corpus (#541, ADR 0002): a docker-compose stand
+  (`tests/fixtures/nmap_pulse_corpus/stand/`), the recorded Nmap XML and Pulse
+  JSON, `record.sh`, an offline comparison (`scanner/pipeline/pulse_corpus.py`,
+  `scripts/compare-nmap-pulse-corpus.py`) and a pytest that pins the starting
+  gap (`docs/pulse-backend.md`).
 - `scripts/check-pulse-latest.sh` and a *Pulse is latest* stage in
   `Jenkinsfile.publish`: a real publish fails when `PULSE_VERSION` is not
   GenDec's latest release (a `DRY_RUN` only warns), so a release cannot silently
   ship an outdated Pulse. It reuses the `GENDEC_READ_TOKEN` credential
   (`docs/release-contract.md`, `docs/pulse-backend.md`).
+
+### Fixed
+
+- `tls_posture` read only the first protocol block of Nmap's `ssl-enum-ciphers`
+  output: real output indents every version header, and the parser was anchored
+  at column 0, so TLSv1.0/1.1 behind another version were dropped.
 
 ## [0.47-1009-rc1] — 2026-10-09
 

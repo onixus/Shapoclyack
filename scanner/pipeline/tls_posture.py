@@ -124,7 +124,7 @@ _NOT_BEFORE_RE = re.compile(r"^Not valid before:\s*(.+?)\s*$", re.MULTILINE)
 _NOT_AFTER_RE = re.compile(r"^Not valid after:\s*(.+?)\s*$", re.MULTILINE)
 
 # ssl-enum-ciphers line-by-line state machine regexes.
-_VERSION_HEADER_RE = re.compile(r"^(TLSv1\.[0-3]|SSLv[23])\s*:\s*$")
+_VERSION_HEADER_RE = re.compile(r"^\s*(TLSv1\.[0-3]|SSLv[23])\s*:\s*$")
 _CIPHERS_HEADER_RE = re.compile(r"^\s*ciphers:\s*$")
 _CIPHER_LINE_RE = re.compile(r"^\s+(TLS_\S+|SSL_\S+)\s*(?:\([^)]*\))?\s*-\s*([A-F])\s*$")
 _LEAST_STRENGTH_RE = re.compile(r"^\s*least strength:\s*([A-F])\s*$")

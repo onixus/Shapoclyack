@@ -575,6 +575,91 @@ System UI marks **nmap** as optional and shows `service_probe.backend`.
 K8s caps (`NET_RAW` / `NET_ADMIN` + `allowPrivilegeEscalation: true`) remain
 required for **naabu** and Pulse SYN/OS — see `k8s/README.md`.
 
+## Reference corpus: Nmap versus Pulse (#541)
+
+`pulse_shadow` compares endpoints and OS family on a live run. The golden corpus
+is the same comparison frozen: Nmap and Pulse run once against a fixed stand,
+the outputs are committed, and the gap is measured offline in CI. It exists
+because Nmap is going away ([ADR 0002](adr/0002-replacing-nmap-functions.md)) and
+what Pulse is measured against has to be recorded while Nmap still runs.
+
+| Part | Where |
+|---|---|
+| Stand (docker compose, pinned images) | `tests/fixtures/nmap_pulse_corpus/stand/` |
+| Recorder | `tests/fixtures/nmap_pulse_corpus/record.sh` |
+| Nmap XML | `tests/fixtures/nmap_pulse_corpus/nmap/{tcp,udp}.xml` |
+| Pulse JSON (banners, TLS rows and findings included) | `tests/fixtures/nmap_pulse_corpus/pulse/{tcp,udp,tcp-scripts}.json` |
+| Comparison | `scanner/pipeline/pulse_corpus.py`, CLI `scripts/compare-nmap-pulse-corpus.py [--json]` |
+| Pinned numbers | `tests/test_nmap_pulse_corpus.py` |
+
+**Stand.** One bridge, `172.29.41.0/24`, fixed addresses, nothing published to
+the host, no named volumes; the scanner container sits on the same bridge so
+`-O` and banner grabs see real TCP/IP stacks. OpenSSH from Ubuntu 20.04, Ubuntu
+22.04, Debian 12 and Rocky 9 packages (the banner carries the distribution
+revision on the first three, none on Rocky); nginx 1.27 (TLS 1.2/1.3), nginx 1.18
+(TLS 1.0/1.1/1.2, `SECLEVEL=0` suites), Apache httpd 2.4 (TLS 1.2); PostgreSQL
+16, MySQL 8.0, Redis 7.2; Samba, snmpd and vsftpd (anonymous) from Debian 12.
+**Stubs, not the real product:** `iis-stub` (a socket server sending IIS 10
+headers) and `rdp-stub` (answers the X.224 request with `RDP_NEG_RSP`). They test
+what each tool does with that wire format, not IIS or Windows. Images are pinned
+by tag and digest; the distribution-package services (OpenSSH, Samba, snmpd,
+vsftpd) install the then-current package of the pinned base, so their exact
+versions are in the fixtures (banners), not in the compose file.
+
+**Commands.** Nmap: `-n -Pn -T4 -sV -O --osscan-guess --script default,safe,vuln,ssl-enum-ciphers`
+(plus `-sU -sV -p 161` for SNMP). Pulse 1.3.0: the adapter's flags
+(`-b --os --os-mode sinfp --cve -f json`, connect scan) with an empty `HOME`,
+plus a second run with `--scripts`. Both got the same targets and ports
+(21, 22, 80, 139, 443, 445, 3306, 3389, 5432, 6379, and UDP 161). The scanner
+image has the distribution `nmap` installed, so Pulse could read
+`/usr/share/nmap/nmap-services` (ADR 0002, measurement 1): service names that
+come from the port table in the Pulse column are NPSL-derived. That is the
+as-is state of a sensor with Nmap installed, and #543 changes it.
+
+**Starting gap** (Nmap 7.93 and Pulse 1.3.0, before any Pulse or adapter
+change; the same numbers are pinned in the test):
+
+| Dimension | Nmap | Pulse 1.3.0 | Gap |
+|---|---|---|---|
+| Open endpoints (TCP + UDP) | 19 | 19 | none; Jaccard 1.0 |
+| Service name | 19 | 18 agree | 1: port 445, Nmap `netbios-ssn`, Pulse `smb` |
+| Product (of 18 Nmap names) | 18 | 14 agree | 3 missing (Samba x2, PostgreSQL), 1 differs (SNMP) |
+| Version | 17 given | 11 exact, 3 upstream-only | 3 missing; the 3 upstream-only lack the distribution revision (`8.2p1 Ubuntu 4ubuntu0.13` against `8.2p1`) |
+| CPE | 17 endpoints | 0 | the field does not exist in Pulse output |
+| OS family (14 hosts) | 14 | 14 agree (Linux) | family only; Nmap `Linux 4.15 - 5.6`, Pulse `Linux (modern, TS+SACK+WS)`, real kernel 6.12 |
+| TLS endpoints | 4 | 3 | MySQL (3306, in-protocol TLS) missing |
+| TLS protocol sets (3 shared) | enumerated | 2 equal | nginx 1.27: Nmap `TLSv1.2, TLSv1.3`, Pulse only the negotiated `TLSv1.3` |
+| TLS cipher suites enumerated | 122 | 0 | `tls[]` holds the negotiated protocol and the weak protocols accepted, not suites or grades |
+| Weak-protocol verdict (3 shared) | 1 endpoint | 1 endpoint, 3 of 3 agree | none on this stand; the unfavourable cases (SSLv3, weak suites on TLS 1.2) are not in it |
+| Script outputs | 157 on ports, 40 distinct scripts | 13 findings (6 exposure, 4 tls, 3 version_cve) | `--scripts` added nothing (13 = 13) |
+| CVE ids named | 428 (`vulners`) | 3 | the 3 are all among Nmap's; 425 are Nmap-only. Not a quality score: `vulners` names every CVE ever filed against a version |
+
+Reading it:
+
+- Pulse's service/product/version detection is close on what its probe DB
+  covers (SSH, HTTP servers, MySQL, Redis, FTP) and absent where it has no rule
+  (Samba, PostgreSQL). That is #546's job.
+- The distribution revision and the CPE are the two fields that disappear when
+  Nmap does (`retro_match` and `asset_services` prefer them): #546, with the
+  Pulse change in #543.
+- Nmap is the reference, not the truth. It reports Samba `4.6.2` (Debian 12
+  ships 4.17), PostgreSQL `9.6.0 or later` for 16, and a kernel range that does
+  not contain 6.12. Agreement with it is scored; being right is not. The IIS
+  and RDP rows measure the stubs only.
+- Cipher-suite enumeration is the largest single gap and the one with no
+  workaround short of #545.
+
+Re-recording: `PULSE_BIN=<linux pulse> tests/fixtures/nmap_pulse_corpus/record.sh`
+(the header explains how to get a digest-checked Linux binary, and `MIRROR=` for
+an unreachable Docker Hub). It needs Docker with NET_RAW and takes a few
+minutes; the stand is removed when the script ends. Re-record only when the
+stand or a tool version changes, then update `EXPECTED_SUMMARY` in the test and
+the table above in the same commit; do not edit fixtures by hand.
+
+Fixture size is 620 KB, 438 KB of it the Nmap XML (the `vuln` scripts and
+`vulners` output). It is stored as recorded so that `_parse_nmap_xml` reads it
+exactly as it reads a run directory.
+
 ## Limitations (current)
 
 - Does not run NSE scripts (`ssl-enum-ciphers`, vulners, …) on the default path.
