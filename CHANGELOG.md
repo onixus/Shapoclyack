@@ -4,7 +4,20 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+## [0.47-1009-rc1] — 2026-10-09
+
+Release candidate for validation, not the current stable release. API and sensor
+versions are `0.47-1009-rc1`; Pulse remains pinned at `v1.1.0`. Image publication
+does not move `latest` / `latest-nmap`, and the publish job produces an unsigned
+sensor bundle for this prerelease. Upgrade notes and the publication checklist
+are in [docs/releases/0.47-1009-rc1.md](docs/releases/0.47-1009-rc1.md).
+
 ### Changed
+
+- The manual GitHub Actions image publisher requires a full release-tag ref,
+  leaves `latest` / `latest-nmap` unchanged for alpha/beta/RC releases, and
+  enables `ENRICHMENT_STRICT=1` like the Jenkins publisher. Candidate images can
+  be published without Jenkins using the workflow's OIDC signing identity.
 
 - Complete caller-owned bulk idempotency (#517, migration `0082`): require
   `actor`, remove the unowned fallback and legacy index/trigger, and preserve
@@ -25,6 +38,14 @@ All notable changes to Shapoclyack are documented in this file.
   from the published release and pending Lariska inventory/update work.
 
 ### Added
+
+- **Installation-aware Lariska inventory (migration `0080`).** Accept schema
+  v1/v2 for a mixed fleet, preserve separate installations and per-source
+  collection status, and retain the last complete inventory when a collector
+  degrades. An incomplete collection cannot prove software removal or close a
+  CVE finding. Native release envelopes preserve the publisher's signed manifest;
+  the endpoint owns its Ed25519 trust keys and sequence floor. See
+  [docs/endpoint-inventory-v2.md](docs/endpoint-inventory-v2.md).
 
 - Optional TLS revocation for sensor/endpoint certificates (#515): issuer-scoped
   signed CRLs, platform CLI publication to files or one Kubernetes Secret,
@@ -1072,6 +1093,13 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **Unsigned legacy Lariska updates are prohibited (#513).** Uploads require a
+  signed native manifest, historical unsigned builds are never offered or
+  downloadable, and cached download URLs also require native signed-update
+  capability. Legacy endpoints receive a blocking reason rather than executable
+  bytes and need a protected native installation before managed updates resume.
+  See [docs/operations.md](docs/operations.md#endpoint-agent-lariska-builds).
+
 - **`update-agent.sh --bundle-url` no longer installs an unsigned tarball
   ([#363](https://github.com/onixus/Shapoclyack/issues/363)).** It downloaded
   whatever the URL served, unpacked it over the installed sensor as root and
@@ -1168,8 +1196,8 @@ All notable changes to Shapoclyack are documented in this file.
   change — against your published digests; the current rows alone hide a
   build that was replaced and restored, or uploaded and deleted
   ([operations](docs/operations.md#endpoint-agent-lariska-builds)).
-  Signing the builds, so the API is not the endpoint's only source of trust,
-  is a follow-up.
+  Native signed manifests and refusal of legacy unsigned delivery are included
+  in this candidate too; see the #513 entry above.
 
 - **General request rate limiting and a body cap on every route
   ([#320](https://github.com/onixus/Shapoclyack/issues/320)).** The login route

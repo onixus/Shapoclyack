@@ -24,11 +24,6 @@ on:
   # release:
   #   types: [published]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Extra image tag to publish (optional, e.g. test)"
-        required: false
-        default: ""
 
 permissions:
   contents: read
@@ -83,6 +78,21 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      - name: Validate release ref
+        id: release
+        env:
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_REF_TYPE" != tag || ! "$RELEASE_TAG" =~ ^shapoclyack-[0-9]+\.[0-9]+-[0-9]{4}(-(alpha|beta|rc)[0-9]+)?$ ]]; then
+            echo 'Run Docker Publish from a full shapoclyack release tag, not a branch.' >&2
+            exit 1
+          fi
+          stable=true
+          if [[ "$RELEASE_TAG" =~ -(alpha|beta|rc)[0-9]+$ ]]; then stable=false; fi
+          printf 'tag=%s\nstable=%s\n' "$RELEASE_TAG" "$stable" >> "$GITHUB_OUTPUT"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
         with:
@@ -117,14 +127,8 @@ jobs:
           flavor: |
             suffix=${{ matrix.tag_suffix }},onlatest=true
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=match,pattern=v(.*),group=1
-            type=ref,event=tag
-            type=sha
-            type=raw,value=latest,enable=${{ github.ref_type == 'tag' || github.event_name == 'release' }}
-            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event.inputs.tag != '' }}
+            type=raw,value=${{ steps.release.outputs.tag }}
+            type=raw,value=latest,enable=${{ steps.release.outputs.stable == 'true' }}
 
       # Pushed by digest only: no tag points here until the next step has
       # signed and verified it.
@@ -149,6 +153,7 @@ jobs:
           build-args: |
             INSTALL_NMAP=${{ matrix.install_nmap }}
             PULSE_VERSION=v1.1.0
+            ENRICHMENT_STRICT=1
           cache-from: type=gha,scope=${{ matrix.name }}
           # mode=max + multi-platform (linux/amd64,linux/arm64) on the larger
           # images (esp. aio) regularly hangs/fails "preparing build cache for
@@ -170,14 +175,13 @@ jobs:
           IMAGE: ${{ matrix.image }}
           DIGEST: ${{ steps.build.outputs.digest }}
           TAGS: ${{ steps.meta.outputs.tags }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
           args=(--keyless
             --identity "${GITHUB_SERVER_URL}/${GITHUB_WORKFLOW_REF}"
             --issuer https://token.actions.githubusercontent.com)
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            args+=(--release "${GITHUB_REF_NAME}")
-          fi
+          args+=(--release "${RELEASE_TAG}")
           while IFS= read -r tag; do
             if [[ -n "${tag}" ]]; then
               args+=(--tag "${tag}")

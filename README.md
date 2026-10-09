@@ -14,7 +14,8 @@ Shapoclyack turns external discovery into a verifiable remediation workflow. It 
 
 > Documentation describes `main`, including changes after the documented
 > release baseline `shapoclyack-0.46-0922`. See
-> [version scope](docs/README.md#version-scope) and `Unreleased` in the changelog
+> [version scope](docs/README.md#version-scope) and the
+> [0.47-1009-rc1 candidate notes](docs/releases/0.47-1009-rc1.md)
 > before applying these instructions to a release installation.
 
 ## Why Shapoclyack

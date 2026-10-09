@@ -11,6 +11,7 @@ policy, and customer-side verification. It does not repeat what other pages own:
 |---|---|
 | Which release lines are supported, and how to report a vulnerability | [Security policy](../.github/SECURITY.md) |
 | What changed in a release | [CHANGELOG.md](../CHANGELOG.md) |
+| Preparing and validating `0.47-1009-rc1` | [Candidate notes and checklist](releases/0.47-1009-rc1.md) |
 | Every bundled tool and dataset, with its licence | [Third-party components](third-party.md) |
 | How Pulse runs inside a scan | [Pulse backend](pulse-backend.md) |
 | How Pulse will be distributed | [ADR 0001](adr/0001-pulse-distribution-model.md) — **proposed, not yet decided** |
@@ -47,8 +48,9 @@ as attestations. Fixes ship as a new tag
   manager keeps, not one the pipeline refuses to break: `Jenkinsfile.publish`
   does not check whether `TAG` was published before, and a second run with the
   same `TAG` overwrites its images. Before a real publish, the release manager
-  confirms the tag is new — `crane digest ghcr.io/onixus/shapoclyack-aio:<TAG>`
-  must fail with `MANIFEST_UNKNOWN`. This is why a deployment pins the digest.
+  confirms every selected image tag is new — `crane digest <image>:<TAG>` (also
+  `<TAG>-nmap` for those variants) must fail with `MANIFEST_UNKNOWN`, not an
+  authentication or network error. This is why a deployment pins the digest.
 - **`latest` on an older line.** Every stable run moves `latest`, including a
   backport to an older line (below).
 
@@ -69,7 +71,7 @@ the build when they disagree or the version has no pin.
 |---|---|---|
 | `shapoclyack-0.45-0916` | `v1.1.0` | against the release's own `checksums.txt`; there is no pin file at this tag |
 | `shapoclyack-0.46-0922` | `v1.1.0` | against the pinned digest; the pin itself was taken unsigned, because `v1.1.0` predates GenDec's release signing |
-| next release (`main` today) | `v1.1.0` | against the pinned digest, and the image records it (below) |
+| `shapoclyack-0.47-1009-rc1` (candidate in preparation) | `v1.1.0` | against the pinned digest, and the image records it (below) |
 
 A support window for a release line ([SECURITY.md](../.github/SECURITY.md#supported-versions))
 covers its Pulse the same way it covers everything else in its images.
