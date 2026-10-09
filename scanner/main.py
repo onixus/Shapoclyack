@@ -974,7 +974,6 @@ def _run_pipeline_body(
                     timeout_ms=pulse_cfg.timeout_ms,
                     banner=pulse_cfg.banner,
                     os_detect=pulse_cfg.os_detect,
-                    os_mode=pulse_cfg.os_mode,
                     cve=pulse_cfg.cve,
                     cve_online=pulse_cfg.cve_online,
                     syn=pulse_cfg.syn,

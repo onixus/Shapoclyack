@@ -16,7 +16,19 @@ echo "==> pulse: ${PULSE_BIN}"
 "${PULSE_BIN}" --version || "${PULSE_BIN}" --help | head -3
 
 echo "==> pulse localhost top-10 JSON"
-OUT="$("${PULSE_BIN}" 127.0.0.1 --top 10 -f json -q 2>/dev/null || true)"
+# Same pinned inputs as the adapter (ADR 0002, #543): our port table and the
+# adapter's own allow-listed environment with a private HOME, taken from
+# scanner/pipeline/pulse_probe.py rather than copied here.
+PY="${PYTHON:-python3}"
+SERVICES_DB="$("${PY}" -c 'from scanner.pipeline.pulse_probe import resolve_services_db; print(resolve_services_db())')"
+PULSE_HOME="$(mktemp -d)"
+trap 'rm -rf "${PULSE_HOME}"' EXIT
+PULSE_ENV=()
+while IFS= read -r -d '' kv; do PULSE_ENV+=("${kv}"); done < <(
+  "${PY}" -c 'import sys; from pathlib import Path; from scanner.pipeline.pulse_probe import pulse_env
+for k, v in pulse_env(Path(sys.argv[1])).items(): sys.stdout.write(f"{k}={v}\0")' "${PULSE_HOME}"
+)
+OUT="$(env -i "${PULSE_ENV[@]}" "${PULSE_BIN}" 127.0.0.1 --top 10 --services-db "${SERVICES_DB}" -f json -q 2>/dev/null || true)"
 if ! echo "$OUT" | grep -q '"stats"'; then
   echo "FAIL: pulse JSON missing stats"
   echo "$OUT" | head -20

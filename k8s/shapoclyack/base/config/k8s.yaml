@@ -47,7 +47,7 @@ profiles:
       concurrency: 800
       rate: 2000
       host_parallel: 16
-      os_mode: auto
+      os_mode: sinfp
   fast:
     discover_rate: 5000
     port_rate: 5000
@@ -200,7 +200,7 @@ service_probe:
     host_parallel: 8
     banner: true
     os_detect: true
-    os_mode: auto
+    os_mode: sinfp
     cve: true
     cve_online: false
 
