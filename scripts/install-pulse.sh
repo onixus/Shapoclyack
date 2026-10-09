@@ -8,7 +8,7 @@
 # Default: the GenDec GitHub Release tarball for this platform, checked
 # against the digest pinned for it below (no cargo required).
 #   scripts/install-pulse.sh
-#   PULSE_VERSION=v1.1.0 scripts/install-pulse.sh
+#   PULSE_VERSION=v1.3.0 scripts/install-pulse.sh
 #   GITHUB_TOKEN=… scripts/install-pulse.sh      # private GenDec (GH_TOKEN also works)
 #   PULSE_DEST=$HOME/.local/bin/pulse scripts/install-pulse.sh
 #   PULSE_SKIP_CHECKSUM=1 scripts/install-pulse.sh  # only for an UNPINNED release
@@ -34,7 +34,7 @@
 set -euo pipefail
 
 DEST="${PULSE_DEST:-/usr/local/bin/pulse}"
-VERSION="${PULSE_VERSION:-v1.1.0}"
+VERSION="${PULSE_VERSION:-v1.3.0}"
 REPO="${PULSE_GITHUB_REPO:-onixus/GenDec}"
 FROM_SOURCE="${PULSE_FROM_SOURCE:-0}"
 LOCAL_REPO="${PULSE_REPO:-}"

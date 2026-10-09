@@ -75,6 +75,7 @@ the build when they disagree or the version has no pin.
 | `shapoclyack-0.45-0916` | `v1.1.0` | against the release's own `checksums.txt`; there is no pin file at this tag |
 | `shapoclyack-0.46-0922` | `v1.1.0` | against the pinned digest; the pin itself was taken unsigned, because `v1.1.0` predates GenDec's release signing |
 | `shapoclyack-0.47-1009-rc1` (candidate in preparation) | `v1.1.0` | against the pinned digest, and the image records it (below) |
+| next release (`main`) | `v1.3.0` | against the pinned digest (signed release, signature verified by `pulse-pin.sh`), and the image records it |
 
 A support window for a release line ([SECURITY.md](../.github/SECURITY.md#supported-versions))
 covers its Pulse the same way it covers everything else in its images.
@@ -108,6 +109,17 @@ tag, never any other way:
    and new Pulse version and the expected effect on findings.
 5. **Shipped in the next release tag.** An existing tag is never rebuilt with a
    new Pulse — a rule kept by the release manager, see above.
+
+**A release ships the latest Pulse.** The owner's rule is enforced, not
+remembered: `Jenkinsfile.publish` has a *Pulse is latest* stage before
+*Build & push* that runs `scripts/check-pulse-latest.sh "$PULSE_VERSION"`. The
+script asks GitHub for GenDec's latest (non-draft, non-prerelease) release with
+the `GENDEC_READ_TOKEN` credential the Pulse build stage already uses, and a
+real publish **fails** when the pin is behind or GitHub cannot be asked
+(exit 1 / 3); the message names the version to pin with `scripts/pulse-pin.sh`.
+With `DRY_RUN` the stage only turns the build yellow. The script comes from the
+pipeline revision (`.release-tooling`), so an older tag cannot skip it. The
+same script can be run by hand: `GH_TOKEN=… scripts/check-pulse-latest.sh v1.3.0`.
 
 Rolling Pulse back means deploying the previous Shapoclyack release, with its
 own pins — see [Upgrade and rollback](operations.md#upgrade-and-rollback) — not

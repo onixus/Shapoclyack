@@ -133,7 +133,7 @@ Release** (not a vendored Rust tree). Canonical pipeline:
 
 ```dockerfile
 # stage pulse-bin downloads:
-#   pulse-v1.1.0-linux-amd64.tar.gz from onixus/GenDec releases
+#   pulse-v1.3.0-linux-amd64.tar.gz from onixus/GenDec releases
 # /out/bin/pulse + /out/share/shapoclyack/pulse-install.txt, one COPY per
 # directory; with INSTALL_PULSE=0 both are empty and nothing is copied:
 COPY --from=pulse-bin /out/bin/ /usr/local/bin/
@@ -143,7 +143,7 @@ COPY --from=pulse-bin /out/share/ /usr/local/share/
 
 | Arg / secret | Default | Meaning |
 |--------------|---------|---------|
-| `PULSE_VERSION` | `v1.1.0` | GenDec release tag |
+| `PULSE_VERSION` | `v1.3.0` | GenDec release tag |
 | `PULSE_GITHUB_REPO` | `onixus/GenDec` | release owner/repo |
 | BuildKit secret `github_token` | — | PAT for **private** GenDec releases (`GENDEC_READ_TOKEN` in CI) |
 | `INSTALL_PULSE` | `1` | set `0` to build without Pulse — and without a token for the private GenDec repo |
@@ -155,7 +155,7 @@ The pin is the **engine** (banner / OS / `--cve` / TLS JSON). Shapoclyack does
 not invoke `pulse monitor`, `pulse --server`, `--alert-*`, `--scripts`, or
 `--inventory`. Those duplicate schedules, webhooks, Nuclei, and job targets.
 
-v1.1.0's TLS probe may write a JARM hash onto `tls[]` (no CLI flag to skip
+Pulse's TLS probe (since v1.1.0) may write a JARM hash onto `tls[]` (no CLI flag to skip
 it). The field is kept on `pulse/tls.json` and is not scored. `finding_class:
 tls` still flows into extra vulnerabilities — `tls_posture` is opt-in and
 writes a separate artifact, so dropping those rows would hide cert expiry on
@@ -191,15 +191,15 @@ pin. That is what GenDec's release signature is for, and why it is checked in
 `scripts/pulse-pin.sh` rather than at install time:
 
 ```bash
-GITHUB_TOKEN=… scripts/pulse-pin.sh v1.2.0
+GITHUB_TOKEN=… scripts/pulse-pin.sh v1.3.0
 ```
 
 The helper fetches the release's `checksums.txt` and its
 `checksums.txt.cosign.bundle`, runs `cosign verify-blob` against GenDec's
 release workflow **on that tag** as the certificate identity, and only then
 prints the lines to paste into `scripts/pulse-pinned.sha256`. A release with no
-signature is refused unless `PULSE_PIN_ALLOW_UNSIGNED=1` — which the `v1.1.0`
-pins currently in the repo were taken with, because signing was added to GenDec
+signature is refused unless `PULSE_PIN_ALLOW_UNSIGNED=1` — which the former `v1.1.0`
+pins were taken with, because signing was added to GenDec
 after that release. Adding cosign to the install path instead would not help:
 on the pinned path the committed digest already beats anything fetched from the
 release being installed, and the images carry no cosign.
@@ -238,7 +238,7 @@ Local image build (GenDec is private, so pass a token with `contents:read`):
 printf '%s' "$GITHUB_TOKEN" > /tmp/gh_token
 docker build -f Dockerfile \
   --secret id=github_token,src=/tmp/gh_token \
-  --build-arg PULSE_VERSION=v1.1.0 \
+  --build-arg PULSE_VERSION=v1.3.0 \
   -t shapoclyack-scanner:local .
 ```
 
@@ -252,7 +252,7 @@ Host install without Docker:
 
 ```bash
 GITHUB_TOKEN=… scripts/install-pulse.sh          # release tarball, verified
-PULSE_VERSION=v1.1.0 scripts/install-pulse.sh    # pick a tag
+PULSE_VERSION=v1.3.0 scripts/install-pulse.sh    # pick a tag
 PULSE_DEST=$HOME/.local/bin/pulse scripts/install-pulse.sh
 PULSE_FROM_SOURCE=1 scripts/install-pulse.sh     # cargo fallback (PULSE_REF picks a ref)
 scripts/smoke-pulse.sh
@@ -263,6 +263,14 @@ scripts/smoke-pulse.sh
 System UI / API status probes `pulse --version` alongside nmap/naabu/nuclei.
 
 Connect-mode Pulse works without root; SYN/OS still need caps/root like nmap.
+
+**A release ships the latest Pulse.** `scripts/check-pulse-latest.sh <version>`
+compares a version with GenDec's latest non-prerelease release (token from
+`GH_TOKEN` / `GITHUB_TOKEN`; the repository is private). Exit 0 up to date,
+1 outdated (the message prints the `scripts/pulse-pin.sh` command to bump),
+3 GitHub could not be asked. `Jenkinsfile.publish` runs it as the *Pulse is
+latest* stage before the build — a failure for a real publish, a warning for
+`DRY_RUN`; see [release-contract.md](release-contract.md#how-the-pulse-version-changes).
 
 ## Checkpoint
 

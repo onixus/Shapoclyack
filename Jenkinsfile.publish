@@ -13,10 +13,10 @@
 // как подключить свой — docs/nmap-external.md.
 // Релизные образы задают версию Pulse явно, а не полагаются на дефолт из
 // Dockerfile: состав компонентов релиза должен читаться здесь. Значения сейчас
-// совпадают (ARG PULSE_VERSION=v1.1.0), и именно поэтому расхождение было бы
+// совпадают (ARG PULSE_VERSION=v1.3.0), и именно поэтому расхождение было бы
 // незаметным — дефолт уехал бы, а сборка релиза молча поехала бы за ним.
 // Так же было в docker-publish.yml до переезда.
-def PULSE_VERSION = 'v1.1.0'
+def PULSE_VERSION = 'v1.3.0'
 
 // Демон BuildKit собирает образ и пишет его provenance, генератор SBOM
 // читает образ целиком — оба закреплены по digest, как базовые образы
@@ -196,6 +196,33 @@ pipeline {
             }
           } else {
             checkSigningKey()
+          }
+        }
+      }
+    }
+
+    // Релиз везёт последний Pulse (решение владельца), а пин обновляется руками
+    // (scripts/pulse-pin.sh) — без этой стадии устаревший PULSE_VERSION уехал бы
+    // в образ незаметно. Проверка идёт до сборки по той же причине, что и ключ
+    // подписи. Скрипт — из ревизии пайплайна (.release-tooling), чтобы старый тег
+    // не обходил проверку. Credential тот же, что у сборки: GENDEC_READ_TOKEN.
+    // В DRY_RUN — только предупреждение (жёлтый).
+    stage('Pulse is latest') {
+      steps {
+        script {
+          // Без catchError: единственный catchError в этом файле — DRY_RUN-ветка
+          // ключа подписи (tests/test_admission_policies.py держит это
+          // инвариантом). Код возврата берём сами, прерывание не глотается.
+          def rc = 0
+          withCredentials([string(credentialsId: 'GENDEC_READ_TOKEN', variable: 'GH_TOKEN')]) {
+            rc = sh(returnStatus: true, script: ".release-tooling/scripts/check-pulse-latest.sh '${PULSE_VERSION}'")
+          }
+          if (rc != 0) {
+            if (params.DRY_RUN) {
+              unstable('DRY_RUN: Pulse устарел или не проверен, настоящий прогон упал бы здесь (scripts/check-pulse-latest.sh)')
+            } else {
+              error("PULSE_VERSION=${PULSE_VERSION} не прошёл проверку «последний релиз GenDec» (код ${rc}); подробности и команда обновления — выше, в выводе scripts/check-pulse-latest.sh.")
+            }
           }
         }
       }

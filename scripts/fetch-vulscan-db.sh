@@ -7,9 +7,10 @@
 # directory (no --script-args needed), so refreshing the CSVs in place is
 # enough; nothing else has to be reconfigured.
 #
-# The Dockerfile/Dockerfile.allinone clone vulscan pinned to a specific git
-# commit for reproducible builds — which also freezes these CSVs at whatever
-# vulscan's maintainers had bundled at that commit. This refreshes them, with
+# The images no longer ship vulscan; whoever installs it next to their own
+# Nmap (docs/nmap-external.md) usually pins a git commit, which also freezes
+# these CSVs at whatever vulscan's maintainers had bundled at that commit.
+# This refreshes them, with
 # per-database non-fatal error handling (one feed being down doesn't block the
 # others, matching scripts/fetch-enrichment.sh's philosophy) so a build/refresh
 # never fails outright — it just keeps whatever CSV was already there.

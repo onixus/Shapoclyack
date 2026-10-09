@@ -11,24 +11,22 @@
 #
 # Bumping PULSE_VERSION means bumping these in the same commit:
 #
-#   GITHUB_TOKEN=... scripts/pulse-pin.sh v1.2.0
+#   GITHUB_TOKEN=... scripts/pulse-pin.sh v1.3.0
 #
 # That verifies GenDec's cosign signature over the release's checksums.txt
 # before printing anything, and prints the lines to paste here. It refuses a
 # release with no signature unless PULSE_PIN_ALLOW_UNSIGNED=1.
 #
-# The v1.1.0 lines below were taken with that override: v1.1.0 predates signing
-# in GenDec, so they rest on the download plus a cross-check between the
-# release's own checksums.txt and the digests GitHub computed on upload (two
-# independently computed values that agreed). The next bump should land on a
-# signed release.
+# The v1.3.0 lines below were taken from a signed release: pulse-pin.sh
+# verified GenDec's cosign signature over checksums.txt before printing them.
+# (v1.1.0 and older predate signing and need PULSE_PIN_ALLOW_UNSIGNED=1.)
 #
 # tests/test_pulse_supply_chain.py fails if this file and the PULSE_VERSION
 # in install-pulse.sh / Dockerfile / Dockerfile.allinone / Jenkinsfile.publish /
 # .github/workflows/docker-publish.yml drift apart (docs/release-contract.md).
 #
 # Format: <version> <platform> <sha256>   (# and blank lines ignored)
-v1.1.0  linux-amd64   25f2f24ecd77d62640776fdcab23ff8cfd2faf2b04ed621f4695da988bf5b2c9
-v1.1.0  linux-arm64   9d711b599815703d8198b70ff39d40327b3ab940e00ad9f2714ad99125e48c73
-v1.1.0  darwin-amd64  c344b11813ad46d6d43cf24bf74bfceec3df472fc47bcd821ca215fbf8e7f85b
-v1.1.0  darwin-arm64  2a82c4ad4841d18c871b4015a991ec7ca26d784972bd3542216a86fc45eab8dd
+v1.3.0  linux-amd64   87a8852c4183cb8957e945e731819187d772e4fca8b7c07bb52e902e63316bcc
+v1.3.0  linux-arm64   ff25a16684af7b8d4f9c2bd0e8ddd2bcd54941cf11c71a41241daefa6058685f
+v1.3.0  darwin-amd64  322efe9864e54053c1e078a7b7f5483e0fbc93b3f1df772084311c344f485c68
+v1.3.0  darwin-arm64  e498c447f7d6ced7cc03b51e1fa4fffbcaadf746537d186256a7de9f7329ed7e

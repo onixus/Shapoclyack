@@ -91,7 +91,7 @@ RUN set -eux; \
 # does the fetch and the checksums.txt check; see docs/pulse-backend.md.
 # Docs: https://github.com/onixus/GenDec/blob/main/docs/release.md
 FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS pulse-bin
-ARG PULSE_VERSION=v1.1.0
+ARG PULSE_VERSION=v1.3.0
 ARG PULSE_GITHUB_REPO=onixus/GenDec
 # GenDec's release job treats checksums.txt as optional (docs/release.md);
 # this lets a build opt out explicitly. Same knob as the installer script.
