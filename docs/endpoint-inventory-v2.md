@@ -62,7 +62,7 @@ until a v2 baseline has been established.
 
 ## Signed native release envelopes
 
-Platform release upload accepts an optional multipart `signed_manifest` JSON
+Platform release upload requires a multipart `signed_manifest` JSON
 field alongside `version`, `platform`, and `binary`. The envelope is
 `{"manifest": {...}, "signature": "<128 lowercase hex characters>"}`. The
 manifest contains exactly `schema: 1`, `key_id`, `version`, `platform`,
@@ -86,11 +86,14 @@ capability fields removes a previously stored `signed_updates` declaration,
 including rollback to an older client with the same identity or version string.
 Clients using `capabilities: ["signed_updates"]` remain supported. The server blocks an unsigned
 release for those agents and carries the exact envelope in `managed_update`.
-Old agents can continue using existing unsigned releases during fleet migration.
+Unsigned uploads, managed-update offers and downloads are blocked, including
+legacy release rows stored before #513. Existing collection can continue, but
+a legacy agent must be migrated administratively before managed updates resume.
 Expired signed manifests are not offered to either client generation. Release
 writes keep the platform-admin permission and recent second-factor policy.
 
-Legacy agents without the `signed_updates` capability must never be offered a native package: their historical self-update code treats downloaded bytes as an executable. The server blocks a signed native release for these clients. Migrate the endpoint through a protected native installation, retain identity/spool, establish trust and seed rollback before enabling native managed updates. Legacy unsigned executable releases remain available to legacy clients during migration.
+Legacy agents without the `signed_updates` capability must never be offered a native package: their historical self-update code treats downloaded bytes as an executable. The server blocks a signed native release for these clients. Migrate the endpoint through a protected native installation, retain identity/spool, establish trust and seed rollback before enabling native managed updates. Legacy unsigned executable releases are retained for audit/deletion only;
+this API does not serve them as an update or a download.
 
 ## Installer variants (migration 0081)
 

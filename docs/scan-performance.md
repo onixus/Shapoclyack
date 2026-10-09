@@ -55,8 +55,11 @@ POST /api/jobs
 ```
 
 Persisted as `scan_options.intent` (+ `intent_summary`). Local execution merges
-nuclei/top_ports into the job effective config; in `agent` execution mode the
-sensor still gets the CLI flags but not the nuclei overlay.
+nuclei/top_ports into the job effective config. Agent execution delivers the
+validated `config_overlay.json` to sensors advertising `config_overlay.v1`;
+the current sensor also advertises v2 for targeted template IDs. Fleet
+capability checks keep jobs requiring an overlay from being claimed by an
+incompatible sensor ([API contract](api-and-rbac.md#scan-surface)).
 
 ### Suggested schedule shape (same fleet)
 

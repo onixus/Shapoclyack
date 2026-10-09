@@ -1,5 +1,7 @@
 # ADR 0001: Distribution model for the default Pulse backend
 
+> Historical proposal against `1ed74b7` (2026-09-24); status remains Proposed. Subsequent signing and air-gap implementation is documented in [Supply chain](../supply-chain.md) and [Air gap](../air-gap.md). Statements about missing implementation below belong to the proposal baseline.
+
 | | |
 |---|---|
 | **Status** | **Proposed — decision by the owner.** The choice between the options below is a product decision; this record prepares it and recommends one, and changes nothing that depends on the answer. |

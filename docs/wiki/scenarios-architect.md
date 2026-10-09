@@ -99,9 +99,9 @@ $$\text{Domain / FQDN} \longrightarrow \text{IP-Address} \longrightarrow \text{P
 ```
 
 ### 2.1. Сетевые требования и изоляция
-* **Никаких входящих портов на сенсорах:** сенсор инициирует только **исходящие** сессии — к FastAPI Control Plane по HTTPS (`/api/agent/register`, `/api/agent/heartbeat`, `/api/agent/jobs/claim`, `/api/agent/jobs/{job_id}/results`) и к NATS JetStream. Аутентификация в обоих случаях — JWT сенсора, полученный в обмен на пер-тенантный provisioning key (`/api/auth/agent/token`); к нему можно потребовать **клиентский сертификат**, привязанный к этому же сенсору (`OCTO_AGENT_MTLS_MODE=optional|required`, по умолчанию выключено; cert-manager или выпуск через `POST /api/agent/certificate`, отзыв на стороне API — [operations.md](../operations.md#sensor-client-certificates)); агент Lariska сертификат предъявлять пока не умеет. Сертификат проверяется на маршрутах API; соединение с NATS аутентифицирует пользователя NATS (`OCTO_NATS_TLS_CERT` при `verify_and_map`), а не конкретный сенсор. TLS до NATS включается явно (`tls://`, `OCTO_NATS_TLS_CA/CERT/KEY/HOSTNAME`, пример серверной части — `k8s/shapoclyack/examples/nats-tls-configmap-patch.yaml`). Без TLS брокер держат внутри доверенного сегмента, а между сегментами пускают только HTTPS-режим claim'а (`OCTO_NATS_URL` пустой).
+* **Никаких входящих портов на сенсорах:** сенсор инициирует только **исходящие** сессии — к FastAPI Control Plane по HTTPS (`/api/agent/register`, `/api/agent/heartbeat`, `/api/agent/jobs/claim`, `/api/agent/jobs/{job_id}/results`) и к NATS JetStream. API использует JWT сенсора, полученный в обмен на пер-тенантный provisioning key (`/api/auth/agent/token`); к нему можно потребовать **клиентский сертификат**, привязанный к этому же сенсору (`OCTO_AGENT_MTLS_MODE=optional|required`, по умолчанию выключено; cert-manager или выпуск через `POST /api/agent/certificate`, отзыв на стороне API — [operations.md](../operations.md#sensor-client-certificates)); агент Lariska сертификат предъявлять пока не умеет. Сертификат проверяется на маршрутах API; соединение с NATS аутентифицирует пользователя NATS (`OCTO_NATS_TLS_CERT` при `verify_and_map`), а не конкретный сенсор. TLS до NATS включается явно (`tls://`, `OCTO_NATS_TLS_CA/CERT/KEY/HOSTNAME`, пример серверной части — `k8s/shapoclyack/examples/nats-tls-configmap-patch.yaml`). Без TLS брокер держат внутри доверенного сегмента, а между сегментами пускают только HTTPS-режим claim'а (`OCTO_NATS_URL` пустой).
 * **Транспорт до хранилищ:** Postgres и ClickHouse шифруются только если это настроено явно (`?sslmode=verify-full`, схема `https://`) — см. [operations.md § Transport encryption](../operations.md#transport-encryption).
-* **Изоляция очередей тенантов:** задачи тенанта изолированы в NATS-субъектах (`jobs.scan.{tenant}`, стрим `JOBS`; durable-консьюмер `octo-agents-{tenant}`), сенсор одного тенанта физически не может перехватить задачи другого заказчика. Сенсор, помещённый в группу (`/api/agent-groups`, миграция `0052`), дополнительно слушает `jobs.scan.{tenant}.{group}`, а задание с `agent_group` в `POST /api/jobs` берут только сенсоры этой группы; запись утверждённого скоупа может потребовать группу, и тогда задание на этот сегмент назначается только сенсорам этой группы (`scan_scopes.required_agent_groups` в `api/services/scan_admission.py`, [#361](https://github.com/onixus/Shapoclyack/issues/361)).
+* **Изоляция очередей тенантов:** задачи тенанта изолированы в NATS-субъектах (`jobs.scan.{tenant}`, стрим `JOBS`; durable-консьюмер `octo-agents-{tenant}`), имя субъекта задаёт маршрутизацию, но само по себе не обеспечивает авторизацию. Изоляция брокера требует tenant-specific NATS ACL/учётных данных либо HTTPS-only режима; API проверяет принадлежность сенсора тенанту. Сенсор, помещённый в группу (`/api/agent-groups`, миграция `0052`), дополнительно слушает `jobs.scan.{tenant}.{group}`, а задание с `agent_group` в `POST /api/jobs` берут только сенсоры этой группы; запись утверждённого скоупа может потребовать группу, и тогда задание на этот сегмент назначается только сенсорам этой группы (`scan_scopes.required_agent_groups` в `api/services/scan_admission.py`, [#361](https://github.com/onixus/Shapoclyack/issues/361)).
 * **Защита от сбоев (Leases & Fencing):** сенсор получает задачу в аренду на ограниченное время (`claimed_until`). Если сенсор завис или потерял связь, задача возвращается в очередь без потери статуса. Токен попытки (`attempt`) предотвращает запись устаревших результатов.
 
 ---
@@ -116,9 +116,9 @@ $$\text{Domain / FQDN} \longrightarrow \text{IP-Address} \longrightarrow \text{P
 | Поле | Допустимые значения | Влияние на систему |
 |---|---|---|
 | `owner_email` | email ответственного | Автоматическое назначение ответственного за устранение (`assignee`) |
-| `business_unit` | Свободный текст (название департамента) | Группировка находок и отчетов по дивизионам компании |
+| `business_unit` | Свободный текст (название департамента) | Бизнес-контекст и фильтрация активов; не обещает сравнения дивизионов в стандартных отчетах |
 | `business_service` | Имя ИС (например, `BillingCore`) | Агрегация риска по бизнес-системе |
-| `environment` | `production`, `staging`, `development`, `lab` | Фильтрация в отчетах и приоритизация инцидентов |
+| `environment` | `production`, `staging`, `development`, `lab`, `other` | Фильтрация в отчетах и приоритизация инцидентов |
 | `data_classification`| `public`, `internal`, `confidential`, `restricted` | Оценка критичности в комплаенс-моделях |
 | `asset_criticality` | `0` (тест), `1` (низкая) ... `4` (бизнес-критичная) | **Прямой множитель Impact** в формуле риска NIST SP 800-30 |
 | `exposure_level` | `internet`, `partner`, `internal`, `unknown` | Экспертное определение доступности хоста |
@@ -170,8 +170,8 @@ sequenceDiagram
     participant Gate as Quality Gate Check
     
     CI->>CI: Деплой ветки во временный стенд (staging-pr-42.test.local)
-    CI->>API: POST /api/jobs (service_token, intent: quick, targets: [FQDN])
-    API-->>CI: 201 Created (Job ID: job_xyz789)
+    CI->>API: POST /api/jobs (service_token, intent: vuln, domains: "staging-pr-42.example.test")
+    API-->>CI: 202 Accepted (Job ID: job_xyz789; replay: 200)
     loop Опрос статуса
         CI->>API: GET /api/jobs/job_xyz789
         API-->>CI: Status: running / succeeded

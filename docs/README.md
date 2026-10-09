@@ -51,6 +51,7 @@ on `main` after `shapoclyack-0.46-0922` (see `## Unreleased` in the changelog).
 | Prioritise scans and cap a tenant's concurrent and queued scans | [Operations § Scan queue](operations.md#scan-queue-priority-and-per-tenant-ceilings) | [Queue priority, concurrency and admission](api-and-rbac.md#queue-priority-concurrency-and-admission) |
 | Put sensors on client certificates (mTLS) | [Operations § Sensor client certificates](operations.md#sensor-client-certificates) | [Configuration § Sensor and Agent client certificates](configuration.md#sensor-and-agent-client-certificates-mtls) |
 | Update native sensors from the signed bundle | [Operations § Sensor bundle updates](operations.md#sensor-bundle-updates) | [Supply chain § The sensor bundle](supply-chain.md#the-sensor-bundle), `OCTO_AGENT_BUNDLE_DIR` / `OCTO_AGENT_AUTO_UPDATE` in [Configuration](configuration.md#environment-variables) |
+| Negotiate inventory v2 and migrate Lariska to signed native packages | [Inventory v2 and signed updates](endpoint-inventory-v2.md) | Installation/source completeness, release envelope and installer selection; migrate the server first |
 | Publish and audit Lariska Agent builds (platform admin) | [Operations § Endpoint Agent (Lariska) builds](operations.md#endpoint-agent-lariska-builds) | [Sensor fleet, deployment and upgrade](api-and-rbac.md#sensor-fleet-deployment-and-upgrade) |
 | Import business context from a CMDB/AD export | [Asset business context](asset-context.md) | `POST /api/assets/import` |
 | Understand request rate limits and the body cap | [Operations § When callers start getting 429](operations.md#when-callers-start-getting-429) | [Request rate limiting and body size](api-and-rbac.md#request-rate-limiting-and-body-size) |
@@ -196,7 +197,7 @@ Documentation is part of the feature definition. A behavior change is incomplete
 
 ## Version scope
 
-This documentation index was reconciled with source baseline `main @ 706ead80`
+This documentation index was reconciled with source baseline `main @ 577bd547` plus the CRL change (#534)
 on **2026-10-09**. The documented published baseline is
 `shapoclyack-0.46-0922` (2026-09-22). Downloading that release does not install
 every feature described on `main`. Use the tagged documentation and
@@ -214,13 +215,17 @@ Recent additions on `main`, still under `Unreleased`:
 | Expanded service product matching and distribution backports | [Retro CVE matching](retro-cve-matching.md) |
 
 Open branches and PRs are not part of this contract. Endpoint inventory accepts
-**schemas v1 and v2** on this baseline; the API requires signed native Lariska
-update packages and disables unsigned executable updates. External Agent
-packaging, trust provisioning and legacy fleet migration still need acceptance;
-see [Endpoint Agent builds](operations.md#endpoint-agent-lariska-builds).
-Signed native **sensor** bundles use a different update path. See
-[Endpoint inventory design record](../Agent_plan.md) and
-[the remaining roadmap](../ROADMAP.md).
+**schema v1 and v2** for a mixed fleet; registration/heartbeat advertise v2.
+Installation identity, source completeness and signed native **Lariska** updates
+are on `main` ([inventory and update contract](endpoint-inventory-v2.md),
+migrations `0080`/`0081`). Unsigned executable uploads, offers and downloads
+are prohibited, including releases stored by older API versions (#513).
+Caller-owned bulk idempotency is contracted by migration `0082` (#517), and
+maintenance windows are rechecked when queued work starts (#516).
+Signed native **sensor** bundles use a separate update path. Lariska client
+certificates remain tracked by #514. Issuer-scoped TLS-terminator CRLs (#515)
+are included; deployments must configure publication, refresh and session
+handling as described in [Operations](operations.md#tls-revocation-with-a-signed-crl-515). See [the remaining roadmap](../ROADMAP.md).
 
 A source-tree review establishes documented behavior, not a successful
 deployment or CI run. Check the exact revision and completed validation for

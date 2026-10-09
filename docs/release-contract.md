@@ -37,10 +37,12 @@ as attestations. Fixes ship as a new tag
 
 **What the pipeline does not enforce yet:**
 
-- **Signatures.** Neither the images nor their attestations are signed, and
-  there is no admission policy that checks one
-  ([#313](https://github.com/onixus/Shapoclyack/issues/313)). A digest proves you
-  got the same bytes as everyone else who pulled that digest, not who built them.
+- **Production signing acceptance.** Current `Jenkinsfile.publish` signs images
+  and SLSA provenance through `scripts/sign-release-image.sh`; verification
+  and admission examples are in [Supply chain](supply-chain.md). The published
+  `0.46-0922` release predates this workflow. Production publication/admission
+  acceptance remains [#313](https://github.com/onixus/Shapoclyack/issues/313);
+  do not assume existing tags acquired signatures retroactively.
 - **Immutable tags.** "A published tag is not rebuilt" is a rule the release
   manager keeps, not one the pipeline refuses to break: `Jenkinsfile.publish`
   does not check whether `TAG` was published before, and a second run with the
@@ -176,8 +178,7 @@ checked only the release's own `checksums.txt`.
 A tag can be moved; a digest cannot. Check the image **by digest** and compare
 that digest with one you trust:
 
-- Until #313 signs the images there is no signed statement of which digest a
-  release is. The closest is a digest committed to this repository in a
+- For the older published release, use a digest committed to this repository in a
   reviewed change after the release: the Kubernetes manifests on `main` pin the
   `aio` and `api` images as `tag@sha256:…` (for 0.46-0922, commit `7658817`).
   **The `scanner` image is not digest-pinned anywhere in the repository**;
@@ -187,13 +188,14 @@ that digest with one you trust:
 
 ```bash
 crane digest "ghcr.io/onixus/shapoclyack-aio:$TAG"                  # what the tag points at now
-IMAGE=ghcr.io/onixus/shapoclyack-aio@sha256:<the digest you trust>
+IMAGE="ghcr.io/onixus/shapoclyack-aio@${SHAPOCLYACK_IMAGE_DIGEST:?set independently verified sha256 digest}"
 docker buildx imagetools inspect "$IMAGE" --format '{{ json .Provenance }}' # build arguments, PULSE_VERSION among them
 docker buildx imagetools inspect "$IMAGE" --format '{{ json .SBOM }}'       # SPDX SBOM of the image
 ```
 
-The attestations are what the build says it was given; they are unsigned until
-#313.
+The attestations state what the build was given. Current publication signs
+SLSA provenance; verify its digest and trusted identity using
+[Supply chain](supply-chain.md). Older releases are not retroactively signed.
 
 ### 1. The Pulse binary in the image
 
@@ -267,7 +269,7 @@ cosign verify-blob --bundle checksums.txt.cosign.bundle \
 
 | Check | Proves | Needs | Available to a customer today |
 |---|---|---|---|
-| 0. Digest and attestations | you are looking at the image you meant; what its build says it was given | a digest you trust | yes; attestations unsigned until #313 |
+| 0. Digest and attestations | you are looking at the image you meant; what its build says it was given | a digest you trust | yes; signature availability depends on the release workflow used |
 | 1. Install record | the binary was not replaced without its record, and the build reports the pinned tarball — against deliberate tampering, only as good as the digest in 0 | the image, the tag's pins | yes, for releases after `0.46-0922` |
 | 2. Pinned tarball | the binary is the one inside the tarball this repository pinned | the tarball | no — GenDec access |
 | 3. Signature | the pinned tarball came out of GenDec's release workflow on that tag | the release assets | no — GenDec access; none for `v1.1.0` |

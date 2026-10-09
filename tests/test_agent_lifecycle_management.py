@@ -360,7 +360,7 @@ def test_agent_installer_and_deployment_snippets(tmp_path: Path, monkeypatch):
     sh_resp = client.get("/api/agent/install.sh")
     assert sh_resp.status_code == 200
     assert "#!/usr/bin/env bash" in sh_resp.text
-    assert "Shapoclyack Remote Agent Universal Installer" in sh_resp.text
+    assert "Shapoclyack Remote Sensor Universal Installer" in sh_resp.text
     # What the host actually downloads carries the pinned default; the details
     # are in tests/test_agent_install_pins.py.
     assert f'AGENT_IMAGE="${{AGENT_IMAGE:-{SENSOR_IMAGE}}}"' in sh_resp.text

@@ -15,7 +15,9 @@ It performs:
 
 It does **not** replace the manually triggered full CI or Jenkins. Those runs
 provide PostgreSQL/NATS integration coverage, SAST, web and manifest checks,
-container builds, e2e/load tests, image scanning, and SBOM generation.
+container builds, e2e tests, image scanning, and SBOM generation. Jenkins
+load tests and the legacy Nmap build run on `main` (or a single-branch job),
+not on feature branches; see [the branch policy](../docs/development.md#what-differs-between-a-branch-build-and-main).
 
 ## Repository ruleset
 

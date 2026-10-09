@@ -56,8 +56,8 @@ key derived from `OCTO_JWT_SECRET` via HKDF-SHA256. Both families still carry a
 `typ` claim and both are still checked, but the signature alone now separates
 them: an operator token does not verify on an agent route and an agent token
 does not verify on `/api/auth/me`, so no single missed `typ` check is enough to
-turn one into the other. The agent key sits on every sensor host, which is a
-much wider blast radius than the API's own secret — see
+turn one into the other. A sensor holds its provisioning credential and short-lived JWT, **not** the
+API's JWT signing secret. Never distribute `OCTO_AGENT_JWT_SECRET` to sensors; see
 [configuration.md](configuration.md#environment-variables) for rotating it.
 
 ## Sessions, logout and revocation
@@ -1791,26 +1791,17 @@ hanging its key on the job row it creates — a scan-start key is still
 **tenant-wide**, so two pipelines of one customer must not name their runs the
 same thing.
 
-For the first 24 hours after the `0055` deploy a key reserved by a replica of
-the *previous* release is still tenant-wide, because the row it left carries no
-owner and the table never recorded one. Both directions of the rollout are
-closed — a retry landing on a new replica replays that row, and a retry landing
-on an old one cannot take a key a new replica already answered — but a
-neighbour in the tenant who guesses such a key inside that window is still
-handed its report as a replay, without an audit row of their own. See
-`docs/operations.md`.
+Migration `0082` completes the caller-owned contract introduced by `0055`:
+`actor` is non-null, and runtime replay has no `actor IS NULL` fallback. Stop
+pre-0055 writers and allow their 24-hour retry windows to expire before
+contracting; a live unowned row blocks migration rather than being assigned a
+guessed owner or replayed to a neighbour. Releases 0.45/0.46 already supply the
+actor. The deployment and rollback procedure is in
+[Operations](operations.md#idempotency-records-346).
 
-Per caller rather than per tenant, because the console mints a UUID per click
-but a CI pipeline sends a *meaningful* key (`nightly-triage`,
-`triage-2026-09-10`), and those are guessable. In one shared namespace any
-member of the tenant could take one and either hold it — every other run of that
-name answered `409` until the record aged out — or, with a body that happened to
-match, be handed the other pipeline's report as a replay, leaving no audit row
-of their own. Two integrations may now use the same name without meeting; one
-integration retrying still lands on its own key, because a service token's
-principal is the same on every retry. Rows written before this change carry no
-caller and keep the old tenant-wide reading for the 24 hours they survive, so a
-retry that crosses the upgrade still replays instead of re-applying its batch.
+Two integrations may use the same bulk key without meeting because their
+principals differ; retries from one service token keep that same principal.
+This does not change tenant-wide scan-start keys on the `jobs` row.
 
 ### Sensor fleet, deployment and upgrade
 

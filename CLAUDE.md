@@ -11,7 +11,7 @@
 - `recon/` — Go-модуль разведки.
 - `web-next/` — консоль Next.js (`src/app`, `src/components`, `src/lib`); `npm run typecheck|lint|test`.
 - `k8s/` — Kustomize; проверка `bash k8s/scripts/validate-kustomize.sh`.
-- `tests/` — pytest (~300 файлов); `docs/` — тематические документы, `docs/adr/` — решения.
+- `tests/` — pytest; `docs/` — тематические документы, `docs/adr/` — решения.
 
 ## Проверки
 
@@ -22,7 +22,7 @@
 
 ## Экономия контекста
 
-- **Не читай целиком** `README.md`, `ROADMAP.md` (830 строк), `CHANGELOG.md` (7500 строк): `grep -n` по ключевому слову, затем `sed -n` узкий диапазон.
+- **Не читай целиком** `README.md`, `ROADMAP.md`, `CHANGELOG.md`: `grep -n` по ключевому слову, затем `sed -n` узкий диапазон.
 - Не читай транскрипты прошлых сессий (`~/.claude/projects/**.jsonl`) и большие логи Jenkins целиком — `grep`/`tail`.
 - Файлы > 300 строк читай кусками вокруг нужного места.
 - Вывод команд обрезай (`| tail -40`, `-q`, `--tb=short`).

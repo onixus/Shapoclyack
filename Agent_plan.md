@@ -3,7 +3,7 @@
 > Integration architecture, technical specifications, and delivery backlog for the Lariska endpoint inventory.
 > For operator documentation, see [docs/README.md](docs/README.md) and [docs/operations.md](docs/operations.md).
 
-**Current Status (checked against `main` on 2026-10-06):** the integration contract (**S1–S10**) is **completed and merged to `main`** — Schema v1, database models + migrations `0004_endpoint_inventory` / `0006_endpoint_fk_cascade`, ingestion API with idempotency and limits, asset reconciliation, software diff/events, read APIs, asset card Web UI, NATS stream events `ingest.endpoint_inventory.{tenant_id}`, retention sweeps, server-side staleness checks, Prometheus metrics, and an E2E lifecycle test suite.
+**Current Status (checked against `main @ 706ead80` on 2026-10-08):** the integration contract (**S1–S10**) is **completed and merged to `main`** — mixed-fleet schemas v1/v2, database models + migrations `0004_endpoint_inventory` / `0006_endpoint_fk_cascade`, ingestion API with idempotency and limits, asset reconciliation, software diff/events, read APIs, asset card Web UI, NATS stream events `ingest.endpoint_inventory.{tenant_id}`, retention sweeps, server-side staleness checks, Prometheus metrics, and an E2E lifecycle test suite.
 
 The inventory is no longer the end of the line. Three **ROADMAP Track E** milestones now consume it and are also merged:
 
@@ -11,11 +11,16 @@ The inventory is no longer the end of the line. Three **ROADMAP Track E** milest
 - **M2 — patch-gap analysis.** The matcher's `vulnerable` rows are regrouped, on read, by the package an operator actually upgrades, with the target version and the command that applies it. No table of its own — a gap cannot outlive the snapshot behind it.
 - **M3 — tracked software findings.** A `vulnerable` match with a published fix folds into `vulnerabilities` as `source = "endpoint_software"` (migration `0032_endpoint_software_findings`), so it carries SLA, owner, ticket and NIST risk and closes on the next inventory that shows the upgrade. Matching re-runs automatically after each accepted snapshot (`api/services/software_match_worker.py`, `OCTO_SOFTWARE_MATCH_INTERVAL_SECONDS`, marker column from migration `0033`).
 
-**Contract boundary.** The current server accepts inventory **schema v1**
-(`api/schemas.py`, `EndpointInventorySnapshotRequest`). Installation-aware schema v2
-and signed Lariska update manifests are pending work, not part of the current
-server contract. The signed native sensor bundle already on `main` updates the
-scanning node, not Lariska. See [documentation version scope](docs/README.md#version-scope).
+**Contract boundary.** `EndpointInventorySnapshotRequest` accepts schemas
+**v1 and v2**; registration/heartbeat advertise `inventory_schema_version: 2`.
+Migration `0080` adds installation identity and source completeness, and `0081`
+allows signed native installer variants. The server requires signed Lariska
+packages and blocks legacy unsigned delivery (#513). See
+[the current inventory/update contract](docs/endpoint-inventory-v2.md) for v2
+fields, complete-source reconciliation, anti-rollback and native migration.
+The v1 examples below remain a supported compatibility contract; they do not
+show the required v2 installation/source fields. The signed **sensor** bundle
+updates the scanning node through a separate path.
 
 **Terminology.** In this record *Agent* means Lariska, the in-guest endpoint agent (`agent_kind = "endpoint"`). The remote node that claims scan jobs and runs the scanner (`agent/worker.py`, `agent_kind = "scanner"`) is a **sensor**; both are rows of the same `agents` table and share the `/api/agent/*` routes.
 
@@ -166,7 +171,13 @@ Lariska communicates exclusively via HTTPS with the Shapoclyack API. Endpoint de
 
 ### 3.4 Contract Versioning
 
-Request payloads must specify `schema_version`. Version `1` is enforced (`Literal[1]`). Unsupported schema versions are rejected with `422 Unprocessable Entity`. Golden test fixtures are maintained across repositories.
+Request payloads must specify `schema_version`: `Literal[1, 2]`. Unsupported
+versions return `422`. V1 retains the original full-snapshot contract shown
+below; v2 requires installation identities and declared source status and
+refuses raw `install_location`. Use the shared v2 fixture
+`tests/fixtures/endpoint_inventory_v2_valid.json` and
+[the v2 guide](docs/endpoint-inventory-v2.md), not a v1 body with only its
+version changed.
 
 ---
 
@@ -272,7 +283,9 @@ Tracks physical/virtual endpoints reporting to the system.
 | `first_seen_at` | Timestamp | Initial registration timestamp |
 | `last_seen_at` | Timestamp | Last contact / heartbeat timestamp |
 | `last_inventory_at` | Timestamp | Timestamp of most recent accepted snapshot |
-| `latest_snapshot_id` | String | Reference to latest snapshot |
+| `latest_snapshot_id` | String | Latest accepted receipt, including a degraded-only v2 receipt |
+| `software_snapshot_id` | String | Last effective inventory change or accepted complete source collection; matching and retention use this pointer |
+| `source_states` | JSON | Per-source completeness, diagnostics and last accepted complete timestamp |
 
 ### 5.2 `endpoint_identifiers`
 
@@ -299,7 +312,8 @@ Represents an immutable snapshot of software state submitted by an endpoint.
 | `snapshot_id` | String | Primary Key (Client-generated UUID) |
 | `device_id` | String | Foreign Key (`endpoint_devices.device_id`, ON DELETE CASCADE) |
 | `tenant_id` | String | Tenant scope |
-| `schema_version` | Integer | Contract version (`1`) |
+| `schema_version` | Integer | Contract version (`1` or `2`) |
+| `source_states` | JSON | Source collection status for v2 |
 | `payload_digest` | String | Canonical SHA-256 digest of normalized payload |
 | `software_count` | Integer | Total software records contained |
 | `collector_warnings` | JSON / Text | Warnings reported by agent collectors |
@@ -316,13 +330,18 @@ Normalized software items installed on a device at the time of a snapshot.
 |---|---|---|
 | `item_id` | String | Primary Key |
 | `snapshot_id` | String | Foreign Key (`endpoint_inventory_snapshots.snapshot_id`, ON DELETE CASCADE) |
-| `comparison_key` | String | SHA-256 of `(name + publisher + architecture + source)` |
+| `comparison_key` | String | V1: SHA-256 of `(name + publisher + architecture + source)`; v2: installation identity |
 | `name` | String | Product / package display name |
 | `version` | String | Version string |
 | `publisher` | String | Software vendor / publisher |
 | `architecture` | String | Binary architecture |
-| `source` | String | Package manager / discovery source (`deb`, `rpm`, `msi`, etc.) |
-| `install_location` | String | Optional installation path |
+| `source` | String | Collector source (`apt`, `dpkg`, `rpm`, `winreg`, `msi`, `kb`, `brew`, `mac_bundle`, `pip`, `npm`, `java`, `pacman`, `other`) |
+| `install_location` | String | Optional v1 path; prohibited in v2 |
+| `product_identity` | String | V2 canonical product identity |
+| `installation_identity` | String | V2 opaque lowercase SHA-256 installation identity |
+| `package_id` | String | Optional package identity |
+| `scope` | String | V2 `system`, `user`, `runtime` or `container` |
+| `install_instance_id` | String | V2 opaque lowercase SHA-256 instance identity |
 
 ### 5.5 `endpoint_software_changes`
 
@@ -417,7 +436,9 @@ Implemented in [api/services/endpoint_inventory.py](api/services/endpoint_invent
    └── Check body size <= OCTO_ENDPOINT_INVENTORY_MAX_BODY_BYTES (default 15 MiB) -> 413.
 
 3. Validate Schema & Structure
-   ├── Enforce schema_version == 1 -> 422.
+   ├── Accept schema_version 1 or 2; reject unsupported versions -> 422.
+   ├── For v2 require installation identities and declared source status.
+   └── Only complete sources authorize replacement/removal; preserve degraded rows.
    └── Check bounding limits (software items <= 5000, labels <= 32, string lengths <= 512).
 
 4. Canonicalize & Digest
@@ -610,25 +631,26 @@ assessed, and every fix to the agent meant walking to the machine.
 | **Windows matching** | On the operating system's *build*, not on packages — `10.0.<build>.<ubr>` against each remediation's `FixedBuild`. Cumulative servicing makes the revision the whole answer; an installed `KB` is consulted too and can only move a verdict toward fixed. The unit of assessment is the OS, so the products are reported once, in aggregate. See docs/software-cve-matching.md |
 | **Windows collection** | MSI entries separated from `winreg`, per-user installs from the loaded profiles under `HKEY_USERS` (not `HKEY_CURRENT_USER` — under a SYSTEM service that is the service's own hive), and applied `KB` updates from Component Based Servicing in state 112 only |
 | **`agents.agent_kind`** | Endpoint Agents (`endpoint`) stopped being judged against the sensors' release line, escalated as missing sensors, or eligible to claim scan work; sensors are `scanner`. Migration `0057` (also adds `endpoint_agent_releases` and `endpoint_agent_policies`) |
-| **Remote management** | Collection settings and the build an Agent should run travel in the heartbeat response (`/api/endpoint/agent/policies`, `/api/endpoint/agent/releases`). A policy cannot carry `server_url`, the provisioning key or `allow_plain_http`: an agent that can be told where to report can be told to report somewhere else. A build is verified against a digest the same authenticated channel published, and an upgrade over plain HTTP is refused |
+| **Remote management** | Collection settings and the build an Agent should run travel in the heartbeat response (`/api/endpoint/agent/policies`, `/api/endpoint/agent/releases`). A policy cannot carry `server_url`, the provisioning key or `allow_plain_http`: an agent that can be told where to report can be told to report somewhere else. A signed native build carries a byte-bound Ed25519 envelope; the endpoint independently verifies local trust and its persistent sequence floor. Unsigned delivery is prohibited, and an upgrade over plain HTTP is refused |
 | **TLS at the edge** | `OCTO_API_TLS_CERT`/`_KEY` — the precondition for the above, and what a stand without an ingress needs to speak HTTPS at all. Half a configuration refuses to start |
 
 Not closed by it: the endpoint Agent still registers through the sensors'
 door (`POST /api/agent/register`) rather than a door of its own, and
-the datastore links behind the API remain plaintext (#309). The Windows half of
-#358 is merged (MSRC provider, `OCTO_MSRC_DATABASE`); the issue stays open for
-RHEL/SUSE/Amazon Linux matching.
+the datastore links behind the API remain plaintext (#309). Windows/MSRC and product-bound RHEL/SLES/Amazon Linux core RPM providers
+are merged. Live-feed/fleet acceptance remains open in #358; see
+[the RPM input and coverage limits](docs/rpm-advisories.md).
 
 ### 16.4 Remaining scope (M4+)
 
-Not started; listed so the two sections above are not misread as coverage of the estate.
+Remaining assessment and acceptance boundaries; the implemented providers do
+not establish complete coverage of an estate.
 
 | Item | Why it is open |
 |---|---|
-| **More distributions** | RHEL, Rocky, AlmaLinux, Fedora, Amazon Linux, SUSE are *recognised* but have no provider, so their packages are `unknown` with `unsupported_distro`. The rpm comparison already exists and is tested — each one is a normalizer plus a small provider subclass. |
+| **More distributions** | RHEL, SLES and Amazon Linux core have binary-RPM providers with explicit product/channel and architecture bindings ([RPM guide](docs/rpm-advisories.md)). They require imported vendor data; a missing dataset is `unknown`, not coverage. Rocky/Alma/CentOS/Oracle/Fedora/openSUSE and extra/module/livepatch channels remain outside that matrix; live-fleet acceptance is still #358. |
 | **Language ecosystems** | npm, PyPI and Java packages *are* collected — the agent's runtime collectors report them as `npm`/`pip`/`java` — but no advisory provider covers them, so they match as `non_distro_source`. RubyGems, Go modules and Cargo are not collected at all. A large share of real application risk lives here. |
 | **macOS** | Homebrew inventory is collected but not matched: Apple's patch model does not map onto the distribution advisory model. Reported as `unknown`. Windows *is* matched now (#358) — on the operating system's build against Microsoft's remediations, which is a different axis from the package-and-release question every distribution provider answers; the Windows products in the uninstall registry remain unmatched, and are reported once in aggregate as `windows_product`. See docs/software-cve-matching.md. |
-| **Offline enrichment bundle** | The advisory datasets ship in the image, but there is no air-gapped bundle covering them together with the EPSS/KEV/CVSS4 overlays. |
+| **Offline enrichment bundle** | Implemented in #339: [air-gap guide](docs/air-gap.md), `scripts/build-enrichment-bundle.sh`. Mirrors and a verified corpus are still operator prerequisites; an installed bundle is not a freshness/completeness guarantee. |
 | **Kernel livepatching** | A livepatched host reports the booted package version and can read as `vulnerable`. There is no signal in the inventory to correct this. |
 
 ---
@@ -646,7 +668,7 @@ Not started; listed so the two sections above are not misread as coverage of the
 7. **Endpoint Staleness:** Server-side staleness evaluated at 48 hours (`OCTO_ENDPOINT_STALE_HOURS = 48`) via [api/services/endpoint_inventory.py](api/services/endpoint_inventory.py).
 8. **Unified Asset Presence:** Endpoint-backed assets appear in all asset views with prefix `ep_...` and are queryable identically to network-scanned assets.
 9. **Tenant Deletion Cascades:** Migration `0006_endpoint_fk_cascade` establishes `ON DELETE CASCADE` across all child endpoint tables and `ON DELETE SET NULL` on `asset_id`.
-10. **Schema & Agent Versioning:** Schema version is strictly enforced as `Literal[1]`. The agent version in a *snapshot* remains informational metadata until a future schema v2 is defined — but the version an agent reports at registration is no longer only that: since #358 it is what a remote upgrade is decided against (`endpoint_agent_policies.desired_version`, migration `0057`), together with the target triple the agent reports on its heartbeat. A version alone does not identify a binary, which is why a release is keyed by both.
+10. **Schema & Agent Versioning:** The original v1-only decision is superseded by mixed-fleet `Literal[1, 2]` negotiation (migration `0080`). Registration/heartbeat advertise v2; collection completeness and installation identities govern v2 reconciliation. Native releases are keyed by `(version, platform, package_kind)` (`0081`), and signed-update capability, installer selection, expiry and sequence policy govern delivery. See [the current contract](docs/endpoint-inventory-v2.md).
 
 *Decisions added with the assessment layer (2026-08-30 → 2026-09-01):*
 
@@ -662,7 +684,7 @@ Not started; listed so the two sections above are not misread as coverage of the
 
 When extending or maintaining endpoint inventory code:
 
-1. **Verify Contracts First:** Inspect [api/schemas.py](api/schemas.py) and ensure any changes adhere to Schema v1.
+1. **Verify Contracts First:** Inspect [api/schemas.py](api/schemas.py), preserve v1 compatibility and verify the negotiated v2 installation/source contract with its shared fixtures.
 2. **Tenant Scoping:** Never rely solely on route-level guards; always include `tenant_id` filters in core service queries.
 3. **PostgreSQL Compatibility:** Validate constraint and cascade behavior on PostgreSQL.
 4. **Regression Safety:** Ensure existing sensor unit/integration tests ([tests/test_agent_worker.py](tests/test_agent_worker.py)) continue to pass.
