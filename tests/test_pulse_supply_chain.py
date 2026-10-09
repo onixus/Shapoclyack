@@ -511,3 +511,70 @@ def test_pin_helper_output_is_parsed_by_the_pin_reader(fake_pin_release):
     pins = _parse_pins(proc.stdout)
     assert set(pins) == {("v9.9.9", plat) for plat in set(_PLATFORMS.values())}
     assert set(pins.values()) == {"a" * 64}
+
+
+# --- "a release ships the latest Pulse" guard --------------------------------
+# scripts/check-pulse-latest.sh asks GitHub which GenDec release is the latest
+# and fails when the pin is behind; Jenkinsfile.publish runs it before Build &
+# push. The script is driven offline with a fake `curl`.
+
+LATEST_GUARD = REPO_ROOT / "scripts" / "check-pulse-latest.sh"
+
+
+def _run_latest_guard(tmp_path: Path, version: str, *, status: str, body: str):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "curl").write_text(
+        "#!/usr/bin/env bash\n"
+        "dest=''\n"
+        "while [[ $# -gt 0 ]]; do\n"
+        '  case "$1" in\n'
+        '    -o) dest="$2"; shift 2 ;;\n'
+        "    -w|-H) shift 2 ;;\n"
+        "    *) shift ;;\n"
+        "  esac\n"
+        "done\n"
+        f"printf '%s' '{body}' > \"$dest\"\n"
+        f"echo {status}\n"
+    )
+    (bindir / "curl").chmod(0o755)
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "GH_TOKEN": "x"}
+    return subprocess.run(
+        ["bash", str(LATEST_GUARD), version],
+        env=env, capture_output=True, text=True, check=False,
+    )
+
+
+def test_latest_guard_passes_on_the_latest_release(tmp_path):
+    proc = _run_latest_guard(tmp_path, "v9.9.9", status="200", body='{"tag_name": "v9.9.9"}')
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_latest_guard_fails_on_an_outdated_pin_and_says_how_to_bump(tmp_path):
+    proc = _run_latest_guard(tmp_path, "v9.9.8", status="200", body='{"tag_name": "v9.9.9"}')
+    assert proc.returncode == 1
+    assert "latest: v9.9.9" in proc.stderr
+    assert "scripts/pulse-pin.sh v9.9.9" in proc.stderr
+
+
+def test_latest_guard_does_not_pass_when_github_cannot_be_asked(tmp_path):
+    """Unknown is not up to date: a 404/401 (private repo, bad token) must fail
+    with its own exit code rather than let a release through."""
+    proc = _run_latest_guard(tmp_path, "v9.9.9", status="404", body="{}")
+    assert proc.returncode == 3
+    assert "HTTP 404" in proc.stderr
+
+
+def test_publish_pipeline_runs_the_latest_guard_before_building():
+    text = (REPO_ROOT / "Jenkinsfile.publish").read_text()
+    stage = text.index("stage('Pulse is latest')")
+    build = text.index("stage('Build & push')")
+    assert stage < build
+    block = text[stage:build]
+    assert ".release-tooling/scripts/check-pulse-latest.sh '${PULSE_VERSION}'" in block
+    # The read-only GenDec credential the build already uses; nothing new.
+    assert "GENDEC_READ_TOKEN" in block
+    # A real publish errors out; DRY_RUN only marks the build unstable.
+    assert "unstable(" in block and "error(" in block
+    assert block.index("params.DRY_RUN") < block.index("error(")
+    assert "|| true" not in block and "catchError(" not in block

@@ -38,7 +38,7 @@
   `PULSE_SKIP_CHECKSUM=1` cannot bypass a pinned version.
 - [`scripts/pulse-pin.sh`](../../scripts/pulse-pin.sh) takes a new pin only after
   `cosign verify-blob` of GenDec's keyless signature, constrained to GenDec's
-  `release.yml` **on that tag**. The `v1.1.0` pins in use predate signing and
+  `release.yml` **on that tag**. The previous `v1.1.0` pins predate signing and
   were taken with `PULSE_PIN_ALLOW_UNSIGNED=1`.
 - [`tests/test_pulse_supply_chain.py`](../../tests/test_pulse_supply_chain.py)
   fails on version/pin drift, a mismatch, or a bypass.
@@ -61,7 +61,7 @@ the build if no binary came out (`test -x`). So:
 
 | Image | Pulse | Nmap |
 |---|---|---|
-| `ghcr.io/onixus/shapoclyack-scanner:<tag>` | yes, `v1.1.0`, with `cap_net_raw,cap_net_admin` | no |
+| `ghcr.io/onixus/shapoclyack-scanner:<tag>` | yes, `v1.3.0`, with `cap_net_raw,cap_net_admin` | no |
 | `ghcr.io/onixus/shapoclyack-scanner:<tag>-nmap` | yes | yes |
 | `ghcr.io/onixus/shapoclyack-aio:<tag>` | yes | no |
 | `ghcr.io/onixus/shapoclyack-aio:<tag>-nmap` | yes | yes |
@@ -84,7 +84,7 @@ the SBOM, the licence text and the release notes.
 |---|---|---|
 | `shapoclyack-0.45-0916` | `v1.1.0` | the release's own `checksums.txt` (no pin file yet) |
 | `shapoclyack-0.46-0922` | `v1.1.0` | pinned digest (unsigned pin) |
-| next release (`main`) | `v1.1.0` | pinned digest, plus the install record |
+| next release (`main`) | `v1.3.0` | pinned digest, plus the install record |
 
 ### What a customer can and cannot establish today
 

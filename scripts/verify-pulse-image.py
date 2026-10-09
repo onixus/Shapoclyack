@@ -31,7 +31,7 @@ from ``main`` (or a newer release) and hand it that tag's pins:
 
     git show shapoclyack-0.46-0922:scripts/pulse-pinned.sha256 > pins-0.46-0922.sha256
     scripts/verify-pulse-image.py --pins pins-0.46-0922.sha256 --platform linux/amd64 \\
-        --image ghcr.io/onixus/shapoclyack-scanner@sha256:<digest> [--tarball pulse-v1.1.0-linux-amd64.tar.gz]
+        --image ghcr.io/onixus/shapoclyack-scanner@sha256:<digest> [--tarball pulse-v1.3.0-linux-amd64.tar.gz]
     scripts/verify-pulse-image.py --pins ... --rootfs ./unpacked-image [--tarball ...]
 
 The copy inside the image is only compared against that file: a disagreement

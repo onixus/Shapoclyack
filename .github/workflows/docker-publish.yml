@@ -131,7 +131,7 @@ jobs:
           # Release images pin component versions here so the matrix for this
           # Shapoclyack release is explicit.
           build-args: |
-            PULSE_VERSION=v1.1.0
+            PULSE_VERSION=v1.3.0
             ENRICHMENT_STRICT=1
           cache-from: type=gha,scope=${{ matrix.name }}
           # mode=max + multi-platform (linux/amd64,linux/arm64) on the larger
