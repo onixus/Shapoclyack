@@ -4,6 +4,8 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+## [0.47-1009] — 2026-10-09
+
 ### Changed
 
 - Complete caller-owned bulk idempotency (#517, migration `0082`): require
@@ -16,6 +18,10 @@ All notable changes to Shapoclyack are documented in this file.
   before execution, preserving exclusion between concurrent retries.
 
 ### Documentation
+
+- Consolidate operator guides and harden installer workflows (#536); reconcile
+  inventory v2, signed native updates, DNS and publication contracts (#535),
+  including issuer-scoped CRL operation (#534).
 
 - Refresh the kind quick start and remediation demo for HTTPS and the generated
   development CA; document the Node CA for the dev proxy, tenant-scoped run
