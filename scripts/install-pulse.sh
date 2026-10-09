@@ -102,8 +102,8 @@ if [[ -n "$LOCAL_REPO" || "$FROM_SOURCE" == "1" ]]; then
   trap 'rm -rf "$TMP"' EXIT
   REF="${PULSE_REF:-${VERSION}}"
   echo "==> cloning $REPO_URL @ $REF"
-  git clone --depth 1 --branch "$REF" "$REPO_URL" "$TMP/pulse" 2>/dev/null \
-    || git clone --depth 1 "$REPO_URL" "$TMP/pulse"
+  # A missing ref or a network failure must never select a different release.
+  git clone --depth 1 --branch "$REF" "$REPO_URL" "$TMP/pulse"
   (cd "$TMP/pulse" && cargo build --release)
   install_bin "$TMP/pulse/target/release/pulse"
   write_record source
