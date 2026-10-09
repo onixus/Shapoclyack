@@ -7,6 +7,7 @@ rather than how one feature works. Feature design stays in its own guide.
 | # | Decision | Status | Issue |
 |---|---|---|---|
 | [0001](0001-pulse-distribution-model.md) | Distribution model for the default Pulse backend | **Proposed** — decision by the owner | [#340](https://github.com/onixus/Shapoclyack/issues/340) |
+| [0002](0002-replacing-nmap-functions.md) | Where the functions Nmap provided move to | **Accepted** — onixus, 2026-10-10 | [#549](https://github.com/onixus/Shapoclyack/issues/549) |
 
 Decisions taken before this directory existed are recorded where they were
 made: the endpoint-inventory decisions in
