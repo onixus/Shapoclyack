@@ -102,7 +102,8 @@ ARG PULSE_SKIP_CHECKSUM=0
 # The result has no service-probe backend of its own -- the scanner refuses to
 # start a run with `service_probe.backend: pulse` and no binary rather than
 # quietly producing a scan with no services (scanner/pipeline/pulse_probe.py),
-# so such an image must be configured with `backend: nmap` and INSTALL_NMAP=1.
+# so such an image needs a self-installed Nmap (docs/nmap-external.md) and
+# `backend: nmap`.
 ARG INSTALL_PULSE=1
 # One implementation for host installs and images: the script resolves the
 # asset (via the API when a token is present -- the plain releases/download
@@ -156,14 +157,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Phase 5: nmap is optional for the default Pulse path. Default INSTALL_NMAP=1
-# keeps the full image (hybrid/vuln_legacy). Pulse-only lean builds:
-#   docker build --build-arg INSTALL_NMAP=0 …
-ARG INSTALL_NMAP=1
+# Nmap is not bundled (NPSL licence, issue #97); see docs/nmap-external.md.
 RUN set -eux; \
     apt-get update; \
     PKGS="ca-certificates curl fping git jq"; \
-    if [ "${INSTALL_NMAP}" = "1" ]; then PKGS="${PKGS} nmap"; fi; \
     apt-get install -y --no-install-recommends ${PKGS}; \
     # Security updates the pinned base digest does not carry yet: Debian has
     # published them, python:3.12-slim has not been rebuilt on top. Upgrade
@@ -191,30 +188,10 @@ COPY --from=pulse-bin /out/share/ /usr/local/share/
 COPY --from=go-tools /out/dnsx /usr/local/bin/dnsx
 COPY --from=go-tools /out/naabu /usr/local/bin/naabu
 
-# Vulnerability NSE scripts (only when INSTALL_NMAP=1):
-#  - nmap-vulners: maps service versions (-sV) to CVEs via the vulners.com API (needs egress).
-#  - vulscan: offline CVE matching against bundled local databases (no internet required).
-# Pinned to specific commits for reproducible, supply-chain-safe builds.
-# Skipped for Pulse-only images (Phase 5); default CVE path is Pulse + Nuclei.
-ARG NMAP_VULNERS_REF=0555294abe71857c581afc2ef62ea3ca5c7b7145
-ARG VULSCAN_REF=bd642ed1bc9d96795a91cdf1acd8c93ceef2d07e
-ARG INSTALL_NMAP=1
-RUN set -eux; \
-    if [ "${INSTALL_NMAP}" != "1" ]; then \
-      echo "INSTALL_NMAP=0: skipping nmap-vulners/vulscan"; \
-      exit 0; \
-    fi; \
-    git clone https://github.com/vulnersCom/nmap-vulners.git /usr/share/nmap/scripts/nmap-vulners; \
-    git -C /usr/share/nmap/scripts/nmap-vulners checkout "${NMAP_VULNERS_REF}"; \
-    git clone https://github.com/scipag/vulscan.git /usr/share/nmap/scripts/vulscan; \
-    git -C /usr/share/nmap/scripts/vulscan checkout "${VULSCAN_REF}"; \
-    rm -rf /usr/share/nmap/scripts/nmap-vulners/.git /usr/share/nmap/scripts/vulscan/.git; \
-    nmap --script-updatedb
-
 # Nuclei: template-based HTTP vulnerability/misconfig scanning (opt-in, see
 # scanner/pipeline/nuclei_scan.py). Binary built in the go-tools stage
 # above; templates pinned to a release tag for the same reproducible-build
-# reason as NMAP_VULNERS_REF/VULSCAN_REF above.
+# reason as the other pinned refs above.
 COPY --from=go-tools /out/nuclei /usr/local/bin/nuclei
 ARG NUCLEI_TEMPLATES_REF=v9.9.4
 # Shallow-clone the tag directly: a full clone pulls years of history that the
@@ -230,8 +207,9 @@ RUN set -eux; \
 # host discovery / SYN scans / OS detection work as the non-root 'scanner' user.
 # (A container-level --cap-add alone is NOT inherited by a non-root process on
 # exec without this — the binary needs the file capability bit set too.)
-# Both cap_net_raw and cap_net_admin are required for naabu SYN, Pulse SYN/OS,
-# and nmap -O (when present). NET_ADMIN is NOT in Docker's default bounding set,
+# Both cap_net_raw and cap_net_admin are required for naabu SYN, Pulse SYN/OS
+# (and a self-installed nmap -O, docs/nmap-external.md). NET_ADMIN is NOT in
+# Docker's default bounding set,
 # so every place this image actually runs scans already grants it explicitly:
 # docker-compose.yml's cap_add, tests/e2e/run.sh's --cap-add, and the k8s
 # api/agent/job/cronjob manifests' capabilities.add. A file capability that
@@ -241,15 +219,11 @@ RUN set -eux; \
 # Do NOT `apt-get purge libcap2-bin` afterward: fping (installed above) Depends
 # on libcap2-bin for its own postinst setcap call, so purging it cascades into
 # silently removing fping too (apt exits 0; the binary just vanishes).
-ARG INSTALL_NMAP=1
 RUN set -eux; \
     apt-get update && apt-get install -y --no-install-recommends libcap2-bin; \
     setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/naabu; \
     if [ -x /usr/local/bin/pulse ]; then \
       setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/pulse; \
-    fi; \
-    if [ "${INSTALL_NMAP}" = "1" ] && [ -x /usr/bin/nmap ]; then \
-      setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap; \
     fi; \
     rm -rf /var/lib/apt/lists/*
 
@@ -308,13 +282,6 @@ RUN set -eu; \
       fi; \
       echo "warning: enrichment data is missing or stubbed; continuing (ENRICHMENT_STRICT=0)" >&2; \
     fi
-
-# Best-effort: refresh vulscan's offline CVE databases beyond whatever was
-# bundled at the pinned VULSCAN_REF commit above, so "vuln-offline" scans use
-# current data without needing a full image rebuild each time. Never fails
-# the build — an offline/network-restricted build just keeps the
-# pinned-commit CSVs, same as today.
-RUN bash scripts/fetch-vulscan-db.sh -o /usr/share/nmap/scripts/vulscan || true
 
 # Best-effort: refresh nuclei-templates beyond whatever was bundled at the
 # pinned NUCLEI_TEMPLATES_REF above (nuclei's own -update-templates flag,

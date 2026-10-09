@@ -123,7 +123,7 @@ separate check and cannot establish those results. At this audit's baseline,
 `test_a_search_that_ignores_the_deadline_is_still_timed_out`; a different branch's
 success is not evidence that this build passed. Current merge readiness must
 be established from the exact PR head, its completed full Jenkins run and
-GitHub gate, not this dated snapshot. Load/legacy-Nmap stages are main-only.
+GitHub gate, not this dated snapshot. The load stage is main-only.
 See [Development](docs/development.md#continuous-integration).
 
 
@@ -135,7 +135,7 @@ See [Development](docs/development.md#continuous-integration).
 | Sensors (remote scanning nodes; API resource `agents`, `agent_kind = scanner`), DefectDojo, PDF reports | Done |
 | Kubernetes (`k8s/shapoclyack/`) + all-in-one compose | Done |
 | GHCR images `shapoclyack-{aio,scanner,api}` | Done |
-| Nmap made optional / non-default in published images ([#97](https://github.com/onixus/Shapoclyack/issues/97) Phase 1) — Pulse is the default service-probe backend; default `-aio`/`-scanner` images ship Nmap-free; a legacy `-nmap` tag remains opt-in for NPSL-aware users who want classic NSE | Done |
+| Nmap made optional / non-default in published images ([#97](https://github.com/onixus/Shapoclyack/issues/97) Phase 1) — Pulse is the default service-probe backend; `-aio`/`-scanner` images ship Nmap-free; the legacy `-nmap` tags were published for the last time with `0.47-1009-rc1`, and users who want classic NSE install their own Nmap ([docs/nmap-external.md](docs/nmap-external.md)) | Done |
 
 The phases below are the **next platform evolution** toward multi-tenant MSSP scale.
 

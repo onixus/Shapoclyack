@@ -144,14 +144,16 @@ Catch it early instead: `scripts/dev-up.sh` warns when the Secret is absent.
 - retry with the `safe` profile and a single authorized host;
 - inspect discovery coverage artifacts before increasing rates.
 
-## Nmap, Naabu, DNSx, or Nuclei fails
+## Naabu, DNSx, Nuclei, or Nmap fails
 
 ```bash
 docker run --rm --entrypoint sh \
   ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.46-0922 \
-  -lc 'nmap --version; naabu -version; dnsx -version; nuclei -version'
+  -lc 'naabu -version; dnsx -version; nuclei -version'
 ```
 
+Nmap is not in the images; if L2 discovery or the NSE stage reports
+`nmap binary not found on PATH`, install your own: [Using your own Nmap](nmap-external.md).
 Use the pinned image tag, not `latest`. Exit code `4` means an external stage
 failed after retries; inspect the corresponding stage log.
 

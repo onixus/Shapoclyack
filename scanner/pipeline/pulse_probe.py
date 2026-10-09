@@ -742,7 +742,7 @@ def run_pulse_probe(
             "install it (scripts/install-pulse.sh, or point OCTO_PULSE_BIN / "
             "service_probe.pulse.bin at an existing binary), or switch the "
             "backend to nmap (OCTO_SERVICE_BACKEND=nmap / service_probe."
-            "backend: nmap) on an image that has nmap. An image built with "
+            "backend: nmap) on a sensor that has nmap installed (docs/nmap-external.md). An image built with "
             "--build-arg INSTALL_PULSE=0 ships no pulse by design and must be "
             "configured that way; see docs/pulse-backend.md."
         )

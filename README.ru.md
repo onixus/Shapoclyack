@@ -121,6 +121,6 @@ python -m pytest tests/test_server_installer.py tests/test_agent_install_pins.py
 [сторонних лицензиях](docs/third-party.md), порядок раскрытия уязвимостей и
 поддерживаемые версии — в [политике безопасности](.github/SECURITY.md).
 
-Стандартные образы (`INSTALL_NMAP=0`) используют Pulse и не содержат Nmap/NSE.
-Дополнительный образ `-nmap` или собственная установка Nmap подпадают под NPSL;
-подробности — в [Pulse backend](docs/pulse-backend.md).
+Образы используют Pulse и не содержат Nmap/NSE (последний релиз с тегом
+`-nmap` — `0.47-1009-rc1`). Nmap подпадает под NPSL; если он нужен, установите
+свой рядом с сенсором: [Using your own Nmap](docs/nmap-external.md) (на английском).
