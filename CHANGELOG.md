@@ -14,6 +14,11 @@ are in [docs/releases/0.47-1009-rc1.md](docs/releases/0.47-1009-rc1.md).
 
 ### Changed
 
+- The manual GitHub Actions image publisher requires a full release-tag ref,
+  leaves `latest` / `latest-nmap` unchanged for alpha/beta/RC releases, and
+  enables `ENRICHMENT_STRICT=1` like the Jenkins publisher. Candidate images can
+  be published without Jenkins using the workflow's OIDC signing identity.
+
 - Complete caller-owned bulk idempotency (#517, migration `0082`): require
   `actor`, remove the unowned fallback and legacy index/trigger, and preserve
   existing owned reports and reservations. The migration deletes only expired
