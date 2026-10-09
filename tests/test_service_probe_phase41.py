@@ -31,7 +31,7 @@ def test_default_yaml_backend_is_pulse():
 
 
 def test_merge_pulse_config_overrides_only_set_fields():
-    base = PulseProbeConfig(concurrency=500, rate=2000, os_mode="auto", host_parallel=8)
+    base = PulseProbeConfig(concurrency=500, rate=2000, os_mode="sinfp", host_parallel=8)
     ov = ProfilePulseConfig(concurrency=300, os_mode="sinfp")
     merged = merge_pulse_config(base, ov)
     assert merged.concurrency == 300

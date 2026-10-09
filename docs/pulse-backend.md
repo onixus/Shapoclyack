@@ -86,7 +86,7 @@ service_probe:
     timeout_ms: 800          # per-connect timeout (pulse -t)
     banner: true
     os_detect: true          # needs raw sockets; dropped for the run if pulse refuses
-    os_mode: auto
+    os_mode: sinfp
     cve: true
     cve_online: false
     syn: false               # half-open scan; needs raw sockets, never auto-downgraded
@@ -100,12 +100,35 @@ profiles:
       concurrency: 800
       rate: 2000
       host_parallel: 16
-      os_mode: auto
+      os_mode: sinfp
     nse_profile: vuln_legacy   # only if backend is nmap|hybrid
 ```
 
-NVD online: set `NVD_API_KEY` or mount a key file readable by the scanner
-(Pulse also supports `~/.pulse/nvd_api_key`).
+NVD online: set `NVD_API_KEY` in the sensor's environment. Pulse's own
+`~/.pulse/nvd_api_key` is not read (see below).
+
+### Pinned inputs
+
+Left alone, Pulse reads `~/.pulse/` and the NPSL-licensed `nmap-services` and
+`nmap-os-db` of any Nmap installed on the host, so two sensors with the same
+config could name services differently. The adapter therefore pins the inputs
+([ADR 0002](adr/0002-replacing-nmap-functions.md), #543):
+
+- `--services-db scanner/data/pulse/services.tsv` on every invocation: a
+  port-to-name table built from the IANA registry (source and terms in
+  [third-party.md](third-party.md)). If the file is missing the adapter passes
+  `/dev/null` and Pulse uses its embedded table; it never falls back to the
+  host's Nmap files.
+- `--os-mode sinfp` whenever `--os` is on. `os_mode: nmap` and `os_mode: auto`
+  are rejected at config load with a message to switch to `sinfp`; edit any
+  sensor config or ConfigMap that still sets them.
+- A private, empty `HOME` per Pulse process (and `PULSE_SERVICES_DB` removed
+  from its environment), so `~/.pulse/nmap-services`, `nmap-os-db`, `kev.txt`,
+  `epss.csv` and `nvd_api_key` of the sensor user cannot change a scan.
+
+The service name is still taken from the port table, not from the probe that
+matched (GenDec#31): port 2222 is named `ethernet-ip-1` even when the banner
+says OpenSSH, until the engine reports the probe's name.
 
 ## Artifacts
 

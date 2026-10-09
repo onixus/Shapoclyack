@@ -29,9 +29,15 @@ Does **not** replace NSE scripts (ssl-enum-ciphers, vulners, …). Use
 Does **not** invoke Pulse product features that duplicate Shapoclyack:
 ``pulse monitor``, ``--server``, ``--alert-*``, ``--scripts``, ``--inventory``.
 
+Pinned inputs (docs/adr/0002-replacing-nmap-functions.md, #543): every
+invocation gets ``--services-db`` pointing at our own IANA-derived table, OS
+detection is always ``--os-mode sinfp``, and the process runs with a private,
+empty ``HOME``. Without that, Pulse reads ``~/.pulse/`` and the NPSL-licensed
+``nmap-services`` / ``nmap-os-db`` of whatever Nmap the host has installed.
+
 Environment:
   OCTO_PULSE_BIN     — path to pulse binary (default: ``pulse`` on PATH)
-  NVD_API_KEY        — optional; pulse also reads ~/.pulse/nvd_api_key
+  NVD_API_KEY        — optional; passed through (``~/.pulse/nvd_api_key`` is not read)
 """
 
 from __future__ import annotations
@@ -42,6 +48,7 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable
@@ -73,6 +80,40 @@ from .utils import run_command, save_json, write_lines
 #: pulse's ruleset id: ``YYYY.MM.DD`` with an optional ``-hN`` hotfix
 #: (pulse 1.1.0 prints ``2026.07.29-h1``).
 _RULESET = re.compile(r"(\d{4})\.(\d{1,2})\.(\d{1,2})(?:-h(\d+))?")
+
+
+#: Port-to-name table handed to ``--services-db``. Built from the IANA registry
+#: (scripts/build-pulse-services.py), never from nmap-services.
+SERVICES_DB = Path(__file__).resolve().parents[1] / "data" / "pulse" / "services.tsv"
+
+#: The only OS engine the adapter runs. ``nmap``/``auto`` make Pulse read
+#: ``nmap-os-db`` from the host.
+OS_MODE = "sinfp"
+
+
+def resolve_services_db() -> str:
+    """Path for ``--services-db``; ``/dev/null`` when our table is missing.
+
+    An empty file makes Pulse use its embedded table. That is the right
+    degradation: omitting the flag would send it hunting for the host's Nmap
+    install, which is exactly what pinning the input prevents.
+    """
+    if SERVICES_DB.is_file():
+        return str(SERVICES_DB)
+    logging.warning("pulse_probe: %s is missing; Pulse falls back to its embedded port table", SERVICES_DB)
+    return os.devnull
+
+
+def pulse_env(home: Path) -> dict[str, str]:
+    """Environment for Pulse with a private ``HOME``.
+
+    Pulse looks in ``$HOME/.pulse/`` for ``nmap-services``, ``nmap-os-db``,
+    ``kev.txt``, ``epss.csv`` and an NVD key. The operator's files must not
+    leak into a scan, so ``HOME`` is an empty directory owned by the run.
+    """
+    env = {k: v for k, v in os.environ.items() if k != "PULSE_SERVICES_DB"}
+    env["HOME"] = str(home)
+    return env
 
 
 def parse_ruleset(value: str | None) -> tuple[int, int, int, int] | None:
@@ -229,13 +270,16 @@ def build_pulse_command(
     timeout_ms: int,
     banner: bool,
     os_detect: bool,
-    os_mode: str,
+    os_mode: str = OS_MODE,
     cve: bool,
     cve_online: bool,
     syn: bool,
     checkpoint: Path | None,
     max_hosts: int,
+    services_db: str | None = None,
 ) -> list[str]:
+    if os_mode != OS_MODE:
+        raise ValueError(f"os_mode {os_mode!r} is not supported; use {OS_MODE!r}")
     cmd = [
         bin_path,
         "--targets-file",
@@ -251,6 +295,8 @@ def build_pulse_command(
         "-f",
         "json",
         "-q",
+        "--services-db",
+        services_db or resolve_services_db(),
     ]
     if rate > 0:
         cmd += ["--rate", str(rate)]
@@ -591,13 +637,15 @@ def _probe_chunk(
     cmd: list[str], *, timeout_seconds: int, retries: int, idx: int
 ) -> tuple[dict[str, Any], int, str]:
     """Run one pulse invocation; return (parsed payload, exit code, stderr)."""
-    completed = run_command(
-        cmd,
-        timeout=timeout_seconds,
-        retries=retries,
-        check=False,
-        capture_output=True,
-    )
+    with tempfile.TemporaryDirectory(prefix="pulse-home-") as home:
+        completed = run_command(
+            cmd,
+            timeout=timeout_seconds,
+            retries=retries,
+            check=False,
+            capture_output=True,
+            env=pulse_env(Path(home)),
+        )
     stdout = (completed.stdout or "").strip()
     stderr = (completed.stderr or "").strip()
     if completed.returncode != 0:
@@ -635,7 +683,7 @@ def run_pulse_probe(
     timeout_ms: int = 800,
     banner: bool = True,
     os_detect: bool = True,
-    os_mode: str = "auto",
+    os_mode: str = OS_MODE,
     cve: bool = True,
     cve_online: bool = False,
     syn: bool = False,
