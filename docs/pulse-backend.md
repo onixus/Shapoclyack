@@ -130,6 +130,12 @@ config could name services differently. The adapter therefore pins the inputs
   `PULSE_*` variables switch on alerting, a server token and alternative data
   files.
 
+Pulse gets only the standard proxy and trust variables (`HTTPS_PROXY`/`https_proxy`,
+`NO_PROXY`, `SSL_CERT_FILE`/`SSL_CERT_DIR`). `OCTO_HTTP(S)_PROXY`, `OCTO_NO_PROXY` and
+`OCTO_CA_BUNDLE` are the sensor-to-API contract and do not reach it; for `cve_online`
+behind a proxy set the standard names. `SSL_CERT_FILE` replaces Pulse's trust store
+(rustls) rather than adding to it, so the bundle must contain the public CAs too.
+
 What the sensor user's `~/.pulse/` used to contribute and no longer does:
 `kev.txt` and `epss.csv` (Pulse's `--cve` now uses its embedded KEV subset and
 fallback scores; Shapoclyack's own KEV/EPSS overlays under `scanner/data` are
