@@ -61,7 +61,7 @@ nmap NSE. Caps still matter for:
 |--------|----------|
 | **naabu** | SYN / host discovery |
 | **pulse** | SYN mode and OS fingerprint (connect mode needs no raw caps) |
-| **nmap** | Optional — not in the default `shapoclyack-scanner`/`-aio` images (`backend: nmap\|hybrid` only); local `docker build` defaults to `INSTALL_NMAP=1` unless overridden, see below |
+| **nmap** | Optional and not in the images (`backend: nmap\|hybrid`, L2 discovery); only with a derived image of your own, see [docs/nmap-external.md](../docs/nmap-external.md) |
 | **fping** | ICMP discovery |
 
 Raw sockets are granted via file capabilities baked into the image at build
@@ -84,24 +84,14 @@ per-workload table, every exception with its reason, Kyverno/Gatekeeper
 snippets and the upgrade steps are in
 [docs/k8s-hardening.md](../docs/k8s-hardening.md).
 
-**Published images are Nmap-free by default** — `ghcr.io/onixus/shapoclyack-{scanner,aio}:latest`
-(and versioned tags) are built with `INSTALL_NMAP=0`; no Nmap binary, NSE data,
-or `nmap-vulners`/Vulscan scripts, so the Nmap Public Source License's
-redistribution terms don't apply to those artifacts (see
-[issue #97](https://github.com/onixus/Shapoclyack/issues/97)). A separate
-`-nmap` tag (`shapoclyack-{scanner,aio}:latest-nmap`) is published for anyone
-who explicitly wants classic NSE — review NPSL before redistributing that tag
-further.
-
-A local `docker build` still defaults to `INSTALL_NMAP=1` unless you pass the
-build-arg explicitly:
-
-```bash
-docker build -f Dockerfile --build-arg INSTALL_NMAP=0 -t shapoclyack-scanner:pulse-only .
-```
-
-NSE stage skips cleanly if someone still sets `backend: nmap` against a
-Nmap-free image.
+**Published images are Nmap-free** — `ghcr.io/onixus/shapoclyack-{scanner,aio}`
+contain no Nmap binary, NSE data, or `nmap-vulners`/Vulscan scripts, so the
+Nmap Public Source License's redistribution terms don't apply to those
+artifacts (see [issue #97](https://github.com/onixus/Shapoclyack/issues/97)).
+`0.47-1009-rc1` is the last release that also published `-nmap` tags. To use
+Nmap, derive an image of your own and point the overlay at it:
+[docs/nmap-external.md](../docs/nmap-external.md). The NSE stage and L2
+discovery skip with a warning if Nmap is absent.
 
 ## Layout
 

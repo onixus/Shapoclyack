@@ -495,7 +495,7 @@ pipeline {
     stage('Image') {
       agent any
       stages {
-        stage('Build (INSTALL_NMAP=0)') {
+        stage('Build') {
           steps {
             // GENDEC_READ_TOKEN — приватные релизы GenDec для стадии Pulse.
             // Credential опционален: без него сборка идёт по анонимному пути.
@@ -504,7 +504,6 @@ pipeline {
                 set -eu
                 DOCKER_BUILDKIT=1 docker build \
                   --secret id=github_token,env=GH_TOKEN \
-                  --build-arg INSTALL_NMAP=0 \
                   -t ${IMAGE_TAG} .
               """
             }
@@ -644,7 +643,7 @@ pipeline {
                 def tag = "${IMAGE_TAG}-${kind}"
                 try {
                   withCredentials([string(credentialsId: 'GENDEC_READ_TOKEN', variable: 'GH_TOKEN')]) {
-                    sh "docker build --secret id=github_token,env=GH_TOKEN --build-arg INSTALL_NMAP=0 -f Dockerfile.${kind} -t ${tag} ."
+                    sh "docker build --secret id=github_token,env=GH_TOKEN -f Dockerfile.${kind} -t ${tag} ."
                   }
                   sh """
                     set -eu
@@ -774,51 +773,6 @@ PY
           // Тег уникален на сборку, поэтому образы копились бы на диске —
           // раньше их перезаписывал следующий билд под тем же именем.
           sh "docker rmi -f ${IMAGE_TAG} || true"
-        }
-      }
-    }
-
-    stage('Image nmap-legacy') {
-      agent any
-      // Второй вариант образа (с Nmap) нужен на релизном пути, а не на
-      // каждой ветке: ещё одна полная сборка образа ради проверки, что
-      // легаси-тег собирается.
-      when {
-        anyOf {
-          expression { env.BRANCH_NAME == null }
-          branch 'main'
-        }
-      }
-      steps {
-        // Этот sh — в одинарных кавычках, поэтому ${IMAGE_TAG} раскрывает не
-        // Groovy, а шелл: значение приходит через env, иначе тег молча стал бы
-        // пустым и docker build собрал бы "-nmap".
-        withEnv(["IMAGE_TAG=${IMAGE_TAG}"]) {
-        withCredentials([string(credentialsId: 'GENDEC_READ_TOKEN', variable: 'GH_TOKEN')]) {
-          sh '''
-            set -eu
-            DOCKER_BUILDKIT=1 docker build \
-              --secret id=github_token,env=GH_TOKEN \
-              --build-arg INSTALL_NMAP=1 \
-              -t ${IMAGE_TAG}-nmap .
-
-            docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN --entrypoint sh ${IMAGE_TAG}-nmap -c '
-              set -e
-              naabu -version
-              dnsx -version
-              pulse --version
-              nmap --version | head -n 1
-              test -f /usr/share/nmap/scripts/nmap-vulners/vulners.nse
-              test -f /usr/share/nmap/scripts/vulscan/vulscan.nse
-              python -m compileall scanner
-            '
-          '''
-        }
-        }
-      }
-      post {
-        always {
-          sh "docker rmi -f ${IMAGE_TAG}-nmap || true"
         }
       }
     }

@@ -13,31 +13,27 @@ it rather than replacing it if you build derivative images.
 Apache-2.0 covers the code in this repository. It says nothing about the
 third-party components below, which keep their own terms: an image is an
 aggregate, and the most restrictive component in it governs what you may do with
-that image. The practical consequence is the `-nmap` tag, which is the only
-artifact here carrying terms that restrict redistribution — see the next
-section.
+that image. This is why Nmap, whose licence restricts redistribution, is not in
+the images — see the next section.
 
 ## Scanner tools
 
-**Nmap is not part of the default distribution.** The published
-`ghcr.io/onixus/shapoclyack-scanner` and `...-aio` images (built by
-`Jenkinsfile.publish` with `INSTALL_NMAP=0`) contain no Nmap binary, no NSE data, and no `nmap-vulners`/
-`Vulscan` scripts — Pulse is the default `service_probe.backend` and covers
-service/OS/CVE detection without Nmap. This removes the Nmap Public Source
-License redistribution question for the images most people pull. A separate
-`-nmap` tag (e.g. `shapoclyack-aio:latest-nmap`, built with `INSTALL_NMAP=1`)
-is published alongside for anyone who explicitly wants classic NSE — review
-the Nmap Public Source License's commercial/OEM redistribution restrictions
-before distributing that tag further. Note that the `Dockerfile` and
-`Dockerfile.allinone` themselves default to `ARG INSTALL_NMAP=1`: a local
-`docker build` without `--build-arg INSTALL_NMAP=0` produces the Nmap-bearing
-variant, so an image built by hand is not the same artifact as the default
-published tag. The sensor image (the remote scanning node, `agent/worker.py`)
-is the scanner image, so the same choice applies to every sensor host.
+**Nmap is not part of the distribution.** The published
+`ghcr.io/onixus/shapoclyack-scanner` and `...-aio` images contain no Nmap binary,
+no NSE data, and no `nmap-vulners`/`Vulscan` scripts — Pulse is the default
+`service_probe.backend` and covers service/OS/CVE detection without Nmap. This
+removes the Nmap Public Source License redistribution question for every
+artifact Shapoclyack publishes. `shapoclyack-0.47-1009-rc1` is the last release
+that also published `-nmap` image tags (built with `INSTALL_NMAP=1`); the build
+argument and the tags are gone from the next release on. Users who need Nmap
+install it themselves next to the sensor, which puts the licence decision with
+them: [Using your own Nmap](nmap-external.md). The sensor image (the remote
+scanning node, `agent/worker.py`) is the scanner image, so the same choice
+applies to every sensor host.
 
 | Component | Documented pin/source | License family | Notes |
 |---|---|---|---|
-| Nmap | Debian package | Nmap Public Source License v0.95 | **Opt-in only** — `INSTALL_NMAP=1` / `-nmap` tag; review commercial/OEM redistribution restrictions before redistributing that tag |
+| Nmap | Debian package | Nmap Public Source License v0.95 | **Not bundled.** Install it yourself ([Using your own Nmap](nmap-external.md)); review the commercial/OEM redistribution restrictions before redistributing an image that contains it |
 | Naabu | `v2.6.1` (`NAABU_VERSION`) | MIT | ProjectDiscovery |
 | DNSx | `v1.2.3` (`DNSX_VERSION`) | MIT | ProjectDiscovery |
 | Pulse | GenDec release tag (`PULSE_VERSION`, currently `v1.1.0`) + per-platform sha256 pinned in `scripts/pulse-pinned.sha256` | MIT | Default service-probe backend (banner/OS/CVE detection); replaces Nmap in the default image. **`onixus/GenDec` is a private repository** — see the note below |
@@ -45,8 +41,8 @@ is the scanner image, so the same choice applies to every sensor host.
 | DejaVu Sans | Debian package `fonts-dejavu-core` (API and all-in-one images); a 27 KB Latin+Cyrillic subset in `tests/fixtures/fonts/` | Bitstream Vera licence + public domain (DejaVu changes) | Unicode face for PDF reports (`api/services/reports/render.py`); without it the renderer falls back to fpdf2's Latin-1 core fonts. The subset is a test fixture only, not shipped in any image |
 | Playwright / Chromium | not pinned; optional host install | Apache-2.0 (Playwright) | **Not in the default image.** P4.4 screenshots skip when the package or browser is missing |
 | nuclei-templates | Git reference (`NUCLEI_TEMPLATES_REF`, currently `v9.9.4`) | MIT | Template content has its own provenance |
-| nmap-vulners | Git reference | GPL-3.0 | **Opt-in only** — `INSTALL_NMAP=1` / `-nmap` tag; NSE vulnerability lookup |
-| Vulscan | Git reference (`VULSCAN_REF`, pinned commit) | GPL-3.0 | **Opt-in only** — `INSTALL_NMAP=1` / `-nmap` tag; NSE scripts and local data |
+| nmap-vulners | Git reference | GPL-3.0 | **Not bundled.** Optional, user-installed (see [Using your own Nmap](nmap-external.md)); NSE vulnerability lookup |
+| Vulscan | Git reference (pinned commit, see nmap-external.md) | GPL-3.0 | **Not bundled.** Optional, user-installed (see [Using your own Nmap](nmap-external.md)); NSE scripts and local data |
 
 **Pulse comes from a private repository.** `onixus/GenDec` is not public, so
 a `docker build` of `Dockerfile` or `Dockerfile.allinone` needs a GitHub token
@@ -74,7 +70,7 @@ anyone outside the organisation. For a reviewer who cannot read the repository,
 that remains the gap.
 `--build-arg INSTALL_PULSE=0` builds an image without Pulse and without a
 token; that image has no service-probe backend of its own and must be run with
-`service_probe.backend: nmap` on an `INSTALL_NMAP=1` build — the scanner fails
+`service_probe.backend: nmap` on a sensor with a self-installed Nmap — the scanner fails
 the run with an explicit error rather than scanning without services.
 
 Whether to publish GenDec's binary releases publicly (with the SBOM already

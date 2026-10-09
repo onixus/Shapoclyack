@@ -80,6 +80,19 @@ def test_run_l2_discovery_uses_arp_then_name_probes(tmp_path: Path, monkeypatch)
     assert (tmp_path / "l2_discovery.json").exists()
 
 
+def test_run_l2_discovery_without_nmap_warns_and_points_to_doc(tmp_path: Path, monkeypatch, caplog):
+    monkeypatch.setattr("scanner.pipeline.l2_discovery.shutil.which", lambda name: None)
+    with caplog.at_level("WARNING", logger="shapoclyack.l2-discovery"):
+        result = run_l2_discovery(
+            ["10.0.0.0/24"],
+            L2DiscoveryConfig(enabled=True, max_hosts=300),
+            tmp_path,
+        )
+
+    assert result["skipped_reason"] == "nmap.unavailable"
+    assert "docs/nmap-external.md" in caplog.text
+
+
 def test_merge_l2_names_preserves_dns_provenance():
     merged = merge_l2_names(
         {"10.0.0.5": {"forward": ["plc.example"], "reverse": [], "names": ["plc.example"]}},

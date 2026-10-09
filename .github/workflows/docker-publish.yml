@@ -46,35 +46,17 @@ jobs:
       matrix:
         include:
           # Container packages are Shapoclyack-scoped (the legacy octo-man GHCR package is gone).
-          # Default scanner/aio images ship Pulse-only (no Nmap) -- see issue #97:
-          # Nmap's NPSL license makes bundling it in the default distributed
-          # artifacts a redistribution risk. A second `-nmap` tag is published
-          # alongside for anyone who explicitly wants the legacy NSE path.
+          # The images ship without Nmap (NPSL licence, issue #97); docs/nmap-external.md
+          # explains how to add your own.
           - name: scanner
             dockerfile: Dockerfile
             image: ghcr.io/onixus/shapoclyack-scanner
-            install_nmap: "0"
-            tag_suffix: ""
-          - name: scanner-nmap
-            dockerfile: Dockerfile
-            image: ghcr.io/onixus/shapoclyack-scanner
-            install_nmap: "1"
-            tag_suffix: "-nmap"
           - name: api
             dockerfile: Dockerfile.api
             image: ghcr.io/onixus/shapoclyack-api
-            install_nmap: "0"
-            tag_suffix: ""
           - name: aio
             dockerfile: Dockerfile.allinone
             image: ghcr.io/onixus/shapoclyack-aio
-            install_nmap: "0"
-            tag_suffix: ""
-          - name: aio-nmap
-            dockerfile: Dockerfile.allinone
-            image: ghcr.io/onixus/shapoclyack-aio
-            install_nmap: "1"
-            tag_suffix: "-nmap"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -124,8 +106,6 @@ jobs:
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ${{ matrix.image }}
-          flavor: |
-            suffix=${{ matrix.tag_suffix }},onlatest=true
           tags: |
             type=raw,value=${{ steps.release.outputs.tag }}
             type=raw,value=latest,enable=${{ steps.release.outputs.stable == 'true' }}
@@ -148,10 +128,9 @@ jobs:
           # Private GenDec release assets for Pulse binary stage.
           secrets: |
             github_token=${{ secrets.GENDEC_READ_TOKEN || secrets.GITHUB_TOKEN }}
-          # Release images intentionally override the Dockerfile default so the
-          # component matrix for this Shapoclyack release is explicit here.
+          # Release images pin component versions here so the matrix for this
+          # Shapoclyack release is explicit.
           build-args: |
-            INSTALL_NMAP=${{ matrix.install_nmap }}
             PULSE_VERSION=v1.1.0
             ENRICHMENT_STRICT=1
           cache-from: type=gha,scope=${{ matrix.name }}

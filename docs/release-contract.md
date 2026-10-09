@@ -26,11 +26,15 @@ publishes `linux/arm64` only), and pushes:
 
 | Image | Tags | Contains Pulse |
 |---|---|---|
-| `ghcr.io/onixus/shapoclyack-scanner` | `<tag>`, `<tag>-nmap` | yes |
-| `ghcr.io/onixus/shapoclyack-aio` | `<tag>`, `<tag>-nmap` | yes |
+| `ghcr.io/onixus/shapoclyack-scanner` | `<tag>` | yes |
+| `ghcr.io/onixus/shapoclyack-aio` | `<tag>` | yes |
 | `ghcr.io/onixus/shapoclyack-api` | `<tag>` | no |
 
-A stable release also moves `latest` / `latest-nmap`; a prerelease never does.
+A stable release also moves `latest`; a prerelease never does. The images
+contain no Nmap ([Using your own Nmap](nmap-external.md)). Releases up to and
+including `0.47-1009-rc1` also published `<tag>-nmap` variants and moved
+`latest-nmap`; those tags stay as published and `latest-nmap` is no longer
+updated.
 Each image index carries BuildKit build provenance (`mode=max`) and an SPDX SBOM
 as attestations. Fixes ship as a new tag
 ([SECURITY.md](../.github/SECURITY.md#security-updates)). Deploy by
@@ -48,8 +52,7 @@ as attestations. Fixes ship as a new tag
   manager keeps, not one the pipeline refuses to break: `Jenkinsfile.publish`
   does not check whether `TAG` was published before, and a second run with the
   same `TAG` overwrites its images. Before a real publish, the release manager
-  confirms every selected image tag is new — `crane digest <image>:<TAG>` (also
-  `<TAG>-nmap` for those variants) must fail with `MANIFEST_UNKNOWN`, not an
+  confirms every selected image tag is new — `crane digest <image>:<TAG>` must fail with `MANIFEST_UNKNOWN`, not an
   authentication or network error. This is why a deployment pins the digest.
 - **`latest` on an older line.** Every stable run moves `latest`, including a
   backport to an older line (below).
@@ -124,8 +127,9 @@ mixing one release's scanner with another release's Pulse.
 - **How the fix ships.** A signed GenDec release, pinned by the procedure above,
   in a new Shapoclyack release tag for every line SECURITY.md lists as receiving
   security fixes. The `CHANGELOG.md` entry goes under *Security*.
-- **Until a fix ships.** `OCTO_SERVICE_BACKEND=nmap` on a `-nmap` image takes
-  Pulse out of the scan. It is an explicit switch with a different finding set,
+- **Until a fix ships.** `OCTO_SERVICE_BACKEND=nmap` on a sensor with a
+  self-installed Nmap ([Using your own Nmap](nmap-external.md)) takes Pulse out
+  of the scan. It is an explicit switch with a different finding set,
   not an equivalent; it is also available per profile
   ([Pulse backend](pulse-backend.md#escape-hatch-full-nse)).
 
@@ -136,7 +140,7 @@ older line's last tag, and released as a new tag of that line
 (`shapoclyack-0.45-<MMDD>`). Two limits of `Jenkinsfile.publish` shape the
 procedure:
 
-- A stable run moves `latest` / `latest-nmap` to whatever it publishes, so a
+- A stable run moves `latest` to whatever it publishes, so a
   backport published last would point `latest` at the **older** line. Publish
   the older line first and the current line last. When only the backport is
   published, put `latest` back afterwards:
@@ -145,7 +149,6 @@ procedure:
   CURRENT=shapoclyack-0.46-0922   # the newest release of the current line
   for image in shapoclyack-scanner shapoclyack-aio; do
     docker buildx imagetools create -t "ghcr.io/onixus/$image:latest" "ghcr.io/onixus/$image:$CURRENT"
-    docker buildx imagetools create -t "ghcr.io/onixus/$image:latest-nmap" "ghcr.io/onixus/$image:$CURRENT-nmap"
   done
   docker buildx imagetools create -t ghcr.io/onixus/shapoclyack-api:latest "ghcr.io/onixus/shapoclyack-api:$CURRENT"
   ```
@@ -297,11 +300,11 @@ is built that way.
 
 - With the default `service_probe.backend: pulse`, a run that has TCP ports to
   probe **fails** with an error naming both fixes — install Pulse, or switch the
-  backend to `nmap` on an image that has it. It never falls back to Nmap on its
+  backend to `nmap` on a sensor that has Nmap installed. It never falls back to Nmap on its
   own and never completes as a scan with no services.
 - Running such an image means choosing the engine explicitly:
-  `OCTO_SERVICE_BACKEND=nmap` (or `service_probe.backend: nmap`) on an
-  `INSTALL_NMAP=1` build.
+  `OCTO_SERVICE_BACKEND=nmap` (or `service_probe.backend: nmap`) with a
+  self-installed Nmap ([Using your own Nmap](nmap-external.md)).
 - `GET /api/system` lists `pulse` as `not installed`; `verify-pulse-image.py`
   exits `3`.
 

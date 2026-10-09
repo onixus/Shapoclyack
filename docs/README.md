@@ -112,6 +112,7 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | [Asset identity](asset-identity.md) | When an IP observation and an FQDN observation are treated as one asset, and when they deliberately are not |
 | [Troubleshooting](troubleshooting.md) | Startup, authentication, scanner, broker, database, UI diagnostics |
 | [Pulse backend](pulse-backend.md) | Pulse service-probe backend and Nmap compatibility choices |
+| [Using your own Nmap](nmap-external.md) | Why Nmap is not bundled, how to connect your own to a host, container or Kubernetes sensor, and how to confirm the L2 and NSE stages ran |
 | [Exact Naabu → Pulse endpoints](pulse-endpoints.md) | The exact-endpoint planner and resume between port discovery and Pulse (#448) |
 | [Server installation](server-install.ru.md) 🇷🇺 | `scripts/install-server.py`: prebuilt all-in-one image and PostgreSQL via Docker Compose, no build on the server |
 

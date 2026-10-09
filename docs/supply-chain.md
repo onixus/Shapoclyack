@@ -133,7 +133,7 @@ as `pkg:docker/…?platform=linux%2Farm64`. Do not go by
 `internalParameters.builderPlatform` — that is the machine that ran BuildKit,
 and on the release Jenkins (Apple silicon, amd64 under QEMU) it reads
 `linux/arm64` for both. The predicate is BuildKit's: the Dockerfile, build
-arguments (`INSTALL_NMAP`, `PULSE_VERSION`, `ENRICHMENT_STRICT`), resolved base
+arguments (`PULSE_VERSION`, `ENRICHMENT_STRICT`), resolved base
 images and the git source.
 
 ### SBOM

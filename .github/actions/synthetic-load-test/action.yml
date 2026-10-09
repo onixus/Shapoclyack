@@ -48,8 +48,7 @@ inputs:
   build_args:
     description: Additional build-args passed to docker/build-push-action
     required: false
-    default: |
-      INSTALL_NMAP=0
+    default: ""
   metrics_path:
     description: Workspace-relative path to write metrics JSON
     required: false

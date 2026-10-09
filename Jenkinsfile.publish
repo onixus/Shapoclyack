@@ -8,9 +8,9 @@
 // действие наружу, оно должно быть осознанным. DRY_RUN по умолчанию включён,
 // то есть первый прогон ничего не публикует.
 
-// Та же матрица, что в docker-publish.yml. Nmap-варианты идут отдельными
-// тегами -nmap: лицензия NPSL делает его включение в дефолтный образ риском
-// перераспространения (issue #97).
+// Та же матрица, что в docker-publish.yml. Образы собираются без Nmap:
+// лицензия NPSL делает его включение риском перераспространения (issue #97),
+// как подключить свой — docs/nmap-external.md.
 // Релизные образы задают версию Pulse явно, а не полагаются на дефолт из
 // Dockerfile: состав компонентов релиза должен читаться здесь. Значения сейчас
 // совпадают (ARG PULSE_VERSION=v1.1.0), и именно поэтому расхождение было бы
@@ -56,11 +56,9 @@ def checkSigningKey() {
 }
 
 def MATRIX = [
-  [name: 'scanner',      dockerfile: 'Dockerfile',            image: 'ghcr.io/onixus/shapoclyack-scanner', nmap: '0', suffix: ''],
-  [name: 'scanner-nmap', dockerfile: 'Dockerfile',            image: 'ghcr.io/onixus/shapoclyack-scanner', nmap: '1', suffix: '-nmap'],
-  [name: 'api',          dockerfile: 'Dockerfile.api',        image: 'ghcr.io/onixus/shapoclyack-api',     nmap: '0', suffix: ''],
-  [name: 'aio',          dockerfile: 'Dockerfile.allinone',   image: 'ghcr.io/onixus/shapoclyack-aio',     nmap: '0', suffix: ''],
-  [name: 'aio-nmap',     dockerfile: 'Dockerfile.allinone',   image: 'ghcr.io/onixus/shapoclyack-aio',     nmap: '1', suffix: '-nmap'],
+  [name: 'scanner',      dockerfile: 'Dockerfile',            image: 'ghcr.io/onixus/shapoclyack-scanner'],
+  [name: 'api',          dockerfile: 'Dockerfile.api',        image: 'ghcr.io/onixus/shapoclyack-api'],
+  [name: 'aio',          dockerfile: 'Dockerfile.allinone',   image: 'ghcr.io/onixus/shapoclyack-aio'],
 ]
 
 pipeline {
@@ -85,7 +83,7 @@ pipeline {
     string(
       name: 'ONLY',
       defaultValue: '',
-      description: 'Собрать только эти образы, через запятую (scanner, scanner-nmap, api, aio, aio-nmap). Пусто — все пять.'
+      description: 'Собрать только эти образы, через запятую (scanner, api, aio). Пусто — все три.'
     )
   }
 
@@ -226,9 +224,9 @@ pipeline {
           """
 
           for (m in selected) {
-            def tags = ["${m.image}:${version}${m.suffix}"]
+            def tags = ["${m.image}:${version}"]
             if (env.IS_PRERELEASE != 'true') {
-              tags << "${m.image}:latest${m.suffix}"
+              tags << "${m.image}:latest"
             }
             echo "=== ${m.name}: ${tags.join(', ')}"
             // Пушится только digest, без тегов (#313). Теги появятся, когда
@@ -248,7 +246,6 @@ pipeline {
                 docker buildx build --builder ${builder} \
                   --platform ${platforms} \
                   -f ${m.dockerfile} \
-                  --build-arg INSTALL_NMAP=${m.nmap} \
                   --build-arg PULSE_VERSION=${PULSE_VERSION} \
                   --build-arg ENRICHMENT_STRICT=1 \
                   --secret id=github_token,env=GH_TOKEN \
