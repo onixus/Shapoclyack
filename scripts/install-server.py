@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import datetime as dt
 import fcntl
 import json
@@ -91,8 +92,8 @@ def manifest(image: str, url: str, port: int, password: str) -> dict:
 
 def write_private(path: Path, data: str) -> None:
     # Exclusive creation: never overwrite an existing installation's keys.
-    with path.open("x", encoding="utf-8") as stream:
-        os.chmod(path, 0o600)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
         stream.write(data)
 
 
@@ -119,11 +120,13 @@ def compose(directory: Path, *args: str, **kwargs) -> subprocess.CompletedProces
     )
 
 
-def preflight(directory: Path) -> None:
+def preflight(directory: Path, *, starting: bool = False) -> None:
     if not (directory / "compose.json").is_file():
         raise ValueError("No installation found. Run prepare or install first.")
     subprocess.run(["docker", "info"], check=True, stdout=subprocess.DEVNULL)
     compose(directory, "config", "--quiet")
+    if not starting:
+        return
     for command in ("up", "run"):
         help_text = compose(directory, command, "--help", capture_output=True, text=True).stdout
         required = "--wait" if command == "up" else "--pull"
@@ -131,13 +134,26 @@ def preflight(directory: Path) -> None:
             raise ValueError("Docker Compose v2 with up --wait and run --pull is required")
 
 
+@contextmanager
+def operation_lock(directory: Path):
+    """Serialize operations that change containers or create a backup."""
+    with (directory / ".installer.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ValueError("Another installer operation is already running") from exc
+        yield
+
+
 def backup(directory: Path) -> Path:
     backups = directory / "backups"
     backups.mkdir(exist_ok=True, mode=0o700)
     target = backups / (dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S")
                         + "-" + secrets.token_hex(3) + ".dump")
+    # Failed exclusive creation must not remove somebody else's dump.
+    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        with target.open("xb") as stream:
+        with os.fdopen(descriptor, "wb") as stream:
             compose(directory, "exec", "-T", "postgres", "pg_dump", "-U", "octo",
                     "-d", "shapoclyack", "-Fc", stdout=stream)
     except BaseException:
@@ -182,18 +198,14 @@ def main(argv: list[str] | None = None) -> int:
             prepare(directory, args)
         if args.command == "prepare":
             return 0
-        preflight(directory)
+        preflight(directory, starting=args.command in ("install", "start"))
         # Read-only inspection remains available during a slow migration/start.
         if args.command == "status":
             compose(directory, "ps")
         elif args.command == "logs":
             compose(directory, "logs", "--tail", "100", "-f")
         else:
-            with (directory / ".installer.lock").open("a") as lock:
-                try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError as exc:
-                    raise ValueError("Another installer operation is already running") from exc
+            with operation_lock(directory):
                 if args.command in ("install", "start"):
                     start(directory, args.timeout)
                 elif args.command == "backup":
