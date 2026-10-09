@@ -374,6 +374,7 @@ falls back to an existing `scanner/state/octo_man.db` when the new
 - Sensor (or Agent, Lariska): `POST /api/auth/agent/token` with provisioning key → short-lived agent JWT
 - Env: `OCTO_AGENT_PROVISIONING_KEY` (preferred) or legacy `OCTO_AGENT_TOKEN` (`tenant_id=default`)
 - Examples: `networkpolicy-agent.example.yaml` (sensor egress; replace its placeholder target ranges), `networkpolicy-api-ingress.example.yaml`, `externalsecret.example.yaml`
+- TLS revocation (#515): `agent-crl-publisher.example.yaml` and `agent-crl-ingress-controller-patch.yaml` add signed CRL refresh and TLS session settings; use a CRL-capable API image and follow [the runbook](../docs/operations.md#tls-revocation-with-a-signed-crl-515).
 - Sensor client certificates (#309): `agent-mtls-cert-manager.example.yaml` (sensor CA + ClusterIssuer), `ingress-agent-mtls.example.yaml` (ingress-nginx `auth-tls-*`), `agent-mtls-api-patch.yaml` (API side), `agent-mtls-patch.yaml` (a certificate per sensor pod via the cert-manager CSI driver) — the rollout is in [docs/operations.md](../docs/operations.md#sensor-client-certificates)
 
 ## Quick start (pull release images)

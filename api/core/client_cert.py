@@ -53,6 +53,7 @@ from typing import Any, Sequence
 from urllib.parse import quote, unquote, urlsplit
 
 from cryptography import x509
+from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.exceptions import InvalidSignature
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
@@ -116,6 +117,7 @@ class PresentedCert:
     not_after: datetime
     identities: tuple[CertIdentity, ...]
     source: str
+    certificate_pem: str = ""
 
 
 @dataclass(frozen=True)
@@ -187,6 +189,7 @@ def describe(cert: x509.Certificate, *, source: str) -> PresentedCert:
         not_after=_naive_utc(cert.not_valid_after_utc),
         identities=tuple(identities),
         source=source,
+        certificate_pem=cert.public_bytes(Encoding.PEM).decode("ascii"),
     )
 
 

@@ -38,6 +38,9 @@ NS_LABEL = "kubernetes.io/metadata.name"
 # Namespaces an example may name although no manifest here creates them: a
 # third-party controller's own. The key is the file that needs it.
 FOREIGN_NAMESPACES = {
+    ("agent-crl-ingress-controller-patch.yaml", "ingress-nginx"): (
+        "TLS session settings belong to the ingress-nginx controller's ConfigMap (#515)"
+    ),
     ("nats-443-ingress.example.yaml", "ingress-nginx"): "ingress-nginx reads its tcp-services ConfigMap there",
     ("agent-mtls-cert-manager.example.yaml", "cert-manager"): (
         "a ClusterIssuer reads its CA Secret from cert-manager's cluster resource namespace (#309)"
@@ -196,6 +199,23 @@ def _strings(node) -> list[str]:
     if isinstance(node, list):
         return [s for value in node for s in _strings(value)]
     return [node] if isinstance(node, str) else []
+
+
+def test_crl_publisher_can_patch_only_one_secret_and_disables_session_resumption() -> None:
+    path = EXAMPLES / "agent-crl-publisher.example.yaml"
+    role = _one(path, "Role")
+    assert role["rules"] == [{
+        "apiGroups": [""], "resources": ["secrets"],
+        "resourceNames": ["shapoclyack-sensor-client-crl"], "verbs": ["patch"],
+    }]
+    job = _one(path, "CronJob")
+    assert job["spec"]["concurrencyPolicy"] == "Forbid"
+    spec = _pod_template(job)["spec"]
+    assert spec["serviceAccountName"] == "agent-crl-publisher"
+    assert spec["automountServiceAccountToken"] is True
+    assert spec["containers"][0]["args"] == ["--secret", "network-scan/shapoclyack-sensor-client-crl"]
+    controller = _one(EXAMPLES / "agent-crl-ingress-controller-patch.yaml", "ConfigMap")
+    assert controller["data"] == {"ssl-session-cache": "false", "ssl-session-tickets": "false"}
 
 
 def _datastore_clients() -> list[tuple[Path, dict, str]]:

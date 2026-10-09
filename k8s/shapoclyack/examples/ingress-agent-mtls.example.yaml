@@ -35,8 +35,12 @@
 #    decision (OCTO_AGENT_MTLS_MODE), not the edge's. "optional_no_ca" is
 #    never right here — it forwards certificates nobody verified.
 #
-# The CA Secret holds ca.crt only (see agent-mtls-cert-manager.example.yaml);
-# it lives in the Ingress's namespace.
+# For TLS revocation (#515), replace auth-tls-secret below with
+# network-scan/shapoclyack-sensor-client-crl, an independently managed Secret
+# holding ca.crt AND the signed ca.crl. ingress-nginx installs ssl_crl and
+# reloads when the Secret changes. See agent-crl-publisher.example.yaml and
+# docs/operations.md. There is no auth-tls-crl annotation. Without ca.crl,
+# revocations are enforced only by the API. Both Secrets live in this namespace.
 #
 # A TLS-inspecting proxy between a sensor and this Ingress cannot forward a
 # client certificate: exempt the API's host from inspection, or put it in the

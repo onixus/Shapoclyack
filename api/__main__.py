@@ -67,7 +67,12 @@ def client_certificate_options() -> dict[str, Any]:
     client_ca = (os.environ.get("OCTO_AGENT_MTLS_CLIENT_CA") or "").strip()
     issuer = (os.environ.get("OCTO_AGENT_MTLS_ISSUER_CERT") or "").strip()
     ca = client_ca or issuer
+    crl = (os.environ.get("OCTO_AGENT_MTLS_CRL") or "").strip()
     if not ca:
+        if crl:
+            raise SystemExit(
+                "Refusing to start: OCTO_AGENT_MTLS_CRL requires a client CA"
+            )
         return {}
     for path in (client_ca, issuer):
         if path and not os.path.exists(path):
@@ -78,13 +83,19 @@ def client_certificate_options() -> dict[str, Any]:
     return {
         "ssl_cert_reqs": ssl.CERT_OPTIONAL,
         "ssl_ca_certs": ca,
-        "ssl_context_factory": functools.partial(_client_ca_context, extra_anchor=extra),
+        "ssl_context_factory": functools.partial(
+            _client_ca_context, extra_anchor=extra, crl_path=crl
+        ),
         "http": listener_protocol_class(),
     }
 
 
 def _client_ca_context(
-    config: uvicorn.Config, default_factory: Callable[[], ssl.SSLContext], *, extra_anchor: str
+    config: uvicorn.Config,
+    default_factory: Callable[[], ssl.SSLContext],
+    *,
+    extra_anchor: str,
+    crl_path: str = "",
 ) -> ssl.SSLContext:
     """uvicorn's context, with the client-certificate checks it has no option for.
 
@@ -101,7 +112,6 @@ def _client_ca_context(
     nothing. Only its first certificate is loaded — the one the API signs
     with.
     """
-    del config
     context = default_factory()
     context.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
     if extra_anchor:
@@ -110,7 +120,30 @@ def _client_ca_context(
         from api.core.client_cert import load_ca_bundle
 
         first = load_ca_bundle(extra_anchor)[0]
-        context.load_verify_locations(cadata=first.public_bytes(Encoding.PEM).decode("ascii"))
+        context.load_verify_locations(
+            cadata=first.public_bytes(Encoding.PEM).decode("ascii")
+        )
+    if crl_path:
+        from api.core.crl import validate_bundle
+        from api.core.client_cert import load_ca_bundle
+
+        try:
+            with open(crl_path, "rb") as handle:
+                data = handle.read()
+            authorities = list(load_ca_bundle(config.ssl_ca_certs))
+            if extra_anchor:
+                authorities.extend(load_ca_bundle(extra_anchor))
+            validate_bundle(data, authorities)
+            context.load_verify_locations(cafile=crl_path)
+            context.verify_flags |= ssl.VERIFY_CRL_CHECK_LEAF
+            # Resumed sessions can retain the old certificate verification
+            # result. Require a new client-certificate check after restart.
+            context.options |= ssl.OP_NO_TICKET
+            context.num_tickets = 0
+        except (OSError, ValueError) as exc:
+            raise SystemExit(
+                f"Refusing to start: unusable client CRL at {crl_path}: {exc}"
+            ) from exc
     return context
 
 

@@ -106,6 +106,7 @@ root filesystem is read-only everywhere except where noted.
 | `StatefulSet/shapoclyack-postgres` | `network-scan` | 999:999 | PGDATA (PVC); `/var/run/postgresql` (socket + lock); `/tmp` (the image's entrypoint fakes a passwd entry for uid 999 with nss_wrapper in two `mktemp` files on first init) | yes |
 | `StatefulSet/shapoclyack-nats` | `network-scan` | 1000:1000 | `/data` (JetStream store, PVC). The entrypoint only rewrites argv. | yes |
 | `StatefulSet/shapoclyack-clickhouse` | `network-scan` | 101:101 | `/var/lib/clickhouse` (PVC: data, tmp, preprocessed configs); `/tmp` (the entrypoint copies users.xml there to diff it); `/etc/clickhouse-server/users.d` (it generates `default-user.xml`). File logging is removed from the config (console only), so `/var/log/clickhouse-server` is not written. | yes |
+| `CronJob/agent-crl-publisher` (optional example, #515) | `network-scan` | 1000:1000 | `/tmp` (emptyDir); CA signer mounted read-only | yes; projected ServiceAccount token required only to patch the named CRL Secret |
 | `CronJob/shapoclyack-postgres-backup` | `network-scan` | 1000:1000 | `/backup` (emptyDir handed from `pg_dump` to the uploader); `/tmp` (the AWS CLI's `HOME`) | yes |
 | `CronJob/shapoclyack-clickhouse-backup` ([#333](https://github.com/onixus/Shapoclyack/issues/333)) | `network-scan` | 101:101 | `/tmp` (16Mi in memory: `clickhouse-client`'s `HOME`/`TMPDIR` and the script's `mktemp -d` for query output; the server itself uploads the backup, so nothing is staged here) | yes |
 | `CronJob/enrichment-refresh` (base/enrichment) | `network-scan` | 1000:1000 | `scanner/data` (PVC `enrichment-data`); `/tmp` (the geoip/asn/epss/kev fetchers download into `mktemp -d`) | yes |
@@ -139,6 +140,11 @@ and every file opened for writing or created was listed. None writes outside
 the paths above.
 
 ## Deviations from restricted
+
+The optional `agent-crl-publisher` mounts a projected ServiceAccount token to
+patch one named CRL Secret. Its Role has only that `patch` permission; no Secret
+read/list/create/delete is granted. The CA key stays in a read-only signer
+volume, and the Pod otherwise meets the restricted baseline.
 
 Every one, with the reason. Nothing else in the repository deviates, and the
 test refuses anything new that does.
