@@ -2405,6 +2405,126 @@ whose newest certificate runs out within `OCTO_AGENT_MTLS_EXPIRY_WARN_DAYS`,
 `client_certs_expired` those whose certificates all have. Each sensor's list
 (`GET /api/agents/{id}/certificates`) says which is which.
 
+#### TLS revocation with a signed CRL (#515)
+
+Use a **CRL** for offline verification by the TLS terminator. OCSP would add a
+new online responder and a fail-open/fail-closed availability decision;
+short-lived certificates alone leave the stolen certificate usable until
+expiry. API revocation and the enrolment lock remain immediate on every
+request. TLS revocation takes effect after publishing the new CRL, reloading
+the verifier, and establishing a new non-resumed connection.
+
+`main` stores the verified public leaf in `agent_client_certs.certificate_pem`
+(migration `0083`), for issued, pinned and observed certificates. It never
+stores the client's private key. A successful request also fills missing
+material on an unrevoked legacy row. The published `0.46-0922` image does not
+contain this exporter: build a current image or use the next release.
+
+The platform operator runs the exporter with database access and the issuing
+CA's certificate/key. These credentials belong to the control plane; tenant
+admins and sensors have no CRL-signing endpoint:
+
+```bash
+# OCTO_POSTGRES_URL is supplied through the platform's secret environment.
+python -m api.agent_crl --issuer-cert /pki/issuer.crt --issuer-key /pki/issuer.key \
+  --output /var/lib/shapoclyack/ca.crl
+```
+
+The CA must be currently valid and allow `cRLSign`. The signed list has an AKI,
+CRL number, and a one-hour `nextUpdate` (configurable 60–86400 seconds, capped
+at CA expiry). The exporter reads committed revocations across tenants,
+verifies each leaf's signature against this exact CA, deduplicates serials,
+and omits expired leaves. It covers operator revocation, reset-enrolment and
+superseded renewals. An old certificate from another CA is counted as
+`other-issuer`; export a separate list with that CA's key while it remains
+trusted. cert-manager does not generate this list for the application: for an
+external CA, run with its authorized signing key or obtain its CRL from the PKI.
+
+A TLS verifier cannot distinguish tenants. An arbitrary fingerprint tombstone,
+or a public certificate pinned without an owned SPIFFE identity, therefore
+stays **API-only** rather than becoming a tenant admin's installation-wide
+ban. Review the exporter's `API-only` count. To approve such a certificate
+explicitly, the platform operator passes `--certificate /pki/leaf.crt`;
+the PEM must match the revoked fingerprint. That option also supplies missing
+material for an unexpired revoked legacy row. Without it, unresolved legacy
+material fails the export; a serial/source is never used to guess the CA.
+Keep the approved historical PEMs available for every subsequent publication.
+Issuing the same unbound certificate to multiple tenants means an approved
+TLS revocation affects all its holders: use distinct certificates per identity.
+
+**Ingress-nginx:** create an independently managed Secret containing `ca.crt`
+and `ca.crl`, and point `nginx.ingress.kubernetes.io/auth-tls-secret` at it.
+The controller installs `ssl_crl` and reloads on Secret changes; there is no
+`auth-tls-crl` annotation. Keep this Secret separate from cert-manager's CA
+Secret so reconciliation cannot remove the CRL. The CA private key is never
+part of it. See the [upstream client-certificate example](https://kubernetes.github.io/ingress-nginx/examples/auth/client-certs/).
+
+```bash
+kubectl -n network-scan create secret generic shapoclyack-sensor-client-crl \
+  --from-file=ca.crt=/pki/client-ca.crt --from-file=ca.crl=/var/lib/shapoclyack/ca.crl
+# Set auth-tls-secret to network-scan/shapoclyack-sensor-client-crl.
+```
+
+Merge [agent-crl-ingress-controller-patch.yaml](../k8s/shapoclyack/examples/agent-crl-ingress-controller-patch.yaml)
+into every controller serving this host: disable **both** TLS session caches
+and session tickets. A resumed session can reuse its previous verification
+result. During an incident, drain existing connections/old workers too;
+CRLs cannot revoke an already-established TLS connection. The API's immediate
+check protects those requests while the edge updates.
+
+Publish every five minutes and immediately after an incident. The optional
+[agent-crl-publisher.example.yaml](../k8s/shapoclyack/examples/agent-crl-publisher.example.yaml)
+uses the API image, an isolated ServiceAccount that can only patch one named
+Secret, a mounted CA signer, and the database secret. Replace its baseline
+image with a verified CRL-capable digest before applying. It patches only
+`ca.crl`, preserving `ca.crt` and metadata. Apply appropriate egress policy for
+PostgreSQL, DNS and the Kubernetes API; its credentials/key require the same
+protection as API issuance. `concurrencyPolicy: Forbid` prevents overlapping
+scheduled snapshots; do not run competing publishers for the same Secret.
+
+For a root → intermediate → leaf chain, ingress-nginx checks CRLs throughout
+the chain: add the root CA's valid CRL as well, including an empty signed one
+when it has no revocations. Use `--append-crl /pki/root.crl --client-ca
+/pki/root-and-issuers.crt`; repeat for other trusted issuers. Appended CRLs are
+checked for freshness and signature against the configured CA bundle before
+publication. The one-CA CronJob example assumes a dedicated self-signed issuer;
+it does not manage external/root CRL renewal for you.
+
+**The API's own TLS listener:** set `OCTO_AGENT_MTLS_CRL=/pki/ca.crl` with its
+client CA. Startup verifies the bundle's signatures and validity, then enables
+OpenSSL leaf CRL checks and disables session tickets. Files are loaded at
+startup, so atomically replace the file and restart/roll the TLS listeners
+after each publication; drain old connections during an incident. There is no
+implicit live reload. Without this variable the listener retains API-only
+revocation. An expired CRL fails certificate verification; a failed export or
+Secret patch leaves the previous list in place. Alert on publisher failures,
+API-only/other-issuer counts and `nextUpdate` well before expiry: a stale list
+can cause a certificate-authentication outage. Never remove CRL checking as an
+automatic recovery. Console/first-enrolment connections without a client
+certificate remain usable under the optional TLS handshake policy.
+
+After restoring an older PostgreSQL backup, restore/reapply revocations before
+publishing a new CRL or reopening access. Publishing from the rolled-back
+database can otherwise re-enable a certificate already revoked at the edge.
+After downgrading below `0083`, public material is lost; collect legacy PEMs
+again before re-enabling the exporter. Existing API revocation rows/locks are
+preserved by the migration and its rollback.
+
+The repeatable acceptance test uses a disposable kind cluster with
+controller-v1.14.3, `error-log-level: info` and the session settings above.
+Port-forward its ingress service, then run:
+
+```bash
+OCTO_CRL_TEST_KUBECONFIG=/tmp/crl-test-kubeconfig \
+OCTO_CRL_TEST_INGRESS_PORT=55443 python -m pytest tests/test_agent_crl_ingress_live.py -q -s
+```
+
+It creates/deletes a random namespace, proves the old certificate worked with
+an empty CRL, updates the Secret with the exported revocation, and checks TLS
+1.2/1.3: revoked `400` with no backend call, healthy `200`, and console without
+a certificate `200`. `tests/test_agent_crl.py` also exercises direct-listener
+TLS rejection before ASGI and issuer/tenant/legacy/failure boundaries.
+
 **Lariska does not support client certificates yet.** Until it does,
 `required` — an installation-wide mode — refuses every Agent: stay at
 `optional` while Agents are deployed, or pin certificates an MDM puts on the

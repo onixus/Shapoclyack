@@ -92,3 +92,64 @@ def test_success_requires_readiness_and_never_builds(tmp_path, monkeypatch):
     assert calls[-2] == ("run", "--rm", "--no-deps", "--pull", "never", "api",
                          "python", "-m", "api.db.migrate")
     assert all("build" not in args for args in calls)
+
+
+def test_inspection_does_not_require_start_flags(tmp_path, monkeypatch):
+    (tmp_path / 'compose.json').write_text('{}')
+    calls = []
+    monkeypatch.setattr(installer.subprocess, 'run', lambda *a, **k: None)
+    monkeypatch.setattr(installer, 'compose', lambda directory, *args, **kwargs: calls.append(args))
+    installer.preflight(tmp_path)
+    assert calls == [('config', '--quiet')]
+
+
+def test_start_requires_compose_wait_support(tmp_path, monkeypatch):
+    (tmp_path / 'compose.json').write_text('{}')
+    monkeypatch.setattr(installer.subprocess, 'run', lambda *a, **k: None)
+    monkeypatch.setattr(installer, 'compose', lambda *a, **k: subprocess.CompletedProcess([], 0, stdout=''))
+    with pytest.raises(ValueError, match='Compose v2'):
+        installer.preflight(tmp_path, starting=True)
+
+
+def test_operation_lock_rejects_concurrent_mutations_and_releases(tmp_path):
+    with installer.operation_lock(tmp_path):
+        with pytest.raises(ValueError, match='already running'):
+            with installer.operation_lock(tmp_path):
+                pytest.fail('Concurrent operation acquired the lock')
+    with installer.operation_lock(tmp_path):
+        pass
+
+
+def test_private_files_and_backup_ignore_permissive_umask(tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.setattr(installer, 'compose', lambda *a, **k: k['stdout'].write(b'dump'))
+    previous = os.umask(0)
+    try:
+        secret = tmp_path / 'secret.json'
+        installer.write_private(secret, 'secret')
+        backup = installer.backup(tmp_path)
+    finally:
+        os.umask(previous)
+    assert secret.stat().st_mode & 0o777 == 0o600
+    assert backup.stat().st_mode & 0o777 == 0o600
+    with pytest.raises(FileExistsError):
+        installer.write_private(secret, 'replacement')
+    assert secret.read_text() == 'secret'
+
+
+def test_backup_collision_preserves_existing_dump(tmp_path, monkeypatch):
+    timestamp = installer.dt.datetime.now(installer.dt.timezone.utc)
+
+    class FixedClock:
+        @staticmethod
+        def now(timezone):
+            return timestamp
+
+    monkeypatch.setattr(installer.dt, 'datetime', FixedClock)
+    monkeypatch.setattr(installer.secrets, 'token_hex', lambda size: 'collision')
+    monkeypatch.setattr(installer, 'compose', lambda *a, **k: k['stdout'].write(b'original'))
+    original = installer.backup(tmp_path)
+    with pytest.raises(FileExistsError):
+        installer.backup(tmp_path)
+    assert original.read_bytes() == b'original'

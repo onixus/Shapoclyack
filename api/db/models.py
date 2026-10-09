@@ -10,6 +10,7 @@ from sqlalchemy import (
     CheckConstraint,
     ForeignKey,
     LargeBinary,
+    Text,
     ForeignKeyConstraint,
     Index,
     UniqueConstraint,
@@ -1984,6 +1985,9 @@ class AgentClientCert(Base):
     agent_id: Mapped[str]
     fingerprint_sha256: Mapped[str]
     serial_hex: Mapped[str] = mapped_column(default="")
+    # The verified leaf, never its private key. A serial alone cannot identify
+    # its issuing CA when signing a TLS revocation list (#515).
+    certificate_pem: Mapped[str] = mapped_column(Text, default="")
     subject: Mapped[str] = mapped_column(default="")
     # csr | pinned | observed | tombstone
     source: Mapped[str]

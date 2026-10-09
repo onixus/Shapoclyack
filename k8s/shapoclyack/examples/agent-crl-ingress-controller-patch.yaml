@@ -1,0 +1,15 @@
+# Merge these keys into your ingress-nginx controller ConfigMap (#515).
+# It is normally outside network-scan and is not part of the API overlay.
+# Use the actual name/namespace of YOUR controller. TLS session resumption
+# can reuse the old verification result after a CRL update; disable both
+# mechanisms on every controller serving the sensor host. Existing TLS
+# connections still need draining during an incident; the API's immediate
+# revocation check remains active in the meantime.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingress-nginx-controller
+  namespace: ingress-nginx
+data:
+  ssl-session-cache: "false"
+  ssl-session-tickets: "false"

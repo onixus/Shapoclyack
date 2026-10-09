@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Shapoclyack Remote Agent Universal Installer
+# Shapoclyack Remote Sensor Universal Installer
 # Compatible with Ubuntu/Debian, RHEL/Rocky/Alma/Fedora, Alpine, Arch Linux.
 # ==============================================================================
 
@@ -42,8 +42,8 @@ usage() {
 Usage: $0 --server <URL> (--key <PROVISIONING_KEY> | --key-stdin | --keep-key) [OPTIONS]
 
 Required:
-  -s, --server <URL>            Shapoclyack server base URL (e.g. http://192.168.1.100:8000)
-  -k, --key <KEY>               Agent Provisioning Key (octo-pk-...)
+  -s, --server <URL>            Shapoclyack server base URL (e.g. https://scan.example.test)
+  -k, --key <KEY>               Sensor Provisioning Key (octo-pk-...)
       --key-stdin               Read the provisioning key from stdin instead.
                                 Prefer this: an argument is visible to every
                                 local user in this host's process list.
@@ -61,7 +61,7 @@ Options:
                                 install for the same tenant, otherwise
                                 agent-<short hostname>-<random>)
   -d, --install-dir <PATH>      Installation root directory (default: /opt/shapoclyack-agent)
-      --docker                  Deploy agent as a Docker container
+      --docker                  Deploy sensor as a Docker container
       --nats-url <URL>          Optional NATS JetStream server URL
       --bundle-url <URL>        Where to fetch the agent package tarball from.
                                 Required for native installs unless the package
@@ -77,6 +77,13 @@ EOF
 }
 
 while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -s|--server|-k|--key|-t|--tenant|-a|--agent-id|-d|--install-dir|--nats-url|--bundle-url)
+            if [[ $# -lt 2 || -z "$2" || "$2" == -* ]]; then
+                error "Missing value for $1; use --help for usage."
+            fi
+            ;;
+    esac
     case "$1" in
         -s|--server)
             SERVER_URL="$2"

@@ -33,6 +33,7 @@ The bare word "agent" always means the Lariska endpoint Agent; anything that cla
 | Integrate with the API and understand tenant/RBAC rules | [API and RBAC](api-and-rbac.md) |
 | Hand the firewall team what sensors and the API open | [Network requirements](network-requirements.md) |
 | Develop or review changes | [Development](development.md) |
+| Maintain README, wiki, roadmap and installer guidance | [Documentation maintenance](documentation-maintenance.md) |
 | Plan product certification under FSTEC requirements | [FSTEC certification roadmap](fstec-certification.ru.md) 🇷🇺 |
 | Install on a single Linux server from prebuilt images | [Server installation](server-install.ru.md) 🇷🇺 |
 
@@ -72,7 +73,7 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 
 | Guide | Scope |
 |---|---|
-| [Wiki Portal](wiki/README.md) | Central portal: concept, data model, NIST SP 800-30, mechanical verification, index |
+| [Wiki Portal](wiki/README.md) | Central portal: role guide index, architecture contracts and links to delivery status |
 | [Security Engineer Scenarios](wiki/scenarios-security-engineer.md) | Day-to-day operations: scanning, triage, remediation kanban, mechanical re-verification, patch gaps, noise reduction |
 | [Architect Scenarios](wiki/scenarios-architect.md) | Architecture: EASM, CMDB/AD export import, sensors in DMZ/VPC, CI/CD DevSecOps, compliance controls |
 | [CISO Scenarios](wiki/scenarios-ciso.md) | Executive view: Risk Overview (NIST SP 800-30), CISA KEV threats, SLA & adoption metrics, board reporting |
@@ -196,11 +197,11 @@ Documentation is part of the feature definition. A behavior change is incomplete
 
 ## Version scope
 
-This audit was checked against `main` at `706ead80` on **2026-10-08**.
-The latest published release at that time was `shapoclyack-0.46-0922`
-(2026-09-22). These guides describe the checked source tree; downloading that
-release does not install every feature documented on `main`. Use the tagged
-documentation and [CHANGELOG.md](../CHANGELOG.md) for the release contract.
+This documentation index was reconciled with source baseline `main @ 577bd547` plus the CRL change (#534)
+on **2026-10-09**. The documented published baseline is
+`shapoclyack-0.46-0922` (2026-09-22). Downloading that release does not install
+every feature described on `main`. Use the tagged documentation and
+[CHANGELOG.md](../CHANGELOG.md) for its release contract.
 
 Recent additions on `main`, still under `Unreleased`:
 
@@ -222,8 +223,9 @@ are prohibited, including releases stored by older API versions (#513).
 Caller-owned bulk idempotency is contracted by migration `0082` (#517), and
 maintenance windows are rechecked when queued work starts (#516).
 Signed native **sensor** bundles use a separate update path. Lariska client
-certificates (#514) and TLS-terminator CRLs (#515, PR #534) remain outside
-this checked `main`. See [the remaining roadmap](../ROADMAP.md).
+certificates remain tracked by #514. Issuer-scoped TLS-terminator CRLs (#515)
+are included; deployments must configure publication, refresh and session
+handling as described in [Operations](operations.md#tls-revocation-with-a-signed-crl-515). See [the remaining roadmap](../ROADMAP.md).
 
 A source-tree review establishes documented behavior, not a successful
 deployment or CI run. Check the exact revision and completed validation for

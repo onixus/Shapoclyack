@@ -350,6 +350,7 @@ def bind(
                         agent_id=agent_id,
                         fingerprint_sha256=cert.fingerprint_sha256,
                         serial_hex=cert.serial_hex,
+                        certificate_pem=cert.certificate_pem,
                         subject=cert.subject,
                         source=SOURCE_OBSERVED,
                         not_before=cert.not_before,
@@ -359,6 +360,8 @@ def bind(
                     ),
                     key=cert.fingerprint_sha256,
                 )
+            if row is not None and not row.certificate_pem:
+                row.certificate_pem = cert.certificate_pem
             return cert
         if row is None:
             raise ClientCertRefused(
@@ -372,6 +375,8 @@ def bind(
                 REASON_MISMATCH,
                 "The client certificate is pinned to a different agent than the token's",
             )
+        if not row.certificate_pem:
+            row.certificate_pem = cert.certificate_pem
         return cert
 
 
@@ -618,6 +623,7 @@ def issue(
                 agent_id=agent_id,
                 fingerprint_sha256=described.fingerprint_sha256,
                 serial_hex=described.serial_hex,
+                certificate_pem=described.certificate_pem,
                 subject=described.subject,
                 source=SOURCE_CSR,
                 not_before=described.not_before,
@@ -761,6 +767,7 @@ def pin(
             agent_id=agent_id,
             fingerprint_sha256=described.fingerprint_sha256,
             serial_hex=described.serial_hex,
+            certificate_pem=described.certificate_pem,
             subject=described.subject,
             source=SOURCE_PINNED,
             not_before=described.not_before,
