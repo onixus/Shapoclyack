@@ -127,7 +127,6 @@ _NOT_AFTER_RE = re.compile(r"^Not valid after:\s*(.+?)\s*$", re.MULTILINE)
 _VERSION_HEADER_RE = re.compile(r"^\s*(TLSv1\.[0-3]|SSLv[23])\s*:\s*$")
 _CIPHERS_HEADER_RE = re.compile(r"^\s*ciphers:\s*$")
 _CIPHER_LINE_RE = re.compile(r"^\s+(TLS_\S+|SSL_\S+)\s*(?:\([^)]*\))?\s*-\s*([A-F])\s*$")
-_LEAST_STRENGTH_RE = re.compile(r"^\s*least strength:\s*([A-F])\s*$")
 
 # nmap's own commonName=... extraction from subject/issuer distinguished names.
 _COMMON_NAME_RE = re.compile(r"commonName=([^/]+)")
@@ -223,18 +222,21 @@ def _parse_ssl_enum_ciphers_output(output: str) -> list[dict[str, Any]]:
             collecting_ciphers = True
             continue
 
-        least_match = _LEAST_STRENGTH_RE.match(raw_line)
-        if least_match:
-            current["least_strength"] = least_match.group(1)
-            collecting_ciphers = False
-            continue
-
         if collecting_ciphers:
             cipher_match = _CIPHER_LINE_RE.match(raw_line)
             if cipher_match:
                 current["ciphers"].append({"name": cipher_match.group(1), "grade": cipher_match.group(2)})
-            # Unmatched lines while collecting (compressors, warnings, etc.)
-            # are skipped silently -- fail-soft by construction.
+            # Unmatched lines while collecting (compressors, warnings, the
+            # script-level "least strength:" line) are skipped silently --
+            # fail-soft by construction.
+
+    # Nmap prints ONE "least strength:" for the whole script, after the last
+    # version, so it cannot be attributed to a version (it used to be hung on the
+    # last one). It is the worst grade over all versions, which is derivable;
+    # each version's own grade is the worst of its ciphers.
+    for version in versions:
+        grades = [c["grade"] for c in version["ciphers"]]
+        version["least_strength"] = max(grades) if grades else None
 
     return versions
 

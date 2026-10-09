@@ -18,9 +18,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT))  # `scanner` package; `pulse_corpus` is next to this file
 
-from scanner.pipeline.pulse_corpus import compare_corpus, format_table  # noqa: E402
+from pulse_corpus import compare_corpus, format_table  # noqa: E402
 
 DEFAULT_CORPUS = ROOT / "tests" / "fixtures" / "nmap_pulse_corpus"
 

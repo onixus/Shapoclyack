@@ -11,12 +11,17 @@ inputs changed, then update the numbers in the same commit as
 from __future__ import annotations
 
 import json
+import re
 import shutil
+import sys
 from pathlib import Path
+from xml.sax.saxutils import quoteattr
 
 import pytest
+import yaml
 
-from scanner.pipeline.pulse_corpus import SCHEMA, compare_corpus, format_table
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from pulse_corpus import SCHEMA, compare_corpus, format_table  # noqa: E402
 
 CORPUS = Path(__file__).parent / "fixtures" / "nmap_pulse_corpus"
 
@@ -51,7 +56,6 @@ EXPECTED_SUMMARY = {
         "cve_only_pulse": 0,
     },
     "os": {"hosts_nmap": 14, "hosts_pulse": 14, "hosts_with_both": 14, "family_agree": 14, "family_disagree": 0},
-    "shadow_endpoints_jaccard": 1.0,
 }
 
 
@@ -81,11 +85,30 @@ def test_report_names_every_endpoint_and_renders():
 
 
 def test_stand_is_pinned_and_stubs_are_declared():
-    meta =json.loads((CORPUS / "stand-meta.json").read_text(encoding="utf-8"))
-    for name, svc in meta["services"].items():
-        ref = svc["build_base"] or svc["image"]
-        if not ref.startswith("shapo-corpus/"):
-            assert "@sha256:" in ref, f"{name} is not pinned by digest: {ref}"
+    meta = json.loads((CORPUS / "stand-meta.json").read_text(encoding="utf-8"))
+    compose = yaml.safe_load((CORPUS / "stand" / "docker-compose.yml").read_text(encoding="utf-8"))
+
+    def pins(services: dict) -> dict:
+        out = {}
+        for name, svc in services.items():
+            build = svc.get("build") or {}
+            base = (build.get("args") or {}).get("BASE")
+            out[name] = (svc.get("image"), base)
+        return out
+
+    # What compose says, with the registry placeholder resolved the way
+    # record.sh normalises the meta.
+    from_compose = {
+        name: tuple(ref.replace("${MIRROR:-docker.io/library}", "docker.io/library") if ref else ref for ref in pair)
+        for name, pair in pins(compose["services"]).items()
+    }
+    from_meta = {n: (s["image"], s["build_base"]) for n, s in meta["services"].items()}
+    assert from_meta == from_compose, "stand-meta.json and docker-compose.yml disagree: re-run record.sh"
+
+    for name, (image, base) in from_compose.items():
+        for ref in (image, base):
+            if ref and not ref.startswith("shapo-corpus/"):
+                assert re.search(r"@sha256:[0-9a-f]{64}$", ref), f"{name} is not pinned by digest: {ref}"
     assert meta["stub_services"] == ["iis-stub (172.29.41.23)", "rdp-stub (172.29.41.24)"]
 
 
@@ -126,3 +149,101 @@ def test_empty_corpus_does_not_pass(tmp_path: Path):
     summary = compare_corpus(tmp_path)["summary"]
     assert summary["endpoints"]["nmap"] == 0
     assert summary != EXPECTED_SUMMARY
+
+
+# --- synthetic mini corpora: each branch must give a match AND a mismatch ----
+
+CERT = "Subject: commonName={cn}\nIssuer: commonName={cn}\n"
+ENUM = "\n  {v}: \n    ciphers: \n      TLS_RSA_WITH_AES_128_CBC_SHA (rsa 2048) - A\n  least strength: A"
+
+
+def _nmap_host(addr: str, port: int, *, product: str, version: str, tls: tuple[str, ...] = (), cn: str = "") -> str:
+    scripts = ""
+    if tls:
+        enum = "".join(ENUM.format(v=v) for v in tls).strip()
+        scripts = (
+            f'<script id="ssl-enum-ciphers" output={quoteattr(enum)}/>'
+            f'<script id="ssl-cert" output={quoteattr(CERT.format(cn=cn))}/>'
+        )
+    return (
+        f'<host><address addr="{addr}" addrtype="ipv4"/><ports><port protocol="tcp" portid="{port}">'
+        f'<state state="open"/><service name="ssh" product="{product}" version="{version}"/>{scripts}'
+        "</port></ports></host>"
+    )
+
+
+def _mini(tmp_path: Path, nmap_hosts: list[str], pulse: dict) -> Path:
+    (tmp_path / "nmap").mkdir()
+    (tmp_path / "pulse").mkdir()
+    (tmp_path / "nmap" / "tcp.xml").write_text(f"<nmaprun>{''.join(nmap_hosts)}</nmaprun>", encoding="utf-8")
+    (tmp_path / "pulse" / "tcp.json").write_text(json.dumps(pulse), encoding="utf-8")
+    return tmp_path
+
+
+def _open(ip: str, port: int, product: str, version: str, cpe: list[str] | None = None) -> dict:
+    return {
+        "ip": ip,
+        "port": port,
+        "protocol": "tcp",
+        "service": "ssh",
+        "product": product,
+        "version": version,
+        "cpe": cpe or [],
+    }
+
+
+def test_product_case_cpe_and_version_branches(tmp_path: Path):
+    nmap = [
+        _nmap_host("10.9.0.1", 22, product="OpenSSH", version="8.2p1 Ubuntu 4"),
+        _nmap_host("10.9.0.2", 22, product="OpenSSH", version="9.2"),
+    ]
+    pulse = {
+        "open": [
+            # lower-case product, distribution revision dropped, CPE filled in
+            _open("10.9.0.1", 22, "openssh", "8.2p1", ["cpe:/a:openbsd:openssh:8.2p1"]),
+            # different product, different version, no CPE
+            _open("10.9.0.2", 22, "Dropbear", "2022.83"),
+        ]
+    }
+    s = compare_corpus(_mini(tmp_path, nmap, pulse))["summary"]
+    assert s["product"] == {"nmap_has_product": 2, "match": 1, "mismatch": 1, "missing_in_pulse": 0}
+    assert s["version"]["base_only"] == 1
+    assert s["version"]["mismatch"] == 1
+    assert s["cpe"]["endpoints_pulse"] == 1
+
+
+def test_tls_weak_verdict_and_certificate_branches(tmp_path: Path):
+    nmap = [
+        # legacy server: Nmap enumerates TLSv1.0 and TLSv1.2
+        _nmap_host("10.9.0.1", 443, product="nginx", version="1", tls=("TLSv1.0", "TLSv1.2"), cn="a.test"),
+        # modern server: TLSv1.2 only
+        _nmap_host("10.9.0.2", 443, product="nginx", version="1", tls=("TLSv1.2",), cn="b.test"),
+    ]
+    pulse = {
+        "open": [_open("10.9.0.1", 443, "nginx", "1"), _open("10.9.0.2", 443, "nginx", "1")],
+        "tls": [
+            # agrees: weak protocol seen, same certificate name
+            {
+                "ip": "10.9.0.1",
+                "port": 443,
+                "negotiated_protocol": "TLSv1_2",
+                "accepts_weak_protocols": ["TLSv1.0"],
+                "subject_cn": "a.test",
+            },
+            # disagrees: Pulse says a weak protocol is accepted, Nmap does not; other certificate name
+            {
+                "ip": "10.9.0.2",
+                "port": 443,
+                "negotiated_protocol": "TLSv1_2",
+                "accepts_weak_protocols": ["TLSv1.1"],
+                "subject_cn": "other.test",
+            },
+        ],
+    }
+    tls = compare_corpus(_mini(tmp_path, nmap, pulse))["summary"]["tls"]
+    assert tls["both"] == 2
+    assert tls["weak_protocol_verdict_agrees"] == 1
+    assert tls["protocol_sets_equal"] == 1
+    assert tls["cert_cn_match"] == 1
+    assert tls["nmap_weak_protocol_endpoints"] == 1
+    assert tls["pulse_weak_protocol_endpoints"] == 2

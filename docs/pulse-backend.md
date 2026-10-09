@@ -589,7 +589,7 @@ what Pulse is measured against has to be recorded while Nmap still runs.
 | Recorder | `tests/fixtures/nmap_pulse_corpus/record.sh` |
 | Nmap XML | `tests/fixtures/nmap_pulse_corpus/nmap/{tcp,udp}.xml` |
 | Pulse JSON (banners, TLS rows and findings included) | `tests/fixtures/nmap_pulse_corpus/pulse/{tcp,udp,tcp-scripts}.json` |
-| Comparison | `scanner/pipeline/pulse_corpus.py`, CLI `scripts/compare-nmap-pulse-corpus.py [--json]` |
+| Comparison | `scripts/pulse_corpus.py`, CLI `scripts/compare-nmap-pulse-corpus.py [--json]` |
 | Pinned numbers | `tests/test_nmap_pulse_corpus.py` |
 
 **Stand.** One bridge, `172.29.41.0/24`, fixed addresses, nothing published to
@@ -621,11 +621,11 @@ change; the same numbers are pinned in the test):
 
 | Dimension | Nmap | Pulse 1.3.0 | Gap |
 |---|---|---|---|
-| Open endpoints (TCP + UDP) | 19 | 19 | none; Jaccard 1.0 |
+| Open endpoints (TCP + UDP) | 19 | 19 | none (19 of 19 shared) |
 | Service name | 19 | 18 agree | 1: port 445, Nmap `netbios-ssn`, Pulse `smb` |
 | Product (of 18 Nmap names) | 18 | 14 agree | 3 missing (Samba x2, PostgreSQL), 1 differs (SNMP) |
 | Version | 17 given | 11 exact, 3 upstream-only | 3 missing; the 3 upstream-only lack the distribution revision (`8.2p1 Ubuntu 4ubuntu0.13` against `8.2p1`) |
-| CPE | 17 endpoints | 0 | the field does not exist in Pulse output |
+| CPE | 17 endpoints | 0 | Pulse's `open[]` rows carry a `cpe` field, but it is `[]` on every row (70 of 70 in the fixture); nothing fills it |
 | OS family (14 hosts) | 14 | 14 agree (Linux) | family only; Nmap `Linux 4.15 - 5.6`, Pulse `Linux (modern, TS+SACK+WS)`, real kernel 6.12 |
 | TLS endpoints | 4 | 3 | MySQL (3306, in-protocol TLS) missing |
 | TLS protocol sets (3 shared) | enumerated | 2 equal | nginx 1.27: Nmap `TLSv1.2, TLSv1.3`, Pulse only the negotiated `TLSv1.3` |
@@ -655,6 +655,21 @@ an unreachable Docker Hub). It needs Docker with NET_RAW and takes a few
 minutes; the stand is removed when the script ends. Re-record only when the
 stand or a tool version changes, then update `EXPECTED_SUMMARY` in the test and
 the table above in the same commit; do not edit fixtures by hand.
+
+Limits of the numbers:
+
+- Counters are per **endpoint** (`host:port/proto`), not per distinct service:
+  nginx on 80 and 443 and Samba on 139 and 445 count twice, so "11 exact
+  versions" is about six distinct product/version pairs.
+- A re-recording will not reproduce them exactly. Base images are pinned, but
+  the packages installed on them (`nmap`, `openssh-server`, `samba`, `snmpd`,
+  `vsftpd`) are not, so versions move with the distribution's repositories. The
+  425 Nmap-only CVE ids come from `vulners`, which queried an external database
+  during the recording (product versions leave the stand for it): a snapshot of
+  that database on 2026-10-09, not a property of the stand.
+- OS fingerprints were taken on an arm64 Docker VM (kernel 6.12 `linuxkit`).
+  On amd64 the TCP/IP stack signatures, and so the `-O` and SinFP answers,
+  change; expect to re-pin every OS and timing-dependent number.
 
 Fixture size is 620 KB, 438 KB of it the Nmap XML (the `vuln` scripts and
 `vulners` output). It is stored as recorded so that `_parse_nmap_xml` reads it

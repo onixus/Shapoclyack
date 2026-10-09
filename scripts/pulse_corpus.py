@@ -12,6 +12,18 @@ itself uses), Pulse JSON through ``pulse_probe.parse_pulse_json``, and the
 endpoint/OS comparison is ``pulse_shadow.compare_pulse_nmap`` run on artifacts
 written the way the pipeline writes them.
 
+Lives in ``scripts/`` (imported by the CLI next to it and by the test with
+``scripts/`` on ``sys.path``, as ``enrichment_bundle`` is), not in
+``scanner/pipeline``, because the scanner package is copied into the production
+images and nothing there calls this. It therefore reaches into private names;
+a rename in these modules breaks this file, and ``tests/test_nmap_pulse_corpus.py``
+is what notices:
+
+- ``report``: ``_parse_nmap_xml``, ``_build_vulnerabilities``
+- ``tls_posture``: ``_WEAK_PROTOCOLS``, ``_iter_ssl_scripts``,
+  ``_normalize_proto_label``, ``_parse_ssl_cert_output``,
+  ``_parse_ssl_enum_ciphers_output``
+
 The numbers are a measurement of the gap, not a quality bar: Nmap is the
 reference only because it is what exists. Where the stand's ground truth differs
 from Nmap's answer (e.g. Samba reported as 4.6.2) the report still scores
@@ -26,10 +38,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from .pulse_probe import extract_pulse_tls, parse_pulse_json, write_pulse_artifacts
-from .pulse_shadow import compare_pulse_nmap
-from .report import _build_vulnerabilities, _parse_nmap_xml
-from .tls_posture import (
+from scanner.pipeline.pulse_probe import extract_pulse_tls, parse_pulse_json, write_pulse_artifacts
+from scanner.pipeline.pulse_shadow import compare_pulse_nmap
+from scanner.pipeline.report import _build_vulnerabilities, _parse_nmap_xml
+from scanner.pipeline.tls_posture import (
     _WEAK_PROTOCOLS,
     _iter_ssl_scripts,
     _normalize_proto_label,
@@ -303,7 +315,6 @@ def compare_corpus(corpus_dir: Path) -> dict[str, Any]:
             "family_agree": shadow["os"]["family_agree"],
             "family_disagree": shadow["os"]["family_disagree_count"],
         },
-        "shadow_endpoints_jaccard": shadow["endpoints"]["jaccard"],
     }
     return {"schema": SCHEMA, "summary": summary, "endpoints": rows, "tls": tls_rows}
 
