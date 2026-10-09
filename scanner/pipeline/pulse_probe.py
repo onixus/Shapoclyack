@@ -287,7 +287,6 @@ def build_pulse_command(
     timeout_ms: int,
     banner: bool,
     os_detect: bool,
-    os_mode: str = OS_MODE,
     cve: bool,
     cve_online: bool,
     syn: bool,
@@ -295,8 +294,6 @@ def build_pulse_command(
     max_hosts: int,
     services_db: str | None = None,
 ) -> list[str]:
-    if os_mode != OS_MODE:
-        raise ValueError(f"os_mode {os_mode!r} is not supported; use {OS_MODE!r}")
     cmd = [
         bin_path,
         "--targets-file",
@@ -327,7 +324,7 @@ def build_pulse_command(
     if banner:
         cmd.append("-b")
     if os_detect:
-        cmd += ["--os", "--os-mode", os_mode]
+        cmd += ["--os", "--os-mode", OS_MODE]
     if cve:
         cmd.append("--cve")
     if cve_online:
@@ -700,7 +697,6 @@ def run_pulse_probe(
     timeout_ms: int = 800,
     banner: bool = True,
     os_detect: bool = True,
-    os_mode: str = OS_MODE,
     cve: bool = True,
     cve_online: bool = False,
     syn: bool = False,
@@ -756,7 +752,11 @@ def run_pulse_probe(
     size = max(1, chunk_hosts)
     chunks = plan_tcp_probe(grouped, chunk_hosts=size, done_hosts=done)
     planned_endpoints = sum(chunk.endpoint_count for chunk in chunks)
+    # Resolved once per run, and recorded: a sensor that lost the table names
+    # services from Pulse's embedded one, and that must be traceable.
+    services_db = resolve_services_db()
     diagnostics = {
+        "services_db": services_db,
         "input_unique_tcp_endpoints": sum(len(ports) for ports in grouped.values()),
         "pending_unique_tcp_endpoints": sum(len(ports) for host, ports in grouped.items() if host not in done),
         "planned_tcp_combinations": planned_endpoints,
@@ -864,7 +864,7 @@ def run_pulse_probe(
                 timeout_ms=timeout_ms,
                 banner=banner,
                 os_detect=with_os,
-                os_mode=os_mode,
+                services_db=services_db,
                 cve=cve,
                 cve_online=cve_online,
                 syn=syn,

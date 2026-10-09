@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -57,12 +58,6 @@ def test_command_forces_sinfp_with_os():
     assert "--os-mode" not in _command(os_detect=False)
 
 
-@pytest.mark.parametrize("mode", ["nmap", "auto"])
-def test_command_refuses_nmap_os_engines(mode):
-    with pytest.raises(ValueError, match="sinfp"):
-        _command(os_mode=mode)
-
-
 def test_missing_table_degrades_to_empty_file_not_host_nmap(monkeypatch, tmp_path):
     monkeypatch.setattr(pp, "SERVICES_DB", tmp_path / "gone.tsv")
     assert _flag_value(_command(), "--services-db") == "/dev/null"
@@ -104,12 +99,42 @@ def test_pulse_process_gets_private_empty_home(tmp_path, monkeypatch):
         assert not Path(env["HOME"]).exists()
 
 
-@pytest.mark.parametrize("mode", ["nmap", "auto"])
-def test_config_rejects_nmap_os_modes(mode):
+def test_run_records_which_services_table_it_used(tmp_path, monkeypatch, caplog):
+    # A sensor that lost the table must say so in the run, once, not per chunk.
+    monkeypatch.setattr(pp, "SERVICES_DB", tmp_path / "gone.tsv")
+    seen: list[list[str]] = []
+
+    def fake_run_command(command, **kwargs):
+        seen.append(command)
+        return _Completed(_ONE_SERVICE)
+
+    monkeypatch.setattr(pp, "run_command", fake_run_command)
+    monkeypatch.setattr(pp, "resolve_pulse_bin", lambda _: "pulse")
+    monkeypatch.setattr(pp, "_pulse_available", lambda _: True)
+
+    out = tmp_path / "out"
+    pp.run_pulse_probe(["10.0.0.1:22/tcp", "10.0.0.2:22/tcp"], output_dir=out, chunk_hosts=1)
+
+    assert len(seen) == 2
+    assert all(_flag_value(c, "--services-db") == "/dev/null" for c in seen)
+    raw = json.loads((out / "pulse" / "raw.json").read_text(encoding="utf-8"))
+    assert raw["adapter"]["services_db"] == "/dev/null"
+    assert caplog.text.count("falls back to its embedded port table") == 1
+
+
+def test_config_rejects_nmap_os_mode():
     with pytest.raises(ValidationError, match="replace it with 'sinfp'"):
-        PulseProbeConfig(os_mode=mode)
+        PulseProbeConfig(os_mode="nmap")
     with pytest.raises(ValidationError, match="replace it with 'sinfp'"):
-        ProfilePulseConfig(os_mode=mode)
+        ProfilePulseConfig(os_mode="nmap")
+
+
+def test_config_maps_the_old_auto_default_to_sinfp(caplog):
+    # ``auto`` was the shipped default: configs copied from an older release
+    # must keep loading after the upgrade, not stop every scan.
+    assert PulseProbeConfig(os_mode="auto").os_mode == "sinfp"
+    assert ProfilePulseConfig(os_mode="auto").os_mode == "sinfp"
+    assert "deprecated" in caplog.text
 
 
 def test_config_default_is_sinfp():

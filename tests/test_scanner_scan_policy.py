@@ -691,7 +691,6 @@ def test_pulse_host_parallel_zero_stays_one_host_at_a_time():
         timeout_ms=pulse_cfg.timeout_ms,
         banner=pulse_cfg.banner,
         os_detect=False,
-        os_mode=pulse_cfg.os_mode,
         cve=False,
         cve_online=False,
         syn=False,

@@ -119,9 +119,11 @@ config could name services differently. The adapter therefore pins the inputs
   [third-party.md](third-party.md)). If the file is missing the adapter passes
   `/dev/null` and Pulse uses its embedded table; it never falls back to the
   host's Nmap files.
-- `--os-mode sinfp` whenever `--os` is on. `os_mode: nmap` and `os_mode: auto`
-  are rejected at config load with a message to switch to `sinfp`; edit any
-  sensor config or ConfigMap that still sets them.
+- `--os-mode sinfp` whenever `--os` is on. `os_mode: nmap` is
+  rejected at config load with a message to switch to `sinfp`. `os_mode: auto`
+  (the old default) still loads, runs as `sinfp` and logs a deprecation warning.
+  Which port table a run used is recorded as `adapter.services_db` in
+  `pulse/raw.json` (`/dev/null` means Pulse's embedded table).
 - A private, empty `HOME` per Pulse process, and an allow-listed environment:
   `PATH`, `LANG`/`LC_*`, `TZ`, `TMPDIR`, `NVD_API_KEY`, the proxy variables
   (`HTTP(S)_PROXY`, `ALL_PROXY`, `NO_PROXY`, both cases) and `SSL_CERT_FILE/DIR`.

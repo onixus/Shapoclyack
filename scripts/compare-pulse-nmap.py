@@ -34,9 +34,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scanner.pipeline.pulse_probe import (  # noqa: E402
+    build_pulse_command,
     parse_pulse_json,
     pulse_env,
-    resolve_services_db,
     write_pulse_artifacts,
 )
 from scanner.pipeline.pulse_shadow import write_pulse_nmap_diff  # noqa: E402
@@ -101,6 +101,18 @@ def resolve_targets(targets: list[str], *, one_ip_per_host: bool) -> list[str]:
     return out
 
 
+def _expand_ports(spec: str) -> list[int]:
+    """``"22,80,8000-8010"`` -> sorted port list for ``build_pulse_command``."""
+    ports: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        lo, _, hi = part.partition("-")
+        ports.update(range(int(lo), int(hi or lo) + 1))
+    return sorted(p for p in ports if 0 < p < 65536)
+
+
 def run_pulse(
     pulse_bin: str,
     targets: list[str],
@@ -111,30 +123,29 @@ def run_pulse(
     os_detect: bool,
 ) -> dict:
     raw_path = out_dir / "pulse_raw.json"
-    # Pulse takes one TARGET arg (comma-separated hosts) or --targets-file.
-    target_arg = ",".join(targets)
-    cmd = [
-        pulse_bin,
-        target_arg,
-        "-p",
-        ports,
-        "-c",
-        "200",
-        "--rate",
-        "500",
-        "-b",
-        "--cve",
-        "-f",
-        "json",
-        "-q",
-        # Same pinned inputs as the adapter, so the comparison is not run on
-        # the host's Nmap data files or ~/.pulse (ADR 0002, #543).
-        "--services-db",
-        resolve_services_db(),
-    ]
-    # OS fingerprint needs raw sockets (root / setcap); skip when unprivileged.
-    if os_detect:
-        cmd.extend(["--os", "--os-mode", "sinfp"])
+    hosts_file = out_dir / "pulse_targets.txt"
+    hosts_file.write_text("\n".join(targets) + "\n", encoding="utf-8")
+    # The adapter's own builder, so every pinned input it passes (ADR 0002,
+    # #543: --services-db, --os-mode sinfp; later --probe-db, --script-dir)
+    # is in the comparison too.
+    cmd = build_pulse_command(
+        bin_path=pulse_bin,
+        hosts_file=hosts_file,
+        ports=_expand_ports(ports),
+        concurrency=200,
+        rate=500,
+        adaptive=False,
+        host_parallel=0,
+        timeout_ms=800,
+        banner=True,
+        # OS fingerprint needs raw sockets (root / setcap); skip when unprivileged.
+        os_detect=os_detect,
+        cve=True,
+        cve_online=False,
+        syn=False,
+        checkpoint=None,
+        max_hosts=len(targets) + 1,
+    )
     t0 = time.perf_counter()
     with tempfile.TemporaryDirectory(prefix="pulse-home-") as home:
         proc = subprocess.run(

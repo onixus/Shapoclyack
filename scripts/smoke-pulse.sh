@@ -16,17 +16,18 @@ echo "==> pulse: ${PULSE_BIN}"
 "${PULSE_BIN}" --version || "${PULSE_BIN}" --help | head -3
 
 echo "==> pulse localhost top-10 JSON"
-# Same pinned inputs as the adapter (ADR 0002, #543): our port table, private HOME.
-SERVICES_DB="$(cd "$(dirname "$0")/.." && pwd)/scanner/pipeline/pulse_data/services.tsv"
+# Same pinned inputs as the adapter (ADR 0002, #543): our port table and the
+# adapter's own allow-listed environment with a private HOME, taken from
+# scanner/pipeline/pulse_probe.py rather than copied here.
+PY="${PYTHON:-python3}"
+SERVICES_DB="$("${PY}" -c 'from scanner.pipeline.pulse_probe import resolve_services_db; print(resolve_services_db())')"
 PULSE_HOME="$(mktemp -d)"
 trap 'rm -rf "${PULSE_HOME}"' EXIT
-# Empty environment plus the adapter's allow-list (scanner/pipeline/pulse_probe.py
-# _ENV_ALLOW), only those that are set.
-PULSE_ENV=("HOME=${PULSE_HOME}")
-for v in PATH LANG LANGUAGE TZ TMPDIR NVD_API_KEY SSL_CERT_FILE SSL_CERT_DIR \
-  HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy; do
-  if [[ -n "${!v:-}" ]]; then PULSE_ENV+=("${v}=${!v}"); fi
-done
+PULSE_ENV=()
+while IFS= read -r -d '' kv; do PULSE_ENV+=("${kv}"); done < <(
+  "${PY}" -c 'import sys; from pathlib import Path; from scanner.pipeline.pulse_probe import pulse_env
+for k, v in pulse_env(Path(sys.argv[1])).items(): sys.stdout.write(f"{k}={v}\0")' "${PULSE_HOME}"
+)
 OUT="$(env -i "${PULSE_ENV[@]}" "${PULSE_BIN}" 127.0.0.1 --top 10 --services-db "${SERVICES_DB}" -f json -q 2>/dev/null || true)"
 if ! echo "$OUT" | grep -q '"stats"'; then
   echo "FAIL: pulse JSON missing stats"

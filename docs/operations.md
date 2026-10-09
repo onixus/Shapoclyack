@@ -4468,8 +4468,9 @@ bundle, what stays unavailable — is [air-gap.md](air-gap.md).
 [#543](https://github.com/onixus/Shapoclyack/issues/543). Search your own sensor
 configs and ConfigMaps (and any `config/*.yaml` you mount over the bundled one)
 for `os_mode:` under `service_probe.pulse` and under `profiles.*.pulse`. A value
-of `nmap` or `auto` makes config validation fail at start, so every scan on that
-sensor stops until you replace it with `sinfp`. The bundled `default.yaml` and
+of `nmap` makes config validation fail at start, so every scan on that sensor
+stops until you replace it with `sinfp`; `auto` keeps loading as `sinfp` with a
+deprecation warning, but set `sinfp` anyway. The bundled `default.yaml` and
 `k8s.yaml` already say `sinfp`; the API's config overrides never carried the key.
 `~/.pulse/` of the sensor user is no longer read either: see
 [Pulse backend](pulse-backend.md#pinned-inputs).

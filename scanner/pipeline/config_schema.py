@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -141,12 +142,17 @@ class DnsConfig(BaseModel):
 
 
 def _reject_nmap_os_mode(value: object) -> object:
-    """Turn the removed ``nmap``/``auto`` OS engines into an actionable error.
+    """Map the removed ``auto`` OS engine to ``sinfp``; reject ``nmap``.
 
     Both make Pulse read ``nmap-os-db`` from the host's Nmap install, which is
-    NPSL-licensed data we do not ship or depend on (ADR 0002, #543).
+    NPSL-licensed data we do not ship or depend on (ADR 0002, #543). ``auto``
+    was the shipped default and already meant "sinfp first", so configs copied
+    from an older release keep loading; ``nmap`` asked for exactly that data.
     """
-    if value in ("nmap", "auto"):
+    if value == "auto":
+        logging.warning("os_mode 'auto' is deprecated and runs as 'sinfp'; set os_mode: sinfp")
+        return "sinfp"
+    if value == "nmap":
         raise ValueError(f"os_mode {value!r} is no longer supported; replace it with 'sinfp'")
     return value
 
