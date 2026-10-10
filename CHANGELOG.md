@@ -6,6 +6,7 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- The asset page's Services table shows `distro` / `distro_revision` under the product and version (#546).
 - Pulse runs with a probe database we own
   ([#546](https://github.com/onixus/Shapoclyack/issues/546)). Every invocation
   gets `--probe-db scanner/pipeline/pulse_data/probes.json`: GenDec v1.3.0's
