@@ -151,6 +151,9 @@ def _assessed_vulnerabilities(run_dir: Path) -> bool:
     if ran & {"pulse", "nse"}:
         return True
     nuclei = runs_service._load_json(run_dir / "nuclei.json")  # noqa: SLF001
+    # ``skipped_reason: no_web_ports`` stays "not assessed" even when the
+    # network pass (#547) ran: assessed is a property of the whole run, and a
+    # pass that looks at the SMB ports of some hosts does not assess the estate.
     return isinstance(nuclei, dict) and not nuclei.get("skipped_reason")
 
 

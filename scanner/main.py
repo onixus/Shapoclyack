@@ -50,7 +50,7 @@ from scanner.pipeline.mail_posture import check_mail_posture
 from scanner.pipeline.l2_discovery import merge_l2_names, run_l2_discovery
 from scanner.pipeline.fingerprint import fingerprint_hosts_sync
 from scanner.pipeline.screenshots import capture_screenshots_sync
-from scanner.pipeline.nuclei_scan import run_nuclei_scan
+from scanner.pipeline.nuclei_scan import nuclei_vulnerability_rows, run_nuclei_scan
 from scanner.pipeline.tls_posture import check_tls_posture
 from scanner.pipeline.hostnames import (
     base_domains_from_fqdns,
@@ -1154,7 +1154,8 @@ def _run_pipeline_body(
             ),
         )
         checkpoint.mark_done("nuclei")
-    nuclei_cve_findings = nuclei_result.get("cve_findings") or []
+    # CVE rows, then the network pass's CVE-less rows (nuclei:<template id>, #547).
+    nuclei_cve_findings = nuclei_vulnerability_rows(nuclei_result)
 
     reporting = config.reporting
     enrichment = config.enrichment

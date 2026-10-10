@@ -139,7 +139,16 @@ class EvidenceReader:
             self.note(path, "invalid_json")
 
     def nuclei(self) -> None:
-        path = "nuclei_raw.jsonl"
+        """The web sweep's JSONL, then each network pass's (``nuclei_network_<rule>_raw.jsonl``, #547)."""
+        self.nuclei_file("nuclei_raw.jsonl")
+        try:
+            names = sorted(p.name for p in self.root.glob("nuclei_network_*_raw.jsonl"))
+        except OSError:
+            names = []
+        for name in names:
+            self.nuclei_file(name)
+
+    def nuclei_file(self, path: str) -> None:
         loaded = self.read(path)
         if loaded is None:
             return

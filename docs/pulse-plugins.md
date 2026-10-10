@@ -4,8 +4,8 @@ Rhai plugins that Shapoclyack hands to Pulse with `--script-dir`
 ([ADR 0002](adr/0002-replacing-nmap-functions.md), work item
 [#544](https://github.com/onixus/Shapoclyack/issues/544)). They are what is left
 of Nmap's NSE `default,safe` identification that Pulse's scripting sandbox can
-do: weak SSH algorithms, anonymous FTP, services that cannot start TLS, and the
-reachability of SMB, RDP and VNC. They live in
+do: weak SSH algorithms, anonymous FTP, services that cannot start TLS, the
+reachability of SMB, RDP and VNC, and HTTP TRACE over plain HTTP. They live in
 `scanner/pipeline/pulse_data/plugins/`, beside the code and not under
 `scanner/data/`, for the same reason `services.tsv` does: an enrichment volume
 mounted over `scanner/data` would hide them.
@@ -21,6 +21,7 @@ speed profile under `profiles.<mode>.pulse.plugins`).
 | `shapo_ssh_algorithms` | Weak key-exchange, host-key, cipher and MAC algorithms in the server's KEXINIT | MEDIUM broken (`diffie-hellman-group1-sha1`, `ssh-dss`, `3des-cbc`, `arcfour*`, `hmac-md5`, …), LOW deprecated (CBC ciphers, `diffie-hellman-group14-sha1`, `ssh-rsa` as the only RSA signature) | the weakness half of `ssh2-enum-algos` |
 | `shapo_ssh_banner` | SSH protocol 1 (`SSH-1.5` HIGH, `SSH-1.99` MEDIUM), OpenSSH older than 7.0 (LOW: distributions backport fixes without changing the banner, so it is a hint to check the package) | see left | GenDec `ssh_audit` (derived, MIT) |
 | `shapo_ftp_anonymous` | The server accepts `USER anonymous`: reply codes are parsed, and the answer to `PASS` (or to `USER`, for a server that logs in at once) must be `230`; a `230` in a multi-line greeting does not count | MEDIUM | `ftp-anon`, without the directory listing |
+| `shapo_http_trace` | The server answers `TRACE /` over plain HTTP with `200` and echoes a marker header in the body (a catch-all that answers 200 without echoing is not reported; HTTPS is out of the sandbox's reach; a hang-up on TRACE reads as refused (no finding, no error; it is not evidence that a fix worked, so a server that resets for another reason also reads clean), a non-HTTP reply is an error; an echo server answering every request with 200 is a false positive the plugin cannot tell apart) | LOW | `http-trace` (the TRACE half of `http-methods`) |
 | `shapo_cleartext_services` | Telnet (HIGH); FTP, POP3, IMAP without a way to start TLS (MEDIUM), judged only when the capability command (`FEAT` 211, `CAPA` +OK, `CAPABILITY` OK, `EHLO` 250) was accepted, otherwise an error, not a finding; SMTP with `AUTH` but no STARTTLS (MEDIUM), without both (LOW) | see left | nothing in `default,safe` |
 | `shapo_smb_exposure` | SMB / NetBIOS session service answers (by detected service; the port number counts only when the scan could not name the service) | LOW | GenDec `smb_netbios_exposure_audit` (derived, MIT) |
 | `shapo_remote_admin_exposure` | RDP or VNC (confirmed from the `RFB` greeting) answers (same gate rule) | LOW | GenDec `rdp_vnc_exposure_audit` (derived, MIT) |
@@ -44,7 +45,8 @@ which is UTF-8. Consequences, checked against the real binary:
   negotiate (`FE 53 4D 42` / `FF 53 4D 42`), the RDP X.224 connection request
   (`0xE0`) and everything after it (NLA, CredSSP, NTLM host information) are
   unreachable: Nmap's `smb2-security-mode`, `smb-security-mode`, `smb-protocols`,
-  `rdp-enum-encryption` and `rdp-ntlm-info` have no equivalent.
+  `rdp-enum-encryption` and `rdp-ntlm-info` have no equivalent here (`smb2-security-mode` is
+  answered by a Nuclei template, see [NSE vuln coverage](nse-vuln-coverage.md)).
 - **No UDP.** SNMP (`snmp-info`) and any other UDP probe cannot be written.
 - **`ssh-hostkey` needs a key exchange**, which is a binary protocol. Not covered.
 - **A second connection to another port is refused**, so `ftp-anon` cannot list the
@@ -149,7 +151,9 @@ held against every host and port of the chunk (the safe direction, since an erro
 same invocation; a smaller `chunk_hosts` narrows the noise. **A plugin that cannot complete a probe
 `throw`s** (connection refused, empty reply, the server hung up) instead of
 returning nothing: nothing returned reads as "looked, clean", and that is what a
-verification would otherwise credit.
+verification would otherwise credit. The one documented exception is `shapo_http_trace`: a
+server that hangs up on `TRACE` has refused the method, so it returns clean without an error,
+which means it cannot confirm that a fix worked (a reset for another reason reads the same).
 
 ## In the report and the tracker
 

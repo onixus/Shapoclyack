@@ -25,6 +25,25 @@ All notable changes to Shapoclyack are documented in this file.
 - The Nmap/Pulse corpus records a Pulse run with the plugins
   (`pulse/tcp-plugins.json`; `RECORD_PARTS=pulse record.sh` re-records only the
   Pulse side) and reports which NSE scripts a plugin answers.
+- NSE `vuln` coverage without Nmap ([#547](https://github.com/onixus/Shapoclyack/issues/547),
+  [NSE vuln coverage](docs/nse-vuln-coverage.md)): each `vuln`-category script that printed on
+  the reference stand is mapped to a Nuclei template, a Rhai plugin, TLS work (#545), version
+  matching or a stated refusal; the corpus report has an `nse_vuln` section with the numbers.
+  - **Nuclei network pass.** `nuclei.network_templates` (default `true`) runs a curated table
+    (`scanner/pipeline/nuclei_network.py`: `smb-signing-not-required` for `smb2-security-mode`)
+    against `host:port` of the endpoints Pulse named as that service, one nuclei process per
+    rule, `-id`-pinned, `-no-interactsh`. `exclude_tags` and `severities` are checked against the
+    template files so an id left out is named (`coverage.network` in `nuclei.json`:
+    `template_ids_missing` / `_excluded` / `_below_floor`), not dropped silently. Not made in a
+    pinned verification run, whose `coverage` is unchanged. Findings carry `"pass": "network"`
+    and reach `vulnerabilities.json` (`nuclei:<template id>`, `cve: ""` when the template names
+    none) and the evidence projection. The pass is bounded by one stage deadline
+    (`overall_timeout_seconds` + 120 s) and refuses an id that matches two template files.
+    Checked live against nuclei v3.11.1, nuclei-templates v9.9.4 and Samba on the corpus stand.
+  - **`shapo_http_trace`** plugin (HTTP TRACE echo over plain HTTP, LOW) for `http-trace`; the
+    Pulse side of the corpus was re-recorded (`tcp-plugins.json`, `plugins.sha256`).
+  - Docs now say what `retro_match` is: the API-side primary source for CVE by version, only as
+    complete as its NVD dataset (a 23-CVE seed until `fetch-nvd-cpe.py --full` is run).
 - Three plugins are adapted from GenDec scripts (MIT); `NOTICE` and
   [third-party.md](docs/third-party.md) carry the attribution.
 - The asset page's Services table shows `distro` / `distro_revision` under the product and version (#546).

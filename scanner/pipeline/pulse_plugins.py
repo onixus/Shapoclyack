@@ -224,6 +224,7 @@ APPLICABILITY: dict[str, dict[str, Any]] = {
     "shapo_ssh_algorithms": {"services": {"ssh"}, "banner": (("ssh-", ""),), "ports": set()},
     "shapo_ssh_banner": {"services": {"ssh"}, "banner": (("ssh-", ""),), "ports": set()},
     "shapo_ftp_anonymous": {"services": {"ftp"}, "banner": (("220", "ftp"),), "ports": set()},
+    "shapo_http_trace": {"services": {"http"}, "banner": (("http/", ""),), "ports": set()},
     "shapo_cleartext_services": {
         "services": {"telnet", "ftp", "pop3", "imap", "smtp"},
         "banner": (("220", "ftp"), ("+ok", ""), ("* ok", ""), ("220", "smtp")),

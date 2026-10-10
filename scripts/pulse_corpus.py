@@ -24,6 +24,10 @@ is what notices:
   ``_normalize_proto_label``, ``_parse_ssl_cert_output``,
   ``_parse_ssl_enum_ciphers_output``
 
+The ``nse_vuln`` section (#547) does the same for Nmap's ``vuln`` category: every
+script of it that printed on the stand, and where it goes now (a Nuclei template,
+a Rhai plugin, TLS grading, version matching, or a stated refusal).
+
 The numbers are a measurement of the gap, not a quality bar: Nmap is the
 reference only because it is what exists. Where the stand's ground truth differs
 from Nmap's answer (e.g. Samba reported as 4.6.2) the report still scores
@@ -75,12 +79,16 @@ NSE_PLUGIN_MAP: dict[str, dict[str, str | None]] = {
     "ssh-hostkey": {"plugin": None, "why": "key fingerprints need the key exchange: binary packets"},
     "ftp-anon": {"plugin": "shapo_ftp_anonymous", "covers": "login accepted or not; no directory listing (needs a data connection)"},
     "ftp-syst": {"plugin": None, "why": "informational (SYST reply); not a finding"},
-    "smb2-security-mode": {"plugin": None, "why": "SMB2 negotiate starts with 0xFE: a byte the sandbox cannot send"},
+    "smb2-security-mode": {
+        "plugin": None, "why": "SMB2 negotiate starts with 0xFE: a byte the sandbox cannot send",
+        "nuclei": "smb-signing-not-required",  # the network pass (nuclei_network.NETWORK_RULES), #547
+    },
     "smb-security-mode": {"plugin": None, "why": "SMB1 negotiate starts with 0xFF: a byte the sandbox cannot send"},
     "smb-protocols": {"plugin": None, "why": "SMB negotiate: a byte the sandbox cannot send"},
     "rdp-enum-encryption": {"plugin": None, "why": "X.224 request carries 0xE0: a byte the sandbox cannot send"},
     "rdp-ntlm-info": {"plugin": None, "why": "CredSSP/NTLM over X.224: bytes the sandbox cannot send"},
     "snmp-info": {"plugin": None, "why": "SNMP is UDP; the sandbox opens TCP only"},
+    "http-trace": {"plugin": "shapo_http_trace", "covers": "TRACE echo over plain HTTP only; HTTPS is out of the sandbox's reach"},
 }
 #: Plugins with no NSE script behind them: what they report beyond Nmap's default,safe.
 PLUGIN_ONLY = {
@@ -88,6 +96,110 @@ PLUGIN_ONLY = {
     "shapo_ssh_banner": "protocol 1 / end-of-life OpenSSH from the banner (Pulse's CVE rules overlap)",
     "shapo_smb_exposure": "reachability of SMB/NetBIOS only (Pulse's own exposure rules overlap)",
     "shapo_remote_admin_exposure": "reachability of RDP/VNC only (Pulse's own exposure rules overlap)",
+}
+
+
+#: Where each NSE script of the ``vuln`` category goes (#547, ADR 0002;
+#: ``docs/nse-vuln-coverage.md`` has the reasoning and the live checks). One row
+#: per script that printed on the stand, plus ``smb-vuln-ms17-010`` (it ran, said
+#: nothing: Samba is not affected) and the non-``vuln`` scripts the issue names
+#: (``related``). ``categories`` are read from ``/usr/share/nmap/scripts/<id>.nse``
+#: of the stand's Nmap 7.93. ``destination`` is one of :data:`VULN_DESTINATIONS`;
+#: ``ref`` names the template, plugin or mechanism, ``why`` the limit or refusal.
+#: Template ids were looked up in nuclei-templates v9.9.4 (the image's pin).
+VULN_DESTINATIONS = ("nuclei_network", "nuclei_web", "plugin", "tls", "version_match", "gap", "refused")
+NSE_VULN_MAP: dict[str, dict[str, Any]] = {
+    "vulners": {
+        "categories": ["vuln", "safe", "external"], "destination": "version_match",
+        "ref": "retro_match (API, offline NVD ranges) first; pulse --cve second",
+        "why": "CVE by version, not a probe",
+    },
+    "http-vuln-cve2011-3192": {
+        "categories": ["vuln", "safe"], "destination": "refused",
+        "why": "judged from a many-range Range reply: flagged nginx 1.27 and 1.18 on the stand, never the Apache; a version fix is a version match",
+    },
+    "http-slowloris-check": {
+        "categories": ["vuln", "safe"], "destination": "refused",
+        "why": "holds connections open to starve the server: a DoS check, against the non-destructive posture (nuclei's dos tag is excluded for the same reason)",
+    },
+    "http-trace": {
+        "categories": ["vuln", "discovery", "safe"], "destination": "plugin", "ref": "shapo_http_trace",
+        "why": "plain HTTP only; nuclei http-trace is info, below the default severity floor",
+    },
+    "http-litespeed-sourcecode-download": {
+        "categories": ["vuln", "intrusive", "exploit"], "destination": "refused",
+        "why": "CVE-2010-2333 exploit probe; on the stand it 'found' the catch-all stub's index page",
+    },
+    "http-phpmyadmin-dir-traversal": {
+        "categories": ["vuln", "exploit"], "destination": "refused",
+        "why": "CVE-2005-3299 traversal exploit; the stand's output was UNKNOWN (unable to test) with the stub's page as evidence",
+    },
+    "http-majordomo2-dir-traversal": {
+        "categories": ["intrusive", "vuln", "exploit"], "destination": "nuclei_web", "ref": "CVE-2011-0049",
+        "why": "medium, tags cve,lfi: inside the default sweep's floor",
+    },
+    "http-vuln-cve2017-1001000": {
+        "categories": ["vuln", "safe"], "destination": "refused",
+        "why": "WordPress 4.7.0/4.7.1 REST write probe; no Nuclei template in v9.9.4 and a write request is not ours to send",
+    },
+    "http-csrf": {
+        "categories": ["intrusive", "exploit", "vuln"], "destination": "refused",
+        "why": "crawler/DAST: out of scope (nuclei's dast/ templates carry the fuzz tag, excluded)",
+    },
+    "http-dombased-xss": {
+        "categories": ["intrusive", "exploit", "vuln"], "destination": "refused",
+        "why": "crawler/DAST: out of scope",
+    },
+    "http-stored-xss": {
+        "categories": ["intrusive", "exploit", "vuln"], "destination": "refused",
+        "why": "crawler/DAST that submits forms: out of scope",
+    },
+    "ssl-ccs-injection": {
+        "categories": ["vuln", "safe"], "destination": "tls", "ref": "#545",
+        "why": "TLS handshake level; no Nuclei template either. Timed out on the stand's RDP stub",
+    },
+    "smb-vuln-ms10-054": {
+        "categories": ["vuln", "intrusive", "dos"], "destination": "refused",
+        "why": "dos category (malformed SMB request); the posture excludes it",
+    },
+    "smb-vuln-ms10-061": {
+        "categories": ["vuln", "intrusive"], "destination": "gap",
+        "why": "print-spooler RPC over SMB: binary protocol, no Nuclei template; GenDec#38",
+    },
+    "samba-vuln-cve-2012-1182": {
+        "categories": ["vuln", "intrusive"], "destination": "version_match",
+        "ref": "retro_match / pulse --cve",
+        "why": "the probe is a malformed RPC call (intrusive); the affected range (Samba < 3.6.4) is a version question",
+    },
+    "smb-vuln-ms17-010": {
+        "categories": ["vuln", "safe"], "destination": "gap",
+        "why": "SMB1 transaction probe: binary, GenDec#38; v9.9.4 has no Nuclei template for MS17-010",
+    },
+    # --- named by the issue, not in the vuln category ---
+    "smb2-security-mode": {
+        "categories": ["safe", "discovery", "default"], "destination": "nuclei_network", "ref": "smb-signing-not-required",
+        "related": True,
+    },
+    "smb-protocols": {
+        "categories": ["safe", "discovery"], "destination": "gap",
+        "why": "dialect list; nuclei smb-version-detect/samba-detect are info, below the floor, and report less",
+        "related": True,
+    },
+    "rdp-enum-encryption": {
+        "categories": ["safe", "discovery"], "destination": "gap",
+        "why": "NLA/CredSSP/security-layer needs the X.224 handshake (0xE0): GenDec#38; nuclei rdp-detect only detects",
+        "related": True,
+    },
+    "http-methods": {
+        "categories": ["default", "safe"], "destination": "plugin", "ref": "shapo_http_trace",
+        "why": "TRACE only; PUT/DELETE/CONNECT are not probed",
+        "related": True,
+    },
+    "http-malware-host": {
+        "categories": ["malware", "safe"], "destination": "refused",
+        "why": "heuristics for an infected site; printed 'false' on the stand",
+        "related": True,
+    },
 }
 
 
@@ -283,6 +395,8 @@ def _plugins_section(
         if not rows:
             continue
         entry: dict[str, Any] = {"endpoints": len(rows), "plugin": mapping["plugin"]}
+        if mapping.get("nuclei"):
+            entry["nuclei"] = mapping["nuclei"]
         if mapping["plugin"] is None:
             entry["not_covered"] = mapping["why"]
         else:
@@ -293,6 +407,8 @@ def _plugins_section(
                     nmap_says = bool(set(re.findall(r"[A-Za-z0-9@._+-]+", row["output"])) & weak)
                 elif script_id == "ftp-anon":
                     nmap_says = "login allowed" in row["output"].lower()
+                elif script_id == "http-trace":
+                    nmap_says = "trace is enabled" in row["output"].lower()
                 else:
                     continue
                 plugin_says = (row["host"], int(row["port"])) in flagged.get(mapping["plugin"], set())
@@ -305,6 +421,49 @@ def _plugins_section(
         "findings_by_plugin": dict(sorted(by_plugin.items())),
         "plugin_only": sorted(p for p in PLUGIN_ONLY if p in by_plugin),
         "nse": nse,
+    }
+
+
+def _nse_vuln_section(n_scripts: list[dict[str, Any]], findings: list[Any]) -> dict[str, Any]:
+    """Nmap's ``vuln`` scripts of the stand, and where each now goes (:data:`NSE_VULN_MAP`).
+
+    ``endpoints`` is how many hosts/ports printed something, ``flagged`` how many of
+    those Nmap itself marked VULNERABLE. ``plugin_flags`` is filled for a
+    ``plugin`` destination: how many of the endpoints the plugin reports too.
+    Nmap's XML carries no categories, so the map is the list; a recording that
+    adds a ``vuln`` script has to add its row (the pinned numbers change).
+    """
+    flagged = {
+        plugin: {(c.ip, c.port) for c in findings if c.match_reason == f"rhai script {plugin}"}
+        for plugin in {c.match_reason.removeprefix("rhai script ") for c in findings}
+    }
+    scripts: dict[str, Any] = {}
+    by_destination: Counter[str] = Counter()
+    for script_id, mapping in NSE_VULN_MAP.items():
+        rows = [s for s in n_scripts if s["script_id"] == script_id and s["output"]]
+        entry: dict[str, Any] = {
+            "vuln": "vuln" in mapping["categories"],
+            "endpoints": len(rows),
+            "flagged": sum(1 for s in rows if s["vulnerable"]),
+            "destination": mapping["destination"],
+        }
+        if mapping["destination"] == "plugin":
+            plugin = mapping["ref"]
+            entry["plugin_flags"] = sum(
+                1 for s in rows if s["port"] and (s["host"], int(s["port"])) in flagged.get(plugin, set())
+            )
+        scripts[script_id] = entry
+        if entry["vuln"]:
+            by_destination[mapping["destination"]] += 1
+    vuln_ids = {i for i, m in NSE_VULN_MAP.items() if "vuln" in m["categories"]}
+    vuln_rows = [s for s in n_scripts if s["output"] and s["script_id"] in vuln_ids]
+    return {
+        "vuln_scripts": sum(1 for e in scripts.values() if e["vuln"]),
+        "vuln_scripts_printed": sum(1 for e in scripts.values() if e["vuln"] and e["endpoints"]),
+        "vuln_outputs": len(vuln_rows),
+        "vuln_flagged_by_nmap": sum(1 for s in vuln_rows if s["vulnerable"]),
+        "by_destination": {d: by_destination[d] for d in VULN_DESTINATIONS if by_destination[d]},
+        "scripts": scripts,
     }
 
 
@@ -416,6 +575,7 @@ def compare_corpus(corpus_dir: Path) -> dict[str, Any]:
         "tls": tls_summary,
         "scripts": scripts_summary,
         "plugins": _plugins_section(corpus_dir, n_scripts, plugin_findings),
+        "nse_vuln": _nse_vuln_section(n_scripts, plugin_findings),
         "os": {
             "hosts_nmap": shadow["os"]["nmap_hosts"],
             "hosts_pulse": shadow["os"]["pulse_hosts"],
