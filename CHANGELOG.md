@@ -6,6 +6,23 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **Breaking:** L2 discovery runs through Pulse instead of Nmap
+  ([#542](https://github.com/onixus/Shapoclyack/issues/542)). `discovery.l2`
+  needs a Pulse binary (`service_probe.pulse.bin`) and no longer Nmap; a missing
+  binary is `skipped_reason: "pulse.unavailable"` (was `nmap.unavailable`). One
+  `pulse -D --discover-method arp` pass finds live hosts and reads the NetBIOS
+  and mDNS names; `max_rate` stays the target packet rate (Pulse gets
+  `max_rate // (mcast_solicit + 2)`, recorded as
+  `pulse_rate` and `rate_divisor`; an estimate measured on 4 and 55 live hosts
+  of 253, not a guarantee). The MAC comes
+  from `/proc/net/arp` and `vendor` is now always `null`. `interface` can no
+  longer be passed to the tool, so networks not routed on-link through it are
+  skipped (`not_on_interface:<iface>`). Port 9 in `ports.exclude_ports` turns
+  the stage off. New skip reasons: `arp.trigger_port_excluded:9`,
+  `rate_cap_unenforceable:<n>`, `timeout_unreachable:<n>s`, `interface.unverifiable`, `pulse.arp_needs_iproute2` (Pulse's ARP needs `ip`;
+  the scanner images now install iproute2); the artifact gains
+  `engine`, `pulse_rate`, `rate_divisor` and loses `names_skipped_reason`.
+  See [L2 discovery](docs/pulse-backend.md#l2-discovery).
 - **Breaking:** the Pulse adapter pins its inputs
   ([#543](https://github.com/onixus/Shapoclyack/issues/543)). Every Pulse
   invocation gets `--services-db scanner/pipeline/pulse_data/services.tsv` (an

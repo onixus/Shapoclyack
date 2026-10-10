@@ -73,7 +73,7 @@ NON_SECONDARY_ACTIVE_STAGES: dict[str, str] = {
     # Primary stages: each is held by policy fields of its own in apply_policy.
     "discover": "primary: discover_rate, wave2/verify/tcp_probe rates, icmp period, discover_concurrency",
     "discover-l2": (
-        "primary, opt-in: nmap ARP --max-rate held to max_discover_rate; "
+        "primary, opt-in: Pulse ARP pass, --rate = max_discover_rate // divisor, divisor = mcast_solicit + 2; "
         "mDNS/NetBIOS name probes off with skip_service_probe"
     ),
     "ports": "primary: port_rate, per_host_rate, ports_concurrency, avoid_ports",
@@ -349,9 +349,11 @@ def apply_policy(config: AppConfig, policy: dict[str, Any]) -> AppConfig:
     discovery_updates: dict[str, Any] = {}
     l2_updates: dict[str, Any] = {}
     if max_discover is not None:
-        # nmap's ARP sweep is a discovery stage too. --max-rate is the only
-        # portable ceiling it exposes, so the tenant ceiling lowers that
-        # explicit command-line value just like it lowers naabu/fping.
+        # The ARP sweep is a discovery stage too. max_rate is a target packet rate
+        # (the stage divides it by mcast_solicit + 2 before handing it to
+        # Pulse: an estimate from runs on 4 and 55 live hosts of 253, not a
+        # guarantee), so the tenant ceiling lowers that value just like it lowers
+        # naabu/fping.
         l2_updates["max_rate"] = _ceiling(config.discovery.l2.max_rate, max_discover)
         # Discovery is three passes, not one. Wave 2 re-probes the hosts that
         # stayed silent in wave 1 — on an OT estate exactly the PLCs and relays
