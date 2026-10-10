@@ -78,7 +78,10 @@ NON_SECONDARY_ACTIVE_STAGES: dict[str, str] = {
     ),
     "ports": "primary: port_rate, per_host_rate, ports_concurrency, avoid_ports",
     "verify_alive": "primary: discovery.verify.rate held to max_discover_rate",
-    "pulse": "primary: pulse rate/concurrency/host_parallel; off with skip_service_probe",
+    "pulse": (
+        "primary: pulse rate/concurrency/host_parallel; off with skip_service_probe; "
+        "its Rhai plugins (serial, outside --rate) are off under per_host_rate"
+    ),
     "nse": "primary: nse_max_rate, nse_concurrency; off with skip_service_probe",
     "nuclei": "primary: rate_limit, concurrency; off with skip_service_probe",
     # Third-party sources and DNS: no connection to an address in scope.
@@ -308,6 +311,14 @@ def apply_policy(config: AppConfig, policy: dict[str, Any]) -> AppConfig:
             # loosening a config, which is the one thing this file may not do.
             pulse_updates["host_parallel"] = _ceiling(profile.pulse.host_parallel, max_concurrency)
             pulse_updates["concurrency"] = _ceiling(profile.pulse.concurrency, max_concurrency)
+        if per_host_rate is not None:
+            # The Rhai plugins pulse runs after its scan (pulse_plugins.py) open
+            # connections of their own: not paced by --rate, not counted by
+            # --host-parallel. They are serial, so max_host_concurrency holds
+            # without help, but "packets aimed at any single host" cannot be
+            # promised for a burst of up to eight connections a plugin run, so
+            # the ceiling turns them off. One direction, like skip_nse.
+            pulse_updates["plugins"] = False
         if pulse_updates:
             updates["pulse"] = profile.pulse.model_copy(update=pulse_updates)
         # The per-profile nuclei overlay is merged over the global block at run

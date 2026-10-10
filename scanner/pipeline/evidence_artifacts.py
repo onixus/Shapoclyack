@@ -25,7 +25,7 @@ MAX_OBSERVATIONS = 10_000
 MAX_NMAP_FILES = 128
 _CVE = re.compile(r"\bCVE-\d{4}-\d{3,7}\b", re.IGNORECASE)
 _KIND = {"version_cve": "version_match", "keyword_cve": "keyword_hypothesis",
-         "exposure": "exposure", "tls": "tls_observation"}
+         "exposure": "exposure", "tls": "tls_observation", "plugin_script": "plugin_report"}
 
 
 class EvidenceReader:
@@ -103,6 +103,10 @@ class EvidenceReader:
             rows = raw.get(field, [])
             if not isinstance(rows, list):
                 raise ValueError
+            adapter = raw.get("adapter") if isinstance(raw.get("adapter"), dict) else {}
+            receipt = adapter.get("plugins") if isinstance(adapter.get("plugins"), dict) else {}
+            plugin_shas = {str(p.get("name")): str(p.get("sha256")) for p in receipt.get("loaded") or []
+                           if isinstance(p, dict)}
             for index, row in enumerate(rows):
                 if not isinstance(row, dict):
                     self.note(path, "invalid_row")
@@ -112,11 +116,21 @@ class EvidenceReader:
                 rule = row.get("rule_id") or row.get("cve_id")
                 if not rule and cls in _KIND:
                     rule = f"{cls}:{row.get('title') or row.get('match_reason') or cls}"
+                cve = row.get("cve_id")
+                ruleset = row.get("ruleset_version") or meta.get("ruleset")
+                if cls == "plugin_script":
+                    # ``SCRIPT-<NAME>`` is Pulse's label for a plugin finding, not a CVE
+                    # (observation() refuses it); the plugin is the rule, and its file's
+                    # sha256 from the adapter receipt is the rule version.
+                    plugin = str(row.get("match_reason") or "").removeprefix("rhai script ").strip()
+                    cve = None
+                    rule = f"plugin:{plugin or row.get('title') or 'unknown'}"
+                    ruleset = f"sha256:{plugin_shas[plugin]}" if plugin in plugin_shas else None
                 self.add({**row, "host": row.get("ip") or row.get("host"),
-                          "protocol": row.get("protocol") or "tcp", "cve": row.get("cve_id"),
+                          "protocol": row.get("protocol") or "tcp", "cve": cve,
                           "rule_id": rule, "evidence_kind": _KIND.get(cls, "unclassified"),
                           "engine_version": meta.get("version"),
-                          "ruleset_version": row.get("ruleset_version") or meta.get("ruleset"),
+                          "ruleset_version": ruleset,
                           "observed_at": row.get("timestamp"),
                           "evidence": row.get("evidence") or row.get("match_reason")},
                          "pulse", path, sha, f"/{field}/{index}")

@@ -93,6 +93,7 @@ service_probe:
     max_hosts: 65536
     chunk_hosts: 64          # hosts per pulse invocation / checkpoint
     retry_settle_seconds: 15 # pause before re-probing an all-closed chunk; 0 disables
+    plugins: true            # Rhai plugins via --script-dir (docs/pulse-plugins.md)
 
 profiles:
   balanced:
@@ -106,6 +107,17 @@ profiles:
 
 NVD online: set `NVD_API_KEY` in the sensor's environment. Pulse's own
 `~/.pulse/nvd_api_key` is not read (see below).
+
+### Rhai plugins
+
+`plugins: true` (the default; also settable per speed profile) hands the plugins in
+`scanner/pipeline/pulse_data/plugins/` to Pulse with `--script-dir`: weak SSH
+algorithms, anonymous FTP, services that cannot start TLS, SMB/RDP/VNC reachability.
+They replace the part of NSE `default,safe` that Pulse's sandbox can express.
+Pulse then runs in an empty working directory (the same one as its `HOME`), the
+plugin files and their sha256 are recorded in `adapter.plugins` of `pulse/raw.json`,
+and a policy with a `per_host_rate` ceiling turns them off. Details, limits and the
+gap to NSE: [Pulse plugins](pulse-plugins.md).
 
 ### Pinned inputs
 
@@ -823,7 +835,8 @@ what Pulse is measured against has to be recorded while Nmap still runs.
 | Stand (docker compose, pinned images) | `tests/fixtures/nmap_pulse_corpus/stand/` |
 | Recorder | `tests/fixtures/nmap_pulse_corpus/record.sh` |
 | Nmap XML | `tests/fixtures/nmap_pulse_corpus/nmap/{tcp,udp}.xml` |
-| Pulse JSON (banners, TLS rows and findings included) | `tests/fixtures/nmap_pulse_corpus/pulse/{tcp,udp,tcp-scripts}.json` |
+| Pulse JSON (banners, TLS rows and findings included) | `tests/fixtures/nmap_pulse_corpus/pulse/{tcp,udp}.json` |
+| Pulse with Shapoclyack's plugins (`--script-dir`, #544): findings, stderr, plugin sha256 | `tests/fixtures/nmap_pulse_corpus/pulse/tcp-plugins.{json,stderr}`, `plugins.sha256` |
 | Comparison | `scripts/pulse_corpus.py`, CLI `scripts/compare-nmap-pulse-corpus.py [--json]` |
 | Pinned numbers | `tests/test_nmap_pulse_corpus.py` |
 
@@ -844,7 +857,10 @@ versions are in the fixtures (banners), not in the compose file.
 **Commands.** Nmap: `-n -Pn -T4 -sV -O --osscan-guess --script default,safe,vuln,ssl-enum-ciphers`
 (plus `-sU -sV -p 161` for SNMP). Pulse 1.3.0: the adapter's flags
 (`-b --os --os-mode sinfp --cve -f json`, connect scan) with an empty `HOME`,
-plus a second run with `--scripts`. Both got the same targets and ports
+plus a second run with `--script-dir` pointing at the Shapoclyack plugins, in the
+empty `HOME` (the adapter's run after #544). The earlier run with bare `--scripts`
+is gone: it loaded nothing (no `./scripts` in its working directory), so its "added
+nothing" measured an empty plugin set. Both got the same targets and ports
 (21, 22, 80, 139, 443, 445, 3306, 3389, 5432, 6379, and UDP 161). The scanner
 image has the distribution `nmap` installed, but Pulse is given `--services-db`
 (IANA table) and `--probe-db` explicitly, as the adapter does (#543, #546), so
@@ -869,8 +885,30 @@ was 14 agree / 3 missing / 1 differs):
 | TLS protocol sets (3 shared) | enumerated | 2 equal | nginx 1.27: Nmap `TLSv1.2, TLSv1.3`, Pulse only the negotiated `TLSv1.3` |
 | TLS cipher suites enumerated | 122 | 0 | `tls[]` holds the negotiated protocol and the weak protocols accepted, not suites or grades |
 | Weak-protocol verdict (3 shared) | 1 endpoint | 1 endpoint, 3 of 3 agree | none on this stand; the unfavourable cases (SSLv3, weak suites on TLS 1.2) are not in it |
-| Script outputs | 157 on ports, 40 distinct scripts | 13 findings (6 exposure, 4 tls, 3 version_cve) | `--scripts` added nothing (13 = 13) |
+| Script outputs | 157 on ports, 40 distinct scripts | 13 findings (6 exposure, 4 tls, 3 version_cve) | plugins add 5 more in the `--script-dir` run (below) |
 | CVE ids named | 428 (`vulners`) | 3 | the 3 are all among Nmap's; 425 are Nmap-only. Not a quality score: `vulners` names every CVE ever filed against a version |
+
+**Plugins against NSE** (#544; `plugins` section of the report, run
+`pulse/tcp-plugins.json`). Per NSE script that printed on the stand: how many
+endpoints, which plugin answers it, and, where both give a verdict, whether they
+agree per endpoint.
+
+| NSE script | Endpoints | Plugin | Result |
+|---|---|---|---|
+| `ssh2-enum-algos` | 4 | `shapo_ssh_algorithms` | verdict (a weak algorithm is offered) agrees on 4 of 4: none offers one. Weakness only, not the lists |
+| `ftp-anon` | 1 | `shapo_ftp_anonymous` | agrees 1 of 1: login accepted. No directory listing (needs a data connection) |
+| `ssh-hostkey` | 4 | none | key exchange needed (binary packets) |
+| `smb2-security-mode`, `smb-protocols` | 1 host | none (`shapo_smb_exposure` reports exposure only) | SMB negotiate starts with 0xFE/0xFF; the sandbox cannot send a byte above 0x7F |
+| `rdp-enum-encryption` | 1 | none (`shapo_remote_admin_exposure` reports exposure only) | X.224 request carries 0xE0 |
+| `ftp-syst` | 1 | none | informational, not a finding |
+
+Plugin findings on the stand: 5 (SMB 2, RDP 1, anonymous FTP 1, FTP without TLS 1);
+no plugin errors. `shapo_cleartext_services` has no NSE counterpart in
+`default,safe`. Not in the table because the stand has no such server: SNMP (UDP),
+Telnet, POP3, IMAP, SMTP; those plugins are exercised against stub servers in
+`tests/test_pulse_plugins_files.py`. The four SSH servers are modern, so
+"agrees" is agreement on a clean result; the weak-algorithm path is proven on stub
+servers, not on this stand.
 
 Reading it:
 
@@ -888,7 +926,14 @@ Reading it:
 - Cipher-suite enumeration is the largest single gap and the one with no
   workaround short of #545.
 
-Re-recording: `PULSE_BIN=<linux pulse> tests/fixtures/nmap_pulse_corpus/record.sh`
+Re-recording only the Pulse side (after a plugin change; the Nmap fixtures stay as
+they are): `RECORD_PARTS=pulse PULSE_BIN=<linux pulse> tests/fixtures/nmap_pulse_corpus/record.sh`.
+`pulse/tcp.json` and `udp.json` were not re-recorded for #544, so the starting gap
+above stays a baseline; `tcp-plugins.json` is a separate run, and
+`tests/test_nmap_pulse_corpus.py` fails when its recorded plugin sha256 and the
+shipped files differ.
+
+Re-recording everything: `PULSE_BIN=<linux pulse> tests/fixtures/nmap_pulse_corpus/record.sh`
 (`stand/scan.sh` passes Pulse the same `--services-db` and `--probe-db` as the
 adapter, bind-mounted from `scanner/pipeline/pulse_data/`, so a probe-database
 change shows up in the next recording)
@@ -920,6 +965,9 @@ exactly as it reads a run directory.
 ## Limitations (current)
 
 - Does not run NSE scripts (`ssl-enum-ciphers`, vulners, …) on the default path.
+  The plugins ([Pulse plugins](pulse-plugins.md)) cover weak SSH algorithms,
+  anonymous FTP and cleartext services; SMB signing, RDP NTLM information, SSH host
+  keys and SNMP are not reachable from Pulse's sandbox.
 - TLS probe fallback ≠ full `ssl-enum-ciphers` grade table.
 - UDP enrichment still relies on naabu (and optional nmap) paths.
 - Banner ≠ full nmap `-sV` product/version.

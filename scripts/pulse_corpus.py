@@ -33,11 +33,13 @@ agreement with Nmap and says so in ``docs/pulse-backend.md``.
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from scanner.pipeline.pulse_plugins import PLUGINS_DIR
 from scanner.pipeline.pulse_probe import extract_pulse_tls, parse_pulse_json, write_pulse_artifacts
 from scanner.pipeline.pulse_shadow import compare_pulse_nmap
 from scanner.pipeline.report import _build_vulnerabilities, _parse_nmap_xml
@@ -63,6 +65,30 @@ _SERVICE_CANON = {
 }
 
 Key = tuple[str, int, str]  # (host, port, protocol)
+
+#: The NSE scripts of ``default,safe`` that identified something on this stand
+#: (#544, ADR 0002), and what Shapoclyack's Rhai plugins do about each. ``plugin``
+#: is the file stem; ``None`` means nothing does, and ``why`` is the reason
+#: (the sandbox limits are GenDec v1.3.0's, ``docs/pulse-plugins.md``).
+NSE_PLUGIN_MAP: dict[str, dict[str, str | None]] = {
+    "ssh2-enum-algos": {"plugin": "shapo_ssh_algorithms", "covers": "weak algorithms only, not the full lists"},
+    "ssh-hostkey": {"plugin": None, "why": "key fingerprints need the key exchange: binary packets"},
+    "ftp-anon": {"plugin": "shapo_ftp_anonymous", "covers": "login accepted or not; no directory listing (needs a data connection)"},
+    "ftp-syst": {"plugin": None, "why": "informational (SYST reply); not a finding"},
+    "smb2-security-mode": {"plugin": None, "why": "SMB2 negotiate starts with 0xFE: a byte the sandbox cannot send"},
+    "smb-security-mode": {"plugin": None, "why": "SMB1 negotiate starts with 0xFF: a byte the sandbox cannot send"},
+    "smb-protocols": {"plugin": None, "why": "SMB negotiate: a byte the sandbox cannot send"},
+    "rdp-enum-encryption": {"plugin": None, "why": "X.224 request carries 0xE0: a byte the sandbox cannot send"},
+    "rdp-ntlm-info": {"plugin": None, "why": "CredSSP/NTLM over X.224: bytes the sandbox cannot send"},
+    "snmp-info": {"plugin": None, "why": "SNMP is UDP; the sandbox opens TCP only"},
+}
+#: Plugins with no NSE script behind them: what they report beyond Nmap's default,safe.
+PLUGIN_ONLY = {
+    "shapo_cleartext_services": "services that cannot start TLS (Nmap's default,safe has no such check)",
+    "shapo_ssh_banner": "protocol 1 / end-of-life OpenSSH from the banner (Pulse's CVE rules overlap)",
+    "shapo_smb_exposure": "reachability of SMB/NetBIOS only (Pulse's own exposure rules overlap)",
+    "shapo_remote_admin_exposure": "reachability of RDP/VNC only (Pulse's own exposure rules overlap)",
+}
 
 
 def _canon_service(name: str) -> str:
@@ -202,6 +228,86 @@ def _tls_section(nmap_dir: Path, payloads: dict[str, dict[str, Any]]) -> tuple[d
     return summary, rows
 
 
+def _plugin_findings(payload: dict[str, Any]) -> list[Any]:
+    """The Rhai plugin findings of the adapter-shaped run with ``--script-dir``."""
+    return [c for c in parse_pulse_json(payload)[2] if c.finding_class == "plugin_script"]
+
+
+def _weak_ssh_names() -> set[str]:
+    """The algorithm names ``shapo_ssh_algorithms`` calls weak, read from the plugin itself."""
+    text = (PLUGINS_DIR / "shapo_ssh_algorithms.rhai").read_text(encoding="utf-8")
+    names: set[str] = set()
+    for fn in ("broken_algorithms", "deprecated_algorithms"):
+        body = text.split(f"fn {fn}()", 1)[1].split("]", 1)[0]
+        names.update(re.findall(r'"([^"]+)"', body))
+    return names
+
+
+def _plugins_section(
+    corpus_dir: Path, n_scripts: list[dict[str, Any]], findings: list[Any]
+) -> dict[str, Any]:
+    """Where the plugins stand against the NSE scripts that ran on the same stand.
+
+    For each NSE script in :data:`NSE_PLUGIN_MAP` that printed output: how many
+    endpoints, which plugin answers it (or why none can), and, where both sides
+    give a verdict, whether they agree per endpoint. A verdict is "weak
+    algorithm present" for ``ssh2-enum-algos`` (Nmap's output read against the
+    plugin's own list of weak names) and "anonymous login allowed" for
+    ``ftp-anon``. Everything else is coverage by name only.
+    """
+    pulse_dir = corpus_dir / "pulse"
+    files = [
+        line.split()[1]
+        for line in (pulse_dir / "plugins.sha256").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ] if (pulse_dir / "plugins.sha256").is_file() else []
+    stderr_path = pulse_dir / "tcp-plugins.stderr"
+    errors = (
+        sum(1 for line in stderr_path.read_text(encoding="utf-8").splitlines() if "plugin error" in line)
+        if stderr_path.is_file() else None
+    )
+
+    by_plugin = Counter(c.match_reason.removeprefix("rhai script ") for c in findings)
+    flagged = {
+        plugin: {(c.ip, c.port) for c in findings if c.match_reason == f"rhai script {plugin}"}
+        for plugin in by_plugin
+    }
+    weak = _weak_ssh_names()
+    nse: dict[str, Any] = {}
+    for script_id, mapping in NSE_PLUGIN_MAP.items():
+        # Host-level scripts (the SMB ones) have no port: they count as one "endpoint" per host.
+        rows = [
+            s for s in n_scripts
+            if s["script_id"] == script_id and s["output"] and (s["port"] or mapping["plugin"] is None)
+        ]
+        if not rows:
+            continue
+        entry: dict[str, Any] = {"endpoints": len(rows), "plugin": mapping["plugin"]}
+        if mapping["plugin"] is None:
+            entry["not_covered"] = mapping["why"]
+        else:
+            entry["covers"] = mapping["covers"]
+            agree = 0
+            for row in rows:
+                if script_id == "ssh2-enum-algos":
+                    nmap_says = bool(set(re.findall(r"[A-Za-z0-9@._+-]+", row["output"])) & weak)
+                elif script_id == "ftp-anon":
+                    nmap_says = "login allowed" in row["output"].lower()
+                else:
+                    continue
+                plugin_says = (row["host"], int(row["port"])) in flagged.get(mapping["plugin"], set())
+                agree += nmap_says == plugin_says
+            entry["verdict_agrees"] = agree
+        nse[script_id] = entry
+    return {
+        "files": len(files),
+        "errors": errors,
+        "findings_by_plugin": dict(sorted(by_plugin.items())),
+        "plugin_only": sorted(p for p in PLUGIN_ONLY if p in by_plugin),
+        "nse": nse,
+    }
+
+
 def compare_corpus(corpus_dir: Path) -> dict[str, Any]:
     """Build the gap report for one corpus directory (``nmap/`` + ``pulse/``)."""
     nmap_dir, pulse_dir = corpus_dir / "nmap", corpus_dir / "pulse"
@@ -257,13 +363,14 @@ def compare_corpus(corpus_dir: Path) -> dict[str, Any]:
         _, _, cves = parse_pulse_json(payload)
         pulse_findings.extend(cves)
     pulse_cves = {(c.ip, str(c.port), c.cve_id) for c in pulse_findings if c.cve_id}
+    plugin_findings = _plugin_findings(payloads.get("tcp-plugins") or {})
     scripts_summary = {
         "nmap_port_script_outputs": len(port_scripts),
         "nmap_distinct_script_ids": len({s["script_id"] for s in port_scripts}),
         "nmap_flagged_vulnerable": sum(1 for s in port_scripts if s["vulnerable"]),
         "pulse_findings": len(pulse_findings),
         "pulse_findings_by_class": dict(sorted(Counter(c.finding_class for c in pulse_findings).items())),
-        "pulse_scripts_run_findings": len((payloads.get("tcp-scripts") or {}).get("findings") or []),
+        "pulse_plugin_findings": len(plugin_findings),
         "cve_both": len(nmap_cves & pulse_cves),
         "cve_only_nmap": len(nmap_cves - pulse_cves),
         "cve_only_pulse": len(pulse_cves - nmap_cves),
@@ -308,6 +415,7 @@ def compare_corpus(corpus_dir: Path) -> dict[str, Any]:
         },
         "tls": tls_summary,
         "scripts": scripts_summary,
+        "plugins": _plugins_section(corpus_dir, n_scripts, plugin_findings),
         "os": {
             "hosts_nmap": shadow["os"]["nmap_hosts"],
             "hosts_pulse": shadow["os"]["pulse_hosts"],

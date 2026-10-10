@@ -43,6 +43,7 @@ def run_command(
     check: bool = True,
     capture_output: bool = True,
     env: Mapping[str, str] | None = None,
+    cwd: str | Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     last_exc: Exception | None = None
     for attempt in range(1, retries + 2):
@@ -55,6 +56,7 @@ def run_command(
                 timeout=timeout,
                 check=check,
                 env=env,
+                cwd=cwd,
             )
             if capture_output:
                 if completed.stdout and completed.stdout.strip():

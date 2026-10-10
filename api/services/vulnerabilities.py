@@ -295,9 +295,10 @@ UNKNOWN_VANTAGE = "unknown"
 def _detector_of(source: Any, script_id: Any) -> tuple[str, str] | None:
     """``(detector, ref)`` for one vulnerabilities.json row, or ``None``.
 
-    ``source`` is what the scanner stages write (``pulse``, ``nuclei``,
-    ``nmap-nse``; scanner/pipeline/report.py); ``script_id`` carries the ref —
-    ``nuclei:<template id>``, ``pulse:<origin>`` or the NSE script id. A row
+    ``source`` is what the scanner stages write (``pulse``, ``pulse-plugin``,
+    ``nuclei``, ``nmap-nse``; scanner/pipeline/report.py); ``script_id`` carries
+    the ref — ``nuclei:<template id>``, ``pulse:<origin>``,
+    ``pulse-plugin:<plugin name>`` or the NSE script id. A row
     without a ``source`` (a run from before the stages wrote one, or written
     by hand) is classified from the ``script_id`` prefix, as migration 0079
     backfills, and a row with neither has no detector anyone can name.
@@ -307,6 +308,8 @@ def _detector_of(source: Any, script_id: Any) -> tuple[str, str] | None:
     derived: tuple[str, str] | None = None
     if script.startswith("nuclei:"):
         derived = (verification_coverage.NUCLEI, script[len("nuclei:") :])
+    elif script.startswith("pulse-plugin:"):
+        derived = (verification_coverage.PULSE_PLUGIN, script[len("pulse-plugin:") :])
     elif script.startswith("pulse:"):
         derived = (verification_coverage.PULSE, script[len("pulse:") :])
     elif script:
@@ -354,10 +357,12 @@ def _observed_detectors(
         if protocol in ("tcp", "udp"):
             # Recorded so a UDP finding is never judged by a TCP re-check.
             candidate["protocol"] = protocol
-        ruleset = str(row.get("ruleset_version") or "").strip()[:64]
-        if name == verification_coverage.PULSE and ruleset:
-            # The offline ruleset this match was made with: a verification
-            # matching with an older one has not re-checked it.
+        # 80, not 64: a plugin's version is ``sha256:`` + 64 hex digits.
+        ruleset = str(row.get("ruleset_version") or "").strip()[:80]
+        if name in (verification_coverage.PULSE, verification_coverage.PULSE_PLUGIN) and ruleset:
+            # The offline ruleset this match was made with (a verification
+            # matching with an older one has not re-checked it), or for a
+            # plugin the sha256 of the file that matched.
             candidate["ruleset"] = ruleset
         if not any(_detector_key(candidate) == _detector_key(seen) for seen in out):
             out.append(candidate)

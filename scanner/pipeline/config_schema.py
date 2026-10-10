@@ -178,6 +178,7 @@ class ProfilePulseConfig(BaseModel):
     max_hosts: int | None = Field(default=None, ge=1, le=1_000_000)
     chunk_hosts: int | None = Field(default=None, ge=1, le=4096)
     retry_settle_seconds: int | None = Field(default=None, ge=0, le=600)
+    plugins: bool | None = None
 
 
 class ProfileNucleiConfig(BaseModel):
@@ -578,6 +579,15 @@ class PulseProbeConfig(BaseModel):
     # its checkpoint as "status: done". Pause and re-probe once when a chunk
     # contradicts the open ports naabu just proved. 0 disables the retry.
     retry_settle_seconds: int = Field(default=15, ge=0, le=600)
+    # Rhai plugins passed to Pulse with --script-dir (scanner/pipeline/pulse_data/
+    # plugins/, docs/pulse-plugins.md): what is left of NSE ``default,safe``
+    # that Pulse's sandbox can do -- weak SSH algorithms, anonymous FTP,
+    # services that cannot start TLS. They open their own connections to the
+    # open ports, outside --rate, so the scan policy turns them off under a
+    # per-host rate ceiling (scan_policy.apply_policy). Only used when Pulse is
+    # the report backend (pulse/hybrid): a nmap-backend shadow run discards its
+    # findings, so it does not make the connections.
+    plugins: bool = True
 
 
 class ServiceProbeConfig(BaseModel):

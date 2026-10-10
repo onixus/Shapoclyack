@@ -42,7 +42,7 @@ value on the System page rather than assuming the file was applied.
 | `discovery` | Alive-host discovery: source, discovery profile, CT logs, brute force, Cloudflare, ASN, cloud resources, domain monitoring, delta | [Discovery modules](#discovery-modules), [Scan performance](scan-performance.md) |
 | `ports` | Port stage: protocol, port lists, UDP top-N, naabu scan type | [Protocol selection](#protocol-selection) |
 | `nse_profiles` | Named NSE script sets a speed profile can reference | [NSE and vulnerability checks](#nse-and-vulnerability-checks) |
-| `service_probe` | Service/version detection backend: `pulse` (default), `nmap`, `hybrid`, and shadow comparison | [Pulse backend](pulse-backend.md) |
+| `service_probe` | Service/version detection backend: `pulse` (default), `nmap`, `hybrid`, and shadow comparison; `pulse.plugins` (default `true`) switches the Rhai plugins on or off | [Pulse backend](pulse-backend.md), [Pulse plugins](pulse-plugins.md) |
 | `reporting` | Which report formats a run writes (Markdown, HTML, CSV, JSON, PDF) and the PDF's title/org | [Operations](operations.md), [Reports and compliance](reports-and-compliance.md) |
 | `enrichment` | CVSS v4, GeoIP and ASN datasets | [Enrichment sources](#enrichment-sources) |
 | `fingerprint` | HTTP fingerprinting of already-open web ports: technology catalogue, versions, CPE, exposed consoles and gateways | [Web fingerprinting](web-fingerprinting.md), [Scan performance](scan-performance.md) |
