@@ -298,6 +298,47 @@ PRODUCT_TABLE: dict[str, tuple[str, ...]] = {
     "powerdns authoritative server": ("a:powerdns:authoritative_server", "a:powerdns:authoritative"),
     "powerdns recursor": ("a:powerdns:recursor",),  # [256]
     "libssh": ("a:libssh:libssh",),  # [53]
+    # Products Pulse's probes.json can name with a version (#546), keys checked
+    # against NVD's CPE dictionary on 2026-10-10 (names per key in brackets).
+    # The strings are the probe database's own; tests/test_pulse_probe_db_cpe.py
+    # fails when the database gains a product that is neither here nor in
+    # :data:`UNMAPPED_PROBE_PRODUCTS`.
+    "openresty": ("a:openresty:openresty",),  # [191]
+    "apache traffic server": ("a:apache:traffic_server",),  # [231]
+    "caddy": ("a:caddyserver:caddy",),  # [142]
+    "traefik": ("a:traefik:traefik",),  # [561]
+    "gunicorn": ("a:gunicorn:gunicorn",),  # [74]
+    "uvicorn": ("a:encode:uvicorn",),  # [117]
+    "werkzeug (flask)": ("a:palletsprojects:werkzeug",),  # [103]
+    "tornado": ("a:tornadoweb:tornado",),  # [82]
+    "cherrypy": ("a:cherrypy:cherrypy",),  # [3]
+    "puma": ("a:puma:puma",),  # [157]
+    "phusion passenger": ("a:phusion:passenger",),  # [456]
+    "twistedweb": ("a:twistedmatrix:twisted",),  # [73]
+    "webrick": ("a:ruby-lang:webrick",),  # [19]
+    "caucho resin": ("a:caucho:resin",),  # [99]
+    "next.js": ("a:vercel:next.js",),  # [3723]
+    "thttpd": ("a:acme:thttpd",),  # [40]
+    "boa webserver": ("a:boa:boa",),  # [7]
+    "miniupnpd": ("a:miniupnp_project:miniupnpd",),  # [137]
+    "allegro rompager": ("a:allegrosoft:rompager",),  # [4]
+    "goahead web server": ("a:embedthis:goahead",),  # [50]
+    "paramiko ssh": ("a:paramiko:paramiko",),  # [114]
+    "asyncssh": ("a:asyncssh_project:asyncssh",),  # [63]
+    "apache mina sshd": ("a:apache:mina_sshd",),  # [56]
+    "cyrus imapd": ("a:cyrusimap:cyrus_imap",),  # [242]
+    "cyrus pop3d": ("a:cyrusimap:cyrus_imap",),
+    "grafana": ("a:grafana:grafana",),  # [1289]
+    "influxdb": ("a:influxdata:influxdb",),  # [170]
+    "neo4j graph database": ("a:neo4j:neo4j",),  # [582]
+    # Docker Engine is filed under docker:docker, its upstream under moby.
+    "docker daemon engine": ("a:docker:docker", "a:mobyproject:moby"),  # [355, 492]
+    # The server's own release from ``etcdserver``; the ``etcdcluster`` field is
+    # the cluster version, which is not a release of any binary (unmapped below).
+    "etcd key-value store": ("a:etcd:etcd",),  # [301]
+    "asterisk pbx": ("a:digium:asterisk",),  # [1177]
+    "freeswitch": ("a:freeswitch:freeswitch",),  # [146]
+    "kamailio sip server": ("a:kamailio:kamailio",),  # [171]
 }
 
 #: Product strings a prober also writes out of a loose match, believed only on
@@ -404,6 +445,105 @@ CPE_ALIASES: dict[str, tuple[str, ...]] = {
     "a:eclipse:jetty": ("a:eclipse:jetty", "a:mortbay:jetty"),
     "a:powerdns:authoritative": ("a:powerdns:authoritative_server", "a:powerdns:authoritative"),
     "a:powerdns:authoritative_server": ("a:powerdns:authoritative_server", "a:powerdns:authoritative"),
+}
+
+_NO_VERSION = "the probe rule emits no version, so there is nothing to compare with an NVD range"
+_PROTOCOL = "the captured number is a protocol or API revision, not a release of the product"
+_UNVERIFIED = (
+    "NVD vendor:product not confirmed against a banner yet (2026-10-10); "
+    "add a PRODUCT_TABLE row with the banner that proves it"
+)
+_BANNER_PATH = (
+    "left to the banner path on purpose: a mapped server is matched on its own version only, "
+    "and the PHP behind its Server line (X-Powered-By) would never be read; pinned by "
+    "test_retro_match.py::test_a_product_named_by_its_banner_takes_the_version_from_its_banner"
+)
+_REDIS_FAMILY = (
+    "answers Redis's INFO like Valkey and its siblings do and is versioned on its own; "
+    "see the Redis note in PRODUCT_TABLE"
+)
+
+
+def _unmapped(reason: str, *products: str) -> dict[str, str]:
+    return {product: reason for product in products}
+
+
+#: Product strings Pulse's probes.json can emit that are **deliberately not**
+#: in :data:`PRODUCT_TABLE`, each with the reason. The invariant, held by
+#: tests/test_pulse_probe_db_cpe.py: every product the database names is in one
+#: of the two, and a rule that starts emitting a version for a ``_NO_VERSION``
+#: product breaks the test, so the choice is made again, not inherited.
+#: Pulse attaches no CPE of its own; this and the table are where a Pulse
+#: product string becomes NVD keys.
+UNMAPPED_PROBE_PRODUCTS: dict[str, str] = {
+    **_unmapped(
+        _PROTOCOL,
+        "Cisco SSH",  # ``SSH-2.0-Cisco-1.25``: 1.25 is the SSH implementation's revision
+        "Huawei VRP sshd",
+        "VNC (RFB)",  # ``RFB 003.008``
+        "Microsoft HTTPAPI",  # ``Microsoft-HTTPAPI/2.0``
+        "Apache Tomcat Coyote",  # ``Apache-Coyote/1.1`` is the connector, not Tomcat
+        "Erlang OTP SSH",  # the ssh application's version, not OTP's
+        "Go crypto/ssh",
+        "WSGIServer",  # ``WSGIServer/0.2`` is wsgiref's
+        "etcd cluster",  # the cluster version, not a binary's
+    ),
+    **_unmapped(_REDIS_FAMILY, "Redis", "KeyDB", "Dragonfly"),
+    **_unmapped(_BANNER_PATH, "H2O", "OpenLiteSpeed", "Cherokee Web Server"),
+    "OpenSearch": (
+        "answers Elasticsearch's API with a version space of its own, and is deliberately unmatched; "
+        "pinned by test_retro_match.py::test_lookalikes_of_the_new_products_are_not_matched"
+    ),
+    "Jenkins CI": "LTS and weekly ranges share one NVD key, told apart by sw_edition; see _NOT_MATCHED_CPE",
+    "MinIO Object Storage": "versions are dated release tags (RELEASE.2024-01-01T00-00-00Z) that the range comparison does not order",
+    "Haraka smtpd": "NVD has no CPE name for it (haraka:haraka queried 2026-10-10)",
+    "NATS Server": "NVD has no CPE name under nats:nats-server (queried 2026-10-10)",
+    **_unmapped(
+        _UNVERIFIED,
+        "TinySSH",
+        "Bitvise SSH Server",
+        "Twisted Conch SSH",
+        "WU-FTPD",
+        "Gene6 FTP Server",
+        "Serv-U FTP Server",
+        "Monkey HTTP Server",
+        "GlassFish",
+        "WildFly",
+        "Payara Server",
+        "JBoss Web",
+        "Daphne (Django Channels)",
+        "Hypercorn",
+        "Thin",
+        "Actix-Web (Rust)",
+    ),
+    **_unmapped(
+        _NO_VERSION,
+        # Remote access, FTP, mail
+        "MikroTik RouterOS sshd", "Fortinet FortiOS sshd", "KiTTY sshd", "Microsoft ftpd", "Generic FTP",
+        "Microsoft Exchange smtpd", "Zimbra Collaboration smtpd", "qmail smtpd", "MailEnable smtpd",
+        "Generic SMTP", "Courier imapd", "Courier pop3d",
+        # Web servers, frameworks, appliances
+        "Cloudflare Edge", "Envoy proxy", "LiteSpeed Web Server", "Varnish Cache", "Oracle WebLogic",
+        "IBM WebSphere", "Unicorn", "Express (Node.js)", "Sails.js", "Nuxt.js", "Strapi CMS", "Fastify",
+        "Koa.js", "Axum (Rust)", "Rocket (Rust)", "Warp (Rust)", "Fiber (Go)", "Gin (Go)", "Echo (Go)",
+        "Caddy (Go)", "Cowboy (Erlang/Elixir)", "Elli (Erlang)", "LiteSpeed", "Microsoft Kestrel (.NET)",
+        "ASP.NET", "MikroTik WebFig", "D-Link Router httpd", "Netgear Router httpd", "Asuswrt httpd",
+        "Zyxel Router httpd", "SonicWALL firewall", "F5 BIG-IP", "Palo Alto PAN-OS", "Generic HTTP",
+        # Management consoles and registries
+        "Prometheus Monitoring Server", "Elastic Kibana", "Jaeger Tracing UI", "RabbitMQ Management HTTP",
+        "Kafka CMAK / Manager", "SonarQube", "GitLab", "Sonatype Nexus", "JFrog Artifactory",
+        "VMware Harbor Registry", "Portainer Container Management", "SUSE Rancher", "phpMyAdmin",
+        "Webmin Control Panel", "Keycloak IAM", "HashiCorp Consul", "HashiCorp Vault", "HashiCorp Nomad",
+        "Spring Boot Actuator", "Spring Boot Actuator Health", "CockroachDB", "Kubernetes API Server",
+        "Kubernetes Kubelet",
+        # Data stores and brokers
+        "Redis (auth required)", "Redis-compatible", "PostgreSQL database", "PgBouncer pooler",
+        "ClickHouse DBMS", "RabbitMQ / AMQP message broker", "AMQP broker", "MQTT Broker (Connected)",
+        "MQTT Broker (Mosquitto/EMQX)", "Apache Kafka message broker",
+        # Remote desktop, telephony, telnet
+        "Microsoft Remote Desktop (RDP)", "xrdp (Linux RDP)", "Remote Desktop Protocol", "Generic SIP",
+        "Telnet daemon", "MikroTik RouterOS telnetd", "Cisco IOS telnetd", "Telnet service",
+    ),
 }
 
 #: NVD key → the Debian/Ubuntu *source* package an advisory names. A product
