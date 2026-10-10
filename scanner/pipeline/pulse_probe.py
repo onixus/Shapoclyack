@@ -65,6 +65,7 @@ from .pulse_progress import (
     normalize_host,
     retain_completed_payload,
 )
+from .pulse_probe_db import ProbeDbError, ProbeDbInfo, describe, fallback_lines, load_probe_db
 from .service_schema import (
     FINDING_CLASSES,
     CveRecord,
@@ -88,6 +89,11 @@ _RULESET = re.compile(r"(\d{4})\.(\d{1,2})\.(\d{1,2})(?:-h(\d+))?")
 #: code, not under scanner/data: an enrichment volume mounted there would hide it.
 SERVICES_DB = Path(__file__).resolve().parent / "pulse_data" / "services.tsv"
 
+#: Service-probe rules handed to ``--probe-db``: GenDec's embedded set as the
+#: base plus rules of our own (docs/pulse-backend.md, "Probe database"). Beside
+#: the code for the same reason as SERVICES_DB.
+PROBE_DB = Path(__file__).resolve().parent / "pulse_data" / "probes.json"
+
 #: The only OS engine the adapter runs. ``nmap``/``auto`` make Pulse read
 #: ``nmap-os-db`` from the host.
 OS_MODE = "sinfp"
@@ -104,6 +110,25 @@ def resolve_services_db() -> str:
         return str(SERVICES_DB)
     logging.warning("pulse_probe: %s is missing; Pulse falls back to its embedded port table", SERVICES_DB)
     return os.devnull
+
+
+_RESOLVE = object()
+
+
+def resolve_probe_db() -> tuple[ProbeDbInfo | None, str | None]:
+    """Validate :data:`PROBE_DB`; return (info, None) or (None, why it is not passed).
+
+    Unlike ``--services-db`` there is no neutral value to hand over instead:
+    Pulse drops a file it cannot load for its embedded set and says so only on
+    stderr. So a file that fails our checks is left off the command line and
+    the reason is recorded, rather than pretending it was used.
+    """
+    try:
+        return load_probe_db(PROBE_DB), None
+    except ProbeDbError as exc:
+        reason = str(exc)
+    logging.warning("pulse_probe: probe database %s not used (%s); Pulse runs its embedded rules", PROBE_DB, reason)
+    return None, reason
 
 
 #: Variables Pulse may inherit. Everything else is dropped: GenDec v1.3.0 reads
@@ -293,6 +318,7 @@ def build_pulse_command(
     checkpoint: Path | None,
     max_hosts: int,
     services_db: str | None = None,
+    probe_db: ProbeDbInfo | None | object = _RESOLVE,
 ) -> list[str]:
     cmd = [
         bin_path,
@@ -312,6 +338,11 @@ def build_pulse_command(
         "--services-db",
         services_db or resolve_services_db(),
     ]
+    # ``None`` means "already resolved, nothing usable": leave the flag off.
+    if probe_db is _RESOLVE:
+        probe_db = resolve_probe_db()[0]
+    if isinstance(probe_db, ProbeDbInfo):
+        cmd += ["--probe-db", probe_db.path]
     if rate > 0:
         cmd += ["--rate", str(rate)]
     if adaptive:
@@ -755,8 +786,13 @@ def run_pulse_probe(
     # Resolved once per run, and recorded: a sensor that lost the table names
     # services from Pulse's embedded one, and that must be traceable.
     services_db = resolve_services_db()
+    probe_db, probe_db_skipped = resolve_probe_db()
     diagnostics = {
         "services_db": services_db,
+        **describe(probe_db, probe_db_skipped),
+        # Pulse's own "probe-db ...: using the embedded set" lines: the file
+        # passed validation here but the engine still dropped it.
+        "probe_db_fallback": [],
         "input_unique_tcp_endpoints": sum(len(ports) for ports in grouped.values()),
         "pending_unique_tcp_endpoints": sum(len(ports) for host, ports in grouped.items() if host not in done),
         "planned_tcp_combinations": planned_endpoints,
@@ -846,7 +882,12 @@ def run_pulse_probe(
                 diagnostics["adapter_retry_tcp_combinations"] += chunk.endpoint_count
             probe_calls += 1
             diagnostics["chunk_probe_calls"] += 1
-            return _probe_chunk(command, timeout_seconds=timeout_seconds, retries=retries, idx=idx)
+            result = _probe_chunk(command, timeout_seconds=timeout_seconds, retries=retries, idx=idx)
+            for line in fallback_lines(result[2]):
+                if line not in diagnostics["probe_db_fallback"]:
+                    diagnostics["probe_db_fallback"].append(line)
+                    logging.warning("pulse_probe: Pulse did not use our probe database: %s", line)
+            return result
 
         key = chunk_key(host_chunk, ports_list, scan_mode)
         hosts_file = pulse_dir / f"chunk_{key}.hosts.txt"
@@ -865,6 +906,7 @@ def run_pulse_probe(
                 banner=banner,
                 os_detect=with_os,
                 services_db=services_db,
+                probe_db=probe_db,
                 cve=cve,
                 cve_online=cve_online,
                 syn=syn,

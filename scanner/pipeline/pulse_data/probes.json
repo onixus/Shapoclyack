@@ -1,5 +1,5 @@
 {
-  "version": "2026.08.21",
+  "version": "2026.08.21+shapo.1",
   "probes": [
     {
       "name": "ssh-greeting",
@@ -1359,6 +1359,24 @@
           "service": "telnet",
           "product": "Telnet service",
           "soft": true
+        }
+      ]
+    },
+    {
+      "name": "postgres-sslrequest",
+      "ports": [
+        5432,
+        5433,
+        6432
+      ],
+      "rarity": 1,
+      "payload": "",
+      "payload_hex": "0000000804d2162f",
+      "matches": [
+        {
+          "pattern": "^[NS]$",
+          "service": "postgresql",
+          "product": "PostgreSQL database"
         }
       ]
     }
