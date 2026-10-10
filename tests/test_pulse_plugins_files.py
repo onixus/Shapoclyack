@@ -168,6 +168,17 @@ def test_applicability_table_matches_the_gate_in_the_plugin(path):
     assert ports == gate["ports"], path.name
 
 
+@pytest.mark.parametrize("path", PLUGINS, ids=_id)
+def test_a_port_number_only_counts_when_the_service_is_unnamed(path):
+    """A different service on 445 or 3389 is not SMB or RDP: the table says so, so must the gate."""
+    text = _gate_text(path.read_text(encoding="utf-8"))
+    for match in re.finditer(r"(?:port|number) == \d+", text):
+        before = text[max(0, match.start() - 60) : match.start()]
+        assert re.search(r"unnamed && \(?$|\(svc == \"\" \|\| svc == \"unknown\"\) && $", before), (
+            f"{path.name}: {match.group(0)} is not guarded by an unnamed-service condition"
+        )
+
+
 def test_every_shipped_plugin_has_an_applicability_entry():
     assert {p.stem for p in PLUGINS} == set(pulse_plugins.APPLICABILITY)
 
@@ -527,6 +538,13 @@ def test_a_refused_capability_command_is_an_error_not_a_cleartext_finding(stub, 
 def test_smtp_ehlo_accepted_after_a_multiline_reply_is_judged(stub):
     server = stub(b"220-mail.example ESMTP\r\n220 ready\r\n", lambda _: b"250-m\r\n250-PIPELINING\r\n250 8BITMIME\r\n221 Bye\r\n")
     assert finding(run_plugin("shapo_cleartext_services", server.port)[0])[1] == "SMTP without STARTTLS"
+
+
+@needs_pulse
+def test_a_greeting_with_continuation_lines_of_the_same_code_does_not_shift_the_replies(stub):
+    greeting = b"220-first\r\n220-second\r\n220 FTP ready\r\n"
+    server = stub(greeting, lambda _: b"331 Password required\r\n230 Login successful.\r\n221 Bye\r\n")
+    assert finding(run_plugin("shapo_ftp_anonymous", server.port)[0])[1] == "Anonymous FTP login allowed"
 
 
 # --- anonymous FTP is the answer to PASS, not a 230 anywhere ----------------

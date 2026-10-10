@@ -692,10 +692,12 @@ class _Slow(Pulse):
     """pulse that overruns its timeout on the chunks named in ``slow`` (by host)."""
 
     slow: set[str] = set()
+    timeouts = 0
 
     def _run(self, command, **kwargs):
         hosts = Path(command[command.index("--targets-file") + 1]).read_text().splitlines()
         if set(hosts) & self.slow:
+            self.timeouts += 1
             raise subprocess.TimeoutExpired(command, kwargs["timeout"])
         return super()._run(command, **kwargs)
 
@@ -715,6 +717,8 @@ def test_a_pulse_timeout_leaves_the_chunk_unresolved_instead_of_failing_the_stag
     assert set(raw["completion"]["hosts"]) == {"10.0.0.6"}
     timed = [c for c in raw["chunks"] if c["timed_out"]]
     assert len(timed) == 5 and all(not c["resolved"] for c in timed)
+    # A slow process is not retried at once like a crashed one: one attempt per chunk.
+    assert slow.timeouts == 5
     # No success receipt, so nothing a verification could credit.
     coverage = vc.RunCoverage(out)
     gaps = _gaps(coverage, _entry(ruleset="sha256:" + _sha(PLUGIN_A), host="10.0.0.1"))
