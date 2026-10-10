@@ -15,23 +15,35 @@ and nothing here is evidence that an engine produces it::
     }
 
 The reader is lenient, because the producer is not ours: a version label may be
-``TLSv1_2`` / ``TLSv1.2`` / ``TLS 1.2`` / ``0x0303`` / ``771`` / ``SSLv2``; a
-suite may be a bare string or an object; ``code`` may be an int or a hex string;
+``TLSv1_2`` / ``TLSv1.2`` / ``TLS 1.2`` / ``"0x0303"`` / the int 771 / ``SSLv2``
+(a decimal STRING such as ``"771"`` is not read); a
+suite may be a bare string or an object; ``code`` may be an int or an ``0x`` hex string (a bare
+"0005" or "5" is ambiguous and is ignored);
 a suite with a code and no name is named from the IANA registry. Anything it
 cannot read is skipped, never raised. ``complete`` must be exactly ``true`` to
 count as a finished enumeration; a suite missing from the list is never read
 as "not accepted".
+
+``kex_bits`` is the RSA/DH modulus size for a finite-field exchange and the CURVE
+size for an elliptic-curve one (x25519 is 253); an EC value over 571 is not a curve
+size and is ignored. A suite whose exchange is unknown gets ``"grade_upper_bound":
+true`` -- its letter is the best the cipher allows, and a weak exchange (a 1024-bit
+DH) cannot show in it. A repeated suite name keeps its worst grade.
 """
 
 from __future__ import annotations
 
+import logging
+import math
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from .tls_grading import grade_cipher_suite, normalize_suite_name, worst_grade
+from .tls_grading import grade_cipher_suite_detail, normalize_suite_name, worst_grade
+
+LOG = logging.getLogger("shapoclyack.tls_enumeration")
 
 _IANA_TABLE = Path(__file__).parent / "pulse_data" / "tls_cipher_suites.tsv"
 
@@ -39,7 +51,7 @@ _IANA_TABLE = Path(__file__).parent / "pulse_data" / "tls_cipher_suites.tsv"
 _WIRE_VERSIONS = {0x0200: "SSLv2", 0x0002: "SSLv2", 0x0300: "SSLv3", 0x0301: "TLSv1.0", 0x0302: "TLSv1.1",
                   0x0303: "TLSv1.2", 0x0304: "TLSv1.3"}
 _VERSION_RE = re.compile(r"^(ssl|tls)v?(\d)(?:[._]?(\d))?$")
-_HEX_RE = re.compile(r"^(?:0x)?([0-9a-f]{1,4})$")
+_HEX_RE = re.compile(r"^0x([0-9a-f]{1,4})$")
 _HEX_PAIR_RE = re.compile(r"^0x([0-9a-f]{2})[, ]+0x([0-9a-f]{2})$")
 _SUITE_NAME_RE = re.compile(r"^(?:TLS|SSL)_[A-Za-z0-9_]+$")
 
@@ -107,6 +119,8 @@ def _parse_code(raw: Any) -> int | None:
 def _int_or_none(raw: Any) -> int | None:
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         return None
+    if isinstance(raw, float) and not math.isfinite(raw):
+        return None  # int(inf) / int(nan) would raise
     return int(raw) if raw > 0 else None
 
 
@@ -126,6 +140,8 @@ def parse_suite(raw: Any) -> dict[str, Any] | None:
         code = _parse_code(raw.get("code"))
         if isinstance(raw.get("name"), str):
             name = raw["name"].strip()
+            if not _SUITE_NAME_RE.match(name):
+                name = ""  # not an IANA-style name (OpenSSL "RC4-SHA"): fall back to the code
         if isinstance(raw.get("kex_group"), str):
             kex_group = raw["kex_group"]
         kex_bits = _int_or_none(raw.get("kex_bits"))
@@ -136,7 +152,43 @@ def parse_suite(raw: Any) -> dict[str, Any] | None:
     if not name or not _SUITE_NAME_RE.match(name):
         return None
     name = normalize_suite_name(name)
-    return {"name": name, "grade": grade_cipher_suite(name, kex_bits=kex_bits, kex_group=kex_group)}
+    grade, upper_bound = grade_cipher_suite_detail(name, kex_bits=kex_bits, kex_group=kex_group)
+    suite: dict[str, Any] = {"name": name, "grade": grade}
+    if upper_bound and grade is not None:
+        suite["grade_upper_bound"] = True  # exchange unknown: the letter may be too good
+    return suite
+
+
+def _safe_suites(raw: list[Any]) -> list[dict[str, Any]]:
+    out = []
+    for item in raw:
+        try:
+            suite = parse_suite(item)
+        except Exception:  # noqa: BLE001 -- fail-soft: one unreadable suite must not take the row (or the stage) down
+            LOG.debug("tls_enumeration: skipped an unreadable suite entry", exc_info=True)
+            continue
+        if suite:
+            out.append(suite)
+    return out
+
+
+def _collapse(suites: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One entry per suite name; of duplicates the worst known grade wins (the cautious reading)."""
+
+    def rank(suite: dict[str, Any]) -> int:
+        return "ABCDEF".index(suite["grade"]) if suite["grade"] else -1
+
+    by_name: dict[str, dict[str, Any]] = {}
+    for suite in suites:
+        kept = by_name.get(suite["name"])
+        # equal letters: the one whose exchange was measured is better evidence
+        measured_beats_bound = (
+            kept is not None and rank(suite) == rank(kept)
+            and kept.get("grade_upper_bound") and not suite.get("grade_upper_bound")
+        )
+        if kept is None or rank(suite) > rank(kept) or measured_beats_bound:
+            by_name[suite["name"]] = suite
+    return list(by_name.values())
 
 
 @dataclass
@@ -163,13 +215,12 @@ def parse_enumeration(row: dict[str, Any]) -> Enumeration | None:
         if label is None:
             continue
         suites_raw = entry.get("ciphers")
-        suites = [s for s in map(parse_suite, suites_raw) if s] if isinstance(suites_raw, list) else []
+        suites = _collapse(_safe_suites(suites_raw)) if isinstance(suites_raw, list) else []
         accepted = entry.get("accepted")
         if accepted is False or not (accepted is True or suites):
             continue
         slot = versions.setdefault(label, {"version": label, "ciphers": [], "least_strength": None})
-        seen = {c["name"] for c in slot["ciphers"]}
-        slot["ciphers"].extend(s for s in suites if s["name"] not in seen)
+        slot["ciphers"] = _collapse([*slot["ciphers"], *suites])
         if isinstance(entry.get("server_preference"), bool):
             slot["server_preference"] = entry["server_preference"]
     for slot in versions.values():

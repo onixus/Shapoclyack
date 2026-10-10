@@ -18,8 +18,8 @@ letter, and some properties cap the letter whatever the points say:
 * letter: >=80 A, >=65 B, >=50 C, >=35 D, >=20 E, else F.
 
 Caps: anonymous key exchange, NULL cipher, EXPORT suites and ciphers of 64
-effective bits or fewer -> F; RC4, 64-bit block ciphers (3DES, IDEA, GOST
-28147) and MD5 MACs -> C; a finite-field exchange under 2048 bits -> B (under 1024 -> D), and an
+effective bits or fewer -> F; RC4 and 64-bit block ciphers (3DES, IDEA, GOST
+28147, Magma) -> C; a finite-field exchange under 2048 bits -> B (under 1024 -> D), and an
 elliptic-curve one under 224 bits -> B.
 
 This is written from that public guide and checked against recorded Nmap
@@ -46,22 +46,24 @@ _EC_GROUP_BITS = {
     "brainpoolp256r1": 256, "brainpoolp384r1": 384, "brainpoolp512r1": 512,
     "x25519": 253, "x448": 448, "curve25519": 253, "curve448": 448,
 }
+_MAX_EC_BITS = 571  # sect571 / secp521: the largest named curve
+_SCORED_KEX = ("ecdhe", "ecdh", "rsa", "dhe", "dh")
 _FFDHE_RE = re.compile(r"^ffdhe(\d{3,5})$")
 
 # (cipher token regex, effective key bits, block bits or None, flags)
 # First match wins; order matters (3DES before DES, AES_128_CCM before AES_128).
 _CIPHERS: tuple[tuple[str, int, int | None, str], ...] = (
     (r"NULL", 0, None, "null"),
-    (r"3DES(?:_EDE)?_CBC|DES_192_EDE3|DES_EDE3", 112, 64, ""),
-    (r"DES40_CBC|DES_40|DES_CBC_40", 40, 64, "export"),
-    (r"DES_CBC|DES56", 56, 64, ""),
-    (r"RC2_CBC_40|RC2_40", 40, 64, "export"),
-    (r"RC2", 64, 64, ""),
+    (r"3DES_EDE_CBC", 112, 64, ""),
+    (r"DES40_CBC|DES_CBC_40", 40, 64, "export"),
+    (r"DES_CBC", 56, 64, ""),
+    (r"RC2_CBC_40", 40, 64, "export"),
     (r"RC4_40", 40, None, "rc4 export"),
     (r"RC4", 128, None, "rc4"),
     (r"IDEA", 128, 64, ""),
-    (r"GOST28147|28147", 256, 64, ""),
-    (r"KUZNYECHIK|MAGMA", 256, None, ""),
+    (r"28147", 256, 64, ""),
+    (r"MAGMA", 256, 64, ""),
+    (r"KUZNYECHIK", 256, None, ""),
     (r"AES_?256", 256, None, ""),
     (r"AES_?128", 128, None, ""),
     (r"CAMELLIA_?256", 256, None, ""),
@@ -81,7 +83,6 @@ class _Parsed:
     bits: int
     block: int | None
     flags: str
-    md5_mac: bool
 
 
 def _score_cipher(bits: int) -> int:
@@ -112,6 +113,11 @@ def _ec_to_rsa_equivalent(ec_bits: int) -> int:
         if ec_bits < limit:
             return rsa
     return 15360
+
+
+def _combine(kex_points: int | None, cipher_points: int) -> float:
+    """Weights 30 : 40 (the guide's key exchange : cipher strength); unmeasured exchange counts 100."""
+    return (30 * (100 if kex_points is None else kex_points) + 40 * cipher_points) / 70
 
 
 def _letter(score: float) -> str:
@@ -164,7 +170,6 @@ def _parse(name: str) -> _Parsed | None:
                 bits=bits,
                 block=block,
                 flags=flags + (" export" if export and "export" not in flags else ""),
-                md5_mac=rest.upper().endswith("_MD5") or "_MD5" in rest.upper(),
             )
     return None
 
@@ -182,27 +187,34 @@ def kex_bits_from_group(group: str | None) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def grade_cipher_suite(
+def grade_cipher_suite(name: str, *, kex_bits: int | None = None, kex_group: str | None = None) -> str | None:
+    """Letter A-F for one suite, or ``None``; see ``grade_cipher_suite_detail``."""
+    return grade_cipher_suite_detail(name, kex_bits=kex_bits, kex_group=kex_group)[0]
+
+
+def grade_cipher_suite_detail(
     name: str,
     *,
     kex_bits: int | None = None,
     kex_group: str | None = None,
-) -> str | None:
-    """Letter A-F for one suite, or ``None`` when the suite is not understood.
+) -> tuple[str | None, bool]:
+    """``(letter, upper_bound)`` for one suite; letter A-F for one suite, or ``None`` when the suite is not understood.
 
     ``name`` is the IANA name, or Nmap's ``TLS_AKE_WITH_*`` variant of a TLS
     1.3 name. ``kex_bits`` is the RSA/DH modulus size for finite-field
-    exchanges, or the curve size for an EC exchange; ``kex_group`` names the
+    exchanges, or the CURVE size for an EC exchange (x25519 is 253); a value over
+    571 given for an EC exchange cannot be a curve size and is ignored; ``kex_group`` names the
     group (``x25519``, ``secp256r1``, ``ffdhe2048``) and supplies the size
     when ``kex_bits`` is absent. Without either, the exchange is not scored
     (and a finite-field DH of unknown size is capped at B): the letter is then
-    the best the suite can earn.
+    the best the suite can earn, and ``upper_bound`` is ``True``: the letter may be
+    too good and a weak exchange (a 1024-bit DH, say) cannot show in it.
     """
     parsed = _parse(name)
     if parsed is None:
-        return None
-    if parsed.kex == "anon" or "null" in parsed.flags or "export" in parsed.flags or parsed.bits <= 64:
-        return "F"
+        return None, False
+    if parsed.kex == "anon" or "export" in parsed.flags or parsed.bits <= 64:  # bits 0 is NULL
+        return "F", False
 
     bits = kex_bits if isinstance(kex_bits, int) and not isinstance(kex_bits, bool) and kex_bits > 0 else None
     if bits is None:
@@ -218,6 +230,8 @@ def grade_cipher_suite(
     else:
         is_ec = False
 
+    if is_ec and bits is not None and bits > _MAX_EC_BITS:
+        bits = None  # not a curve size (an RSA/DH modulus in the wrong field): do not score it
     kex_score: int | None = None
     caps: list[str] = []
     if bits is not None and parsed.kex in ("ecdhe", "ecdh", "tls13", "rsa", "dhe", "dh"):
@@ -235,10 +249,12 @@ def grade_cipher_suite(
     cipher_score = _score_cipher(parsed.bits)
     # An exchange nobody measured does not pull the letter down: the grade is then
     # what the cipher alone allows, i.e. an upper bound for that suite.
-    score = (30 * (100 if kex_score is None else kex_score) + 40 * cipher_score) / 70
-    if "rc4" in parsed.flags or parsed.md5_mac or (parsed.block is not None and parsed.block <= 64):
+    score = _combine(kex_score, cipher_score)
+    if "rc4" in parsed.flags or (parsed.block is not None and parsed.block <= 64):
         caps.append("C")
-    return max([_letter(score), *caps])
+    # kex_score is None with a scoreable exchange: the full points above were an assumption.
+    upper_bound = kex_score is None and parsed.kex in _SCORED_KEX
+    return max([_letter(score), *caps]), upper_bound
 
 
 def worst_grade(grades: list[str | None]) -> str | None:

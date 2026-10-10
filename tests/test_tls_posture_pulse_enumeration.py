@@ -139,8 +139,7 @@ def test_unreadable_versions_are_none(label):
         {"code": "0x0005"},
         {"code": 5},
         {"code": "0x00,0x05"},
-        {"code": "5"},
-        {"code": "0005", "name": ""},
+        {"code": "0x0005", "name": "RC4-SHA"},  # not an IANA name: the code names it
         "0x0005",
         "TLS_RSA_WITH_RC4_128_SHA",
         {"name": "TLS_RSA_WITH_RC4_128_SHA", "code": "garbage"},
@@ -148,7 +147,9 @@ def test_unreadable_versions_are_none(label):
 )
 def test_suite_named_by_code_or_by_name_gives_the_same_findings(suite):
     row = _from_pulse(_row({"complete": True, "versions": [{"version": "TLSv1.2", "ciphers": [suite]}]}))
-    assert row["cipher_versions"][0]["ciphers"] == [{"name": "TLS_RSA_WITH_RC4_128_SHA", "grade": "C"}]
+    assert row["cipher_versions"][0]["ciphers"] == [
+        {"name": "TLS_RSA_WITH_RC4_128_SHA", "grade": "C", "grade_upper_bound": True}
+    ]
     sig = _cipher_signature(row["issues"])
     assert ("weak_cipher_grade", "TLSv1.2", "C", None) in sig
     assert ("weak_cipher_name", "TLSv1.2", None, "TLS_RSA_WITH_RC4_128_SHA") in sig
@@ -351,8 +352,11 @@ def test_full_pulse_cap_leaves_no_budget_for_the_probe(tmp_path: Path):
 
 
 def test_corpus_style_gap_is_the_9443_listener(tmp_path: Path):
-    """Pulse v1.3.0 probes 443/8443 only; an open 9443 and the 465/636/993 listeners of the
-    corpus stand have no row. Of those, only 9443 is in the default probe_tls_ports."""
+    """Pulse v1.3.0 probes 443/8443 only (measured live on the corpus stand with extra
+    ``openssl s_server`` listeners on 443, 8443, 465, 636, 993 and 9443; the measurement is in
+    ADR 0002, section "TLS (#545)", not in these fixtures). Here the stand's Pulse rows are the
+    fixture, and the open 9443 plus 465/636/993 are what the scanner reports as open; of those
+    only 9443 is in the default probe_tls_ports."""
     artifact = json.loads((CORPUS / "pulse" / "tcp.json").read_text(encoding="utf-8"))
     nmap_dir = _write_pulse_tls(tmp_path, artifact["tls"])
     calls: list[list[str]] = []
@@ -363,3 +367,151 @@ def test_corpus_style_gap_is_the_9443_listener(tmp_path: Path):
         result = check_tls_posture(nmap_dir, cfg, tmp_path, now=NOW, open_ports=open_ports)
     assert calls == [["172.29.41.30:9443"]]
     assert result["checked_count"] == 4
+
+
+# --- review fixes ------------------------------------------------------------
+
+
+def _suite_row(*suites: Any, version: str = "TLSv1.2", complete: bool = True, **extra: Any) -> dict[str, Any]:
+    return _row({"complete": complete, "versions": [{"version": version, "ciphers": list(suites)}]}, **extra)
+
+
+@pytest.mark.parametrize("bits", [float("inf"), float("-inf"), float("nan"), 1e999, 10**400, "2048", [], {}])
+def test_absurd_kex_bits_do_not_take_the_stage_down(bits):
+    good = {"ip": "10.0.0.1", "port": 443, "negotiated_protocol": "TLSv1_2"}
+    bad = _suite_row({"name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256", "kex_bits": bits}, accepts_weak_protocols=["TLSv1.0"])
+    rows = findings_from_pulse_tls({"tls": [good, bad]}, now=NOW, expiring_soon_days=30, max_targets=10)
+    assert [r["host"] for r in rows] == ["10.0.0.1", "10.0.0.9"]
+    assert any(i["kind"] == "weak_protocol" for i in rows[1]["issues"])  # the row's other findings survive
+    # the suite itself is kept, its exchange simply unmeasured (not dropped by an exception handler)
+    assert [c["name"] for c in rows[1]["cipher_versions"][0]["ciphers"]] == ["TLS_DHE_RSA_WITH_AES_128_GCM_SHA256"]
+
+
+def test_a_row_whose_enumeration_raises_is_isolated():
+    ok = _suite_row({"name": "TLS_RSA_WITH_RC4_128_SHA", "kex_bits": 2048})
+    ok["ip"] = "10.0.0.1"
+    broken = _suite_row({"name": "TLS_RSA_WITH_RC4_128_SHA"}, accepts_weak_protocols=["TLSv1.1"])
+    real = __import__("scanner.pipeline.tls_posture", fromlist=["x"]).parse_enumeration
+
+    def flaky(row):
+        if row["ip"] == "10.0.0.9":
+            raise RuntimeError("boom")
+        return real(row)
+
+    with patch("scanner.pipeline.tls_posture.parse_enumeration", side_effect=flaky):
+        rows = findings_from_pulse_tls({"tls": [ok, broken]}, now=NOW, expiring_soon_days=30, max_targets=10)
+    assert {i["kind"] for i in rows[0]["issues"]} >= {"weak_cipher_grade"}
+    assert [(i["kind"], i["version"]) for i in rows[1]["issues"] if i["kind"] == "weak_protocol"] == [
+        ("weak_protocol", "TLSv1.1")]
+    assert rows[1]["cipher_versions"] == [{"version": "TLSv1.2", "ciphers": [], "least_strength": None}]
+
+
+def test_non_iana_name_with_a_code_is_named_by_the_code_and_without_one_is_dropped():
+    named = _from_pulse(_suite_row({"code": "0x0005", "name": "RC4-SHA"}))
+    assert [c["name"] for c in named["cipher_versions"][0]["ciphers"]] == ["TLS_RSA_WITH_RC4_128_SHA"]
+    nameless = _from_pulse(_suite_row({"name": "RC4-SHA"}, {"name": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"}))
+    assert [c["name"] for c in nameless["cipher_versions"][0]["ciphers"]] == ["TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"]
+
+
+def test_unknown_exchange_is_flagged_as_an_upper_bound_and_cannot_raise_a_kex_finding():
+    unknown = _from_pulse(_suite_row({"name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256"},
+                                     {"name": "TLS_RSA_WITH_AES_128_GCM_SHA256"},
+                                     {"name": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "kex_bits": 4096}))
+    by_name = {c["name"]: c for c in unknown["cipher_versions"][0]["ciphers"]}
+    assert by_name["TLS_DHE_RSA_WITH_AES_128_GCM_SHA256"] == {
+        "name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256", "grade": "B", "grade_upper_bound": True}
+    assert by_name["TLS_RSA_WITH_AES_128_GCM_SHA256"]["grade_upper_bound"] is True
+    # 4096 is not a curve size: ignored, and then the letter is an upper bound again
+    assert by_name["TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"]["grade_upper_bound"] is True
+    assert not _cipher_signature(unknown["issues"])  # a 1024-bit DH is invisible without kex_bits
+
+    known = _from_pulse(_suite_row({"name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256", "kex_bits": 1024},
+                                   {"name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256", "kex_bits": 512},
+                                   {"name": "TLS_AES_128_GCM_SHA256"}))
+    (suite,) = [c for c in known["cipher_versions"][0]["ciphers"] if "DHE" in c["name"]]
+    assert suite == {"name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256", "grade": "D"}  # worst of the duplicates
+    assert ("weak_cipher_grade", "TLSv1.2", "D", None) in _cipher_signature(known["issues"])
+    tls13 = next(c for c in known["cipher_versions"][0]["ciphers"] if c["name"] == "TLS_AES_128_GCM_SHA256")
+    assert "grade_upper_bound" not in tls13
+
+
+def test_accepted_false_with_a_suite_list_is_still_not_accepted():
+    row = _from_pulse(_row({"complete": True, "versions": [
+        {"version": "SSLv3", "accepted": False, "ciphers": [{"name": "TLS_RSA_WITH_3DES_EDE_CBC_SHA", "kex_bits": 2048}]}]}))
+    assert not [i for i in row["issues"] if i["kind"] == "weak_protocol"]
+    assert not _cipher_signature(row["issues"])
+    assert row["cipher_versions"] == [{"version": "TLSv1.2", "ciphers": [], "least_strength": None}]
+
+
+def test_duplicate_suites_collapse_to_the_worst_grade_within_and_across_entries():
+    dup = {"name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256"}
+    row = _from_pulse(_row({"complete": True, "versions": [
+        {"version": "TLSv1.2", "ciphers": [{**dup, "kex_bits": 4096}, {**dup, "kex_bits": 512}, {**dup, "kex_bits": 2048}]},
+        {"version": "TLS 1.2", "ciphers": [{**dup, "kex_bits": 4096}, {"name": "TLS_NEW_WITH_THING"}]},
+    ]}))
+    (v,) = row["cipher_versions"]
+    assert {c["name"]: c["grade"] for c in v["ciphers"]} == {dup["name"]: "D", "TLS_NEW_WITH_THING": None}
+    assert v["least_strength"] == "D"
+
+
+def test_a_known_grade_replaces_an_unknown_one_for_the_same_name():
+    row = _from_pulse(_suite_row({"name": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "kex_group": "nonsense"},
+                                 {"name": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "kex_bits": 256}))
+    assert row["cipher_versions"][0]["ciphers"] == [
+        {"name": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "grade": "A"}]
+
+
+@pytest.mark.parametrize("code", ["5", "0005", "771", "C02F", "c02f", " 5 ", "0x", "0x12345", "x0005", 0x10000, -5])
+def test_only_0x_hex_strings_and_in_range_ints_name_a_suite(code):
+    row = _from_pulse(_suite_row({"code": code}))
+    assert not [c for v in row["cipher_versions"] for c in v["ciphers"]]
+
+
+def test_decimal_version_strings_are_not_read_but_ints_and_0x_hex_are():
+    from scanner.pipeline.tls_enumeration import normalize_version
+
+    assert normalize_version("771") is None
+    assert normalize_version(771) == "TLSv1.2"
+    assert normalize_version("0x0303") == "TLSv1.2"
+
+
+def test_ipv6_open_port_is_covered_in_any_spelling_and_gap_is_passed_without_brackets(tmp_path: Path):
+    nmap_dir = _write_pulse_tls(tmp_path, [{"ip": "0:0:0:0:0:0:0:1", "port": 443}, {"ip": "2001:db8::5", "port": 443}])
+    calls: list[list[str]] = []
+    cfg = TlsPostureConfig(enabled=True, probe_fallback=True)
+    with patch("scanner.pipeline.tls_posture.probe_tls_endpoints", side_effect=_fake_probe(calls)):
+        result = check_tls_posture(
+            nmap_dir, cfg, tmp_path, now=NOW,
+            open_ports=["[::1]:443/tcp", "[2001:0db8:0:0:0:0:0:5]:443/tcp", "[::1]:9443/tcp"],
+        )
+    assert calls == [["::1:9443"]]
+    assert result["checked_count"] == 3
+
+
+def test_merged_rows_are_ordered_by_host_then_numeric_port(tmp_path: Path):
+    nmap_dir = _write_pulse_tls(tmp_path, [{"ip": "10.0.0.2", "port": 443}, {"ip": "10.0.0.1", "port": 8443}])
+    calls: list[list[str]] = []
+    cfg = TlsPostureConfig(enabled=True, probe_fallback=True)
+    with patch("scanner.pipeline.tls_posture.probe_tls_endpoints", side_effect=_fake_probe(calls)):
+        result = check_tls_posture(
+            nmap_dir, cfg, tmp_path, now=NOW,
+            open_ports=["10.0.0.1:10443/tcp", "10.0.0.1:9443/tcp", "10.0.0.2:4443/tcp"],
+        )
+    assert [(f["host"], f["port"], f["source"]) for f in result["findings"]] == [
+        ("10.0.0.1", "8443", "pulse-tls"), ("10.0.0.1", "9443", "pulse-tls-probe"),
+        ("10.0.0.1", "10443", "pulse-tls-probe"), ("10.0.0.2", "443", "pulse-tls"),
+        ("10.0.0.2", "4443", "pulse-tls-probe")]
+
+
+def test_a_suite_that_raises_while_being_read_is_skipped_alone():
+    real = __import__("scanner.pipeline.tls_enumeration", fromlist=["x"]).grade_cipher_suite_detail
+
+    def flaky(name, **kw):
+        if "RC4" in name:
+            raise RuntimeError("boom")
+        return real(name, **kw)
+
+    with patch("scanner.pipeline.tls_enumeration.grade_cipher_suite_detail", side_effect=flaky):
+        row = _from_pulse(_suite_row({"name": "TLS_RSA_WITH_RC4_128_SHA"},
+                                     {"name": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "kex_bits": 256}))
+    assert [c["name"] for c in row["cipher_versions"][0]["ciphers"]] == ["TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"]

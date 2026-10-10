@@ -509,7 +509,11 @@ has no Pulse row, and those rows join `tls_posture.json` with their own
 `source: pulse-tls-probe` (the run-level `source` stays `pulse-tls`). They count
 toward `max_targets` together with the Pulse rows (`truncated` is set when either
 side is cut); `tls_probe.json` holds just the probed rows. Ports outside
-`probe_tls_ports` (465, 636, 993, 3306, ...) are still not looked at.
+`probe_tls_ports` (465, 636, 993, 3306, ...) are still not looked at, and the
+budget is spent on open `probe_tls_ports` endpoints whether or not they speak TLS.
+The "443 and 8443 only" figure was measured live on the corpus stand with extra
+`openssl s_server` listeners (443, 8443, 465, 636, 993, 9443); the measurement is
+in ADR 0002, section "TLS (#545)", not in the recorded fixtures.
 
 ### Cipher suites and A-F grades on the Pulse path
 
@@ -524,10 +528,14 @@ to enumerate suites (opt-in, [GenDec#34](https://github.com/onixus/GenDec/issues
   the key-exchange size or group. Method: the public Qualys SSL Labs *SSL Server
   Rating Guide* (key-exchange and cipher strength to points, points to a letter),
   with ceilings: anonymous key exchange, NULL, EXPORT and 64-bit-or-less keys give
-  F; RC4, 64-bit block ciphers (3DES, IDEA, GOST 28147) and MD5 MACs give C;
+  F; RC4 and 64-bit block ciphers (3DES, IDEA, GOST 28147, Magma) give C;
   finite-field DH or RSA exchange under 2048 bits gives B (under 1024, D); a
   finite-field DH of unknown size gives B. A suite it cannot parse has grade
   `null`, never a guessed letter, and does not count toward `least_strength`.
+  When the key exchange is unknown (no `kex_bits` / `kex_group`) the letter is the
+  best the cipher allows and the suite carries `"grade_upper_bound": true`. Such a
+  suite cannot produce a `weak_cipher_grade` because of its key exchange: a
+  1024-bit DH (Logjam) stays invisible until the engine reports `kex_bits`.
   The `weak_cipher_grade` threshold (C-F) is the same for every source.
   It was checked against the recorded Nmap output of the corpus; that sample only
   contains A and F, so the C-E rules rest on the guide, not on Nmap.
@@ -544,11 +552,16 @@ to enumerate suites (opt-in, [GenDec#34](https://github.com/onixus/GenDec/issues
   ```
 
   The reader accepts a version as `TLSv1_2`, `TLSv1.2`, `TLS 1.2`, `0x0303` or
-  `771`, `SSLv2`/`SSLv3`; a suite as a name string or an object; a `code` as an
-  int or a hex string, and names a suite given by code alone from the IANA table
+  the int `771`, `SSLv2`/`SSLv3` (a decimal string such as `"771"` is not read);
+  a suite as a name string or an object; a `code` as an int or an `0x` hex string
+  (a bare `"0005"` is ambiguous and ignored); a name that is not IANA-style
+  (`RC4-SHA`) is replaced by the one the code stands for; and names a suite given by code alone from the IANA table
   `scanner/pipeline/pulse_data/tls_cipher_suites.tsv` (IANA *TLS Cipher Suites*
   registry, fetched 2026-10-10; rebuilt by `scripts/build-pulse-tls-ciphers.py`).
-  Anything it cannot read is skipped. Findings keep their existing kinds and
+  `kex_bits` is the RSA/DH modulus size for a finite-field exchange and the
+  **curve size** for an EC one (x25519: 253); an EC value over 571 is not a curve
+  size and is ignored. Repeated suite names collapse to the worst grade. Anything
+  it cannot read is skipped, and one unreadable suite or row never fails the stage. Findings keep their existing kinds and
   shapes (`weak_protocol`, `weak_cipher_grade`, `weak_cipher_name`; `source:
   pulse-tls`) and come from the same classifier as the nmap path. If `complete`
   is not exactly `true` (or is absent) every finding drawn from the enumeration

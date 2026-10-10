@@ -89,6 +89,7 @@ FQDN; that is not adding targets.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 import xml.etree.ElementTree as ET  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
@@ -570,7 +571,12 @@ def findings_from_pulse_tls(
         # Suite enumeration (expected GenDec#34, see tls_enumeration): graded on our
         # side and classified by the very function the nmap path uses. Not
         # complete -> every finding drawn from it needs confirming.
-        enumeration = parse_enumeration(row)
+        try:
+            enumeration = parse_enumeration(row)
+        except Exception:  # noqa: BLE001 -- fail-soft: the enumeration is an optional extra of a
+            # producer we do not control; a row it garbles keeps its certificate findings
+            LOG.warning("tls_posture: unreadable suite enumeration for %s:%s ignored", ip, port, exc_info=True)
+            enumeration = None
         enum_weak_versions: set[str] = set()
         if enumeration is not None:
             enum_issues = _classify_ciphers(enumeration.versions)
@@ -773,6 +779,14 @@ def _persist(output_dir: Path, result: dict[str, Any]) -> None:
     write_lines(output_dir / "tls_posture_findings.txt", lines)
 
 
+def _canonical_host(host: str) -> str:
+    """IP literals compare in one spelling (``::1`` == ``0:0:0:0:0:0:0:1``); names as they are."""
+    try:
+        return str(ipaddress.ip_address(host.strip()))
+    except ValueError:
+        return host.strip()
+
+
 def _pulse_gap_endpoints(
     open_ports: list[str] | None, config: TlsPostureConfig, covered: set[tuple[str, str]]
 ) -> list[str]:
@@ -782,10 +796,11 @@ def _pulse_gap_endpoints(
     """
     if not config.probe_fallback or not open_ports:
         return []
+    covered = {(_canonical_host(h), p) for h, p in covered}
     return [
-        f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+        f"{host}:{port}"  # parse_endpoint splits on the LAST colon, so a bare IPv6 host survives
         for host, port in _parse_tls_endpoints(open_ports, set(config.probe_tls_ports))
-        if (host, str(port)) not in covered
+        if (_canonical_host(host), str(port)) not in covered
     ]
 
 
@@ -920,8 +935,11 @@ def check_tls_posture(
             max_targets=config.max_targets,
         )
         if pulse_findings:
-            # Pulse probes TLS only on a couple of ports (443/8443 as of v1.3.0);
-            # the other ``probe_tls_ports`` that are open would go unchecked, so
+            # Pulse probes TLS only on a couple of ports (443/8443 as of v1.3.0: measured
+            # live on the corpus stand with extra openssl s_server listeners on 443, 8443,
+            # 465, 636, 993 and 9443, recorded in docs/adr/0002-replacing-nmap-functions.md,
+            # section "TLS (#545)" -- not in the corpus fixtures); the other
+            # ``probe_tls_ports`` that are open would go unchecked, so
             # the stdlib probe fills them in. Its rows keep their own
             # ``source: pulse-tls-probe``; the run-level ``source`` stays pulse-tls.
             pulse_count = len(target_keys) or len(pulse_findings)
