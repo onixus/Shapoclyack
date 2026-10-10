@@ -19,6 +19,7 @@ so they also pin the artifact contract between the two sides.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -1809,3 +1810,148 @@ def test_the_regroup_grace_period_is_configurable(monkeypatch):
 def test_a_silence_is_spelled_in_the_largest_whole_unit(seconds, spelled):
     """Under a minute used to read "0m" — "silent for zero minutes"."""
     assert vulns._duration(seconds) == spelled
+
+
+# --------------------------------------------------------------------------
+# A Rhai plugin's finding, end to end: adapter -> tracker -> verification (#544)
+# --------------------------------------------------------------------------
+
+PLUGIN = "shapo_ssh_algorithms"
+PLUGIN_SOURCE = f'fn name() {{ "{PLUGIN}" }}\nfn description() {{ "x" }}\nfn ports() {{ [] }}\nfn run() {{ }}\n'
+PLUGIN_SHA = "sha256:" + hashlib.sha256(PLUGIN_SOURCE.encode()).hexdigest()
+PLUGIN_ERROR = f"  warn  plugin error — {PLUGIN}: Runtime error: the server closed (line 3, position 9)\n"
+
+
+def _plugin_stage(
+    monkeypatch,
+    run_dir: Path,
+    tmp_path: Path,
+    *,
+    source: str = PLUGIN_SOURCE,
+    service: str = "ssh",
+    stderr: str = "",
+    finding: bool = False,
+) -> Path:
+    """The real Pulse stage with plugins on over ``run_dir``; only the binary is stubbed."""
+    from scanner.pipeline import pulse_plugins
+
+    plugins = tmp_path / f"plugins-{run_dir.name}"
+    plugins.mkdir(exist_ok=True)
+    (plugins / f"{PLUGIN}.rhai").write_text(source, encoding="utf-8")
+    monkeypatch.setattr(pulse_plugins, "PLUGINS_DIR", plugins)
+    monkeypatch.setattr(pulse_plugins, "check_plugin", lambda *args, **kwargs: None)
+    banner = "SSH-2.0-OpenSSH_7.4" if service == "ssh" else "HTTP/1.1 200 OK"
+    row = {
+        "cve_id": f"SCRIPT-{PLUGIN.upper()}", "ip": HOST, "port": 22, "service": service, "severity": "MEDIUM",
+        "title": "SSH server offers weak algorithms", "summary": "s", "evidence": "broken: ssh-dss",
+        "source": "rhai_script", "finding_class": "plugin_script", "match_reason": f"rhai script {PLUGIN}",
+        "confidence": 90, "ruleset_version": RULESET, "requires_confirmation": False,
+    }
+    payload = json.dumps({
+        "open": [{"ip": HOST, "port": 22, "service": service, "banner": banner}],
+        "cves": [row] if finding else [], "findings": [row] if finding else [],
+        "meta": {"ruleset": RULESET, "scanner": "pulse", "schema": "pulse.scan.v2", "version": "1.3.0"},
+    })
+    monkeypatch.setattr(
+        pulse_probe, "run_command", lambda command, **_: subprocess.CompletedProcess(command, 0, payload, stderr)
+    )
+    monkeypatch.setattr(pulse_probe, "resolve_pulse_bin", lambda _: "pulse")
+    monkeypatch.setattr(pulse_probe, "_pulse_available", lambda _: True)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    pulse_probe.run_pulse_probe([f"{HOST}:22/tcp"], output_dir=run_dir, plugins=True, retry_settle_seconds=0)
+    return run_dir
+
+
+def _plugin_report_row(monkeypatch, tmp_path: Path) -> dict:
+    """The vulnerabilities.json row the report would write for a plugin finding."""
+    observed = _plugin_stage(monkeypatch, tmp_path / "observed", tmp_path, finding=True)
+    shape = json.loads((observed / "pulse" / "findings_report_shape.json").read_text(encoding="utf-8"))
+    (row,) = [r for r in shape["vulnerabilities"] if r["source"] == "pulse-plugin"]
+    return row
+
+
+def _plugin_entry(vuln: dict) -> dict:
+    (entry,) = [d for d in vuln["detectors"] if d["detector"] == "pulse-plugin"]
+    return entry
+
+
+def test_a_plugin_finding_is_tracked_with_its_plugin_and_the_whole_sha(tmp_path, monkeypatch):
+    row = _plugin_report_row(monkeypatch, tmp_path)
+    assert row["cve"] == "" and row["script_id"] == f"pulse-plugin:{PLUGIN}"
+    settings, tenant_id = _seed(tmp_path, findings=[row])
+
+    vuln = _tracked(settings, tenant_id, [row])
+
+    entry = _plugin_entry(vuln)
+    assert entry["ref"] == PLUGIN and entry["host"] == HOST and entry["port"] == "22"
+    assert entry["protocol"] == "tcp"
+    assert entry["ruleset"] == PLUGIN_SHA and len(entry["ruleset"]) == len("sha256:") + 64
+
+
+def test_a_plugin_detector_listed_under_also_detected_by_is_kept(tmp_path, monkeypatch):
+    row = _plugin_report_row(monkeypatch, tmp_path)
+    also = {key: row[key] for key in ("source", "script_id", "protocol", "ruleset_version")}
+    finding = _row("pulse", "pulse:local", port="22", also_detected_by=[also])
+    settings, tenant_id = _seed(tmp_path, findings=[finding])
+
+    vuln = _tracked(settings, tenant_id, [finding])
+
+    assert {d["detector"] for d in vuln["detectors"]} == {"pulse", "pulse-plugin"}
+    assert _plugin_entry(vuln)["ruleset"] == PLUGIN_SHA
+
+
+def _plugin_verification(monkeypatch, tmp_path, **stage):
+    row = _plugin_report_row(monkeypatch, tmp_path)
+    settings, tenant_id = _seed(tmp_path, findings=[row])
+    vuln = _tracked(settings, tenant_id, [row])
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _plugin_stage(monkeypatch, run_dir, tmp_path, **stage)
+    return settings, tenant_id, vuln
+
+
+def test_the_same_plugin_on_an_applicable_endpoint_closes_the_finding(tmp_path, monkeypatch):
+    settings, tenant_id, vuln = _plugin_verification(monkeypatch, tmp_path)
+
+    stats = _fold(settings, tenant_id)
+
+    assert stats.verification_passed == 1
+    after = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"])
+    assert after["state"] == vuln_states.CLOSED and after["machine_verified"] is True
+    assert _last_event(settings, tenant_id, vuln["vuln_id"])["detail"]["coverage_rule"] == "detectors"
+
+
+@pytest.mark.parametrize(
+    ("stage", "reason"),
+    [
+        # The plugin was edited since the finding: another check.
+        ({"source": PLUGIN_SOURCE + "// edited\n"}, "plugin_changed"),
+        # Pulse printed a runtime error for that plugin in the chunk.
+        ({"stderr": PLUGIN_ERROR}, "plugin_error"),
+        # The endpoint is not a service the plugin handles now: it exited at its gate.
+        ({"service": "http"}, "plugin_not_applicable"),
+    ],
+    ids=["edited", "error", "not-applicable"],
+)
+def test_a_run_that_did_not_really_look_does_not_close_a_plugin_finding(tmp_path, monkeypatch, stage, reason):
+    settings, tenant_id, vuln = _plugin_verification(monkeypatch, tmp_path, **stage)
+
+    stats = _fold(settings, tenant_id)
+
+    assert stats.verification_passed == 0
+    event = _assert_inconclusive(settings, tenant_id, vuln["vuln_id"], reason)
+    assert event["detail"]["gaps"][0]["detector"] == "pulse-plugin"
+    assert event["detail"]["gaps"][0]["ref"] == PLUGIN
+
+
+def test_with_a_second_detector_the_plugin_alone_can_hold_the_closure(tmp_path, monkeypatch):
+    row = _plugin_report_row(monkeypatch, tmp_path)
+    also = {key: row[key] for key in ("source", "script_id", "protocol", "ruleset_version")}
+    finding = _row("pulse", "pulse:local", port="22", also_detected_by=[also])
+    settings, tenant_id = _seed(tmp_path, findings=[finding])
+    vuln = _tracked(settings, tenant_id, [finding])
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _plugin_stage(monkeypatch, run_dir, tmp_path, source=PLUGIN_SOURCE + "// edited\n")
+
+    _fold(settings, tenant_id)
+
+    _assert_inconclusive(settings, tenant_id, vuln["vuln_id"], "plugin_changed")
