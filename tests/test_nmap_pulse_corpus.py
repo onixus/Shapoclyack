@@ -10,6 +10,7 @@ inputs changed, then update the numbers in the same commit as
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -50,12 +51,51 @@ EXPECTED_SUMMARY = {
         "nmap_flagged_vulnerable": 16,
         "pulse_findings": 13,
         "pulse_findings_by_class": {"exposure": 6, "tls": 4, "version_cve": 3},
-        "pulse_scripts_run_findings": 13,
+        "pulse_plugin_findings": 5,
         "cve_both": 3,
         "cve_only_nmap": 425,
         "cve_only_pulse": 0,
     },
     "os": {"hosts_nmap": 14, "hosts_pulse": 14, "hosts_with_both": 14, "family_agree": 14, "family_disagree": 0},
+    # Shapoclyack's Rhai plugins (#544) against the NSE scripts that ran on the same stand.
+    "plugins": {
+        "files": 6,
+        "errors": 0,
+        "findings_by_plugin": {
+            "shapo_cleartext_services": 1,
+            "shapo_ftp_anonymous": 1,
+            "shapo_remote_admin_exposure": 1,
+            "shapo_smb_exposure": 2,
+        },
+        "plugin_only": ["shapo_cleartext_services", "shapo_remote_admin_exposure", "shapo_smb_exposure"],
+        "nse": {
+            "ssh2-enum-algos": {
+                "endpoints": 4, "plugin": "shapo_ssh_algorithms",
+                "covers": "weak algorithms only, not the full lists", "verdict_agrees": 4,
+            },
+            "ssh-hostkey": {
+                "endpoints": 4, "plugin": None,
+                "not_covered": "key fingerprints need the key exchange: binary packets",
+            },
+            "ftp-anon": {
+                "endpoints": 1, "plugin": "shapo_ftp_anonymous",
+                "covers": "login accepted or not; no directory listing (needs a data connection)",
+                "verdict_agrees": 1,
+            },
+            "ftp-syst": {"endpoints": 1, "plugin": None, "not_covered": "informational (SYST reply); not a finding"},
+            "smb2-security-mode": {
+                "endpoints": 1, "plugin": None,
+                "not_covered": "SMB2 negotiate starts with 0xFE: a byte the sandbox cannot send",
+            },
+            "smb-protocols": {
+                "endpoints": 1, "plugin": None, "not_covered": "SMB negotiate: a byte the sandbox cannot send",
+            },
+            "rdp-enum-encryption": {
+                "endpoints": 1, "plugin": None,
+                "not_covered": "X.224 request carries 0xE0: a byte the sandbox cannot send",
+            },
+        },
+    },
 }
 
 
@@ -141,6 +181,64 @@ def test_stripping_nmap_script_output_is_noticed(corpus_copy: Path):
     summary = compare_corpus(corpus_copy)["summary"]
     assert summary["tls"]["nmap_cipher_suites_enumerated"] == 0
     assert summary["tls"] != EXPECTED_SUMMARY["tls"]
+
+
+def _plugin_run(corpus: Path) -> dict:
+    return json.loads((corpus / "pulse" / "tcp-plugins.json").read_text(encoding="utf-8"))
+
+
+def test_the_plugin_run_was_recorded_with_the_plugins_that_ship():
+    """A plugin edited after the recording would leave the corpus describing code that is gone."""
+    from scanner.pipeline import pulse_plugins
+
+    recorded = dict(
+        reversed(line.split())
+        for line in (CORPUS / "pulse" / "plugins.sha256").read_text(encoding="utf-8").splitlines()
+    )
+    shipped = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in pulse_plugins.PLUGINS_DIR.glob("*.rhai")}
+    assert recorded == shipped, (
+        "a plugin changed since pulse/tcp-plugins.json was recorded: "
+        "RECORD_PARTS=pulse PULSE_BIN=<linux pulse> tests/fixtures/nmap_pulse_corpus/record.sh"
+    )
+
+
+def test_every_shipped_plugin_is_accounted_for_against_nse():
+    from pulse_corpus import NSE_PLUGIN_MAP, PLUGIN_ONLY
+
+    from scanner.pipeline import pulse_plugins
+
+    shipped = {p.stem for p in pulse_plugins.PLUGINS_DIR.glob("*.rhai")}
+    mapped = {m["plugin"] for m in NSE_PLUGIN_MAP.values() if m["plugin"]}
+    assert shipped == mapped | set(PLUGIN_ONLY)
+    for script_id, mapping in NSE_PLUGIN_MAP.items():
+        assert bool(mapping["plugin"]) != bool(mapping.get("why")), script_id  # a plugin, or the reason there is none
+
+
+def test_dropping_a_plugin_finding_is_noticed(corpus_copy: Path):
+    path = corpus_copy / "pulse" / "tcp-plugins.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["cves"] = [c for c in payload["cves"] if c.get("cve_id") != "SCRIPT-SHAPO_FTP_ANONYMOUS"]
+    payload["findings"] = payload["cves"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    summary = compare_corpus(corpus_copy)["summary"]
+    assert summary["scripts"]["pulse_plugin_findings"] == 4
+    assert summary["plugins"]["nse"]["ftp-anon"]["verdict_agrees"] == 0  # Nmap allows it, the plugin no longer says so
+
+
+def test_a_weak_algorithm_nmap_lists_and_the_plugin_misses_is_a_disagreement(corpus_copy: Path):
+    path = corpus_copy / "nmap" / "tcp.xml"
+    text = path.read_text(encoding="utf-8")
+    assert 'id="ssh2-enum-algos"' in text
+    # Put a name the plugin calls weak into one endpoint's algorithm list.
+    marked = text.replace('id="ssh2-enum-algos" output="', 'id="ssh2-enum-algos" output="\n      3des-cbc', 1)
+    path.write_text(marked, encoding="utf-8")
+    assert compare_corpus(corpus_copy)["summary"]["plugins"]["nse"]["ssh2-enum-algos"]["verdict_agrees"] == 3
+
+
+def test_a_plugin_error_in_the_recorded_run_is_counted(corpus_copy: Path):
+    stderr = corpus_copy / "pulse" / "tcp-plugins.stderr"
+    stderr.write_text("  warn  plugin error \u2014 shapo_ssh_algorithms: Runtime error: boom\n", encoding="utf-8")
+    assert compare_corpus(corpus_copy)["summary"]["plugins"]["errors"] == 1
 
 
 def test_empty_corpus_does_not_pass(tmp_path: Path):

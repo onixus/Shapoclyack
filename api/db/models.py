@@ -1535,8 +1535,8 @@ class Vulnerability(Base):
     script_id: Mapped[str | None] = mapped_column(default=None)
     port: Mapped[str | None] = mapped_column(default=None)
     # Which detectors have observed this finding, and where: one entry per
-    # (detector, ref, host, port) -- ``pulse`` / ``nuclei`` / ``nmap-nse``, the
-    # template id, NSE script or pulse origin, and the host spelled as the
+    # (detector, ref, host, port) -- ``pulse`` / ``pulse-plugin`` / ``nuclei`` /
+    # ``nmap-nse``, the template id, NSE script, pulse origin or plugin name, and the host spelled as the
     # scanner addressed it -- with the run and time it was last seen. Merged on
     # every observation, newest first, capped (vulnerabilities.MAX_DETECTORS).
     # ``script_id`` above is only the first observer's; one CVE seen by Pulse

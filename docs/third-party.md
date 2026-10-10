@@ -127,6 +127,20 @@ it must not be shadowed by an enrichment volume mounted there:
 | Public Suffix List | `scanner/pipeline/public_suffix_list.dat` | [publicsuffix.org](https://publicsuffix.org/list/) | MPL-2.0; committed unmodified with its licence header, so the file is its own source form | The whole list, as published — used to derive registrable (seed) domains and to refuse AXFR against a public suffix. Refresh with `scripts/fetch-public-suffix-list.sh` |
 | Subdomain-takeover catalogue | `scanner/pipeline/takeover_fingerprints.json` | [can-i-take-over-xyz](https://github.com/EdOverflow/can-i-take-over-xyz); [nuclei-templates](https://github.com/projectdiscovery/nuclei-templates/tree/main/http/takeovers) `http/takeovers`; Microsoft's dangling-DNS guidance | **CC BY 4.0 — attribution required** (can-i-take-over-xyz); MIT (nuclei-templates) | Per service: takeover status and the short error strings a provider shows for an unclaimed resource. A selection, re-expressed as a JSON catalogue with this project's own CNAME patterns, notes and ids; no prose is copied. Edited by hand — see [configuration.md](configuration.md#subdomain-takeover-detection) |
 
+Rhai plugins for Pulse ([Pulse plugins](pulse-plugins.md)) ship in
+`scanner/pipeline/pulse_data/plugins/` for the same reason. Three are adapted from
+scripts of GenDec release v1.3.0 (MIT, per its `Cargo.toml`) and say so in their
+`SPDX-License-Identifier: MIT` header; the rest are original and Apache-2.0:
+
+| Plugin | Origin | Terms | What changed |
+|---|---|---|---|
+| `shapo_ssh_banner.rhai` | GenDec `scripts/ssh_audit.rhai` | MIT | any port whose service is SSH; protocol 1 only vs 1.99 told apart; OpenSSH major version read instead of a prefix list |
+| `shapo_smb_exposure.rhai` | GenDec `scripts/smb_netbios_exposure_audit.rhai` | MIT | matches on the detected service too; severity HIGH lowered to MEDIUM; text says what was not checked |
+| `shapo_remote_admin_exposure.rhai` | GenDec `scripts/rdp_vnc_exposure_audit.rhai` | MIT | matches on the detected service too; VNC confirmed from the `RFB` greeting; severity HIGH lowered to MEDIUM; text says what was not checked |
+| `shapo_ssh_algorithms.rhai`, `shapo_ftp_anonymous.rhai`, `shapo_cleartext_services.rhai` | this project | Apache-2.0 | — |
+
+The attribution is in [NOTICE](../NOTICE).
+
 **Attribution.** EPSS data is provided by FIRST.org under CC BY 4.0. The
 takeover statuses and fingerprints are adapted from "can-i-take-over-xyz" by
 EdOverflow and contributors, CC BY 4.0. Any redistribution of this repository

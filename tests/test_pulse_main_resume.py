@@ -47,7 +47,9 @@ def cli(tmp_path, monkeypatch):
         "profiles": {name: {"discover_rate": 10, "port_rate": 10, "top_ports": 100,
                              "nse_profile": "baseline"} for name in ("safe", "balanced", "fast")},
         "nse_profiles": {"baseline": {"scripts": "default,safe"}},
-        "service_probe": {"backend": "pulse", "pulse": {"retry_settle_seconds": 0}},
+        # Plugins have their own tests below; here subprocess.run is forbidden and
+        # `pulse plugin check` is one.
+        "service_probe": {"backend": "pulse", "pulse": {"retry_settle_seconds": 0, "plugins": False}},
         "reporting": {"pdf_summary": False},
         "alerts": {"enabled": False}, "defectdojo": {"enabled": False},
     })
@@ -76,6 +78,7 @@ def cli(tmp_path, monkeypatch):
     monkeypatch.setattr(pp, "resolve_pulse_bin", lambda _: "fixture")
     monkeypatch.setattr(pp, "_pulse_available", lambda _: True)
     calls = []
+    commands = []
     outcome = {"code": 0}
 
     def probe(command, **kwargs):
@@ -85,6 +88,7 @@ def cli(tmp_path, monkeypatch):
         assert not disk.is_done("pulse"), "stale coarse completion survived until replay"
         assert not set(hosts) & disk.done_items("pulse"), "unverified host was not invalidated"
         calls.extend((host, port) for host in hosts for port in ports)
+        commands.append(command)
         body = {"open": [{"ip": host, "port": port} for host in hosts for port in ports]}
         return subprocess.CompletedProcess(command, outcome["code"], json.dumps(body), "")
     monkeypatch.setattr(pp, "run_command", probe)
@@ -102,7 +106,7 @@ def cli(tmp_path, monkeypatch):
     monkeypatch.setenv("OCTO_SERVICE_BACKEND", "pulse")
     monkeypatch.delenv("OCTO_PULSE_SHADOW", raising=False)
     return SimpleNamespace(main=sm.main, output=output, checkpoint=checkpoint_path,
-                           calls=calls, outcome=outcome)
+                           calls=calls, outcome=outcome, config=config, commands=commands, sm=sm)
 
 
 @pytest.mark.parametrize("cache_kind", ["missing", "corrupt", "legacy", "partial", "complete"])
@@ -213,3 +217,55 @@ def test_an_ordinary_run_makes_no_connect_probe(cli, monkeypatch, tmp_path):
 
     assert seen == []
     assert not (cli.output / "reachability.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Rhai plugins, as scanner.main wires them (#544)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def plugins_on(cli, monkeypatch):
+    """Plugins enabled in the config, ``pulse plugin check`` stubbed to accept."""
+    from scanner.pipeline import pulse_plugins
+
+    cli.config.service_probe.pulse.plugins = True
+    monkeypatch.setattr(pulse_plugins, "check_plugin", lambda *args, **kwargs: None)
+    return cli
+
+
+def test_plugins_reach_pulse_on_the_default_pulse_backend(plugins_on):
+    assert plugins_on.main() == 0
+    assert plugins_on.commands
+    for command in plugins_on.commands:
+        # A staging directory of the accepted files, absolute: pulse runs elsewhere.
+        assert Path(command[command.index("--script-dir") + 1]).is_absolute()
+
+
+def test_the_config_switch_turns_plugins_off(plugins_on):
+    plugins_on.config.service_probe.pulse.plugins = False
+    assert plugins_on.main() == 0
+    assert plugins_on.commands
+    assert all("--script-dir" not in command for command in plugins_on.commands)
+
+
+def test_a_per_host_rate_ceiling_keeps_plugins_off_end_to_end(plugins_on, monkeypatch):
+    from scanner.pipeline.scan_policy import apply_policy
+    from tests.test_scanner_scan_policy import _policy
+
+    tightened = apply_policy(plugins_on.config, _policy(per_host_rate=25))
+    monkeypatch.setattr(plugins_on.sm, "_config_for_run", lambda args: (tightened, "safe", "custom"))
+    assert plugins_on.main() == 0
+    assert plugins_on.commands
+    assert all("--script-dir" not in command for command in plugins_on.commands)
+
+
+def test_a_shadow_pulse_run_makes_no_plugin_connections(plugins_on, monkeypatch, tmp_path):
+    """backend=nmap + shadow runs Pulse only to compare services; its plugin
+    findings are discarded, so the connections would be for nothing."""
+    plugins_on.config.service_probe.shadow = True
+    monkeypatch.setenv("OCTO_SERVICE_BACKEND", "nmap")
+    monkeypatch.setattr(plugins_on.sm, "run_nse", lambda *args, **kwargs: tmp_path)
+    assert plugins_on.main() == 0
+    assert plugins_on.commands, "the shadow run did not call pulse"
+    assert all("--script-dir" not in command for command in plugins_on.commands)

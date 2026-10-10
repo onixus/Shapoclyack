@@ -227,7 +227,7 @@ def observation(
         confidence = None
     kind = row.get("evidence_kind")
     if kind not in {"version_match", "keyword_hypothesis", "exposure", "tls_observation",
-                    "template_match", "nse_report"}:
+                    "template_match", "nse_report", "plugin_report"}:
         kind = "unclassified"
     severity = str(row.get("severity") or "unknown").lower()
     if severity not in {"critical", "high", "medium", "low", "info", "unknown"}:

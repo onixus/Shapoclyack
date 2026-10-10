@@ -4,7 +4,44 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Rhai plugins for Pulse, passed with `--script-dir`
+  ([#544](https://github.com/onixus/Shapoclyack/issues/544), [Pulse plugins](docs/pulse-plugins.md)):
+  weak SSH key-exchange/host-key/cipher/MAC algorithms and legacy SSH banners,
+  anonymous FTP login, Telnet/FTP/POP3/IMAP/SMTP that cannot start TLS, and
+  SMB/NetBIOS/RDP/VNC exposure (LOW), in `scanner/pipeline/pulse_data/plugins/`. On by
+  default on the `pulse` and `hybrid` backends; `service_probe.pulse.plugins: false`
+  (or per profile) turns them off, and a scan policy with `per_host_rate` does so
+  for its run. Findings are `finding_class: plugin_script` rows with `cve: ""`,
+  `source: pulse-plugin`, `script_id: pulse-plugin:<name>` and the plugin file's
+  sha256 as their version. A new `pulse-plugin` detector lets a verification re-scan
+  close such a finding only if it loaded the same plugin, finished the endpoint, saw a
+  service the plugin handles there and had no plugin error on it. `pulse/raw.json` records the plugins (name, sha256, the
+  ones `pulse plugin check` rejected, runtime errors per chunk) under
+  `adapter.plugins`. SMB signing/SMBv1, RDP NLA/NTLM information, SSH host keys and
+  SNMP stay out of reach until GenDec can send binary payloads and UDP; the
+  corpus report lists each such NSE script with the reason.
+- The Nmap/Pulse corpus records a Pulse run with the plugins
+  (`pulse/tcp-plugins.json`; `RECORD_PARTS=pulse record.sh` re-records only the
+  Pulse side) and reports which NSE scripts a plugin answers.
+- Three plugins are adapted from GenDec scripts (MIT); `NOTICE` and
+  [third-party.md](docs/third-party.md) carry the attribution.
+
 ### Changed
+
+- Three Pulse timeouts in a row stop the stage with a message that says what to change
+  (`PulseTimeoutLoopError`); one only leaves its chunk unresolved.
+- Every path in the Pulse command is absolute (the process no longer runs in the
+  scanner's cwd, so a relative `runtime.output_dir` would otherwise not resolve), and a
+  Pulse process that overruns its timeout leaves its chunk unresolved for `--resume`
+  instead of failing the stage.
+- Pulse now runs in an empty temporary working directory (the same one as its
+  private `HOME`) and a relative `OCTO_PULSE_BIN` is made absolute first, so a
+  `./scripts` next to the scanner is never loaded as plugins.
+- The corpus no longer carries `pulse/tcp-scripts.json`, the run with bare
+  `--scripts`: it loaded nothing, so the "13 findings, nothing added" it pinned
+  measured an empty plugin set.
 
 - **Breaking:** the Pulse adapter pins its inputs
   ([#543](https://github.com/onixus/Shapoclyack/issues/543)). Every Pulse

@@ -53,10 +53,12 @@ class OsRecord(BaseModel):
     host: str = ""
 
 
-#: Pulse finding classes (``pulse.scan.v2``). ``exposure`` and ``tls`` carry no
+#: Pulse finding classes (``pulse.scan.v2``). ``plugin_script`` is a Rhai
+#: plugin's finding (``cve_id`` is ``SCRIPT-<NAME>``, not a CVE; see
+#: ``pulse_plugins.py``). ``exposure`` and ``tls`` carry no
 #: CVE id; ``keyword_cve`` is an unverified NVD keyword hit, not a confirmed
 #: match. See GenDec ``docs/findings.md``.
-FINDING_CLASSES = ("version_cve", "keyword_cve", "exposure", "tls")
+FINDING_CLASSES = ("version_cve", "keyword_cve", "exposure", "tls", "plugin_script")
 
 
 class CveRecord(BaseModel):
@@ -153,6 +155,45 @@ def os_to_report_matches(os_records: list[OsRecord]) -> list[dict[str, Any]]:
     return out
 
 
+#: ``source`` of a Rhai plugin's finding in the report, and the prefix of its
+#: ``script_id``. A detector of its own, not ``pulse``: what re-checks it is a
+#: plugin file, not the CVE ruleset (api/services/verification_coverage.py).
+PLUGIN_DETECTOR = "pulse-plugin"
+
+
+def _plugin_vulnerability(c: CveRecord, severity: str) -> dict[str, Any]:
+    """Report row for a plugin finding: no CVE, the plugin is the identity.
+
+    Pulse names the finding ``SCRIPT-<NAME>`` in ``cve_id``. That is not a CVE
+    and must not reach the tracker or the EPSS/KEV lookups as one, so the row
+    carries ``cve=""`` and the report/tracker key it by ``script_id``
+    (``pulse-plugin:<name>``) and port instead -- the same as an NSE script
+    finding without a CVE. ``ruleset_version`` is the plugin file's
+    ``sha256:<hex>`` (``pulse_probe.parse_pulse_json``).
+    """
+    name = c.match_reason.removeprefix("rhai script ").strip() if c.match_reason else ""
+    name = name or c.cve_id.removeprefix("SCRIPT-").lower()
+    return {
+        "host": c.ip,
+        "port": str(c.port) if c.port else "",
+        "script_id": f"{PLUGIN_DETECTOR}:{name}",
+        "source": PLUGIN_DETECTOR,
+        "protocol": "tcp",
+        "cve": "",
+        "cvss": None,
+        "severity": severity,
+        "title": c.title or name,
+        "detail": c.summary or c.match_reason,
+        "finding_class": c.finding_class,
+        "confidence": c.confidence,
+        "requires_confirmation": c.requires_confirmation,
+        "evidence": c.evidence,
+        "ruleset_version": c.ruleset_version,
+        "epss": None,
+        "in_kev": False,
+    }
+
+
 def cves_to_extra_vulnerabilities(cves: list[CveRecord]) -> list[dict[str, Any]]:
     """Map Pulse findings into report extra_vulnerabilities shape.
 
@@ -178,6 +219,9 @@ def cves_to_extra_vulnerabilities(cves: list[CveRecord]) -> list[dict[str, Any]]
         else:
             severity = "unknown"
         origin = (c.source or "local").strip() or "local"
+        if c.finding_class == "plugin_script":
+            out.append(_plugin_vulnerability(c, severity))
+            continue
         out.append(
             {
                 "host": c.ip,

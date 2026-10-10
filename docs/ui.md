@@ -577,7 +577,7 @@ operator's next, different batch mints its own key.
   risk explanation copied from the last observing run when that run is still
   on disk;
 - for a scan finding, **Detectors** (#451): every check that has observed it —
-  `pulse`, `nuclei` or `nmap-nse`, the template or script, the host and port it
+  `pulse`, `pulse-plugin`, `nuclei` or `nmap-nse`, the template, plugin or script, the host and port it
   saw it on (an entry migrated from the old `script_id` says "any address of
   the asset") and the run that last saw it. This is what a verification
   re-scan is built from and what it has to cover before the finding may close;

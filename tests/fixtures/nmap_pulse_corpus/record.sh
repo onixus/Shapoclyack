@@ -12,6 +12,9 @@
 #     debian:12-slim bash -c 'apt-get update -qq && apt-get install -y -qq \
 #       curl ca-certificates python3 && /src/install-pulse.sh'
 #
+# RECORD_PARTS=pulse  records only the Pulse side (default: nmap,pulse). That is
+# how pulse/tcp-plugins.json was added (#544) without touching the Nmap fixtures.
+#
 # MIRROR=mirror.gcr.io/library  fetches the pinned images from another registry
 # when Docker Hub is unreachable; the digests in docker-compose.yml still apply.
 #
@@ -56,7 +59,7 @@ compose exec -T scanner bash -c '
   done'
 sleep 10   # mysql and postgres open the port before they are ready to answer
 
-compose exec -T scanner bash /corpus/stand/scan.sh
+compose exec -T -e RECORD_PARTS="${RECORD_PARTS:-nmap,pulse}" scanner bash /corpus/stand/scan.sh
 
 # --- what the stand was made of ---
 compose config --format json | python3 -c '

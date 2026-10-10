@@ -160,6 +160,47 @@ nothing.
   the private repository: what is checked becomes public, only the engine
   stays in GenDec.
 
+## Plugins (#544)
+
+The plugins are in `scanner/pipeline/pulse_data/plugins/` and described in
+[Pulse plugins](../pulse-plugins.md). Measured against the real Pulse v1.3.0 sandbox
+(`pulse plugin run`, a stub server that records what arrives):
+
+| NSE `default,safe` function | Reachable from the sandbox? | State |
+|---|---|---|
+| `ssh2-enum-algos` (weak algorithms) | yes: the reply is ASCII name-lists after sanitising | `shapo_ssh_algorithms` |
+| `ssh-hostkey` | no: needs a key exchange | **blocked in GenDec** |
+| `ftp-anon` | the login, yes; the listing, no (data connection) | `shapo_ftp_anonymous`, partial |
+| cleartext services (not an NSE script) | yes | `shapo_cleartext_services` |
+| `smb2-security-mode`, `smb-security-mode`, `smb-protocols` | **no**: the SMB negotiate begins with `0xFE`/`0xFF` and a Rhai string is sent as UTF-8, so `"\xfe"` reaches the wire as `C3 BE` | `shapo_smb_exposure` says only that the service answers (LOW); **blocked in GenDec** |
+| `rdp-enum-encryption`, `rdp-ntlm-info` | **no**: the X.224 request carries `0xE0`, and CredSSP/NTLM follows | `shapo_remote_admin_exposure`, exposure only (LOW); **blocked in GenDec** |
+| `snmp-info` and any UDP probe | **no**: TCP only | not written; **blocked in GenDec** |
+
+Filed as [onixus/GenDec#38](https://github.com/onixus/GenDec/issues/38). What GenDec has to add is binary-safe payloads (a hex or blob argument to
+`probe_send`, and a reply that keeps its bytes) , a UDP call with the same
+per-host, per-port, budget and time limits, and one deadline per call (the sandbox's
+timeout applies to every read, so a trickling server stretches a call without bound). Until then the gap is stated, per NSE
+script and with its reason, in the corpus report
+(`scripts/compare-nmap-pulse-corpus.py`), and the two exposure plugins say in the
+finding that signing, SMBv1, NLA and NTLM information were not checked.
+
+Decisions taken while implementing it:
+
+- **A plugin finding is its own detector**, `pulse-plugin`, not `pulse`: what
+  re-checks it is the plugin file, not the CVE ruleset. The finding carries the
+  file's sha256; a verification credits a plugin only if the re-scan loaded the same
+  bytes, finished the endpoint, saw a service the plugin's gate accepts there and had
+  no plugin error on it. No migration:
+  `vulnerabilities.detectors` is JSON.
+- **A probe that fails is an error, not an empty result**, so that "the plugin
+  could not look" is not read as "the plugin looked and found nothing".
+- **Plugins are off under a `per_host_rate` policy** and in a shadow run, because
+  their connections bypass `--rate`; they are serial, so a concurrency ceiling needs
+  nothing.
+- **Pulse loads three directories**: `--script-dir`, `./scripts` and
+  `$HOME/.pulse/scripts`. The process runs in an empty directory that is also its
+  `HOME`, which is what makes the first the only one.
+
 ## Work items
 
 Tracked under [#549](https://github.com/onixus/Shapoclyack/issues/549). Order matters for 1:
@@ -171,6 +212,7 @@ the reference has to be recorded while Nmap still runs.
 3. [#543](https://github.com/onixus/Shapoclyack/issues/543) — Pin Pulse's inputs: `--services-db`, `--os-mode sinfp`, private `HOME`;
    service name from the probe (GenDec).
 4. [#544](https://github.com/onixus/Shapoclyack/issues/544) — Audit plugins in Shapoclyack, `--script-dir`, finding contract and parser.
+   **Implemented, with a blocker in GenDec for part of it** — see [Plugins (#544)](#plugins-544) below.
 5. [#545](https://github.com/onixus/Shapoclyack/issues/545) — TLS suite and version enumeration (GenDec) and grading (`tls_posture`).
 6. [#546](https://github.com/onixus/Shapoclyack/issues/546) — Probe DB in Shapoclyack: clean-room rules, distribution revision, CPE
    mapping.

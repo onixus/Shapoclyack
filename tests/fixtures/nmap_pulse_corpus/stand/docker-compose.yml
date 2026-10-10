@@ -129,4 +129,7 @@ services:
     volumes:
       - ${PULSE_BIN:?set PULSE_BIN to a linux Pulse binary (see ../record.sh)}:/usr/local/bin/pulse:ro
       - ..:/corpus
+      # The plugins Shapoclyack hands to Pulse with --script-dir (#544): the stand
+      # runs the files in the repository, not a copy.
+      - ../../../../scanner/pipeline/pulse_data/plugins:/plugins:ro
     networks: { stand: { ipv4_address: 172.29.41.250 } }

@@ -64,6 +64,23 @@ with ones from ProjectDiscovery's nuclei-templates (MIT,
 https://github.com/projectdiscovery/nuclei-templates). No endorsement by the
 authors is implied.
 
+Rhai plugins derived from GenDec
+--------------------------------
+
+Three of the Rhai plugins in scanner/pipeline/pulse_data/plugins/ are adapted from
+scripts of GenDec (the Pulse scanner, https://github.com/onixus/GenDec, release
+v1.3.0, licensed MIT per its Cargo.toml `license` field):
+
+  shapo_ssh_banner.rhai             from scripts/ssh_audit.rhai
+  shapo_smb_exposure.rhai           from scripts/smb_netbios_exposure_audit.rhai
+  shapo_remote_admin_exposure.rhai  from scripts/rdp_vnc_exposure_audit.rhai
+
+Each file keeps an SPDX-License-Identifier: MIT header that names its origin and
+lists what was changed. The MIT licence permits use, modification and
+redistribution provided its copyright and permission notice are kept with the
+copies; the notice of the GenDec release applies to these three files. The other
+plugins in that directory are original to this project (Apache-2.0).
+
 LGPL components
 ---------------
 
