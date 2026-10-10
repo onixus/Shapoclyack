@@ -496,11 +496,65 @@ sensor, for a container sensor as a mounted file.
 | Source | When | Covers |
 |--------|------|--------|
 | `nmap-nse` | SSL scripts present in nmap XML | cert validity / self-signed heuristic / key size and signature digest + full cipher grades and every offered version |
-| `pulse-tls` | `pulse/tls.json` has rows | cert validity / self-signed / Pulse's own legacy-protocol probe (`requires_confirmation`) |
+| `pulse-tls` | `pulse/tls.json` has rows | cert validity / self-signed / Pulse's own legacy-protocol probe (`requires_confirmation`); with a suite enumeration (see below, expected GenDec#34) also the offered versions and suites with A-F grades |
 | `pulse-tls-probe` | fallback handshake | cert and chain validity / self-signed / chain trust / key size and signature digest / TLS 1.0 and 1.1 acceptance |
 
 Artifacts: `tls_posture.json` (same shape; `source` field), plus
 `tls_probe.json` when the fallback ran.
+
+**Ports Pulse did not probe.** Pulse v1.3.0 runs its TLS probe on 443 and 8443
+only, so a listener on 9443, 4443, ... has no `tls[]` row. With `probe_fallback`
+on, the stdlib probe now also runs on every open port of `probe_tls_ports` that
+has no Pulse row, and those rows join `tls_posture.json` with their own
+`source: pulse-tls-probe` (the run-level `source` stays `pulse-tls`). They count
+toward `max_targets` together with the Pulse rows (`truncated` is set when either
+side is cut); `tls_probe.json` holds just the probed rows. Ports outside
+`probe_tls_ports` (465, 636, 993, 3306, ...) are still not looked at.
+
+### Cipher suites and A-F grades on the Pulse path
+
+Nmap's `ssl-enum-ciphers` brings a letter for every suite; Pulse reports only
+what the server negotiated plus the legacy protocols it accepts, so on this path
+`cipher_versions[].ciphers` is empty and there are no `weak_cipher_grade` /
+`weak_cipher_name` findings. Two pieces are in place for when the engine learns
+to enumerate suites (opt-in, [GenDec#34](https://github.com/onixus/GenDec/issues/34)):
+
+* **Our grader**, `scanner/pipeline/tls_grading.py`: a letter A-F per suite from
+  the suite name (IANA, or Nmap's `TLS_AKE_WITH_*` for TLS 1.3) and, when known,
+  the key-exchange size or group. Method: the public Qualys SSL Labs *SSL Server
+  Rating Guide* (key-exchange and cipher strength to points, points to a letter),
+  with ceilings: anonymous key exchange, NULL, EXPORT and 64-bit-or-less keys give
+  F; RC4, 64-bit block ciphers (3DES, IDEA, GOST 28147) and MD5 MACs give C;
+  finite-field DH or RSA exchange under 2048 bits gives B (under 1024, D); a
+  finite-field DH of unknown size gives B. A suite it cannot parse has grade
+  `null`, never a guessed letter, and does not count toward `least_strength`.
+  The `weak_cipher_grade` threshold (C-F) is the same for every source.
+  It was checked against the recorded Nmap output of the corpus; that sample only
+  contains A and F, so the C-E rules rest on the guide, not on Nmap.
+* **A reader for the enumeration**, `scanner/pipeline/tls_enumeration.py`. The
+  form below is **expected from GenDec#34 and is Shapoclyack's proposal; no Pulse
+  release emits it today.** It would sit in a `tls[]` row:
+
+  ```json
+  "enumeration": {"complete": true, "versions": [
+    {"version": "TLSv1.2", "accepted": true, "server_preference": true,
+     "ciphers": [{"code": "0xC02F", "name": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+                  "kex_group": "x25519", "kex_bits": 253}]},
+    {"version": "SSLv3", "accepted": false}]}
+  ```
+
+  The reader accepts a version as `TLSv1_2`, `TLSv1.2`, `TLS 1.2`, `0x0303` or
+  `771`, `SSLv2`/`SSLv3`; a suite as a name string or an object; a `code` as an
+  int or a hex string, and names a suite given by code alone from the IANA table
+  `scanner/pipeline/pulse_data/tls_cipher_suites.tsv` (IANA *TLS Cipher Suites*
+  registry, fetched 2026-10-10; rebuilt by `scripts/build-pulse-tls-ciphers.py`).
+  Anything it cannot read is skipped. Findings keep their existing kinds and
+  shapes (`weak_protocol`, `weak_cipher_grade`, `weak_cipher_name`; `source:
+  pulse-tls`) and come from the same classifier as the nmap path. If `complete`
+  is not exactly `true` (or is absent) every finding drawn from the enumeration
+  carries `requires_confirmation`, and a suite or version missing from the list
+  is never read as "not accepted". The row also gets `enumeration_complete`.
+  Without an `enumeration` key nothing changes.
 
 ### What the probe checks, and what it can establish
 
