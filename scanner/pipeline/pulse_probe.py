@@ -57,6 +57,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import time
 from collections import defaultdict
@@ -70,6 +71,7 @@ from .pulse_plan import plan_tcp_probe
 from .pulse_plugins import (
     PLUGIN_CLASS,
     PLUGIN_SOURCE,
+    active_digest,
     normalize_severity,
     parse_plugin_errors,
     plugin_budget_seconds,
@@ -322,10 +324,13 @@ def build_pulse_command(
     services_db: str | None = None,
     script_dir: str | None = None,
 ) -> list[str]:
+    # Pulse runs in a private temporary directory (``_probe_chunk``), so every
+    # path it is given must mean the same from there: an output_dir that is
+    # relative (the default, scanner/output) would otherwise point into it.
     cmd = [
         bin_path,
         "--targets-file",
-        str(hosts_file),
+        os.path.abspath(hosts_file),
         "-p",
         _port_spec(ports) if ports else "1-1024",
         "-c",
@@ -338,13 +343,13 @@ def build_pulse_command(
         "json",
         "-q",
         "--services-db",
-        services_db or resolve_services_db(),
+        os.path.abspath(services_db or resolve_services_db()),
     ]
     if script_dir:
         # Implies --scripts. Pulse adds ./scripts and $HOME/.pulse/scripts to
         # this directory; both are empty because _probe_chunk runs it in the
         # private temporary directory.
-        cmd += ["--script-dir", script_dir]
+        cmd += ["--script-dir", os.path.abspath(script_dir)]
     if rate > 0:
         cmd += ["--rate", str(rate)]
     if adaptive:
@@ -365,7 +370,7 @@ def build_pulse_command(
     if syn:
         cmd += ["--syn", "--syn-retries", "1"]
     if checkpoint is not None:
-        cmd += ["--checkpoint", str(checkpoint)]
+        cmd += ["--checkpoint", os.path.abspath(checkpoint)]
     return cmd
 
 
@@ -754,9 +759,26 @@ def _probe_chunk(
     return payload, completed.returncode, stderr
 
 
-def run_pulse_probe(
+def _shas(receipt: Mapping[str, Any]) -> dict[str, str]:
+    """name -> sha256 of the plugins that run, from the run's receipt."""
+    return {str(p["name"]): str(p["sha256"]) for p in receipt.get("loaded") or [] if isinstance(p, dict)}
+
+
+def run_pulse_probe(open_ports: list[str], **kwargs: Any) -> Path:
+    """Run Pulse against hosts derived from open_ports; write artifacts.
+
+    The keyword arguments and the contract are those of :func:`_run_pulse_probe`.
+    This wrapper only owns the directory the accepted plugin files are copied
+    into for the duration of the run.
+    """
+    with tempfile.TemporaryDirectory(prefix="pulse-plugins-") as staging:
+        return _run_pulse_probe(open_ports, plugin_staging=Path(staging), **kwargs)
+
+
+def _run_pulse_probe(
     open_ports: list[str],
     *,
+    plugin_staging: Path,
     output_dir: Path,
     bin_path: str = "",
     concurrency: int = 500,
@@ -811,14 +833,32 @@ def run_pulse_probe(
     """
     pulse_bin = resolve_pulse_bin(bin_path)
     plugin_set = resolve_plugin_set(enabled=plugins)
+    # Which plugins Pulse will actually load. It loads every script of its
+    # directory that compiles and skips the rest without a word, so each file is
+    # asked once (`pulse plugin check`) and Pulse is given a directory of copies
+    # of the accepted ones only. Done before the resume decision: what a resume
+    # may reuse is judged by the plugins that will run now, not by the ones that
+    # merely sit on disk.
+    loaded: list[dict[str, str]] = []
+    rejected: list[dict[str, str]] = []
+    verified = False
+    if plugin_set.files and _pulse_available(pulse_bin):
+        with tempfile.TemporaryDirectory(prefix="pulse-home-") as home:
+            loaded, rejected = verify_plugins(
+                pulse_bin, plugin_set, plugin_staging, env=pulse_env(Path(home)), cwd=home
+            )
+        verified = True
     plugin_receipt: dict[str, Any] = {
         "requested": plugins,
-        "active": False,
+        "active": bool(loaded),
         "dir": str(plugin_set.directory) if plugin_set.directory else None,
-        "digest": plugin_set.digest,
+        # The identity of the plugins that run (resume, chunk key); the digest of
+        # the files on disk is kept beside it for a run that could not ask Pulse.
+        "digest": active_digest(loaded),
+        "offered_digest": plugin_set.digest,
         "unavailable": plugin_set.unavailable,
-        "loaded": [],
-        "rejected": [],
+        "loaded": loaded,
+        "rejected": rejected,
         "errors": [],
     }
     grouped = _group_tcp_ports(open_ports)
@@ -832,7 +872,15 @@ def run_pulse_probe(
                 raise ValueError("expected an object")
             done, cached = retain_completed_payload(grouped, requested_done, previous)
             prior = ((previous.get("adapter") or {}).get("plugins") or {}) if done else {}
-            if done and str(prior.get("digest") or "") != plugin_set.digest:
+            if verified:
+                same = str(prior.get("digest") or "") == plugin_receipt["digest"]
+            elif plugin_set.files:
+                # No binary to ask (an all-done resume on a host without Pulse):
+                # trust the receipt of the run if it was made with these files.
+                same = str(prior.get("offered_digest") or "") == plugin_set.digest
+            else:
+                same = not prior.get("digest")
+            if done and not same:
                 # The checkpointed hosts were probed with other plugins (or
                 # none): their findings and "no finding" would be credited to a
                 # set that never looked. Probe them again.
@@ -841,14 +889,17 @@ def run_pulse_probe(
                 )
                 done, cached = set(), {}
             elif done:
-                plugin_receipt["loaded"] = list(prior.get("loaded") or [])
-                plugin_receipt["rejected"] = list(prior.get("rejected") or [])
+                if not verified:
+                    plugin_receipt["loaded"] = list(prior.get("loaded") or [])
+                    plugin_receipt["rejected"] = list(prior.get("rejected") or [])
+                    plugin_receipt["digest"] = str(prior.get("digest") or "")
+                    plugin_receipt["active"] = bool(plugin_receipt["loaded"])
                 plugin_receipt["errors"] = [
                     e for e in prior.get("errors") or []
                     if isinstance(e, dict) and set(map(normalize_host, e.get("hosts") or [])) & done
                 ]
             # Validate reusable canonical data before honoring any checkpoint.
-            parse_pulse_json(cached, plugin_shas=plugin_set.shas)
+            parse_pulse_json(cached, plugin_shas=_shas(plugin_receipt))
         except (OSError, ValueError, TypeError):
             logging.warning("pulse_probe: persisted checkpoint evidence unavailable; re-probing approved endpoints")
             done, cached = set(), {}
@@ -878,9 +929,7 @@ def run_pulse_probe(
         "replayed_checkpoint_hosts": len((requested_done & grouped.keys()) - done),
     }
 
-    all_services, all_os, all_cves = parse_pulse_json(
-        cached, plugin_shas=plugin_set.shas
-    )
+    all_services, all_os, all_cves = parse_pulse_json(cached, plugin_shas=_shas(plugin_receipt))
     merged_raw: dict[str, Any] = {
         "open": list(cached.get("open") or []),
         "os": list(cached.get("os") or []),
@@ -922,17 +971,8 @@ def run_pulse_probe(
             "configured that way; see docs/pulse-backend.md."
         )
 
-    # Which plugins Pulse will actually load. It skips a script that does not
-    # compile without saying so, so each file is asked once, up front.
-    script_dir: str | None = None
-    if plugin_set.files:
-        with tempfile.TemporaryDirectory(prefix="pulse-home-") as home:
-            loaded, rejected = verify_plugins(pulse_bin, plugin_set, env=pulse_env(Path(home)), cwd=home)
-        plugin_receipt["loaded"], plugin_receipt["rejected"] = loaded, rejected
-        if loaded:
-            script_dir = plugin_set.script_dir
-            plugin_receipt["active"] = True
-    chunk_plugins = plugin_set.digest if script_dir else ""
+    script_dir = str(plugin_staging) if loaded else None
+    chunk_plugins = plugin_receipt["digest"] if script_dir else ""
 
     # Effective --os for this run. Flipped off once pulse refuses it for lack
     # of raw sockets; every later chunk then skips the doomed attempt.
@@ -960,18 +1000,32 @@ def run_pulse_probe(
         host_chunk = list(chunk.hosts)
         ports_list = list(chunk.ports)
         probe_calls = 0
+        timed_out = False
 
         def _probe(command: list[str]) -> tuple[dict[str, Any], int, str]:
-            nonlocal probe_calls
+            nonlocal probe_calls, timed_out
             if probe_calls:
                 diagnostics["adapter_retry_calls"] += 1
                 diagnostics["adapter_retry_tcp_combinations"] += chunk.endpoint_count
             probe_calls += 1
             diagnostics["chunk_probe_calls"] += 1
-            # Plugins run after the scan, one endpoint at a time, so the
-            # process may legitimately outlive the scan by their worst case.
+            # Plugins run after the scan, one endpoint at a time, so the process
+            # may outlive the scan; the allowance is capped (pulse_plugins).
             budget = timeout_seconds + (plugin_budget_seconds(chunk.endpoint_count) if script_dir else 0)
-            return _probe_chunk(command, timeout_seconds=budget, retries=retries, idx=idx)
+            try:
+                payload, code, err = _probe_chunk(command, timeout_seconds=budget, retries=retries, idx=idx)
+            except subprocess.TimeoutExpired:
+                # Not a crash: the process was healthy and slow (a stalled
+                # server under a plugin, a tar-pit). The chunk gets no success
+                # receipt, so it is probed again on --resume and nothing is
+                # credited to it; crash-loop accounting is for exits without JSON.
+                logging.warning(
+                    "pulse_probe chunk %s: pulse did not finish within %ss; its hosts stay unresolved", idx, budget
+                )
+                timed_out = True
+                return {}, -1, f"timed out after {budget}s"
+            timed_out = False
+            return payload, code, err
 
         key = chunk_key(host_chunk, ports_list, scan_mode, chunk_plugins)
         hosts_file = pulse_dir / f"chunk_{key}.hosts.txt"
@@ -1037,7 +1091,7 @@ def run_pulse_probe(
             cmd = _command(with_os=False)
             payload, returncode, stderr = _probe(cmd)
 
-        crashed = returncode != 0 and not payload
+        crashed = returncode != 0 and not payload and not timed_out
         if crashed:
             # A crash is not weather: re-run at once, no settle pause. The
             # pause below exists for a saturated network path, which has
@@ -1049,8 +1103,8 @@ def run_pulse_probe(
                 stderr[:300] or "no stderr",
             )
             payload, returncode, stderr = _probe(cmd)
-            crashed = returncode != 0 and not payload
-        elif not payload.get("open") and retry_settle_seconds:
+            crashed = returncode != 0 and not payload and not timed_out
+        elif not timed_out and not payload.get("open") and retry_settle_seconds:
             # Every host here reached this stage because naabu proved a port
             # open on it moments ago, so an all-closed chunk is a contradiction
             # rather than a finding: the ports burst saturates the path and the
@@ -1065,8 +1119,9 @@ def run_pulse_probe(
             time.sleep(retry_settle_seconds)
             payload, returncode, stderr = _probe(cmd)
 
-        # A settle retry can itself crash; classify the final attempt.
-        crashed = returncode != 0 and not payload
+        # A settle retry can itself crash; classify the final attempt. A timeout
+        # is neither a crash nor a success: it leaves the counter where it is.
+        crashed = returncode != 0 and not payload and not timed_out
         if crashed:
             consecutive_crashes += 1
             if consecutive_crashes >= MAX_CONSECUTIVE_CRASHED_CHUNKS:
@@ -1076,7 +1131,7 @@ def run_pulse_probe(
                     f"{stderr[:500] or 'empty'}. Fix the binary/flags "
                     f"({pulse_bin}) and re-run with --resume."
                 )
-        else:
+        elif not timed_out:
             consecutive_crashes = 0
 
 
@@ -1100,7 +1155,7 @@ def run_pulse_probe(
             if meta.get("version"):
                 pulse_versions.add(str(meta["version"]))
             services, os_recs, cves = parse_pulse_json(
-                payload, plugin_shas=plugin_set.shas if script_dir else {}
+                payload, plugin_shas=_shas(plugin_receipt) if script_dir else {}
             )
             all_services.extend(services)
             all_os.extend(os_recs)
@@ -1123,6 +1178,7 @@ def run_pulse_probe(
                 "hosts": host_chunk,
                 "ports": ports_list,
                 "returncode": returncode,
+                "timed_out": timed_out,
                 "resolved": resolved,
                 "unresolved_hosts": unresolved_hosts,
                 "probe_calls": probe_calls,

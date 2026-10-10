@@ -28,16 +28,21 @@ Wall-clock budget
 -----------------
 Pulse runs the scripts after the scan, in one blocking task, one open port at a
 time and one script at a time: never concurrent. The connection cap (8 per
-script run) is Pulse's own constant and is not a flag. What can be bounded here
-is time. A call made with the plugin's timeout ``T`` can spend ``T`` connecting
-and up to two reads of ``T`` (the sandbox keeps reading until EOF or a quiet
-period). Every plugin in this directory makes at most one call per run and uses
-``T <= PLUGIN_CALL_TIMEOUT_MS`` (``tests/test_pulse_plugins.py`` enforces both
-by reading the files), which is 4.5 s a call. At most two plugins can match one
-endpoint (FTP: anonymous login and cleartext), so ``PLUGIN_SECONDS_PER_ENDPOINT``
-is 10 s. A chunk of ``E`` endpoints gets ``E * 10`` extra seconds on the
-process timeout. That is the ceiling of a chunk in which *every* endpoint is
-FTP and every server stalls; ports that no plugin matches cost microseconds.
+script run) is Pulse's own constant and is not a flag. What is bounded here is
+the process, not the plugins: the sandbox's timeout applies to the connect and
+to *each read*, and a call with a payload reads until EOF, so a server that
+trickles bytes can stretch one call far beyond the plugin's timeout (measured:
+14.5 s for a 1500 ms call; onixus/GenDec#38 asks for one deadline per call).
+No per-call bound can be promised.
+
+So a chunk gets ``endpoints * PLUGIN_SECONDS_PER_ENDPOINT`` extra seconds on the
+process timeout, capped at ``PLUGIN_BUDGET_CAP_SECONDS`` (the open ports and
+their services are not known when a chunk is cut, so every endpoint is
+counted). The number is a typical-case allowance (two plugins can match one FTP
+endpoint, a healthy call is a fraction of a second), not a worst case. When the
+process still overruns, ``run_pulse_probe`` treats the chunk as unresolved
+(no ``completion`` receipt, probed again on ``--resume``) instead of failing the
+stage: see ``pulse_probe`` and ``verification_coverage``.
 
 Scan policy: the plugins' connections are not paced by ``--rate`` and are not
 counted by ``--host-parallel``. They are serial, so a host-concurrency ceiling
@@ -63,8 +68,10 @@ PLUGINS_DIR = Path(__file__).resolve().parent / "pulse_data" / "plugins"
 #: ``probe_recv``. The sandbox clamps to 50..5000 ms on its own.
 PLUGIN_CALL_TIMEOUT_MS = 1500
 
-#: Extra wall-clock per scanned endpoint, see the module docstring.
+#: Extra wall-clock per scanned endpoint, and its ceiling per chunk. See the
+#: module docstring: an allowance, not a bound.
 PLUGIN_SECONDS_PER_ENDPOINT = 10
+PLUGIN_BUDGET_CAP_SECONDS = 1800
 
 #: ``pulse plugin check`` compiles and dry-runs one script; it opens no socket.
 CHECK_TIMEOUT_SECONDS = 20
@@ -141,7 +148,7 @@ def resolve_plugin_set(*, enabled: bool, directory: Path | None = None) -> Plugi
 
 def plugin_budget_seconds(endpoints: int) -> int:
     """Seconds to add to the pulse process timeout for ``endpoints`` scanned endpoints."""
-    return max(0, int(endpoints)) * PLUGIN_SECONDS_PER_ENDPOINT
+    return min(max(0, int(endpoints)) * PLUGIN_SECONDS_PER_ENDPOINT, PLUGIN_BUDGET_CAP_SECONDS)
 
 
 def check_plugin(pulse_bin: str, path: Path, *, env: Mapping[str, str], cwd: str | Path) -> str | None:
@@ -167,20 +174,78 @@ def check_plugin(pulse_bin: str, path: Path, *, env: Mapping[str, str], cwd: str
     return f"plugin check exited {done.returncode}"
 
 
+def active_digest(loaded: list[Mapping[str, str]]) -> str:
+    """Identity of the plugins that will really run; ``""`` when none do."""
+    if not loaded:
+        return ""
+    material = "".join(f"{p['name']} {p['sha256']}\n" for p in sorted(loaded, key=lambda p: p["name"]))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
 def verify_plugins(
-    pulse_bin: str, plugin_set: PluginSet, *, env: Mapping[str, str], cwd: str | Path
+    pulse_bin: str, plugin_set: PluginSet, staging: Path, *, env: Mapping[str, str], cwd: str | Path
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    """``(loaded, rejected)`` receipts for the set, one ``pulse plugin check`` each."""
+    """``(loaded, rejected)`` receipts; the accepted files are copied into ``staging``.
+
+    Pulse loads every script of the directory it is given that compiles, whatever
+    we think of it. So Pulse is given ``staging``, which holds copies of the
+    accepted files only, and the sha256 of a loaded plugin is the sha256 of the
+    copy Pulse reads.
+    """
     loaded: list[dict[str, str]] = []
     rejected: list[dict[str, str]] = []
     for plugin in plugin_set.files:
-        reason = check_plugin(pulse_bin, plugin.path, env=env, cwd=cwd)
+        copy = staging / f"{plugin.name}.rhai"
+        copy.write_bytes(plugin.path.read_bytes())
+        sha = hashlib.sha256(copy.read_bytes()).hexdigest()
+        reason = check_plugin(pulse_bin, copy, env=env, cwd=cwd)
         if reason is None:
-            loaded.append({"name": plugin.name, "sha256": plugin.sha256})
+            loaded.append({"name": plugin.name, "sha256": sha})
         else:
+            copy.unlink()
             logging.warning("pulse_plugins: %s rejected by pulse plugin check: %s", plugin.name, reason)
-            rejected.append({"name": plugin.name, "sha256": plugin.sha256, "reason": reason})
+            rejected.append({"name": plugin.name, "sha256": sha, "reason": reason})
     return loaded, rejected
+
+
+#: Which endpoints each shipped plugin acts on. A plugin whose gate does not
+#: match returns without a word, so "plugin loaded, endpoint completed, no
+#: finding" proves nothing about an endpoint it never looked at; the
+#: ``pulse-plugin`` detector asks :func:`applies`. ``tests/test_pulse_plugins_files.py``
+#: reads the gates out of the ``.rhai`` files and fails if this table differs.
+#:
+#: A plugin applies when the detected service is in ``services``, or the
+#: banner (lower-cased) starts with a ``banner`` prefix and, where one is
+#: given, contains the second string, or the port is in ``ports`` and the
+#: service is unknown.
+APPLICABILITY: dict[str, dict[str, Any]] = {
+    "shapo_ssh_algorithms": {"services": {"ssh"}, "banner": (("ssh-", ""),), "ports": set()},
+    "shapo_ssh_banner": {"services": {"ssh"}, "banner": (("ssh-", ""),), "ports": set()},
+    "shapo_ftp_anonymous": {"services": {"ftp"}, "banner": (("220", "ftp"),), "ports": set()},
+    "shapo_cleartext_services": {
+        "services": {"telnet", "ftp", "pop3", "imap", "smtp"},
+        "banner": (("220", "ftp"), ("+ok", ""), ("* ok", ""), ("220", "smtp")),
+        "ports": {23},
+    },
+    "shapo_smb_exposure": {"services": {"smb", "microsoft-ds", "netbios-ssn"}, "banner": (), "ports": {445, 139}},
+    "shapo_remote_admin_exposure": {
+        "services": {"rdp", "ms-wbt-server", "vnc"}, "banner": (("rfb ", ""),), "ports": {3389},
+    },
+}
+
+
+def applies(plugin: str, *, service: str, port: int, banner: str) -> bool:
+    """Whether ``plugin`` would act on an endpoint with these scan results."""
+    gate = APPLICABILITY.get(plugin)
+    if gate is None:
+        return False
+    svc = (service or "").strip().lower()
+    text = (banner or "").lower()
+    if svc in gate["services"]:
+        return True
+    if any(text.startswith(prefix) and needle in text for prefix, needle in gate["banner"]):
+        return True
+    return svc in ("", "unknown") and port in gate["ports"]
 
 
 def parse_plugin_errors(stderr: str) -> list[dict[str, str]]:

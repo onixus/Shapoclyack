@@ -235,12 +235,11 @@ def plugins_on(cli, monkeypatch):
 
 
 def test_plugins_reach_pulse_on_the_default_pulse_backend(plugins_on):
-    from scanner.pipeline import pulse_plugins
-
     assert plugins_on.main() == 0
     assert plugins_on.commands
     for command in plugins_on.commands:
-        assert command[command.index("--script-dir") + 1] == str(pulse_plugins.PLUGINS_DIR)
+        # A staging directory of the accepted files, absolute: pulse runs elsewhere.
+        assert Path(command[command.index("--script-dir") + 1]).is_absolute()
 
 
 def test_the_config_switch_turns_plugins_off(plugins_on):
