@@ -160,7 +160,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # Nmap is not bundled (NPSL licence, issue #97); see docs/nmap-external.md.
 RUN set -eux; \
     apt-get update; \
-    PKGS="ca-certificates curl fping git jq"; \
+    # iproute2: Pulse's ARP discovery (discovery.l2) reads neighbours through
+    # `ip -4 neigh`. Without `ip` it reports 0 live hosts, prints nothing and
+    # exits 0 (docs/pulse-backend.md#l2-discovery).
+    PKGS="ca-certificates curl fping git iproute2 jq"; \
     apt-get install -y --no-install-recommends ${PKGS}; \
     # Security updates the pinned base digest does not carry yet: Debian has
     # published them, python:3.12-slim has not been rebuilt on top. Upgrade

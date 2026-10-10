@@ -152,7 +152,7 @@ docker run --rm --entrypoint sh \
   -lc 'naabu -version; dnsx -version; nuclei -version'
 ```
 
-Nmap is not in the images; if L2 discovery or the NSE stage reports
+Nmap is not in the images; if the NSE stage reports
 `nmap binary not found on PATH`, install your own: [Using your own Nmap](nmap-external.md).
 Use the pinned image tag, not `latest`. Exit code `4` means an external stage
 failed after retries; inspect the corresponding stage log.

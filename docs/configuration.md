@@ -113,16 +113,15 @@ uses `-6`, so a mixed batch does not let the binary's default family silently
 skip half the targets.
 
 For a sensor attached to an internal Ethernet segment, `discovery.l2.enabled`
-adds an opt-in nmap ARP sweep (Nmap is not bundled; install your own, see [Using your own Nmap](nmap-external.md)). It never widens scan scope: configured
+adds an opt-in ARP sweep through Pulse ([L2 discovery](pulse-backend.md#l2-discovery); no Nmap needed). It never widens scan scope: configured
 `discovery.l2.networks` must be contained in the run targets, and an empty list
 derives only in-scope private/link-local IPv4 networks. `max_hosts` bounds work
-before a packet is sent and `max_rate` is lowered by the tenant scan policy.
+before a packet is sent and `max_rate` is the target packet rate, lowered by the tenant scan policy; Pulse is given `max_rate` divided by `mcast_solicit + 2` (the trigger datagram, the kernel's ARP retries and one more for what was measured on top), an estimate from runs on 4 and 55 live hosts of 253, not a guarantee ([L2 discovery](pulse-backend.md#l2-discovery)). Pulse cannot pin an interface, so `interface` restricts the networks to those the kernel routes on-link through it.
 After ARP, optional UDP/137 NetBIOS and UDP/5353 mDNS probes record names in
 `l2_discovery.json` and merge them into `hostnames.json` under the separate
 `l2` field. A fragile/`skip_service_probe` policy leaves ARP discovery on but
-disables those protocol-specific name probes. Nmap absence or insufficient raw
-socket privileges is recorded in the artifact rather than disguised as an
-empty network.
+disables those protocol-specific name probes. A missing Pulse binary or a failed
+run is recorded in the artifact rather than disguised as an empty network.
 
 ## Input contract
 

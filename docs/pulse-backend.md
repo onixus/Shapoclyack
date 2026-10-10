@@ -611,12 +611,97 @@ Nuclei skips cleanly if the binary or `templates_dir` is missing
 (host installs without the Docker bake). Disable with
 `nuclei.enabled: false`.
 
+## L2 discovery
+
+`discovery.l2.enabled: true` (off by default) finds silent hosts on a directly
+attached IPv4 segment and records their MAC and link-local names. It runs
+Pulse, not Nmap (#542); the artifact is `l2_discovery.json` with
+`engine: "pulse"`, and `discover/l2-pulse.json` keeps the raw output.
+
+One run does it all:
+`pulse --targets-file <selected networks> -D --discover-method arp --rate R --max-hosts <max_hosts> -f json -q --all --protocol udp -p 137,5353 -b`.
+
+- **What goes on the wire.** "ARP" is the kernel's neighbour resolution: Pulse
+  sends a 1-byte UDP datagram to port 9 of every candidate address and the
+  kernel ARPs for it (three requests per dead address). Live hosts then get UDP
+  probes on 137 (NetBIOS wildcard NBSTAT query, `netbios: true`) and 5353
+  (mDNS service query, `mdns: true`); a port in `ports.exclude_ports` is
+  dropped. With neither name probe left, the pass touches only port 9. Port 9
+  itself in `exclude_ports` switches the stage off
+  (`arp.trigger_port_excluded:9`): the trigger cannot be moved.
+- **iproute2.** Pulse's ARP method reads the neighbours through
+  `ip -4 neigh`. Without `ip` on its `PATH` it reports 0 live hosts, prints
+  nothing and exits 0, indistinguishable from an empty segment. The scanner
+  images install `iproute2` for this; on a host install, put it on `PATH`. The
+  adapter checks for `ip` first and otherwise skips the stage with
+  `pulse.arp_needs_iproute2`.
+- **Targets.** CIDR networks are accepted in the targets file, and `--max-hosts`
+  counts a /24 as 254, like `max_hosts` here.
+- **Rate.** `--rate` paces candidate addresses, not packets, so a candidate
+  costs `mcast_solicit + 1` packets (the sysctl of the configured interface; without one the largest value over
+  `/proc/sys/net/ipv4/neigh/*` except `lo`; 3 if unreadable). The adapter passes
+  `--rate ⌊max_rate / divisor⌋` and records it as `pulse_rate` with
+  `rate_divisor` in the artifact, where `divisor = mcast_solicit + 2`: the
+  trigger datagram, the ARP retries, and one more for what the measurements
+  show on top of that, with or without name probes. Measured on a Docker
+  bridge with `mcast_solicit` 3, on 4 and on 55 live hosts of 253 candidates
+  (peak tx packets per second): without name probes `--rate 25` gave 86 and
+  103 against a ceiling of 100, `--rate 20` gave 79, 68 and 71; with name
+  probes `--rate 25` gave 101 and 86, `--rate 20` gave 74, 69, 70 and 83. Runs
+  differ a lot from each other, so this is an estimate for other
+  `mcast_solicit` values and longer replies, not a proof. When the quotient is
+  0 the rate cannot be approached (`--rate 0` would mean unlimited) and the
+  stage is skipped with `rate_cap_unenforceable:<max_rate>`.
+- **Time budget.** Before the run the adapter estimates
+  `candidates / pulse_rate + mcast_solicit` seconds (the last dead candidate
+  still waits out its ARP retries). Over `timeout_seconds` the stage is skipped
+  with `timeout_unreachable:<estimate>s` rather than killed half-way with no
+  result.
+- **Interface.** Pulse cannot be told which interface to use; the routing
+  table decides. With `discovery.l2.interface` set, the adapter reads
+  `/proc/net/route` and scans only the parts of the networks the kernel really
+  sends out of that interface without a gateway. The kernel takes the longest
+  prefix and, at an equal prefix, the lowest metric, so a network (or part of
+  one) is dropped when a more specific route of any interface covers it, or an
+  equal route has a metric that is not strictly worse than this interface's.
+  The dropped parts go to `skipped_networks` as `not_on_interface:<iface>`. An unreadable route table skips the stage
+  (`interface.unverifiable`). Without `interface` no route check is made, as
+  before.
+- **MAC.** Not in Pulse's output. After the run the adapter reads the kernel
+  neighbour table (`/proc/net/arp`), complete entries only, of the configured
+  interface when one is set, for alive in-scope hosts. A host whose entry
+  vanished has `mac: null`. `vendor` is always `null`: there is no OUI
+  database (Nmap's came from `nmap-mac-prefixes`).
+- **Names.** NetBIOS: the unique names of the NBSTAT table in the banner;
+  group names (workgroup) are dropped by their group bit, and the table is
+  cut at about 150 characters. The statistics block after the table starts
+  with the adapter's MAC and would read as a name, so only names of letters,
+  digits, `-` and `_` (up to 15) are kept: a NetBIOS name with a space, a `.`
+  or a `$` is dropped, and that is the price of the filter. `__MSBROWSE__`
+  falls out the same way (it carries non-printable bytes, shown as dots). A logged-in user name (suffix `0x03`) is
+  indistinguishable from the machine name in that text and may appear. mDNS:
+  only `*.local` host names, never service types. Pulse asks
+  `_services._dns-sd._udp.local` and usually gets `_ssh._tcp`-style service
+  types back, so mDNS names are rare (Nmap's `dns-service-discovery` gave none
+  either). Evidence rows carry `script_id` `pulse:netbios-ns` / `pulse:mdns`.
+- **Failure.** No live host is empty output with exit code 0 and is not an
+  error. A non-zero exit code is `arp.failed:<code>`, a timeout or start error
+  `arp.failed:<ExceptionName>`, unparsable output `arp.failed:invalid_json`; a
+  missing binary is `pulse.unavailable` with a warning pointing here, a missing `ip`
+  `pulse.arp_needs_iproute2`. The scan
+  continues in every case.
+
+Pulse is missing MAC and names in structured output, a packet-rate cap in
+discovery, a discovery-only mode and an interface choice
+([GenDec#35](https://github.com/onixus/GenDec/issues/35)); the workarounds above
+go away when it lands. Measurements: [ADR 0002](adr/0002-replacing-nmap-functions.md).
+
 ## Optional nmap
 
 Nmap is not bundled in the images (NPSL, [#97](https://github.com/onixus/Shapoclyack/issues/97));
 `0.47-1009-rc1` is the last release that published `-nmap` tags. It is not
-required for the default Pulse path. For `backend: nmap|hybrid`, `vuln_legacy`
-and the L2 ARP sweep, install your own and let it be found on `PATH`:
+required for the default Pulse path. For `backend: nmap|hybrid`, and
+`vuln_legacy`, install your own and let it be found on `PATH`:
 [Using your own Nmap](nmap-external.md).
 
 When nmap is absent, `run_nse` logs a warning, writes `nmap/SKIPPED_NMAP_MISSING`
