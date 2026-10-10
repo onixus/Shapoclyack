@@ -466,6 +466,14 @@ and not the next is not a ceiling:
   another in the same worker — two of them the TLS 1.0/1.1 checks, which
   `tls_posture.probe_legacy_protocols: false` in the scanner config turns off
   (the policy does not).
+* **`per_host_rate` and the Pulse plugins.** The Rhai plugins Pulse runs after its
+  scan ([Pulse plugins](pulse-plugins.md)) open connections of their own, up to
+  eight per plugin run, outside `--rate`. They run one at a time, so
+  `max_host_concurrency` holds without help; a per-host packet rate cannot be promised
+  for them, so a policy with `per_host_rate` sets `service_probe.pulse.plugins` to
+  `false` in every speed profile for that run. The service-probe stage off already
+  skips the whole Pulse stage. The effect is visible in `pulse/raw.json` as
+  `adapter.plugins.requested: false`.
 * **`max_host_concurrency: 1`** is one *batch* at a time, not one host at a
   time, and the difference matters on a plant network. It lowers the discovery,
   port and NSE worker counts and pulse's `--host-parallel`; a worker takes a

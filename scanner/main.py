@@ -987,6 +987,7 @@ def _run_pipeline_body(
                     retry_settle_seconds=pulse_cfg.retry_settle_seconds,
                     on_unresolved=unresolved.extend,
                     on_resume_validated=lambda hosts: checkpoint.restart_stage("pulse", hosts),
+                    plugins=pulse_cfg.plugins and report_primary_pulse,
                 ),
             )
             if unresolved:
