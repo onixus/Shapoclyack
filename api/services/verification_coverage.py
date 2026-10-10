@@ -40,10 +40,12 @@ The evidence, per detector:
     plugin with the **same sha256** the finding was made with (an edited or
     replaced plugin is a different check), a success receipt (``completion``)
     for the host and port, and no entry in ``adapter.plugins.errors`` for that
-    plugin on a chunk that held the endpoint. Pulse prints a plugin's runtime
-    error without saying which endpoint it was for, and the shipped plugins
-    ``throw`` when a probe fails, so an error in the chunk is a "did not look"
-    for everything in the chunk. ``loaded`` is what ``pulse plugin check``
+    plugin on a chunk that held the endpoint, and an ``open[]`` row for the
+    endpoint that the plugin's own gate accepts (``pulse_plugins.APPLICABILITY``):
+    a plugin exits silently on a service it does not handle, which is not a look.
+    Pulse prints a plugin's runtime error without saying which endpoint it was
+    for, and the shipped plugins ``throw`` when a probe fails, so an error in the
+    chunk is a "did not look" for everything in the chunk. ``loaded`` is what ``pulse plugin check``
     accepted, not merely what was on disk (pulse skips a script that does not
     compile, silently).
 ``nmap-nse``
@@ -81,6 +83,7 @@ from defusedxml.ElementTree import fromstring as safe_fromstring
 from api.services import runs as runs_service
 from scanner.pipeline import pulse_progress
 from scanner.pipeline.protocol import parse_endpoint
+from scanner.pipeline.pulse_plugins import applies as plugin_applies
 from scanner.pipeline.pulse_probe import parse_ruleset
 
 LOG = logging.getLogger("shapoclyack.verification")
@@ -474,6 +477,22 @@ class RunCoverage:
             (probed := receipts.get(host)) and (port is None or port in probed) for host in hosts
         ):
             return "endpoint_not_probed"
+        # A plugin gates on the detected service / banner and returns without a
+        # word when the endpoint is not one it handles; "loaded, endpoint
+        # completed, no finding" then says nothing about it.
+        if not any(
+            isinstance(row, dict)
+            and normalize_host(row.get("ip") or row.get("host")) in hosts
+            and (port is None or _port(row.get("port")) == port)
+            and plugin_applies(
+                ref,
+                service=str(row.get("service") or ""),
+                port=_port(row.get("port")) or 0,
+                banner=str(row.get("banner") or ""),
+            )
+            for row in document.get("open") or []
+        ):
+            return "plugin_not_applicable"
         for error in receipt.get("errors") or []:
             if not isinstance(error, dict) or str(error.get("plugin")) != ref:
                 continue
