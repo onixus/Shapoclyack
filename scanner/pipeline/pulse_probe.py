@@ -57,6 +57,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from . import distro_revision
 from .protocol import parse_endpoint
 from .pulse_plan import plan_tcp_probe
 from .pulse_progress import (
@@ -367,6 +368,25 @@ def build_pulse_command(
     return cmd
 
 
+def _distro_fields(row: dict[str, Any], version: str, banner: str) -> tuple[str, str]:
+    """(distro, distro_revision) for one ``open[]`` row.
+
+    Pulse's own fields win when it reports them (GenDec#33 asks for
+    ``distro`` / ``distro_revision``; v1.3.0 reports neither). Whatever it
+    leaves out is read from the version and the listener's own greeting. A
+    revision is only taken from the banner for the distribution Pulse named,
+    never paired with another one.
+    """
+    distro = str(row.get("distro") or "").strip().lower()
+    revision = str(row.get("distro_revision") or "").strip()
+    if distro and revision:
+        return distro, revision
+    read_distro, read_revision = distro_revision.for_service(version, banner)
+    if not distro:
+        return read_distro, read_revision
+    return distro, read_revision if read_distro == distro else ""
+
+
 def parse_pulse_json(payload: dict[str, Any]) -> tuple[list[ServiceRecord], list[OsRecord], list[CveRecord]]:
     services: list[ServiceRecord] = []
     for row in payload.get("open") or []:
@@ -388,6 +408,7 @@ def parse_pulse_json(payload: dict[str, Any]) -> tuple[list[ServiceRecord], list
         product = str(row.get("product") or "").strip()
         version = str(row.get("version") or "").strip()
         state = str(row.get("state") or "open").strip().lower() or "open"
+        distro, distro_revision = _distro_fields(row, version, str(banner) if banner else "")
         services.append(
             ServiceRecord(
                 ip=ip,
@@ -400,6 +421,8 @@ def parse_pulse_json(payload: dict[str, Any]) -> tuple[list[ServiceRecord], list
                 banner=str(banner) if banner else "",
                 source="pulse",
                 host=str(row.get("host") or ip),
+                distro=distro,
+                distro_revision=distro_revision,
             )
         )
 

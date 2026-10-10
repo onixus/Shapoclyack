@@ -46,6 +46,7 @@ from api.services import job_states
 from api.services import runs as runs_service
 from api.services import vulnerabilities as vulns_service
 from api.settings import Settings
+from scanner.pipeline import distro_revision
 from scanner.pipeline.report import _parse_nmap_xml
 from scanner.pipeline.service_schema import OsRecord, ServiceRecord
 
@@ -60,7 +61,7 @@ FIELD_MAX = 256
 CPE_MAX = 8
 
 #: The fields whose change re-queues a listener for matching.
-FINGERPRINT_FIELDS = ("service", "product", "version", "banner", "cpe")
+FINGERPRINT_FIELDS = ("service", "product", "version", "banner", "cpe", "distro", "distro_revision")
 
 
 def _now() -> datetime:
@@ -86,15 +87,26 @@ def _normalized(entry: dict[str, Any], *, source: str) -> dict[str, Any] | None:
         return None
     raw_cpe = entry.get("cpe")
     cpe = [str(c).strip()[:FIELD_MAX] for c in raw_cpe if str(c).strip()] if isinstance(raw_cpe, list) else []
+    version = _clip(entry.get("version"), FIELD_MAX)
+    raw_banner = str(entry.get("banner") or entry.get("extrainfo") or "")
+    # Pulse's services.json states the pair itself; nmap's rows (and the
+    # findings.json fallback) get it read from the same text by the same
+    # grammar, so a listener has the fields whichever prober saw it.
+    distro = _clip(entry.get("distro"), FIELD_MAX).lower()
+    revision = _clip(entry.get("distro_revision"), FIELD_MAX)
+    if not distro and not revision:
+        distro, revision = distro_revision.for_service(version, raw_banner)
     return {
         "host": host,
         "port": port,
         "protocol": (_clip(entry.get("protocol"), 16) or "tcp").lower(),
         "service": _clip(entry.get("service"), FIELD_MAX),
         "product": _clip(entry.get("product"), FIELD_MAX),
-        "version": _clip(entry.get("version"), FIELD_MAX),
-        "banner": _clip(entry.get("banner") or entry.get("extrainfo"), BANNER_MAX),
+        "version": version,
+        "banner": _clip(raw_banner, BANNER_MAX),
         "cpe": list(dict.fromkeys(cpe))[:CPE_MAX],
+        "distro": distro,
+        "distro_revision": revision,
         "source": source,
     }
 
@@ -137,6 +149,12 @@ def fingerprints_from_run_dir(run_dir: Path) -> list[dict[str, Any]]:
         elif not current["banner"]:
             current["banner"] = record["banner"]
         current["cpe"] = list(dict.fromkeys([*current["cpe"], *record["cpe"]]))[:CPE_MAX]
+        # A revision belongs to the distribution that stated it: take the pair
+        # from the first prober that has one, never one half from each.
+        if not current["distro_revision"] and record["distro_revision"]:
+            current["distro"], current["distro_revision"] = record["distro"], record["distro_revision"]
+        elif not current["distro"] and not current["distro_revision"]:
+            current["distro"] = record["distro"]
 
     nmap_dir = run_dir / "nmap"
     if nmap_dir.is_dir():
@@ -358,6 +376,8 @@ def _upsert(
             version=fp["version"],
             banner=fp["banner"],
             cpe=fp["cpe"],
+            distro=fp["distro"],
+            distro_revision=fp["distro_revision"],
             source=fp["source"],
             first_seen_at=now,
             last_seen_at=now,
@@ -462,6 +482,8 @@ def to_dict(row: models.AssetService) -> dict[str, Any]:
         "version": row.version,
         "banner": row.banner,
         "cpe": list(row.cpe or []),
+        "distro": row.distro,
+        "distro_revision": row.distro_revision,
         "source": row.source,
         "first_seen_at": _iso(row.first_seen_at),
         "last_seen_at": _iso(row.last_seen_at),

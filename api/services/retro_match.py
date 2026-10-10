@@ -46,6 +46,7 @@ from typing import Any, Callable, Iterable
 from api.services import package_identity, version_compare
 from api.services.advisories import base as advisory_base
 from api.services.cpe_ranges import CpeRange, CpeRangeDataset
+from scanner.pipeline import distro_revision
 
 # --------------------------------------------------------------------------
 # Verdicts and confidence
@@ -653,6 +654,12 @@ class Fingerprint:
     banner: str = ""
     cpe: tuple[str, ...] = ()
     service: str = ""
+    #: The distribution and package revision the scanner read off the listener's
+    #: own greeting (``ServiceRecord.distro`` / ``distro_revision``). Empty for a
+    #: row recorded before the fields existed, or by a prober that states none:
+    #: :func:`own_hint` then reads the banner text as it always did.
+    distro: str = ""
+    distro_revision: str = ""
 
     @property
     def text(self) -> str:
@@ -836,30 +843,7 @@ def upstream_version(
 # Distribution hints
 # --------------------------------------------------------------------------
 
-_UBUNTU_REVISION = re.compile(r"ubuntu[\s_-]+(\d[\w.+~]*ubuntu[\w.+~]*)", re.IGNORECASE)
-_UBUNTU_BARE_REVISION = re.compile(r"(?<![\w.])(\d+[\w.+~]*ubuntu\d[\w.+~]*)", re.IGNORECASE)
-_DEBIAN_REVISION = re.compile(r"debian[\s_-]+(\d[\w.+~]*)", re.IGNORECASE)
-_DEBIAN_RELEASE = re.compile(r"[+~](?:deb|bpo)(\d{1,2})(?:u\d+)?", re.IGNORECASE)
-_UBUNTU_RELEASE = re.compile(r"(?:ubuntu\d*\.|~)(\d{2}\.\d{2})", re.IGNORECASE)
 _EL_RELEASE = re.compile(r"\.el(\d+)", re.IGNORECASE)
-
-#: Distributions a banner can name that no advisory provider covers. Seeing one
-#: is what turns an NVD hit into ``possible``: these vendors backport too, we
-#: just cannot ask them.
-_OTHER_DISTROS: tuple[tuple[str, str], ...] = (
-    ("red hat", "rhel"),
-    ("rhel", "rhel"),
-    ("centos", "centos"),
-    ("rocky", "rocky"),
-    ("almalinux", "almalinux"),
-    ("fedora", "fedora"),
-    ("amazon linux", "amazonlinux"),
-    ("oracle linux", "oraclelinux"),
-    ("suse", "suse"),
-    ("raspbian", "raspbian"),
-    ("freebsd", "freebsd"),
-    ("alpine", "alpine"),
-)
 
 
 @dataclass(frozen=True)
@@ -883,43 +867,25 @@ def distro_hint(text: str) -> DistroHint:
     the release to :func:`_releases_shipping`, a bare ``(Ubuntu)`` pins the
     distribution alone.
     """
-    lowered = (text or "").lower()
-    if not lowered:
-        return DistroHint()
-    if "ubuntu" in lowered:
-        match = _UBUNTU_REVISION.search(text) or _UBUNTU_BARE_REVISION.search(text)
-        revision = match.group(1) if match else None
-        release = None
-        if revision:
-            numbered = _UBUNTU_RELEASE.search(revision)
-            if numbered:
-                release = _release_from_number(package_identity.UBUNTU, numbered.group(1))
-        return DistroHint(package_identity.UBUNTU, release, revision)
-    # Before Debian: Raspbian's banner carries a ``+deb10u2`` revision too, but
-    # its packages are its own builds and the Debian tracker does not speak
-    # for them.
-    for needle, label in _OTHER_DISTROS:
-        if needle in lowered:
-            return DistroHint(label)
-    debian_release = _DEBIAN_RELEASE.search(text)
-    if "debian" in lowered or debian_release:
-        match = _DEBIAN_REVISION.search(text)
-        revision = match.group(1) if match else None
-        if revision is None and debian_release:
-            # "+deb12u3" with no "Debian" word before it: the revision is the
-            # token that carries the marker.
-            token = re.search(r"(\d[\w.]*[+~](?:deb|bpo)\d[\w.+~]*)", text, re.IGNORECASE)
-            revision = token.group(1) if token else None
-        release = (
-            _release_from_number(package_identity.DEBIAN, debian_release.group(1))
-            if debian_release
-            else None
-        )
-        return DistroHint(package_identity.DEBIAN, release, revision)
-    el = _EL_RELEASE.search(text)
+    found = distro_revision.read(text)
+    if found is not None:
+        distro, revision = found
+        return DistroHint(distro, _release_of(distro, revision, text), revision)
+    el = _EL_RELEASE.search(text or "")
     if el:
         return DistroHint("rhel", el.group(1))
     return DistroHint()
+
+
+def _release_of(distro: str, revision: str | None, text: str) -> str | None:
+    """The release a revision (or, failing that, the text around it) pins."""
+    if distro == package_identity.UBUNTU:
+        numbered = distro_revision.UBUNTU_RELEASE.search(revision) if revision else None
+        return _release_from_number(distro, numbered.group(1)) if numbered else None
+    if distro == package_identity.DEBIAN:
+        numbered = distro_revision.DEBIAN_RELEASE.search(text)
+        return _release_from_number(distro, numbered.group(1)) if numbered else None
+    return None
 
 
 def _release_from_number(distro: str, number: str) -> str | None:
@@ -1260,8 +1226,33 @@ def own_hint(fingerprint: Fingerprint, keys: Iterable[str], cpe_version: str | N
     it, the rule :func:`host_hint` applies between listeners. Read off the
     whole banner, PHP's ``4ubuntu2.19`` became Apache's — a patched
     ``2.4.41-4ubuntu3.17`` rebuilt as ``2.4.41-4ubuntu2.19``, below its fix.
+
+    When the scanner recorded the revision as a field of its own
+    (``Fingerprint.distro_revision``) that is the answer, read by the same
+    grammar at the source (``scanner/pipeline/distro_revision.py``); the text
+    above is the fallback for rows that predate the field or listeners whose
+    greeting states none.
     """
     keys = tuple(keys)
+    structured = _structured_hint(fingerprint)
+    if structured is not None and structured.revision:
+        return structured
+    hint = _banner_own_hint(fingerprint, keys, cpe_version)
+    if not hint.visible and structured is not None:
+        return structured
+    return hint
+
+
+def _structured_hint(fingerprint: Fingerprint) -> DistroHint | None:
+    """The scanner's own distro/revision fields as a hint, ``None`` when unset."""
+    distro = (fingerprint.distro or "").strip().lower()
+    if not distro:
+        return None
+    revision = (fingerprint.distro_revision or "").strip() or None
+    return DistroHint(distro, _release_of(distro, revision, revision or ""), revision)
+
+
+def _banner_own_hint(fingerprint: Fingerprint, keys: tuple[str, ...], cpe_version: str | None) -> DistroHint:
     lines = [line for line in _BANNER_LINES.split(fingerprint.banner or "") if line]
     php = "a:php:php" in keys
     context = [line for line in lines if php or not _FOREIGN_LINE.match(line)]
