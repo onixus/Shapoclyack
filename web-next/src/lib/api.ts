@@ -1350,6 +1350,11 @@ export type AssetServiceInfo = {
   version: string;
   banner: string;
   cpe: string[];
+  /** Distribution and package revision the scan read off the listener's own
+   * greeting (`ubuntu` / `4ubuntu0.13`), apart from `version` (`8.2p1`). Empty
+   * when the prober stated none; absent on an API older than migration 0084. */
+  distro?: string;
+  distro_revision?: string;
   source: string;
   first_seen_at: string | null;
   last_seen_at: string | null;

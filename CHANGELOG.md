@@ -4,6 +4,30 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- The asset page's Services table shows `distro` / `distro_revision` under the product and version (#546).
+- Pulse runs with a probe database we own
+  ([#546](https://github.com/onixus/Shapoclyack/issues/546)). Every invocation
+  gets `--probe-db scanner/pipeline/pulse_data/probes.json`: GenDec v1.3.0's
+  embedded set verbatim (MIT, attribution in `probes.json.LICENSE`, `NOTICE`) plus
+  rules of our own, written from observed banners and not from Nmap's NPSL
+  `nmap-service-probes`. The adapter validates the file first (Pulse silently
+  falls back to its embedded set on a bad one), records the file's version and
+  sha256 as `adapter.probe_db*` in `pulse/raw.json`, and notes when Pulse still
+  fell back. First rule: PostgreSQL via an SSLRequest (stock Pulse named the
+  service but not the product).
+- The package revision is a field of its own: `ServiceRecord.distro` /
+  `distro_revision` (`8.2p1` stays the version, `ubuntu` / `4ubuntu0.13` is the
+  revision), stored in new `asset_services` columns (migration `0084`, expand
+  only; old rows keep the banner fallback) and read first by the retro matcher's
+  backport step. Forward-compatible with GenDec#33. A pre-existing row gets the
+  fields filled at its next scan without counting as a changed fingerprint.
+- Every product string the probe database can emit is in `retro_match`'s
+  `PRODUCT_TABLE` (33 new rows, NVD keys checked 2026-10-10) or in
+  `UNMAPPED_PROBE_PRODUCTS` (122 entries) with the reason; a test enforces it. This changes
+  `rules_version`, so listeners are matched once more.
+
 ### Changed
 
 - **Breaking:** the Pulse adapter pins its inputs

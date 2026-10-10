@@ -1,0 +1,60 @@
+Service probe database for Pulse (`--probe-db`)
+===============================================
+
+The base of probes.json is the probe database embedded in GenDec/Pulse,
+copied verbatim.
+
+  Source:   https://github.com/onixus/GenDec  (src/scanner/probes.json)
+  Tag:      v1.3.0
+  Version:  2026.08.21 (the "version" field of the file)
+  sha256:   ee2c2c71e9c0c04ecbabdc3abb195f35acfe35477b56834bb451304c4ffa1a1a
+  Licence:  MIT (Cargo.toml: license = "MIT", authors = ["GenA"]).
+            The upstream repository carries no LICENSE file, so the standard
+            MIT text is reproduced below with the author named in Cargo.toml.
+
+Provenance of the base, and what is claimed
+-------------------------------------------
+
+What we know about the upstream set comes from two statements in the GenDec
+repository at tag v1.3.0, nothing more:
+
+  * src/scanner/probe_db.rs, the comment on EMBEDDED_PROBE_DB: "The shipped
+    probe set. Written by hand for Pulse -- the Nmap `nmap-service-probes`
+    file is NPSL-licensed and is not used here."
+  * Cargo.toml: license = "MIT", authors = ["GenA"]. GenDec has no LICENSE
+    file at its root, so the MIT text below is the standard text with the
+    copyright holder taken from that field.
+
+We have not independently verified either statement and have no confirmation
+from the author beyond them. We therefore claim exactly this: the base is the
+upstream set as its author describes it. Do not read it as a clean-room
+guarantee made by this project.
+
+Rules added after the upstream entries (see docs/pulse-backend.md, "Probe
+database") are written from scratch for this project, from banners observed on
+our own test stand and from vendor documentation. They are not derived from
+Nmap's nmap-service-probes (NPSL).
+
+----------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) GenA
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

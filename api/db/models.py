@@ -3282,6 +3282,12 @@ class AssetService(Base):
     # "Debian-2+deb12u3" lives when the version field does not carry it.
     banner: Mapped[str] = mapped_column(default="")
     cpe: Mapped[list] = mapped_column(JSON, default=list)
+    # The distribution and package revision the scanner read off the listener's
+    # greeting (``SSH-2.0-OpenSSH_8.2p1 Ubuntu-4ubuntu0.13`` → ``ubuntu`` /
+    # ``4ubuntu0.13``), kept apart from ``version`` (``8.2p1``). Empty when the
+    # prober stated none; the retro matcher then reads ``banner``.
+    distro: Mapped[str] = mapped_column(default="", server_default="")
+    distro_revision: Mapped[str] = mapped_column(default="", server_default="")
     # pulse | nmap
     source: Mapped[str] = mapped_column(default="")
     first_seen_at: Mapped[datetime]

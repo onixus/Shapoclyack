@@ -124,7 +124,7 @@ data and measurement live in Shapoclyack.**
 
 | Function | Pulse (engine) | Shapoclyack | Nuclei |
 |---|---|---|---|
-| Service and version detection | probe engine; derive `service` from the matched probe, not the port table (measurement 2) | owns the probe DB (`scanner/pipeline/pulse_data/probes.json`, passed with `--probe-db`); rules written clean-room — nothing copied or paraphrased from `nmap-service-probes` | — |
+| Service and version detection | probe engine; derive `service` from the matched probe, not the port table (measurement 2) | owns the probe DB (`scanner/pipeline/pulse_data/probes.json`, passed with `--probe-db`); base = GenDec's embedded set as stated by its author (see `probes.json.LICENSE`); rules added by this project are written from observed banners — nothing copied or paraphrased from `nmap-service-probes` | — |
 | Distribution revision, backports | report the distribution suffix separately from the upstream version (measurement 3) | backport judgement in `retro_match` | — |
 | CPE | — | product→CPE mapping next to the `retro_match` alias table | — |
 | OS detection | SinFP | always pass `--os-mode sinfp`; `auto` and `nmap` are not used | — |
