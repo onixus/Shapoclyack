@@ -12,10 +12,28 @@ copied verbatim.
             The upstream repository carries no LICENSE file, so the standard
             MIT text is reproduced below with the author named in Cargo.toml.
 
-Rules added on top of that base (everything after the upstream entries, see
-docs/pulse-backend.md "Probe database") are written from scratch for this
-project from banners observed on our own test stand and from vendor
-documentation. They are not derived from Nmap's nmap-service-probes (NPSL).
+Provenance of the base, and what is claimed
+-------------------------------------------
+
+What we know about the upstream set comes from two statements in the GenDec
+repository at tag v1.3.0, nothing more:
+
+  * src/scanner/probe_db.rs, the comment on EMBEDDED_PROBE_DB: "The shipped
+    probe set. Written by hand for Pulse -- the Nmap `nmap-service-probes`
+    file is NPSL-licensed and is not used here."
+  * Cargo.toml: license = "MIT", authors = ["GenA"]. GenDec has no LICENSE
+    file at its root, so the MIT text below is the standard text with the
+    copyright holder taken from that field.
+
+We have not independently verified either statement and have no confirmation
+from the author beyond them. We therefore claim exactly this: the base is the
+upstream set as its author describes it. Do not read it as a clean-room
+guarantee made by this project.
+
+Rules added after the upstream entries (see docs/pulse-backend.md, "Probe
+database") are written from scratch for this project, from banners observed on
+our own test stand and from vendor documentation. They are not derived from
+Nmap's nmap-service-probes (NPSL).
 
 ----------------------------------------------------------------------------
 
