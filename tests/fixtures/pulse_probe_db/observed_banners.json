@@ -1,5 +1,5 @@
 {
-  "note": "Responses seen on the nmap_pulse_corpus stand (docker, 172.29.41.0/24) or recorded in tests/fixtures/nmap_pulse_corpus/pulse/tcp.json. 'probe' is the probes.json probe whose payload provoked the response. Used by tests/test_pulse_probe_db.py to replay rules; the expected values are what a live Pulse 1.3.0 run with --probe-db reported.",
+  "note": "Responses seen on the nmap_pulse_corpus stand (docker, 172.29.41.0/24) on 2026-10-10, or recorded in tests/fixtures/nmap_pulse_corpus/pulse/tcp.json. 'probe' is the probes.json probe whose payload provoked the response. The 'expect' values are what Pulse 1.3.0 reported when run live with --probe-db for the postgres entry; the other entries use the stock rules and the corpus recording. tests/test_pulse_probe_db.py replays the responses through a Python emulator of probe_db.rs matching, not through Pulse.",
   "observed": [
     {
       "probe": "postgres-sslrequest",

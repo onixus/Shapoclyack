@@ -180,9 +180,31 @@ and updating the pin and the fixture in the same change.
 **The adapter validates the file before passing it.** Pulse answers a file it
 cannot read, parse or compile with one stderr line (`probe-db <path>: ... --
 using the embedded set`) and carries on with the stock rules. So
-`scanner/pipeline/pulse_probe_db.py` checks the JSON shape, compiles every
-pattern and rejects what Python accepts but Pulse's Rust `regex` engine does
-not (look-around, back-references). A file that fails is **not** passed: the
+`scanner/pipeline/pulse_probe_db.py` checks, before passing the file:
+
+- the JSON itself as serde_json reads it (no `NaN`/`Infinity`, no lone
+  surrogate escape), the shape of probes and matches, port and rarity ranges,
+  and `payload_hex` (whitespace allowed, as Pulse's `decode_hex` strips it);
+- that every pattern compiles in Python **and** stays inside the *common subset*
+  of Python's `re` and Rust's `regex`. The rule is "patterns must be in the
+  common subset", not "everything Rust accepts": no look-around, no
+  back-references or octal escapes, no `(?#...)`, no flags except `i`, `m`, `s`
+  (bare ones only at the start; scoped `(?i:...)` is fine), no possessive
+  quantifiers, only `\d \D \s \S \w \W \b \B \A \n \r \t \f \v \a`, `\xHH` and
+  escaped punctuation, no nested, POSIX or `&&`/`--`/`~~` classes, `{` only as a
+  counted repetition. This rejects some Rust-only syntax too (`(?<n>`, `\pL`,
+  `\x{41}`, `\z`), on purpose, so the verdict does not depend on the Python
+  version;
+- an estimated compiled size of at most 1000 per pattern (a literal is 1,
+  `\w \d \s` and negated classes are 10, counted repetitions multiply and
+  nest). Rust refuses programs over its size limit, which Python does not
+  notice (`\w{500}`, `(\w{1,1000}){1,1000}`). `\w{200}` compiles and `\w{300}`
+  does not under regex 1.13.1; the budget is half the former, and the largest
+  shipped pattern is a fraction of it.
+
+The subset was checked against a real `regex` 1.13.1 compile of every shipped
+pattern, a battery of edge cases and a few thousand generated patterns: none the
+validator accepted was refused by Rust. A file that fails is **not** passed: the
 run logs a warning once and records `adapter.probe_db: null` with the reason
 in `adapter.probe_db_skipped`. A file that passes is recorded as
 `adapter.probe_db` (path), `probe_db_version` and `probe_db_sha256`; if Pulse
@@ -213,6 +235,14 @@ here. Then:
    first soft one; `$N` expands to capture N). That emulates the engine, it
    does not run it: check new rules with `pulse --probe-db` against the stand
    too.
+
+The stock `postgres-startup` probe is still sent first on 5432 (probes are
+tried cheapest first and ours is appended), and a PostgreSQL server logs
+`invalid length of startup packet` for its literal-text payload (and
+`incomplete startup packet` for the listen-only `null` probe). On the stand the
+chain went on regardless: the run reported `PostgreSQL database`, banner `N`,
+`detection_method: probe-db` from `postgres-sslrequest` (Pulse 1.3.0,
+2026-10-10).
 
 Rules added so far: `postgres-sslrequest` (5432/5433/6432). A PostgreSQL server
 answers the SSLRequest with the single byte `N` or `S`; the stock rule wants

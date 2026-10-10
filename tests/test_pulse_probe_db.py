@@ -38,7 +38,13 @@ def test_our_database_only_adds_to_upstream():
     assert [p["name"] for p in ours[: len(upstream)]] == [p["name"] for p in upstream], (
         "upstream probes must stay first and in order; new probes go after them"
     )
+    assert re.fullmatch(rf"{re.escape(_load(UPSTREAM)['version'])}\+shapo\.\d+", _load(pp.PROBE_DB)["version"]), (
+        "version must say it is upstream's plus our additions: <upstream>+shapo.N"
+    )
     for old, new in zip(upstream, ours, strict=False):
+        assert set(new) == set(old), f"{old['name']}: keys differ from upstream ({set(new) ^ set(old)})"
+        for old_rule, new_rule in zip(old["matches"], new["matches"], strict=False):
+            assert set(new_rule) == set(old_rule)
         for key in ("ports", "rarity", "payload", "payload_hex"):
             assert new.get(key) == old.get(key), f"{old['name']}: {key} differs from upstream"
         assert new["matches"][: len(old["matches"])] == old["matches"], (
@@ -79,8 +85,8 @@ def _db(*patterns: str, **probe_extra) -> str:
         ("{not json", "not valid JSON"),
         ("[]", "top level"),
         (json.dumps({"version": "x", "probes": [{"ports": [1]}]}), "name"),
-        (_db("(?=x)y"), "unsupported group"),
-        (_db("(?<!a)b"), "unsupported group"),
+        (_db("(?=x)y"), "group construct"),
+        (_db("(?<!a)b"), "group construct"),
         (_db("(a)\\1"), "back-reference"),
         (_db("(unclosed"), "bad pattern"),
         (_db("x", ports=[70000]), "ports"),
@@ -93,10 +99,84 @@ def test_validation_rejects_what_pulse_would_drop(text: str, why: str):
         pdb.validate_probe_db_text(text)
 
 
-def test_validation_accepts_what_pulse_accepts():
-    # An escaped backslash before a digit and a class holding '(?=' are not look-around.
-    version, probes, matches = pdb.validate_probe_db_text(_db(r"\\1", r"[(?=]x", r"^[NS]$", payload_hex="00ff"))
-    assert (version, probes, matches) == ("x", 1, 3)
+# Verified against a real Rust ``regex`` 1.13.1 compile (Regex::new, default size
+# limit) on 2026-10-10: Rust rejects every pattern in the first two lists.
+PYTHON_ONLY = [
+    r"abc\Z",  # end-of-text escape that is Python's alone
+    r"(?#comment)a",
+    r"(?a)\w",
+    r"(?L)a",
+    r"(?(1)a|b)",
+    r"(a)(?P=n)",
+    r"(?>a)",
+    r"\Nx",
+    r"a*+",  # possessive in Python 3.11+
+]
+TOO_BIG = [
+    r"\w{500}",
+    r"[\d]{0,3000}\s",
+    r"(\w{1,1000}){1,1000}",
+    r"(\w{1,50}){1,5}",
+    r"(?:\w{16}){16}",
+]
+# Rust accepts these and Python does not (or not on every version): rejected so
+# that the answer does not depend on the interpreter.
+RUST_ONLY = [r"(?<n>a)", r"\pL", r"\x{41}", r"(?U)a", r"a(?i)b", r"[\w--a]", r"\z", r"[[:alpha:]]", r"[a&&b]"]
+
+
+@pytest.mark.parametrize("pattern", PYTHON_ONLY + TOO_BIG + RUST_ONLY)
+def test_patterns_outside_the_common_subset_are_rejected(pattern: str):
+    with pytest.raises(pdb.ProbeDbError):
+        pdb.validate_probe_db_text(_db(pattern))
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        r"\\1",  # an escaped backslash, then '1'
+        r"[(?=]x",
+        r"^[NS]$",
+        r"(?i)(?s)a",
+        r"(?i:a)b",
+        r"(?P<n>a)",
+        r"a*?b",
+        r"[]a]",
+        r"\x41\_",
+        r"\w{100}",  # the largest budget that compiles with room to spare
+        r"(?:\w{10}){10}",
+        r"[a-z]{1,500}",
+    ],
+)
+def test_patterns_inside_the_common_subset_are_accepted(pattern: str):
+    assert pdb.validate_probe_db_text(_db(pattern))[2] == 1
+
+
+def test_every_shipped_pattern_is_inside_the_budget():
+    biggest = max(
+        pdb.pattern_cost(rule["pattern"]) for probe in _load(pp.PROBE_DB)["probes"] for rule in probe["matches"]
+    )
+    assert biggest <= pdb.MAX_PATTERN_COST // 4  # real headroom, not a pattern at the edge
+
+
+def test_payload_hex_may_contain_whitespace_like_decode_hex():
+    assert pdb.validate_probe_db_text(_db("x", payload_hex="00 00\n00\u00a008"))[1] == 1
+    with pytest.raises(pdb.ProbeDbError, match="payload_hex"):
+        pdb.validate_probe_db_text(_db("x", payload_hex="0g"))
+    with pytest.raises(pdb.ProbeDbError, match="payload_hex"):
+        pdb.validate_probe_db_text(_db("x", payload_hex="\u00e9\u00e9"))  # non-ASCII would panic decode_hex
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"version": NaN, "probes": []}',
+        '{"version": "x", "probes": [{"name": "t", "rarity": Infinity}]}',
+        '{"version": "x", "probes": [{"name": "t\\ud800"}]}',  # lone surrogate escape
+    ],
+)
+def test_json_serde_would_refuse_is_rejected(text: str):
+    with pytest.raises(pdb.ProbeDbError, match="not valid JSON"):
+        pdb.validate_probe_db_text(text)
 
 
 # --------------------------------------------------------------------------
@@ -188,6 +268,26 @@ def test_run_notices_when_pulse_fell_back_to_its_embedded_set(tmp_path, monkeypa
 # --------------------------------------------------------------------------
 
 
+def _rust_dollar(pattern: str) -> str:
+    """Python's ``$`` also matches before a trailing newline; Rust's (no ``(?m)``) only at the end."""
+    if "(?m" in pattern or re.search(r"\(\?[a-z]*m[a-z]*[:)]", pattern):
+        return pattern
+    out, i, in_class = [], 0, False
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "\\":
+            out.append(pattern[i : i + 2])
+            i += 2
+            continue
+        if c == "[":
+            in_class = True
+        elif c == "]":
+            in_class = False
+        out.append("\\Z" if c == "$" and not in_class else c)
+        i += 1
+    return "".join(out)
+
+
 def emulate(db: dict, probe_name: str, response: str) -> dict | None:
     """Apply one probe's rules to a response the way probe_db.rs ``match_response`` does.
 
@@ -195,13 +295,14 @@ def emulate(db: dict, probe_name: str, response: str) -> dict | None:
     wins; failing that, the first soft match; ``$N`` expands to capture N (an
     absent group is empty), the result is trimmed. Python's ``re`` stands in
     for Rust's ``regex`` (same for the constructs ``rust_incompatibility``
-    lets through). Not a proof about the engine: tests/fixtures/pulse_probe_db/
+    lets through; ``$`` is made to mean end-of-text, as in Rust, see
+    ``_rust_dollar``). Not a proof about the engine: tests/fixtures/pulse_probe_db/
     observed_banners.json says what a live Pulse reported for the same bytes.
     """
     probe = next(p for p in db["probes"] if p["name"] == probe_name)
     soft_hit = None
     for rule in probe["matches"]:
-        found = re.search(rule["pattern"], response)
+        found = re.search(_rust_dollar(rule["pattern"]), response)
         if not found:
             continue
 
@@ -247,3 +348,9 @@ def test_the_postgres_rule_is_ours_and_the_stock_database_misses_it():
     ours = _load(pp.PROBE_DB)
     probe = next(p for p in ours["probes"] if p["name"] == "postgres-sslrequest")
     assert probe["payload_hex"] == "0000000804d2162f"
+
+
+def test_the_emulator_treats_dollar_as_end_of_text_like_rust():
+    db = {"probes": [{"name": "p", "matches": [{"pattern": "^[NS]$", "service": "s", "product": "P"}]}]}
+    assert emulate(db, "p", "N") is not None
+    assert emulate(db, "p", "N\n") is None  # Python alone would match this
