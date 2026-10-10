@@ -171,7 +171,10 @@ RUN set -eux; \
     # openssh-client: the SSH push deployment (api/services/agent_deployer.py)
     # runs `ssh`/`ssh-keyscan` from this image; without it the feature fails
     # with HostKeyUnavailable before anything is sent to the target.
-    PKGS="ca-certificates curl fping git jq openssh-client fonts-dejavu-core"; \
+    # iproute2: Pulse's ARP discovery (discovery.l2) reads neighbours through
+    # `ip -4 neigh`. Without `ip` it reports 0 live hosts, prints nothing and
+    # exits 0 (docs/pulse-backend.md#l2-discovery).
+    PKGS="ca-certificates curl fping git iproute2 jq openssh-client fonts-dejavu-core"; \
     apt-get install -y --no-install-recommends ${PKGS}; \
     # Security updates the pinned base digest does not carry yet: Debian has
     # published them, python:3.12-slim has not been rebuilt on top. Upgrade

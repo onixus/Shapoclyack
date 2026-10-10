@@ -18,9 +18,10 @@ provided either lands in Pulse or in Shapoclyack, or is dropped on purpose.
 
 ### What still calls Nmap
 
+L2 discovery (ARP sweep, NetBIOS and mDNS names) no longer does: it runs through Pulse since [#542](https://github.com/onixus/Shapoclyack/issues/542), see [pulse-backend.md](../pulse-backend.md#l2-discovery).
+
 | Function | Code | Default |
 |---|---|---|
-| L2 discovery: ARP sweep (`-sn -PR`), then NetBIOS (`nbstat`) and mDNS (`dns-service-discovery`) names over UDP | [`l2_discovery.py`](../../scanner/pipeline/l2_discovery.py) | off (`discovery.l2.enabled: false`) |
 | `-sV` / `-O` / NSE stage, profiles `baseline` (`default,safe`), `vuln_legacy` (`+vuln,vulners,ssl-enum-ciphers`), `vuln-offline` (Vulscan), `service_specific` | [`nse.py`](../../scanner/pipeline/nse.py), `nse_profiles` in [`default.yaml`](../../scanner/config/default.yaml) | only with `service_probe.backend: nmap\|hybrid` |
 | Pulse-versus-Nmap coverage diff (`diff_pulse_nmap.json`) | [`pulse_shadow.py`](../../scanner/pipeline/pulse_shadow.py) | only with `service_probe.shadow: true` |
 | TLS cipher-suite enumeration and grades (`ssl-enum-ciphers`); SSLv2/SSLv3 detection | `nmap-nse` source in [`tls_posture.py`](../../scanner/pipeline/tls_posture.py) | only when NSE ran; the stdlib probe [`tls_probe.py`](../../scanner/pipeline/tls_probe.py) does not enumerate suites |
@@ -83,9 +84,52 @@ TLS cipher suites 0 of 122 enumerated, TLS protocol sets equal on 2 of 3 shared
 endpoints and one endpoint (MySQL) absent. Table, method and caveats:
 [pulse-backend.md](../pulse-backend.md#reference-corpus-nmap-versus-pulse-541).
 
-Not measured: whether `pulse -D --discover-method arp` reports MAC addresses
-and NetBIOS/mDNS names in its JSON, and whether it honours a rate cap. That
-needs a directly attached segment and is the first step of work item 2.
+L2 discovery (work item 2, [#542](https://github.com/onixus/Shapoclyack/issues/542);
+Pulse 1.3.0 against Nmap 7.93 on one Docker bridge: a scanner container with
+`NET_RAW`, an `nmbd` responder, an `avahi-daemon` responder, an idle host and
+the bridge gateway; wire rate read from the scanner's `tx_packets` counter
+every 100 ms, because a capture on Docker Desktop shows every frame twice):
+
+- **Live hosts.** `-D --discover-method arp` found the same 4 live hosts as
+  `nmap -sn -PR` on a /28 and a /24, and none for an off-link network (no
+  packet left for it). It works without `NET_RAW` too.
+- **How.** "ARP" is the kernel's neighbour resolution, not raw frames: Pulse
+  sends a 1-byte UDP datagram to port **9** of every candidate and the kernel
+  ARPs for it — 3 requests per dead address (`mcast_solicit`); 253 candidates
+  cost 759 packets where Nmap sends 532. Pulse reads the neighbours back with
+  `ip -4 neigh`: without iproute2 it finds nothing, prints nothing and exits
+  0. The interface cannot be chosen; the
+  routing table picks it.
+- **MAC.** Not in the JSON, CSV or XML output. The kernel neighbour table
+  (`/proc/net/arp`) holds it for every live host after the run. No vendor.
+- **No discovery-only mode.** Discovery always continues into a port phase;
+  with `--all` every live host gets one result row per port, which is the only
+  machine-readable list of live hosts. With no live host Pulse prints nothing
+  and exits 0. `--top 0` falls back to the default ports, `-p 0` is rejected.
+- **Rate.** `--rate N` paces candidates, not packets. Peak packets per second
+  on the wire with 4 of 253 candidates alive: `--rate 5` → 18, `20` → 70,
+  `25` → 90, `100` → 247 (unlimited: 261); Nmap `--max-rate 20` → 20,
+  `100` → 97. With 55 of 253 alive and the UDP/137 and UDP/5353 name probes in
+  the same run: `--rate 25` → 101 and 86 (two runs), `5` → 21, `20` → 74,
+  `4` → 17; without name probes `--rate 25` → 86 and 103, `--rate 20` → 79,
+  68 and 71. So a ceiling of `R` packets per second held, in every run, with
+  `--rate ⌊R / (mcast_solicit + 2)⌋` (peaks 68–83 for `R` = 100, 20 for
+  `R` = 20); `mcast_solicit + 1` overshot by up to 3%. It is an estimate for
+  other `mcast_solicit` values and denser segments, not a guarantee. Below the
+  divisor it cannot be held at all, and `l2_discovery` skips the stage.
+- **NetBIOS.** `--protocol udp -p 137 -b` sends a wildcard NBSTAT query; the
+  banner carries the name table (printable bytes, others as `.`, high-bit bytes
+  as U+FFFD, cut at about 150 characters), from which the machine name can be
+  read. Nmap's `nbstat` reports the same name.
+- **mDNS.** UDP/5353 asks `_services._dns-sd._udp.local` and the banner lists
+  service types (`_ssh._tcp`), not the host name. Nmap's
+  `dns-service-discovery` gave no `.local` host name on the same responder
+  either, so nothing is lost — but neither tool reports the host name.
+
+What Pulse lacks here (MAC and names in structured output, a packet-rate
+discovery cap, a discovery-only mode, an interface choice) is filed as
+onixus/GenDec#35; `l2_discovery` works around it as described in
+[pulse-backend.md](../pulse-backend.md#l2-discovery) until that lands.
 
 ## Decision drivers
 
@@ -129,7 +173,7 @@ data and measurement live in Shapoclyack.**
 | CPE | — | product→CPE mapping next to the `retro_match` alias table | — |
 | OS detection | SinFP | always pass `--os-mode sinfp`; `auto` and `nmap` are not used | — |
 | Port frequencies | — | ship a non-NPSL services table and always pass `--services-db` (measurement 1) | — |
-| L2: ARP, NetBIOS and mDNS names | discovery (ARP exists; names if missing) | scope, `max_hosts`, rate cap, the artifact shape `l2_discovery` writes today | — |
+| L2: ARP, NetBIOS and mDNS names | discovery (ARP exists; MAC, names and a packet-rate cap in structured output: GenDec#35) | scope, `max_hosts`, rate cap, the artifact shape `l2_discovery` writes today | — |
 | TLS suites, versions, SSLv2/SSLv3 | enumeration with its own ClientHellos | grading and thresholds in `tls_posture` | — |
 | NSE `default,safe` identification (SSH algorithms, SMB signing, RDP NTLM info, FTP anonymous, SNMP…) | the Rhai sandbox | the plugins (`scanner/pipeline/pulse_data/plugins/`, passed with `--script-dir`) and the parser for their findings | — |
 | NSE `vuln` checks | TLS-level ones (Heartbleed and the like) with the enumeration above | the list of checks and where each lands | network templates first; Rhai only for what has none |
