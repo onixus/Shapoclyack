@@ -89,14 +89,18 @@ def read(text: str, *, labelled_only: bool = False) -> tuple[str, str | None] | 
 def for_service(version: str, banner: str) -> tuple[str, str]:
     """(distro, revision) a scanned service discloses; empty strings when none.
 
-    The version field is read in full (a prober that glues the revision on puts
-    it there). From the banner only the lines that describe the listener
-    itself are read — an SSH greeting or a ``Server:`` header, not a page body
+    The version field is trusted less than it looks: nmap puts the whole
+    ``((Ubuntu) PHP/7.4.3-4ubuntu2.19)`` module list there, so another
+    package's suffix can sit in it. A revision is therefore taken from it only
+    when labelled with the distribution's name (``8.2p1 Ubuntu 4ubuntu0.5``) or
+    as a suffix of its *first* token (``1.2.104-1ubuntu1``). From the banner
+    only the lines that describe the listener itself are read — an SSH greeting or a ``Server:`` header, not a page body
     or another product's ``X-Powered-By`` — and only a revision labelled with
     its distribution's name, so a neighbour product's package suffix is never
     attributed to this one.
     """
-    candidates = [(version, False)]
+    head = (version or "").split(None, 1)[0] if (version or "").strip() else ""
+    candidates = [(version, True), (head, False)]
     candidates += [(line, True) for line in _BANNER_LINES.split(banner or "") if _OWN_LINE.match(line)]
     first: str | None = None
     for text, labelled in candidates:

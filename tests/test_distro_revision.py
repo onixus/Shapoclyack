@@ -53,6 +53,10 @@ def _parse(payload: dict) -> ServiceRecord:
             "HTTP/1.1 200 OK | Server: nginx/1.18.0 (Ubuntu) | X-Powered-By: PHP/7.4.3-4ubuntu2.19",
             ("ubuntu", ""),
         ),
+        # nmap's module list: PHP's package suffix is not Apache's revision.
+        ("2.4.41 ((Ubuntu) PHP/7.4.3-4ubuntu2.19)", "", ("ubuntu", "")),
+        ("2.4.38 (Debian) PHP/7.3.31-1~deb10u1", "", ("debian", "")),
+        ("7.4.3-4ubuntu2.19", "", ("ubuntu", "4ubuntu2.19")),
         # A page body that mentions Debian says nothing about the listener.
         ("2.4.62", "HTTP/1.1 200 OK | Server: Apache/2.4.62 | <html>Debian Default Page</html>", ("", "")),
         ("", "", ("", "")),
@@ -190,3 +194,58 @@ def test_the_fields_reach_asset_services_and_a_new_revision_requeues(tmp_path):
     with get_session(settings.postgres_url) as session:
         row = session.scalars(select(models.AssetService)).one()
         assert row.distro_revision == "4ubuntu0.14" and row.matched_dataset_version is None
+
+
+@requires_postgres
+def test_filling_the_fields_of_an_old_row_is_not_a_new_fingerprint(tmp_path):
+    from datetime import timedelta
+
+    from api.services import assets as assets_service
+    from api.services import tenants as tenants_service
+
+    settings = make_settings(tmp_path)
+    settings.output_dir.mkdir(parents=True, exist_ok=True)
+    settings.state_dir.mkdir(parents=True, exist_ok=True)
+    tenants_service.configure(settings)
+    tenants_service.reset_for_tests()
+    tenants_service.load_tenants(settings)
+
+    def run(run_id: str, banner: str) -> None:
+        run_dir = settings.output_dir / "runs" / run_id
+        run_dir.mkdir(parents=True)
+        (run_dir / "alive_hosts.json").write_text(json.dumps([{"host": "10.0.0.1"}]), encoding="utf-8")
+        (run_dir / "vulnerabilities.json").write_text("[]", encoding="utf-8")
+        record = _parse(_open(version="8.2p1", banner=banner))
+        (run_dir / "services.json").write_text(json.dumps([record.model_dump(mode="json")]), encoding="utf-8")
+        assets_service.upsert_assets_from_run(settings, tenant_id="default", run_id=run_id)
+
+    run("run-1", SSH_UBUNTU)
+    asset_services.record_run(settings, tenant_id="default", run_id="run-1")
+    long_ago = asset_services._now() - timedelta(days=30)  # noqa: SLF001
+    with get_session(settings.postgres_url) as session:
+        row = session.scalars(select(models.AssetService)).one()
+        # What a row written before migration 0084 looks like, already matched.
+        row.distro = row.distro_revision = ""
+        row.matched_dataset_version = "marker"
+        row.fingerprint_changed_at = long_ago
+        row.source = "nmap"
+
+    run("run-2", SSH_UBUNTU)
+    stats = asset_services.record_run(settings, tenant_id="default", run_id="run-2")
+    assert (stats["changed"], stats["unchanged"]) == (0, 1)
+    with get_session(settings.postgres_url) as session:
+        row = session.scalars(select(models.AssetService)).one()
+        assert (row.distro, row.distro_revision) == ("ubuntu", "4ubuntu0.13")
+        assert row.matched_dataset_version == "marker"
+        assert row.fingerprint_changed_at.replace(tzinfo=None) == long_ago.replace(tzinfo=None)
+        assert row.source == "nmap"
+
+    # A different fingerprint is still a change, whatever the distro fields do.
+    run("run-3", SSH_UBUNTU.replace("8.2p1", "9.9"))
+    with get_session(settings.postgres_url) as session:
+        row = session.scalars(select(models.AssetService)).one()
+        row.distro = row.distro_revision = ""
+    run3 = settings.output_dir / "runs" / "run-3"
+    changed = _parse(_open(version="9.9", banner=SSH_UBUNTU.replace("8.2p1", "9.9")))
+    (run3 / "services.json").write_text(json.dumps([changed.model_dump(mode="json")]), encoding="utf-8")
+    assert asset_services.record_run(settings, tenant_id="default", run_id="run-3")["changed"] == 1

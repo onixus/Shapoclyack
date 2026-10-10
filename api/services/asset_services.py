@@ -60,6 +60,7 @@ FIELD_MAX = 256
 #: CPE names kept per listener.
 CPE_MAX = 8
 
+_DISTRO_FIELDS = frozenset({"distro", "distro_revision"})
 #: The fields whose change re-queues a listener for matching.
 FINGERPRINT_FIELDS = ("service", "product", "version", "banner", "cpe", "distro", "distro_revision")
 
@@ -403,10 +404,21 @@ def _upsert(
             row.first_seen_at = now
         return "stale"
 
-    changed = any(getattr(row, name) != fp[name] for name in FINGERPRINT_FIELDS)
+    differing = {name for name in FINGERPRINT_FIELDS if getattr(row, name) != fp[name]}
     row.last_seen_at = now
     row.last_run_id = run_id
     row.host = fp["host"]
+    if differing and differing <= _DISTRO_FIELDS and not row.distro and not row.distro_revision:
+        # A row recorded before migration 0084: the listener is the same, the
+        # scanner now states what the banner already said. Fill it in, but this
+        # is not a new fingerprint: no fingerprint_changed_at, no new source, and
+        # no re-queue. The matcher read the same text through the same grammar
+        # (own_hint falls back to it), and this release's rules_version already
+        # re-asks every listener once.
+        for name in differing:
+            setattr(row, name, fp[name])
+        differing = set()
+    changed = bool(differing)
     if changed:
         for name in FINGERPRINT_FIELDS:
             setattr(row, name, fp[name])
