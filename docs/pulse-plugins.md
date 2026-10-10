@@ -19,13 +19,13 @@ speed profile under `profiles.<mode>.pulse.plugins`).
 | Plugin | Finds | Severity | Replaces |
 |---|---|---|---|
 | `shapo_ssh_algorithms` | Weak key-exchange, host-key, cipher and MAC algorithms in the server's KEXINIT | MEDIUM broken (`diffie-hellman-group1-sha1`, `ssh-dss`, `3des-cbc`, `arcfour*`, `hmac-md5`, …), LOW deprecated (CBC ciphers, `diffie-hellman-group14-sha1`, `ssh-rsa` as the only RSA signature) | the weakness half of `ssh2-enum-algos` |
-| `shapo_ssh_banner` | SSH protocol 1 (`SSH-1.5` HIGH, `SSH-1.99` MEDIUM), OpenSSH older than 7.0 (MEDIUM) | see left | GenDec `ssh_audit` (derived, MIT) |
-| `shapo_ftp_anonymous` | The server accepts `USER anonymous` (reply `230`) | MEDIUM | `ftp-anon`, without the directory listing |
-| `shapo_cleartext_services` | Telnet (HIGH); FTP, POP3, IMAP without a way to start TLS (MEDIUM); SMTP with `AUTH` but no STARTTLS (MEDIUM), without both (LOW) | see left | nothing in `default,safe` |
-| `shapo_smb_exposure` | SMB / NetBIOS session service answers | MEDIUM | GenDec `smb_netbios_exposure_audit` (derived, MIT) |
-| `shapo_remote_admin_exposure` | RDP or VNC (confirmed from the `RFB` greeting) answers | MEDIUM | GenDec `rdp_vnc_exposure_audit` (derived, MIT) |
+| `shapo_ssh_banner` | SSH protocol 1 (`SSH-1.5` HIGH, `SSH-1.99` MEDIUM), OpenSSH older than 7.0 (LOW: distributions backport fixes without changing the banner, so it is a hint to check the package) | see left | GenDec `ssh_audit` (derived, MIT) |
+| `shapo_ftp_anonymous` | The server accepts `USER anonymous`: reply codes are parsed, and the answer to `PASS` (or to `USER`, for a server that logs in at once) must be `230`; a `230` in a multi-line greeting does not count | MEDIUM | `ftp-anon`, without the directory listing |
+| `shapo_cleartext_services` | Telnet (HIGH); FTP, POP3, IMAP without a way to start TLS (MEDIUM), judged only when the capability command (`FEAT` 211, `CAPA` +OK, `CAPABILITY` OK, `EHLO` 250) was accepted, otherwise an error, not a finding; SMTP with `AUTH` but no STARTTLS (MEDIUM), without both (LOW) | see left | nothing in `default,safe` |
+| `shapo_smb_exposure` | SMB / NetBIOS session service answers (by detected service; the port number counts only when the scan could not name the service) | LOW | GenDec `smb_netbios_exposure_audit` (derived, MIT) |
+| `shapo_remote_admin_exposure` | RDP or VNC (confirmed from the `RFB` greeting) answers (same gate rule) | LOW | GenDec `rdp_vnc_exposure_audit` (derived, MIT) |
 
-The two exposure plugins claim reachability only. SMB signing, SMBv1, RDP NLA and
+The two exposure plugins claim exposure only. SMB signing, SMBv1, RDP NLA and
 NTLM host information are **not** checked, and the finding text says so.
 
 Pulse's own rules already raise `exposure` findings for SMB and RDP (the
@@ -53,8 +53,9 @@ which is UTF-8. Consequences, checked against the real binary:
 - The reply is sanitised, so binary replies are read through what survives. The
   SSH plugin is built around that; see below.
 
-The gap is filed for GenDec as a request for binary-safe payloads (hex or a blob
-type) and a UDP call. Until then it is a documented gap, not a silent one: the
+The gap is filed for GenDec as
+[onixus/GenDec#38](https://github.com/onixus/GenDec/issues/38): binary-safe payloads
+(hex or a blob type), a UDP call and one deadline per call. Until then it is a documented gap, not a silent one: the
 reference corpus lists each NSE script with the reason no plugin answers it
 ([Reference corpus](pulse-backend.md#reference-corpus-nmap-versus-pulse-541)).
 
@@ -79,19 +80,34 @@ first in every list, which is the case a naive parse loses.
   **plus** `./scripts` and `$HOME/.pulse/scripts`; the process therefore runs with an
   empty temporary directory as both its working directory and its `HOME`. Bare
   `--scripts` is never used.
-- Once per run, each file goes through `pulse plugin check`. Pulse skips a script that
-  does not compile without a word, so only the files the check accepts count as
-  loaded; if none does, `--script-dir` is not passed.
+- Once per run, each file goes through `pulse plugin check`. Pulse loads **every**
+  script of the directory it is given that compiles, whatever the check said, so it is
+  given a temporary directory holding copies of the accepted files only; the sha256 in
+  the receipt is that of the copy. If none is accepted, `--script-dir` is not passed.
+- Every path in the command is absolute: Pulse runs in its private directory, and a
+  relative `output_dir` (the default, `scanner/output`) would point into it.
 - A finding from a plugin that is not in the offered set is dropped with a warning.
-- The plugin set is part of `chunk_key` and of the resume decision: hosts probed
-  with other plugins (or none) are probed again.
+- The set of plugins that **run** (`adapter.plugins.digest`, the digest of the
+  accepted files, `""` for none) is part of `chunk_key` and of the resume decision:
+  hosts probed with other plugins (or none, because every check failed that time) are
+  probed again. On a host without a Pulse binary the check cannot be asked and the
+  receipt's `offered_digest` (the files on disk) is compared instead.
 - **Time.** Pulse runs the plugins after the scan, one open port and one plugin at a
-  time, never concurrently. A call with timeout `T` can take `3T` (connect, then up to
-  two reads). Every shipped plugin makes at most one call per run with `T <= 1500` ms,
-  and at most two plugins match one endpoint (FTP), so a chunk gets
-  `endpoints * 10` seconds added to the process timeout
-  (`PLUGIN_SECONDS_PER_ENDPOINT`). `tests/test_pulse_plugins_files.py` enforces the
-  per-plugin limits by reading the files.
+  time, never concurrently. No per-call bound can be promised: the sandbox applies the
+  timeout to the connect and to *each read*, and a call with a payload reads until EOF,
+  so a server that trickles bytes stretches one call far past the plugin's timeout
+  (14.5 s measured for a 1500 ms call; GenDec#38 asks for one deadline per call).
+  A chunk therefore gets `endpoints * 10` seconds added to the process timeout,
+  capped at 30 minutes (`PLUGIN_SECONDS_PER_ENDPOINT`, `PLUGIN_BUDGET_CAP_SECONDS`):
+  an allowance for ordinary servers, not a worst case. The services behind the open
+  ports are not known when a chunk is cut, so every endpoint is counted. When Pulse
+  still overruns, the chunk is **unresolved**, not a crash: no success receipt, its
+  hosts are reported through `on_unresolved` and probed again on `--resume`, the
+  crash-loop counter (exits without JSON) is neither advanced nor reset by it, and
+  `pulse/raw.json` marks the chunk `timed_out`. A verification then finds no receipt
+  (`endpoint_not_probed`). What the tests check about the plugin files is stated as
+  such: call *sites* (at most four per file), literal timeouts (at most 1500 ms),
+  and `ports()` empty. They do not prove how many calls one run makes.
 
 ### Scan policy
 
@@ -111,7 +127,8 @@ plugin connections.
 ```json
 {
   "requested": true, "active": true, "dir": ".../pulse_data/plugins",
-  "digest": "<sha256 of the offered set>", "unavailable": null,
+  "digest": "<sha256 of the plugins that run; empty if none>",
+  "offered_digest": "<sha256 of the files on disk>", "unavailable": null,
   "loaded":   [{"name": "shapo_ftp_anonymous", "sha256": "..."}],
   "rejected": [{"name": "...", "sha256": "...", "reason": "Compilation error: ..."}],
   "errors":   [{"plugin": "shapo_ssh_algorithms", "message": "Runtime error: ...",
@@ -121,7 +138,10 @@ plugin connections.
 
 Pulse prints a plugin's runtime error on stderr as `plugin error — <plugin>: <error>`
 and does not say which endpoint it was for, so each error carries the hosts and
-ports of the invocation that printed it. **A plugin that cannot complete a probe
+ports of the invocation that printed it. That is deliberately coarse: the error is
+held against every host and port of the chunk (the safe direction, since an error means
+"did not look"), so one failing endpoint costs the coverage of its neighbours in the
+same invocation; a smaller `chunk_hosts` narrows the noise. **A plugin that cannot complete a probe
 `throw`s** (connection refused, empty reply, the server hung up) instead of
 returning nothing: nothing returned reads as "looked, clean", and that is what a
 verification would otherwise credit.
@@ -146,7 +166,12 @@ shows (`api/services/verification_coverage.py`):
    a finding with no recorded sha: `plugin_version_not_recorded`; not loaded:
    `plugin_not_loaded`);
 2. a success receipt (`completion`) for the host and port (`endpoint_not_probed`);
-3. no entry in `adapter.plugins.errors` for that plugin on a chunk that held the
+3. an `open[]` row for the endpoint that the plugin's own gate accepts
+   (`plugin_not_applicable`): a plugin returns silently on a service it does not
+   handle, which is not a look. The gates are mirrored in
+   `pulse_plugins.APPLICABILITY`, and a test reads them out of the `.rhai` files and
+   fails if the two differ;
+4. no entry in `adapter.plugins.errors` for that plugin on a chunk that held the
    endpoint (`plugin_error`).
 
 No database migration: `vulnerabilities.detectors` is JSON and the detector name is
@@ -156,11 +181,13 @@ a string.
 
 - Name the file `shapo_<what>.rhai` and make `name()` return the same string: it is
   the `cve_id` suffix and the detector reference. A test fails otherwise.
-- `ports()` returns `[]` and the plugin gates on `service` / `banner` in `run()`, so
-  a service on a non-standard port is still checked and an unrelated port costs no
-  connection.
-- A probe that fails `throw`s. At most one network call per run, `probe_send` /
-  `probe_recv` with a timeout of 1500 ms or less, no `http_get`.
+- `ports()` returns `[]` (a test requires it: the applicability table does not model
+  a port filter) and the plugin gates on `service` / `banner` in `run()`, so a service
+  on a non-standard port is still checked and an unrelated port costs no connection.
+  Add the gate to `pulse_plugins.APPLICABILITY` in the same change.
+- A probe that fails `throw`s. Keep to one network call per path through `run()`;
+  `probe_send` / `probe_recv` with a timeout of 1500 ms or less, no `http_get`. (The
+  tests count call sites and read the literal timeouts; they cannot count calls.)
 - ASCII source, and no escape that names a byte above `0x7F`.
 - Licence header: Apache-2.0 (`// SPDX-License-Identifier: Apache-2.0`) for ours;
   a file derived from a GenDec script carries `SPDX-License-Identifier: MIT`, names

@@ -712,8 +712,8 @@ agree per endpoint.
 | `ssh2-enum-algos` | 4 | `shapo_ssh_algorithms` | verdict (a weak algorithm is offered) agrees on 4 of 4: none offers one. Weakness only, not the lists |
 | `ftp-anon` | 1 | `shapo_ftp_anonymous` | agrees 1 of 1: login accepted. No directory listing (needs a data connection) |
 | `ssh-hostkey` | 4 | none | key exchange needed (binary packets) |
-| `smb2-security-mode`, `smb-protocols` | 1 host | none (`shapo_smb_exposure` reports reachability only) | SMB negotiate starts with 0xFE/0xFF; the sandbox cannot send a byte above 0x7F |
-| `rdp-enum-encryption` | 1 | none (`shapo_remote_admin_exposure` reports reachability only) | X.224 request carries 0xE0 |
+| `smb2-security-mode`, `smb-protocols` | 1 host | none (`shapo_smb_exposure` reports exposure only) | SMB negotiate starts with 0xFE/0xFF; the sandbox cannot send a byte above 0x7F |
+| `rdp-enum-encryption` | 1 | none (`shapo_remote_admin_exposure` reports exposure only) | X.224 request carries 0xE0 |
 | `ftp-syst` | 1 | none | informational, not a finding |
 
 Plugin findings on the stand: 5 (SMB 2, RDP 1, anonymous FTP 1, FTP without TLS 1);
