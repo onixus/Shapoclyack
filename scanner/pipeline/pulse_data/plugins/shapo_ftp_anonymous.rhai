@@ -21,11 +21,12 @@ fn ports() {
     []
 }
 
-// Final reply codes of an FTP/SMTP-style reply stream, in order. A reply is
-// "NNN text" or a block opened by "NNN-" and closed by "NNN " (lines in between
-// are text, whatever they start with: a multi-line greeting can contain "230 ").
-fn final_codes(reply) {
-    let codes = [];
+// Final lines of an FTP-style reply stream, in order. A reply is "NNN text" or
+// a block opened by "NNN-" and closed by "NNN " (lines in between are text,
+// whatever they start with: a multi-line greeting can contain "230 "). The
+// code is the first three characters of the line.
+fn final_lines(reply) {
+    let finals = [];
     let open = "";
     for raw in reply.split("\n") {
         let line = raw;
@@ -35,19 +36,18 @@ fn final_codes(reply) {
         }
         if open != "" {
             if line.starts_with(open + " ") || line == open {
-                codes.push(open);
+                finals.push(line);
                 open = "";
             }
             continue;
         }
-        let code = line.sub_string(0, 3);
         if line.len() > 3 && line.sub_string(3, 1) == "-" {
-            open = code;
+            open = line.sub_string(0, 3);
         } else {
-            codes.push(code);
+            finals.push(line);
         }
     }
-    codes
+    finals
 }
 
 fn head(text, limit) {
@@ -63,25 +63,25 @@ fn run() {
     let reply = probe_send(port, "USER anonymous\r\nPASS anonymous@example.invalid\r\nQUIT\r\n", 1500);
     // A failed probe is raised, not swallowed: an empty result would read as
     // "checked, clean" to a verification re-scan (docs/pulse-plugins.md).
-    let codes = final_codes(reply);
-    if codes.len() < 3 || codes[0] != "220" {
+    let finals = final_lines(reply);
+    if finals.len() < 3 || !finals[0].starts_with("220") {
         throw "no complete FTP reply to USER/PASS: " + head(reply, 60);
     }
     // The answer to PASS decides; a server that logs in on USER alone answers 230 there.
     // 230 inside a multi-line greeting or banner text is not a login.
-    if codes[1] == "230" || codes[2] == "230" {
-        let seen = "";
-        for line in reply.split("\n") {
-            if line.starts_with("230") && seen == "" {
-                seen = line;
-                seen.trim();
-            }
-        }
+    // The evidence is that reply's own closing line.
+    let decisive = "";
+    if finals[1].starts_with("230") {
+        decisive = finals[1];
+    } else if finals[2].starts_with("230") {
+        decisive = finals[2];
+    }
+    if decisive != "" {
         return #{
             title: "Anonymous FTP login allowed",
             severity: "MEDIUM",
             summary: "The FTP server accepted the user anonymous. Files may be readable, and possibly writable, without credentials; the listing is not checked.",
-            evidence: head(seen, 120)
+            evidence: head(decisive, 120)
         };
     }
 }

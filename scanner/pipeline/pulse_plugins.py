@@ -86,6 +86,8 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 # GenDec ``main.rs``: ``eprintln!("  {}  plugin error — {err}", "warn")`` with
 # ``err`` = ``<script name>: <rhai error>``.
 _PLUGIN_ERROR = re.compile(r"plugin error\s+[—-]+\s+(?P<plugin>[A-Za-z0-9_.\-]+):\s*(?P<message>.*)$")
+# Rhai appends the place in the script to every runtime error.
+_POSITION = re.compile(r"\s*\((?P<where>line \d+, position \d+)\)\s*$")
 
 _SEVERITIES = {"critical", "high", "medium", "low"}
 
@@ -239,7 +241,11 @@ def applies(plugin: str, *, service: str, port: int, banner: str) -> bool:
     gate = APPLICABILITY.get(plugin)
     if gate is None:
         return False
-    svc = (service or "").strip().lower()
+    # The service is compared exactly, as the plugins do (`service == "ssh"`):
+    # Pulse writes it in lower case, and a looser reading here would call an
+    # endpoint looked at that a plugin skipped. The plugins lower-case the
+    # banner in their gates, so it is lower-cased here.
+    svc = service or ""
     text = (banner or "").lower()
     if svc in gate["services"]:
         return True
@@ -249,7 +255,10 @@ def applies(plugin: str, *, service: str, port: int, banner: str) -> bool:
 
 
 def parse_plugin_errors(stderr: str) -> list[dict[str, str]]:
-    """Plugin runtime errors from Pulse's stderr: ``[{"plugin", "message"}]``.
+    """Plugin runtime errors from Pulse's stderr: ``[{"plugin", "message"[, "position"]}]``.
+
+    ``position`` is Rhai's ``line N, position M``, kept apart so that the same
+    failure in two runs is the same message.
 
     Pulse prints each distinct ``<script>: <error>`` once per invocation (it
     de-duplicates), without the endpoint. A plugin that gives up on a probe
@@ -261,7 +270,11 @@ def parse_plugin_errors(stderr: str) -> list[dict[str, str]]:
         match = _PLUGIN_ERROR.search(_ANSI.sub("", raw).strip())
         if match is None:
             continue
-        record = {"plugin": match["plugin"], "message": match["message"].strip()[:300]}
+        message = match["message"].strip()
+        position = _POSITION.search(message)
+        record = {"plugin": match["plugin"], "message": (message[: position.start()] if position else message)[:300]}
+        if position:
+            record["position"] = position["where"]
         if record not in out:
             out.append(record)
     return out

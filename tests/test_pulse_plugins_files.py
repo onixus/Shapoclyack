@@ -142,12 +142,27 @@ def _gate_text(text: str) -> str:
     dropped so that prose cannot pose as a gate.
     """
     code = "\n".join(line for line in text.splitlines() if not line.strip().startswith("//"))
+    assert "fn run()" in code, "no run(): there is no gate to compare"
     start = code.index("fn run()")
-    gate = code[start : code.index("return;", start)]
+    cut = code.find("return;", start)
+    assert cut > start, "run() has no bare `return;`: the gate cannot be told from the body"
+    gate = code[start:cut]
     if "fn kind_of" in code:
         kind = code.index("fn kind_of")
-        gate += code[kind : code.index("\nfn ", kind + 1)]
+        end = code.find("\nfn ", kind + 1)
+        assert end > kind, "kind_of is the last function: its end is unknown"
+        gate += code[kind:end]
+    assert re.search(r"\b(?:service|svc)\b", gate), "gate region names no service: it was cut in the wrong place"
     return gate
+
+
+def _banner_pairs(text: str) -> set[tuple[str, str]]:
+    """(prefix, needle) pairs: `x.starts_with("p")` optionally followed by `&& x.contains("n")` on
+    the same variable. Sets of literals would not notice a needle moving to another prefix."""
+    return {
+        (m.group(2).lower(), (m.group(3) or "").lower())
+        for m in re.finditer(r'(\w+)(?:\.to_lower\(\))?\.starts_with\("([^"]+)"\)(?:\s*&&\s*\1\.contains\("([^"]+)"\))?', text)
+    }
 
 
 def _literals(pattern: str, text: str) -> set[str]:
@@ -159,12 +174,10 @@ def test_applicability_table_matches_the_gate_in_the_plugin(path):
     gate = pulse_plugins.APPLICABILITY[path.stem]
     text = _gate_text(path.read_text(encoding="utf-8"))
     services = _literals(r'(?:service|svc) == "([a-z0-9-]+)"', text) - {"unknown"}
-    prefixes = _literals(r'starts_with\("([^"]+)"\)', text)
-    needles = _literals(r'\.contains\("([^"]+)"\)', text)
+    pairs = _banner_pairs(text)
     ports = {int(n) for n in re.findall(r"(?:port|number) == (\d+)", text)}
     assert services == gate["services"], path.name
-    assert prefixes == {p for p, _ in gate["banner"]}, path.name
-    assert needles == {n for _, n in gate["banner"] if n}, path.name
+    assert pairs == set(gate["banner"]), path.name
     assert ports == gate["ports"], path.name
 
 
@@ -569,3 +582,25 @@ def test_a_server_that_closes_before_answering_pass_is_an_error(stub):
     server = stub(b"220 FTP ready\r\n", lambda _: b"331 Password required\r\n")
     lines, stderr = run_plugin("shapo_ftp_anonymous", server.port)
     assert finding(lines) is None and "no complete FTP reply" in stderr
+
+
+def test_the_gate_extractor_refuses_a_plugin_it_cannot_read():
+    with pytest.raises(AssertionError, match="bare `return;`"):
+        _gate_text('fn run() {\n    if service == "ssh" { return #{ title: "x" }; }\n}\n')
+    with pytest.raises(AssertionError, match="no run"):
+        _gate_text('fn name() { "x" }')
+
+
+def test_a_needle_moved_to_another_prefix_is_a_different_gate():
+    """("220", "smtp") is not ("220", "ftp"), though both literals are present."""
+    moved = _gate_text('fn run() {\n    if service == "x" || (g.starts_with("220") && g.contains("smtp")) { return; }\n}')
+    assert _banner_pairs(moved) == {("220", "smtp")}
+    assert _banner_pairs(moved) != {("220", "ftp")}
+    assert _banner_pairs('b.starts_with("220") || c.contains("ftp")') == {("220", "")}  # different variables: no pair
+
+
+@needs_pulse
+def test_anonymous_ftp_evidence_is_the_reply_to_pass_not_the_first_230_line(stub):
+    greeting = b"220-Banner mentions\r\n230 as text\r\n220 FTP ready\r\n"
+    server = stub(greeting, lambda _: b"331 Password required\r\n230-Welcome\r\n230 Login successful, guest.\r\n221 Bye\r\n")
+    assert finding(run_plugin("shapo_ftp_anonymous", server.port)[0])[2] == "230 Login successful, guest."

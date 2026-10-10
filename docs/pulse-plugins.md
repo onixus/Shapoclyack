@@ -105,7 +105,11 @@ first in every list, which is the case a naive parse loses.
   hosts are reported through `on_unresolved` and probed again on `--resume`, the
   crash-loop counter (exits without JSON) is neither advanced nor reset by it, and
   `pulse/raw.json` marks the chunk `timed_out`. A verification then finds no receipt
-  (`endpoint_not_probed`). What the tests check about the plugin files is stated as
+  (`endpoint_not_probed`). Three timed-out chunks in a row stop the stage
+  (`PulseTimeoutLoopError`, a subclass of `PulseCrashLoopError`) with a message naming
+  what to change (`runtime.nse_timeout_seconds`, `chunk_hosts`, the plugins switch):
+  each further chunk would cost two attempts of up to 40 minutes to give the same
+  answer. Hosts finished earlier stay done; `--resume` asks again for the rest. What the tests check about the plugin files is stated as
   such: call *sites* (at most four per file), literal timeouts (at most 1500 ms),
   and `ports()` empty. They do not prove how many calls one run makes.
 
@@ -132,6 +136,7 @@ plugin connections.
   "loaded":   [{"name": "shapo_ftp_anonymous", "sha256": "..."}],
   "rejected": [{"name": "...", "sha256": "...", "reason": "Compilation error: ..."}],
   "errors":   [{"plugin": "shapo_ssh_algorithms", "message": "Runtime error: ...",
+                "position": "line 135, position 9",
                 "chunk": "<chunk key>", "hosts": ["10.0.0.5"], "ports": [22]}]
 }
 ```
@@ -167,7 +172,8 @@ shows (`api/services/verification_coverage.py`):
    `plugin_not_loaded`);
 2. a success receipt (`completion`) for the host and port (`endpoint_not_probed`);
 3. an `open[]` row for the endpoint that the plugin's own gate accepts
-   (`plugin_not_applicable`): a plugin returns silently on a service it does not
+   (`plugin_not_applicable`; the service is compared exactly, as the plugins do, and the
+   banner in lower case, as the gates do): a plugin returns silently on a service it does not
    handle, which is not a look. The gates are mirrored in
    `pulse_plugins.APPLICABILITY`, and a test reads them out of the `.rhai` files and
    fails if the two differ;

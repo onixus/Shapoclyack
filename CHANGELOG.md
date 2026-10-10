@@ -30,6 +30,8 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- Three Pulse timeouts in a row stop the stage with a message that says what to change
+  (`PulseTimeoutLoopError`); one only leaves its chunk unresolved.
 - Every path in the Pulse command is absolute (the process no longer runs in the
   scanner's cwd, so a relative `runtime.output_dir` would otherwise not resolve), and a
   Pulse process that overruns its timeout leaves its chunk unresolved for `--resume`

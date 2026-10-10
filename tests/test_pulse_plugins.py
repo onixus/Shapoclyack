@@ -255,9 +255,12 @@ def test_errors_are_not_collected_when_plugins_are_off(tmp_path, plugin_dir, pul
 
 
 def test_parse_plugin_errors_reads_pulses_stderr_line():
-    stderr = "x\n  \x1b[33mwarn\x1b[0m  plugin error — shapo_ssh_algorithms: Runtime error: boom (line 1)\nplugin error — a.b-c: x\n"
+    stderr = (
+        "x\n  \x1b[33mwarn\x1b[0m  plugin error — shapo_ssh_algorithms: Runtime error: boom (line 1) (line 3, position 9)\n"
+        "plugin error — a.b-c: x\n"
+    )
     assert pulse_plugins.parse_plugin_errors(stderr) == [
-        {"plugin": "shapo_ssh_algorithms", "message": "Runtime error: boom (line 1)"},
+        {"plugin": "shapo_ssh_algorithms", "message": "Runtime error: boom (line 1)", "position": "line 3, position 9"},
         {"plugin": "a.b-c", "message": "x"},
     ]
     assert pulse_plugins.parse_plugin_errors("warn  something else\n") == []
@@ -659,6 +662,11 @@ def test_a_missing_open_row_is_not_applicable(tmp_path, plugin_dir, pulse):
     ("plugin", "service", "port", "banner", "expected"),
     [
         ("shapo_ssh_algorithms", "ssh", 22, "", True),
+        # Compared as the plugin compares (`service == "ssh"`): a looser reading here would
+        # call an endpoint looked at that the plugin skipped.
+        ("shapo_ssh_algorithms", "SSH", 22, "", False),
+        ("shapo_ssh_algorithms", " ssh", 22, "", False),
+        ("shapo_smb_exposure", "SMB", 445, "", False),
         ("shapo_ssh_algorithms", "unknown", 2222, "SSH-2.0-x", True),
         ("shapo_ssh_algorithms", "unknown", 22, "", False),  # no port rule: only service or banner
         ("shapo_ftp_anonymous", "unknown", 21, "220 vsFTPd", True),
@@ -704,7 +712,7 @@ class _Slow(Pulse):
 
 def test_a_pulse_timeout_leaves_the_chunk_unresolved_instead_of_failing_the_stage(tmp_path, plugin_dir, monkeypatch):
     slow = _Slow(monkeypatch)
-    slow.slow = {f"10.0.0.{i}" for i in range(1, 6)}  # more chunks in a row than the crash-loop limit
+    slow.slow = {"10.0.0.1", "10.0.0.2", "10.0.0.4", "10.0.0.5"}  # runs of two: under the loop limit
     unresolved: list[str] = []
     done: list[str] = []
     endpoints = [f"10.0.0.{i}:22/tcp" for i in range(1, 7)]
@@ -712,13 +720,13 @@ def test_a_pulse_timeout_leaves_the_chunk_unresolved_instead_of_failing_the_stag
     pp.run_pulse_probe(endpoints, output_dir=out, plugins=True, chunk_hosts=1, retry_settle_seconds=0,
                        on_unresolved=unresolved.extend, on_host_done=done.append)
     raw = _raw(out)
-    assert sorted(unresolved) == sorted(f"10.0.0.{i}" for i in range(1, 6))
-    assert done == ["10.0.0.6"]  # the one chunk that finished is still credited
-    assert set(raw["completion"]["hosts"]) == {"10.0.0.6"}
+    assert sorted(unresolved) == ["10.0.0.1", "10.0.0.2", "10.0.0.4", "10.0.0.5"]
+    assert done == ["10.0.0.3", "10.0.0.6"]  # the chunks that finished are still credited
+    assert set(raw["completion"]["hosts"]) == {"10.0.0.3", "10.0.0.6"}
     timed = [c for c in raw["chunks"] if c["timed_out"]]
-    assert len(timed) == 5 and all(not c["resolved"] for c in timed)
+    assert len(timed) == 4 and all(not c["resolved"] for c in timed)
     # A slow process is not retried at once like a crashed one: one attempt per chunk.
-    assert slow.timeouts == 5
+    assert slow.timeouts == 4
     # No success receipt, so nothing a verification could credit.
     coverage = vc.RunCoverage(out)
     gaps = _gaps(coverage, _entry(ruleset="sha256:" + _sha(PLUGIN_A), host="10.0.0.1"))
@@ -730,6 +738,18 @@ def test_timeouts_do_not_hide_a_real_crash_loop(tmp_path, plugin_dir, pulse, mon
         return subprocess.CompletedProcess(command, 2, "", "boom")
 
     monkeypatch.setattr(pp, "run_command", crash)
-    with pytest.raises(pp.PulseCrashLoopError):
+    with pytest.raises(pp.PulseCrashLoopError) as raised:
         pp.run_pulse_probe([f"10.0.0.{i}:22/tcp" for i in range(1, 6)], output_dir=tmp_path / "o",
                            plugins=True, chunk_hosts=1, retry_settle_seconds=0)
+    assert not isinstance(raised.value, pp.PulseTimeoutLoopError)
+
+
+def test_a_run_of_timeouts_stops_the_stage_with_a_message_that_says_what_to_change(tmp_path, plugin_dir, monkeypatch):
+    slow = _Slow(monkeypatch)
+    slow.slow = {f"10.0.0.{i}" for i in range(1, 8)}
+    with pytest.raises(pp.PulseTimeoutLoopError, match="3 chunks in a row") as raised:
+        pp.run_pulse_probe([f"10.0.0.{i}:22/tcp" for i in range(1, 8)], output_dir=tmp_path / "o", plugins=True,
+                           chunk_hosts=1, retry_settle_seconds=0)
+    assert isinstance(raised.value, pp.PulseCrashLoopError)
+    assert "chunk_hosts" in str(raised.value) and "plugins" in str(raised.value)
+    assert slow.timeouts == pp.MAX_CONSECUTIVE_TIMED_OUT_CHUNKS  # not one more chunk is paid for

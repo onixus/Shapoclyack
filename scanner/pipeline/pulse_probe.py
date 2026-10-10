@@ -256,6 +256,21 @@ class PulseCrashLoopError(RuntimeError):
     """pulse exited without JSON for MAX_CONSECUTIVE_CRASHED_CHUNKS chunks in a row."""
 
 
+#: Consecutive chunks that may overrun the process timeout before the stage
+#: gives up. One slow chunk is weather (a stalled server under a plugin); the
+#: same overrun on every chunk is a setting (timeout too small for the chunk
+#: size, a plugin against an estate that tar-pits it), and each further chunk
+#: costs ``(timeout + plugin allowance) * (retries + 1)`` seconds -- two
+#: attempts of up to 40 minutes at the defaults -- to learn nothing new.
+#: Unlike a crash, a timeout leaves its chunk unresolved rather than failing the
+#: stage, so this limit is only about not paying for the same answer again.
+MAX_CONSECUTIVE_TIMED_OUT_CHUNKS = 3
+
+
+class PulseTimeoutLoopError(PulseCrashLoopError):
+    """pulse overran its timeout on MAX_CONSECUTIVE_TIMED_OUT_CHUNKS chunks in a row."""
+
+
 def _is_os_raw_socket_failure(stderr: str) -> bool:
     """pulse ``ensure_os_capable`` refused: ``--os`` cannot open raw sockets.
 
@@ -819,7 +834,10 @@ def _run_pulse_probe(
     finding set under the same profile, and nobody would see it happen. The
     message names both fixes instead.
     Raises ``PulseCrashLoopError`` after ``MAX_CONSECUTIVE_CRASHED_CHUNKS``
-    chunks in a row end in a pulse exit without JSON.
+    chunks in a row end in a pulse exit without JSON, and its subclass
+    ``PulseTimeoutLoopError`` after ``MAX_CONSECUTIVE_TIMED_OUT_CHUNKS`` chunks
+    in a row overrun the process timeout (a single overrun only leaves the
+    chunk unresolved).
 
     ``plugins``: hand ``pulse_data/plugins/`` to Pulse with ``--script-dir``
     (``pulse_plugins``). Off by default here and on by default in the config
@@ -985,6 +1003,7 @@ def _run_pulse_probe(
     rulesets: set[str] = set()
     pulse_versions: set[str] = set()
     consecutive_crashes = 0
+    consecutive_timeouts = 0
     scan_mode = "syn" if syn else "connect"
 
     logging.info(
@@ -1133,6 +1152,21 @@ def _run_pulse_probe(
                 )
         elif not timed_out:
             consecutive_crashes = 0
+
+        if timed_out:
+            consecutive_timeouts += 1
+            if consecutive_timeouts >= MAX_CONSECUTIVE_TIMED_OUT_CHUNKS:
+                raise PulseTimeoutLoopError(
+                    f"pulse did not finish within its timeout on {consecutive_timeouts} chunks in a row "
+                    f"(process timeout {timeout_seconds}s"
+                    + (f" plus up to {plugin_budget_seconds(chunk.endpoint_count)}s for the plugins" if script_dir else "")
+                    + f", {len(host_chunk)} host(s) per chunk). Raise runtime.nse_timeout_seconds, lower "
+                    "service_probe.pulse.chunk_hosts, or turn the plugins off "
+                    "(service_probe.pulse.plugins: false) if a server is stalling them; hosts finished "
+                    "earlier are kept, and --resume asks again for the rest."
+                )
+        else:
+            consecutive_timeouts = 0
 
 
         if script_dir:
