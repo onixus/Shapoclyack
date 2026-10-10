@@ -5,7 +5,7 @@
 // the Cargo.toml `license` field is the licence statement of that release).
 // Changes for Shapoclyack: matches on the detected service as well as the
 // port, so VNC on a display other than :0-:2 is found; VNC is confirmed from
-// the "RFB" greeting instead of assumed from the port; HIGH lowered to MEDIUM
+// the "RFB" greeting instead of assumed from the port; HIGH lowered to LOW
 // because the finding is reachability only; the summary says what was not
 // checked. No network calls.
 //
@@ -28,9 +28,11 @@ fn ports() {
 
 fn run() {
     let label = "";
-    if service == "rdp" || service == "ms-wbt-server" || port == 3389 {
+    // The port number counts only when the scan could not name the service.
+    let unnamed = service == "" || service == "unknown";
+    if service == "rdp" || service == "ms-wbt-server" || (unnamed && port == 3389) {
         label = "RDP";
-    } else if service == "vnc" || banner.starts_with("RFB ") {
+    } else if service == "vnc" || banner.to_lower().starts_with("rfb ") {
         label = "VNC";
     } else {
         return;
@@ -38,8 +40,8 @@ fn run() {
 
     return #{
         title: "Remote administration service reachable (" + label + ")",
-        severity: "MEDIUM",
-        summary: label + " answers on port " + port + ". Reachability only: network-level authentication, encryption and password policy were not checked.",
+        severity: "LOW",
+        summary: "Exposure only: " + label + " answers on port " + port + ". Network-level authentication, encryption and password policy were not checked.",
         evidence: "Port " + port + " open (service: " + service + ")"
     };
 }

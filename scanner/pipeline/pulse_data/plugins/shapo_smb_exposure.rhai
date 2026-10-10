@@ -4,7 +4,7 @@
 // Derived from GenDec scripts/smb_netbios_exposure_audit.rhai (GenDec v1.3.0,
 // MIT; the Cargo.toml `license` field is the licence statement of that
 // release). Changes for Shapoclyack: matches on the detected service as well
-// as the port; HIGH lowered to MEDIUM because the finding is reachability
+// as the port; HIGH lowered to LOW because the finding is reachability
 // only; the summary says what was not checked. No network calls.
 //
 // Not checked, and why: SMB signing, SMBv1 and the dialect list need an SMB
@@ -27,9 +27,12 @@ fn ports() {
 
 fn run() {
     let label = "";
-    if service == "smb" || service == "microsoft-ds" || port == 445 {
+    // The port number counts only when the scan could not name the service; a
+    // different service on 445 is not SMB.
+    let unnamed = service == "" || service == "unknown";
+    if service == "smb" || service == "microsoft-ds" || (unnamed && port == 445) {
         label = "SMB";
-    } else if service == "netbios-ssn" || port == 139 {
+    } else if service == "netbios-ssn" || (unnamed && port == 139) {
         label = "NetBIOS session";
     } else {
         return;
@@ -37,8 +40,8 @@ fn run() {
 
     return #{
         title: "SMB / NetBIOS service reachable (" + label + ")",
-        severity: "MEDIUM",
-        summary: "A file-sharing service (" + label + ") answers on port " + port + ". Reachability only: message signing, SMBv1 and the dialect list were not checked.",
+        severity: "LOW",
+        summary: "Exposure only: a file-sharing service (" + label + ") answers on port " + port + ". Message signing, SMBv1 and the dialect list were not checked.",
         evidence: "Port " + port + " open (service: " + service + ")"
     };
 }

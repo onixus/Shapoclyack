@@ -43,6 +43,35 @@ fn kind_of(svc, greeting, number) {
     ""
 }
 
+// Final reply codes of an FTP/SMTP-style reply stream, in order. A reply is
+// "NNN text" or a block opened by "NNN-" and closed by "NNN " (lines in between
+// are text, whatever they start with: a multi-line greeting can contain "230 ").
+fn final_codes(reply) {
+    let codes = [];
+    let open = "";
+    for raw in reply.split("\n") {
+        let line = raw;
+        line.trim();
+        if line.len() < 3 {
+            continue;
+        }
+        if open != "" {
+            if line.starts_with(open + " ") || line == open {
+                codes.push(open);
+                open = "";
+            }
+            continue;
+        }
+        let code = line.sub_string(0, 3);
+        if line.len() > 3 && line.sub_string(3, 1) == "-" {
+            open = code;
+        } else {
+            codes.push(code);
+        }
+    }
+    codes
+}
+
 fn clip(text, limit) {
     let one_line = text;
     one_line.replace("\r", "");
@@ -50,8 +79,15 @@ fn clip(text, limit) {
     if one_line.len() > limit { one_line.sub_string(0, limit) } else { one_line }
 }
 
+// The command must have been accepted before its capability list means anything:
+// a refusal (Postfix's pipelining guard answers 554, an FTP server that wants
+// TLS first answers FEAT with 530) lists no STARTTLS because it lists nothing.
 // A failed probe is raised, not swallowed: an empty result would read as
 // "checked, clean" to a verification re-scan (docs/pulse-plugins.md).
+fn refused(what, reply) {
+    throw what + " did not accept the capability command: " + clip(reply, 60);
+}
+
 fn expect(reply, prefix, what) {
     if !reply.starts_with(prefix) {
         throw "no " + what + " greeting in the reply: " + clip(reply, 60);
@@ -76,6 +112,10 @@ fn run() {
     if kind == "ftp" {
         let reply = probe_send(port, "FEAT\r\nQUIT\r\n", 1500);
         expect(reply, "220", "FTP");
+        let codes = final_codes(reply);
+        if codes.len() < 2 || codes[1] != "211" {
+            refused("FTP FEAT", reply);
+        }
         let upper = reply.to_upper();
         if upper.contains("AUTH TLS") || upper.contains("AUTH SSL") {
             return;
@@ -91,6 +131,11 @@ fn run() {
     if kind == "pop3" {
         let reply = probe_send(port, "CAPA\r\nQUIT\r\n", 1500);
         expect(reply, "+OK", "POP3");
+        // Line 1 is the greeting; the answer to CAPA is the next line.
+        let lines = reply.split("\n");
+        if lines.len() < 2 || !lines[1].starts_with("+OK") {
+            refused("POP3 CAPA", reply);
+        }
         if reply.to_upper().contains("STLS") {
             return;
         }
@@ -105,6 +150,9 @@ fn run() {
     if kind == "imap" {
         let reply = probe_send(port, "a1 CAPABILITY\r\na2 LOGOUT\r\n", 1500);
         expect(reply, "* OK", "IMAP");
+        if !reply.contains("\na1 OK") {
+            refused("IMAP CAPABILITY", reply);
+        }
         if reply.to_upper().contains("STARTTLS") {
             return;
         }
@@ -119,6 +167,10 @@ fn run() {
     // smtp
     let reply = probe_send(port, "EHLO shapoclyack.invalid\r\nQUIT\r\n", 1500);
     expect(reply, "220", "SMTP");
+    let codes = final_codes(reply);
+    if codes.len() < 2 || codes[1] != "250" {
+        refused("SMTP EHLO", reply);
+    }
     let upper = reply.to_upper();
     if upper.contains("STARTTLS") {
         return;

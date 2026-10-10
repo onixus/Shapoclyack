@@ -120,7 +120,7 @@ fn join_names(items) {
 }
 
 fn run() {
-    if !(service == "ssh" || banner.starts_with("SSH-")) {
+    if !(service == "ssh" || banner.to_lower().starts_with("ssh-")) {
         return;
     }
 

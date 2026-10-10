@@ -41,7 +41,7 @@ fn openssh_major(text) {
 }
 
 fn run() {
-    if !(service == "ssh" || banner.starts_with("SSH-")) {
+    if !(service == "ssh" || banner.to_lower().starts_with("ssh-")) {
         return;
     }
 
@@ -65,9 +65,9 @@ fn run() {
     let major = openssh_major(banner);
     if major >= 0 && major < 7 {
         return #{
-            title: "End-of-life OpenSSH release",
-            severity: "MEDIUM",
-            summary: "OpenSSH " + major + ".x predates 7.0 and no longer receives security fixes.",
+            title: "Old OpenSSH release",
+            severity: "LOW",
+            summary: "The banner says OpenSSH " + major + ".x, which predates 7.0 and is out of upstream support. Distributions backport fixes without changing this string, so it is a hint to check the package, not proof of exposure.",
             evidence: banner
         };
     }
