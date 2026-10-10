@@ -2376,8 +2376,8 @@ class TenantPatchGap(BaseModel):
 class VulnerabilityDetectorInfo(BaseModel):
     """One detector that observed a tracked finding (#451). Read-only.
 
-    ``detector`` is ``pulse``, ``nuclei`` or ``nmap-nse``; ``ref`` the pulse
-    origin, nuclei template id or NSE script; ``host`` the address as the
+    ``detector`` is ``pulse``, ``pulse-plugin``, ``nuclei`` or ``nmap-nse``;
+    ``ref`` the pulse origin, plugin name, nuclei template id or NSE script; ``host`` the address as the
     scanner addressed it — ``null`` on an entry migration 0079 derived from a
     row's ``script_id``, which never recorded it. A verification re-scan is
     built from these and may only close the finding once every one of them has
@@ -2390,8 +2390,9 @@ class VulnerabilityDetectorInfo(BaseModel):
     port: str | None = None
     last_run_id: str | None = None
     last_seen_at: str | None = None
-    # Pulse only: the offline CVE ruleset the match was made with. A
-    # verification has to match with one at least as new.
+    # Pulse: the offline CVE ruleset the match was made with. A
+    # verification has to match with one at least as new. A Pulse plugin:
+    # ``sha256:<hex>`` of the plugin file; a verification has to run the same one.
     ruleset: str | None = None
 
 

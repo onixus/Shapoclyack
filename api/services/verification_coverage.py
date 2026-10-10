@@ -35,6 +35,17 @@ The evidence, per detector:
     A CVE pulse found online (origin ``nvd``) needs ``adapter.cve_online`` as
     well, and a CVE found with offline ruleset R needs the run's
     ``adapter.ruleset`` to be R or newer.
+``pulse-plugin``
+    ``pulse/raw.json`` whose ``adapter.plugins.loaded`` lists the finding's
+    plugin with the **same sha256** the finding was made with (an edited or
+    replaced plugin is a different check), a success receipt (``completion``)
+    for the host and port, and no entry in ``adapter.plugins.errors`` for that
+    plugin on a chunk that held the endpoint. Pulse prints a plugin's runtime
+    error without saying which endpoint it was for, and the shipped plugins
+    ``throw`` when a probe fails, so an error in the chunk is a "did not look"
+    for everything in the chunk. ``loaded`` is what ``pulse plugin check``
+    accepted, not merely what was on disk (pulse skips a script that does not
+    compile, silently).
 ``nmap-nse``
     An nmap XML that finished with ``exit="success"``, was run with the
     script named in ``--script`` (a category such as ``vuln`` does not count:
@@ -77,9 +88,12 @@ LOG = logging.getLogger("shapoclyack.verification")
 PULSE = "pulse"
 NUCLEI = "nuclei"
 NMAP_NSE = "nmap-nse"
+#: A Rhai plugin Pulse ran (scanner/pipeline/pulse_plugins.py). ``ref`` is the
+#: plugin name and ``ruleset`` the ``sha256:<hex>`` of its file.
+PULSE_PLUGIN = "pulse-plugin"
 #: The detectors this module can judge. Recorded detectors outside it are kept
 #: on the finding for the record and are never counted as covered.
-KNOWN_DETECTORS = (PULSE, NUCLEI, NMAP_NSE)
+KNOWN_DETECTORS = (PULSE, NUCLEI, NMAP_NSE, PULSE_PLUGIN)
 #: The ``source`` pulse gives a CVE its online NVD lookup found (GenDec
 #: ``src/scanner/cve.rs``: ``local`` for its offline rules, ``nvd`` online),
 #: and so the ref of such a detector (``script_id`` ``pulse:nvd``).
@@ -429,6 +443,50 @@ class RunCoverage:
                 return None
         return "endpoint_not_probed"
 
+    def _plugin_gap(
+        self, ref: str, expected: str | None, hosts: set[str], port: int | None
+    ) -> str | None:
+        document = self.pulse
+        if document is None:
+            return "pulse_not_run"
+        adapter = document.get("adapter") if isinstance(document.get("adapter"), dict) else {}
+        receipt = adapter.get("plugins")
+        if not isinstance(receipt, dict):
+            return "plugin_receipt_not_recorded"
+        loaded = {
+            str(row.get("name")): str(row.get("sha256"))
+            for row in receipt.get("loaded") or []
+            if isinstance(row, dict)
+        }
+        if not ref or ref not in loaded:
+            return "plugin_not_loaded"
+        wanted = str(expected or "")
+        if not wanted.startswith("sha256:"):
+            # Nothing says which version of the plugin found it.
+            return "plugin_version_not_recorded"
+        if loaded[ref] != wanted[len("sha256:") :]:
+            return "plugin_changed"
+        receipts = {
+            normalize_host(host): ports
+            for host, ports in pulse_progress._successful_tcp_ports(document).items()  # noqa: SLF001
+        }
+        if not any(
+            (probed := receipts.get(host)) and (port is None or port in probed) for host in hosts
+        ):
+            return "endpoint_not_probed"
+        for error in receipt.get("errors") or []:
+            if not isinstance(error, dict) or str(error.get("plugin")) != ref:
+                continue
+            # An error without its chunk's hosts and ports is read as covering
+            # everything: the safe direction.
+            error_hosts = {normalize_host(h) for h in error.get("hosts") or []}
+            error_ports = {p for p in (_port(v) for v in error.get("ports") or []) if p}
+            if (not error_hosts or error_hosts & hosts) and (
+                not error_ports or port is None or port in error_ports
+            ):
+                return "plugin_error"
+        return None
+
     def _nse_gap(
         self, ref: str, hosts: set[str], port: int | None, protocol: str | None = None
     ) -> str | None:
@@ -456,6 +514,8 @@ class RunCoverage:
             return self._nuclei_gap(ref, hosts, port)
         if detector == PULSE:
             return self._pulse_gap(ref, entry.get("ruleset"), hosts, port)
+        if detector == PULSE_PLUGIN:
+            return self._plugin_gap(ref, entry.get("ruleset"), hosts, port)
         if detector == NMAP_NSE:
             return self._nse_gap(ref, hosts, port, detector_protocol(entry))
         return "no_coverage_rule"
@@ -549,11 +609,11 @@ class RunCoverage:
 
 
 def detector_protocol(entry: dict[str, Any]) -> str | None:
-    """``tcp``/``udp`` a detector observed on; pulse and nuclei are TCP-only."""
+    """``tcp``/``udp`` a detector observed on; pulse, its plugins and nuclei are TCP-only."""
     recorded = str(entry.get("protocol") or "").lower()
     if recorded in ("tcp", "udp"):
         return recorded
-    return "tcp" if entry.get("detector") in (PULSE, NUCLEI) else None
+    return "tcp" if entry.get("detector") in (PULSE, NUCLEI, PULSE_PLUGIN) else None
 
 
 def finding_protocol(detectors: list[dict[str, Any]]) -> str | None:

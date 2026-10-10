@@ -1,0 +1,511 @@
+"""Rhai plugins for Pulse: the adapter side (#544, ADR 0002).
+
+What is pinned here, and why each one is a test of its own:
+
+* ``--script-dir`` is passed when plugins are on and never otherwise, and Pulse
+  runs in the same empty directory as its ``HOME`` -- ``--script-dir`` makes it
+  load ``./scripts`` and ``$HOME/.pulse/scripts`` too;
+* the run's receipt names every plugin with its sha256, which of them
+  ``pulse plugin check`` accepted, and the errors Pulse printed, per chunk;
+* the plugin set is part of the chunk key and of the resume decision;
+* a plugin finding is not a CVE: severity normalised, stamped with the file's
+  sha, keyed by ``script_id`` in the report, and judged by its own detector
+  when a verification asks whether it was re-checked.
+
+No Pulse binary is needed. The tests that run the plugins against stub servers
+are in ``test_pulse_plugins_live.py``.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from api.services import verification_coverage as vc
+from api.services import vulnerabilities as vulns
+from scanner.pipeline import evidence_artifacts, pulse_plugins
+from scanner.pipeline import pulse_probe as pp
+from scanner.pipeline.config_schema import ProfilePulseConfig, PulseProbeConfig, merge_pulse_config
+from scanner.pipeline.scan_policy import apply_policy
+from scanner.pipeline.service_schema import CveRecord, cves_to_extra_vulnerabilities
+from tests.test_scanner_scan_policy import _config, _policy
+
+PLUGIN_A = "fn name() { \"alpha\" }\nfn description() { \"a\" }\nfn ports() { [] }\nfn run() { }\n"
+PLUGIN_B = "fn name() { \"beta\" }\nfn description() { \"b\" }\nfn ports() { [] }\nfn run() { }\n"
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _flag(cmd: list[str], flag: str) -> str:
+    return cmd[cmd.index(flag) + 1]
+
+
+def _plugin_row(plugin: str = "alpha", *, ip: str = "10.0.0.1", port: int = 22, severity: str = "HIGH") -> dict:
+    return {
+        "cve_id": f"SCRIPT-{plugin.upper()}", "ip": ip, "port": port, "service": "ssh", "severity": severity,
+        "title": "t", "summary": "s", "evidence": "e\r", "source": "rhai_script",
+        "finding_class": "plugin_script", "match_reason": f"rhai script {plugin}", "confidence": 90,
+        "ruleset_version": "2026.07.29-h1", "requires_confirmation": False,
+    }
+
+
+@pytest.fixture
+def plugin_dir(tmp_path, monkeypatch) -> Path:
+    directory = tmp_path / "plugins"
+    directory.mkdir()
+    (directory / "alpha.rhai").write_text(PLUGIN_A, encoding="utf-8")
+    (directory / "beta.rhai").write_text(PLUGIN_B, encoding="utf-8")
+    monkeypatch.setattr(pulse_plugins, "PLUGINS_DIR", directory)
+    return directory
+
+
+class Pulse:
+    """A stand-in for the pulse process: records how it was spawned."""
+
+    def __init__(self, monkeypatch):
+        self.spawns: list[dict] = []
+        self.checked: list[str] = []
+        self.stderr = ""
+        self.findings: list[dict] = []
+        self.reject: dict[str, str] = {}
+        monkeypatch.setattr(pp, "resolve_pulse_bin", lambda _: "fixture")
+        monkeypatch.setattr(pp, "_pulse_available", lambda _: True)
+        monkeypatch.setattr(pp.time, "sleep", lambda _: None)
+        monkeypatch.setattr(pp, "run_command", self._run)
+        monkeypatch.setattr(pulse_plugins, "check_plugin", self._check)
+
+    def _check(self, pulse_bin, path, *, env, cwd):
+        self.checked.append(Path(path).stem)
+        return self.reject.get(Path(path).stem)
+
+    def _run(self, command, **kwargs):
+        cwd = kwargs.get("cwd")
+        env = kwargs["env"]
+        hosts = Path(command[command.index("--targets-file") + 1]).read_text().splitlines()
+        ports = [int(p) for p in _flag(command, "-p").split(",")]
+        self.spawns.append({
+            "command": command, "cwd": cwd, "home": env["HOME"], "timeout": kwargs["timeout"],
+            # Snapshot at spawn time: the directory is removed once the process is done.
+            "cwd_entries": sorted(p.name for p in Path(cwd).iterdir()) if cwd else None,
+            "cwd_is_dir": bool(cwd) and Path(cwd).is_dir(),
+        })
+        rows = [{"ip": h, "port": p, "protocol": "tcp", "service": "ssh"} for h in hosts for p in ports]
+        body = {"open": rows, "cves": list(self.findings), "findings": list(self.findings),
+                "meta": {"ruleset": "2026.07.29-h1", "version": "1.3.0"}}
+        return subprocess.CompletedProcess(command, 0, json.dumps(body), self.stderr)
+
+
+@pytest.fixture
+def pulse(monkeypatch) -> Pulse:
+    return Pulse(monkeypatch)
+
+
+def _run(tmp_path, endpoints=("10.0.0.1:22/tcp",), **kwargs) -> Path:
+    out = tmp_path / "out"
+    pp.run_pulse_probe(list(endpoints), output_dir=out, retry_settle_seconds=0, **kwargs)
+    return out
+
+
+def _raw(out: Path) -> dict:
+    return json.loads((out / "pulse" / "raw.json").read_text(encoding="utf-8"))
+
+
+# --------------------------------------------------------------------------
+# The command and the process
+# --------------------------------------------------------------------------
+
+
+def test_script_dir_is_passed_when_plugins_are_on(tmp_path, plugin_dir, pulse):
+    _run(tmp_path, plugins=True)
+    command = pulse.spawns[0]["command"]
+    assert Path(_flag(command, "--script-dir")) == plugin_dir
+    assert "--scripts" not in command  # bare --scripts would read ./scripts of the cwd
+
+
+def test_script_dir_is_not_passed_when_plugins_are_off(tmp_path, plugin_dir, pulse):
+    out = _run(tmp_path, plugins=False)
+    assert "--script-dir" not in pulse.spawns[0]["command"]
+    assert pulse.checked == []
+    receipt = _raw(out)["adapter"]["plugins"]
+    assert receipt["requested"] is False and receipt["active"] is False and receipt["loaded"] == []
+
+
+def test_pulse_runs_in_the_empty_directory_that_is_also_home(tmp_path, plugin_dir, pulse):
+    _run(tmp_path, plugins=True)
+    spawn = pulse.spawns[0]
+    assert spawn["cwd"] == spawn["home"]
+    assert spawn["cwd_entries"] == []  # no ./scripts, no .pulse/scripts to be added by pulse
+    assert not Path(spawn["cwd"]).exists()  # removed with the process
+
+
+def test_cwd_is_private_even_without_plugins(tmp_path, plugin_dir, pulse):
+    _run(tmp_path, plugins=False)
+    spawn = pulse.spawns[0]
+    assert spawn["cwd"] == spawn["home"] and spawn["cwd_entries"] == []
+
+
+def test_relative_pulse_binary_is_made_absolute(tmp_path, plugin_dir, pulse, monkeypatch):
+    monkeypatch.setattr(pp, "resolve_pulse_bin", lambda _: "./bin/pulse")
+    _run(tmp_path, plugins=False)
+    assert Path(pulse.spawns[0]["command"][0]).is_absolute()
+
+
+def test_process_timeout_grows_by_the_plugin_budget(tmp_path, plugin_dir, pulse):
+    _run(tmp_path, ["10.0.0.1:22/tcp", "10.0.0.1:21/tcp"], plugins=True, timeout_seconds=100)
+    assert pulse.spawns[0]["timeout"] == 100 + 2 * pulse_plugins.PLUGIN_SECONDS_PER_ENDPOINT
+
+
+def test_process_timeout_is_untouched_without_plugins(tmp_path, plugin_dir, pulse):
+    _run(tmp_path, ["10.0.0.1:22/tcp", "10.0.0.1:21/tcp"], plugins=False, timeout_seconds=100)
+    assert pulse.spawns[0]["timeout"] == 100
+
+
+# --------------------------------------------------------------------------
+# The receipt
+# --------------------------------------------------------------------------
+
+
+def test_receipt_names_each_plugin_with_the_sha256_of_its_file(tmp_path, plugin_dir, pulse):
+    receipt = _raw(_run(tmp_path, plugins=True))["adapter"]["plugins"]
+    assert receipt["loaded"] == [
+        {"name": "alpha", "sha256": _sha(PLUGIN_A)},
+        {"name": "beta", "sha256": _sha(PLUGIN_B)},
+    ]
+    assert receipt["active"] is True and receipt["rejected"] == []
+    assert receipt["digest"] and receipt["dir"] == str(plugin_dir)
+    assert pulse.checked == ["alpha", "beta"]
+
+
+def test_a_plugin_pulse_check_rejects_is_not_loaded(tmp_path, plugin_dir, pulse):
+    pulse.reject = {"beta": "Compilation error: x"}
+    receipt = _raw(_run(tmp_path, plugins=True))["adapter"]["plugins"]
+    assert [p["name"] for p in receipt["loaded"]] == ["alpha"]
+    assert receipt["rejected"] == [{"name": "beta", "sha256": _sha(PLUGIN_B), "reason": "Compilation error: x"}]
+
+
+def test_when_every_plugin_is_rejected_no_script_dir_is_passed(tmp_path, plugin_dir, pulse):
+    pulse.reject = {"alpha": "bad", "beta": "bad"}
+    receipt = _raw(_run(tmp_path, plugins=True))["adapter"]["plugins"]
+    assert "--script-dir" not in pulse.spawns[0]["command"]
+    assert receipt["active"] is False and receipt["loaded"] == []
+
+
+def test_missing_plugin_directory_degrades_and_says_so(tmp_path, pulse, monkeypatch, caplog):
+    monkeypatch.setattr(pulse_plugins, "PLUGINS_DIR", tmp_path / "gone")
+    receipt = _raw(_run(tmp_path, plugins=True))["adapter"]["plugins"]
+    assert "--script-dir" not in pulse.spawns[0]["command"]
+    assert receipt["active"] is False and "no .rhai plugins" in receipt["unavailable"]
+    assert "Pulse runs without plugins" in caplog.text
+
+
+def test_plugin_errors_are_recorded_with_the_chunks_hosts_and_ports(tmp_path, plugin_dir, pulse):
+    pulse.stderr = (
+        "adaptive  concurrency\n"
+        "  \x1b[1m\x1b[33mwarn\x1b[39m\x1b[0m  plugin error — alpha: Runtime error: the server closed (line 3, position 9)\n"
+    )
+    raw = _raw(_run(tmp_path, ["10.0.0.1:22/tcp", "10.0.0.2:22/tcp"], plugins=True))
+    receipt = raw["adapter"]["plugins"]
+    assert len(receipt["errors"]) == 1
+    error = receipt["errors"][0]
+    assert error["plugin"] == "alpha" and "server closed" in error["message"]
+    assert error["hosts"] == ["10.0.0.1", "10.0.0.2"] and error["ports"] == [22]
+    assert error["chunk"] == raw["chunks"][0]["key"]
+
+
+def test_errors_are_not_collected_when_plugins_are_off(tmp_path, plugin_dir, pulse):
+    pulse.stderr = "  warn  plugin error — alpha: boom\n"
+    assert _raw(_run(tmp_path, plugins=False))["adapter"]["plugins"]["errors"] == []
+
+
+def test_parse_plugin_errors_reads_pulses_stderr_line():
+    stderr = "x\n  \x1b[33mwarn\x1b[0m  plugin error — shapo_ssh_algorithms: Runtime error: boom (line 1)\nplugin error — a.b-c: x\n"
+    assert pulse_plugins.parse_plugin_errors(stderr) == [
+        {"plugin": "shapo_ssh_algorithms", "message": "Runtime error: boom (line 1)"},
+        {"plugin": "a.b-c", "message": "x"},
+    ]
+    assert pulse_plugins.parse_plugin_errors("warn  something else\n") == []
+
+
+# --------------------------------------------------------------------------
+# Chunk key and resume
+# --------------------------------------------------------------------------
+
+
+def test_chunk_key_depends_on_the_plugin_set_and_only_when_there_is_one():
+    plain = pp.chunk_key(["10.0.0.1"], [22])
+    assert pp.chunk_key(["10.0.0.1"], [22], "connect", "") == plain  # old keys stay valid
+    with_a = pp.chunk_key(["10.0.0.1"], [22], "connect", "a" * 64)
+    assert with_a != plain
+    assert with_a != pp.chunk_key(["10.0.0.1"], [22], "connect", "b" * 64)
+
+
+def test_chunk_file_name_carries_the_plugin_digest(tmp_path, plugin_dir, pulse):
+    with_plugins = _run(tmp_path / "a", plugins=True)
+    without = _run(tmp_path / "b", plugins=False)
+    assert _raw(with_plugins)["chunks"][0]["key"] != _raw(without)["chunks"][0]["key"]
+
+
+def _resume(out: Path, **kwargs) -> None:
+    pp.run_pulse_probe(["10.0.0.1:22/tcp"], output_dir=out, done_hosts={"10.0.0.1"}, retry_settle_seconds=0, **kwargs)
+
+
+def test_resume_reuses_a_run_made_with_the_same_plugins(tmp_path, plugin_dir, pulse):
+    out = _run(tmp_path, plugins=True)
+    pulse.findings = [_plugin_row()]
+    spawns = len(pulse.spawns)
+    _resume(out, plugins=True)
+    assert len(pulse.spawns) == spawns  # nothing re-probed
+    receipt = _raw(out)["adapter"]["plugins"]
+    assert [p["name"] for p in receipt["loaded"]] == ["alpha", "beta"]  # the receipt survived
+
+
+def test_resume_reprobes_when_a_plugin_was_edited(tmp_path, plugin_dir, pulse):
+    out = _run(tmp_path, plugins=True)
+    (plugin_dir / "alpha.rhai").write_text(PLUGIN_A + "// edited\n", encoding="utf-8")
+    spawns = len(pulse.spawns)
+    _resume(out, plugins=True)
+    assert len(pulse.spawns) == spawns + 1
+
+
+def test_resume_reprobes_when_plugins_were_off_and_are_on_now(tmp_path, plugin_dir, pulse):
+    out = _run(tmp_path, plugins=False)
+    spawns = len(pulse.spawns)
+    _resume(out, plugins=True)
+    assert len(pulse.spawns) == spawns + 1
+
+
+def test_resume_reprobes_when_plugins_were_on_and_are_off_now(tmp_path, plugin_dir, pulse):
+    out = _run(tmp_path, plugins=True)
+    spawns = len(pulse.spawns)
+    _resume(out, plugins=False)
+    assert len(pulse.spawns) == spawns + 1
+
+
+# --------------------------------------------------------------------------
+# Parsing a plugin's finding
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [("HIGH", "high"), ("Medium", "medium"), ("critical", "critical"), ("LOW", "low"),
+     ("INFO", "info"), ("informational", "info"), ("", "info"), (None, "info"), ("urgent!", "info")],
+)
+def test_plugin_severity_is_normalised(given, expected):
+    records = pp.parse_pulse_json({"cves": [{**_plugin_row(), "severity": given}]})[2]
+    assert records[0].severity == expected
+
+
+def test_plugin_finding_is_stamped_with_the_files_sha_and_cleaned():
+    row = _plugin_row()
+    _, _, records = pp.parse_pulse_json({"cves": [row]}, plugin_shas={"alpha": "ab" * 32})
+    assert records[0].finding_class == "plugin_script"
+    assert records[0].ruleset_version == "sha256:" + "ab" * 32
+    assert records[0].evidence == "e"
+
+
+def test_finding_from_a_plugin_nobody_offered_is_dropped(caplog):
+    payload = {"cves": [_plugin_row("alpha"), _plugin_row("stranger")]}
+    _, _, records = pp.parse_pulse_json(payload, plugin_shas={"alpha": "ab" * 32})
+    assert [r.match_reason for r in records] == ["rhai script alpha"]
+    assert "not in the set" in caplog.text
+    # Without plugins offered, every plugin finding is a stranger.
+    assert pp.parse_pulse_json(payload, plugin_shas={})[2] == []
+    # Recorded output read by tooling (no set) passes untouched.
+    assert len(pp.parse_pulse_json(payload)[2]) == 2
+
+
+def test_run_drops_findings_when_plugins_are_off(tmp_path, plugin_dir, pulse):
+    pulse.findings = [_plugin_row()]
+    out = _run(tmp_path, plugins=False)
+    assert json.loads((out / "pulse_cves.json").read_text(encoding="utf-8")) == []
+
+
+def test_run_keeps_and_stamps_findings_of_loaded_plugins(tmp_path, plugin_dir, pulse):
+    pulse.findings = [_plugin_row("alpha")]
+    out = _run(tmp_path, plugins=True)
+    (record,) = json.loads((out / "pulse_cves.json").read_text(encoding="utf-8"))
+    assert record["ruleset_version"] == "sha256:" + _sha(PLUGIN_A)
+    shape = json.loads((out / "pulse" / "findings_report_shape.json").read_text(encoding="utf-8"))
+    (row,) = shape["vulnerabilities"]
+    assert row["script_id"] == "pulse-plugin:alpha" and row["source"] == "pulse-plugin"
+
+
+def test_report_row_has_no_fake_cve():
+    record = CveRecord(**{**_plugin_row(), "severity": "info", "refs": []})
+    (row,) = cves_to_extra_vulnerabilities([record])
+    assert row["cve"] == "" and row["script_id"] == "pulse-plugin:alpha"
+    assert row["severity"] == "unknown" and row["finding_class"] == "plugin_script"
+    assert row["epss"] is None and row["in_kev"] is False
+
+
+def test_plugin_finding_reaches_the_evidence_projection(tmp_path, plugin_dir, pulse):
+    pulse.findings = [_plugin_row("alpha")]
+    out = _run(tmp_path, plugins=True)
+    result = evidence_artifacts.write_evidence_artifact(out, tenant_id="t", run_id="r")
+    assert not [d for d in result["diagnostics"] if d["code"] == "invalid_observation"]
+    text = json.dumps(result)
+    assert "plugin:alpha" in text and "plugin_report" in text
+    assert "sha256:" + _sha(PLUGIN_A) in text
+
+
+# --------------------------------------------------------------------------
+# The detector: what a verification may credit
+# --------------------------------------------------------------------------
+
+
+def _coverage(tmp_path, plugin_dir, pulse, *, findings=True) -> tuple[vc.RunCoverage, str]:
+    pulse.findings = [_plugin_row("alpha")] if findings else []
+    out = _run(tmp_path, ["10.0.0.1:22/tcp", "10.0.0.2:22/tcp"], plugins=True)
+    return vc.RunCoverage(out), "sha256:" + _sha(PLUGIN_A)
+
+
+def _entry(ref="alpha", ruleset="x", host="10.0.0.1", port="22") -> dict:
+    return {"detector": vc.PULSE_PLUGIN, "ref": ref, "host": host, "port": port, "ruleset": ruleset}
+
+
+def _gaps(coverage, entry, host="10.0.0.1"):
+    return [g["reason"] for g in coverage.gaps([entry], port="22", asset_hosts={host})]
+
+
+def test_plugin_is_covered_by_a_run_that_loaded_the_same_file_and_finished_the_endpoint(tmp_path, plugin_dir, pulse):
+    coverage, sha = _coverage(tmp_path, plugin_dir, pulse)
+    assert _gaps(coverage, _entry(ruleset=sha)) == []
+
+
+def test_plugin_edited_since_the_finding_is_not_covered(tmp_path, plugin_dir, pulse):
+    coverage, _ = _coverage(tmp_path, plugin_dir, pulse)
+    assert _gaps(coverage, _entry(ruleset="sha256:" + "0" * 64)) == ["plugin_changed"]
+
+
+def test_finding_without_a_recorded_version_is_not_covered(tmp_path, plugin_dir, pulse):
+    coverage, _ = _coverage(tmp_path, plugin_dir, pulse)
+    assert _gaps(coverage, _entry(ruleset=None)) == ["plugin_version_not_recorded"]
+
+
+def test_plugin_that_was_not_loaded_is_not_covered(tmp_path, plugin_dir, pulse):
+    pulse.reject = {"alpha": "bad"}
+    coverage, sha = _coverage(tmp_path, plugin_dir, pulse, findings=False)
+    assert _gaps(coverage, _entry(ruleset=sha)) == ["plugin_not_loaded"]
+    assert _gaps(coverage, _entry(ref="gamma", ruleset=sha)) == ["plugin_not_loaded"]
+
+
+def test_endpoint_without_a_success_receipt_is_not_covered(tmp_path, plugin_dir, pulse):
+    coverage, sha = _coverage(tmp_path, plugin_dir, pulse)
+    assert _gaps(coverage, _entry(ruleset=sha, host="10.0.0.9"), host="10.0.0.9") == ["endpoint_not_probed"]
+    assert _gaps(coverage, _entry(ruleset=sha, port="2222")) == ["endpoint_not_probed"]
+
+
+def test_plugin_error_on_the_endpoints_chunk_is_not_covered(tmp_path, plugin_dir, pulse):
+    pulse.stderr = "  warn  plugin error — alpha: Runtime error: boom\n"
+    coverage, sha = _coverage(tmp_path, plugin_dir, pulse)
+    assert _gaps(coverage, _entry(ruleset=sha)) == ["plugin_error"]
+
+
+def test_error_of_another_plugin_does_not_block_this_one(tmp_path, plugin_dir, pulse):
+    pulse.stderr = "  warn  plugin error — beta: Runtime error: boom\n"
+    coverage, sha = _coverage(tmp_path, plugin_dir, pulse)
+    assert _gaps(coverage, _entry(ruleset=sha)) == []
+
+
+def test_error_without_its_endpoints_reads_as_covering_everything(tmp_path, plugin_dir, pulse):
+    pulse.stderr = "  warn  plugin error — alpha: Runtime error: boom\n"
+    coverage, sha = _coverage(tmp_path, plugin_dir, pulse)
+    for error in coverage.pulse["adapter"]["plugins"]["errors"]:
+        error.pop("hosts"), error.pop("ports")
+    assert _gaps(coverage, _entry(ruleset=sha)) == ["plugin_error"]
+
+
+def test_run_without_a_plugin_receipt_covers_nothing(tmp_path, plugin_dir, pulse):
+    out = _run(tmp_path, plugins=False)
+    raw = _raw(out)
+    del raw["adapter"]["plugins"]
+    (out / "pulse" / "raw.json").write_text(json.dumps(raw), encoding="utf-8")
+    assert _gaps(vc.RunCoverage(out), _entry(ruleset="sha256:" + _sha(PLUGIN_A))) == ["plugin_receipt_not_recorded"]
+
+
+def test_no_pulse_run_covers_nothing(tmp_path):
+    assert _gaps(vc.RunCoverage(tmp_path), _entry(ruleset="sha256:x")) == ["pulse_not_run"]
+
+
+def test_plugin_detector_is_a_known_one_and_tcp_only():
+    assert vc.PULSE_PLUGIN in vc.KNOWN_DETECTORS
+    assert vc.detector_protocol({"detector": vc.PULSE_PLUGIN}) == "tcp"
+
+
+def test_tracker_derives_the_plugin_detector_from_script_id_and_keeps_the_sha():
+    assert vulns._detector_of("pulse-plugin", "pulse-plugin:alpha") == (vc.PULSE_PLUGIN, "alpha")
+    assert vulns._detector_of("", "pulse-plugin:alpha") == (vc.PULSE_PLUGIN, "alpha")
+    from datetime import UTC, datetime
+
+    sha = "sha256:" + "ab" * 32
+    (entry,) = vulns._observed_detectors(
+        {"host": "10.0.0.1", "source": "pulse-plugin", "script_id": "pulse-plugin:alpha",
+         "protocol": "tcp", "ruleset_version": sha},
+        port="22", run_id="r1", now=datetime.now(UTC),
+    )
+    assert entry["detector"] == vc.PULSE_PLUGIN and entry["ref"] == "alpha" and entry["ruleset"] == sha
+
+
+# --------------------------------------------------------------------------
+# Config and scan policy
+# --------------------------------------------------------------------------
+
+
+def test_plugins_are_on_by_default_and_the_profile_can_turn_them_off():
+    assert PulseProbeConfig().plugins is True
+    merged = merge_pulse_config(PulseProbeConfig(), ProfilePulseConfig(plugins=False))
+    assert merged.plugins is False
+    assert merge_pulse_config(PulseProbeConfig(), ProfilePulseConfig()).plugins is True
+
+
+def _plugins_after(policy: dict) -> set[bool]:
+    tightened = apply_policy(_config(), policy)
+    return {merge_pulse_config(tightened.service_probe.pulse, p.pulse).plugins for p in tightened.profiles.values()}
+
+
+def test_per_host_rate_ceiling_turns_plugins_off_in_every_profile():
+    assert _plugins_after(_policy(per_host_rate=25)) == {False}
+
+
+def test_no_policy_and_non_rate_ceilings_leave_plugins_on():
+    # The plugins are serial: a host-concurrency ceiling holds without help.
+    assert _plugins_after(_policy()) == {True}
+    assert _plugins_after(_policy(max_host_concurrency=2)) == {True}
+    assert _plugins_after(_policy(max_port_rate=100, max_discover_rate=100)) == {True}
+
+
+# --------------------------------------------------------------------------
+# The set itself
+# --------------------------------------------------------------------------
+
+
+def test_set_ignores_symlinks_and_other_files(tmp_path):
+    directory = tmp_path / "p"
+    directory.mkdir()
+    (directory / "a.rhai").write_text(PLUGIN_A, encoding="utf-8")
+    (directory / "notes.txt").write_text("x", encoding="utf-8")
+    (directory / "link.rhai").symlink_to(directory / "a.rhai")
+    plugin_set = pulse_plugins.resolve_plugin_set(enabled=True, directory=directory)
+    assert [f.name for f in plugin_set.files] == ["a"]
+
+
+def test_set_digest_changes_with_content_and_is_empty_for_an_empty_set(tmp_path):
+    directory = tmp_path / "p"
+    directory.mkdir()
+    (directory / "a.rhai").write_text(PLUGIN_A, encoding="utf-8")
+    first = pulse_plugins.resolve_plugin_set(enabled=True, directory=directory).digest
+    (directory / "a.rhai").write_text(PLUGIN_A + " ", encoding="utf-8")
+    assert pulse_plugins.resolve_plugin_set(enabled=True, directory=directory).digest != first
+    assert pulse_plugins.resolve_plugin_set(enabled=False).digest == ""
+
+
+def test_check_plugin_reports_a_missing_binary_instead_of_raising(tmp_path):
+    reason = pulse_plugins.check_plugin("/nonexistent/pulse", tmp_path / "a.rhai", env={}, cwd=tmp_path)
+    assert reason and "could not run" in reason
