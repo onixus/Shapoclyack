@@ -759,6 +759,7 @@ def _run_pipeline_body(
                 paths.output_dir,
                 retries=retries,
                 exclude_ports=config.ports.exclude_ports,
+                pulse_bin=config.service_probe.pulse.bin,
             ),
         )
         checkpoint.mark_done("discover-l2")

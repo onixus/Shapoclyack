@@ -163,17 +163,23 @@ The stage:
    scope, or derives private/link-local IPv4 targets when the list is empty;
 2. refuses networks once their combined usable address count would exceed
    `max_hosts`;
-3. runs bounded nmap ARP discovery and records MAC/vendor evidence;
-4. optionally probes the ARP-alive hosts for NetBIOS and mDNS names. A policy
+3. runs one bounded Pulse pass (`-D --discover-method arp`) and records the
+   MAC from the kernel neighbour table (no vendor);
+4. in the same pass probes the live hosts for NetBIOS and mDNS names. A policy
    `avoid_ports` entry of 137 or 5353 drops that probe, and `skip_service_probe`
    drops both.
 
 The artifact records every skipped network and reason (`outside_scan_scope`,
-`host_cap_exceeded`, missing nmap, or command failure). A sweep that exceeds
-`timeout_seconds` is recorded as `arp.failed:TimeoutExpired` (or
-`names_skipped_reason` for the name pass) and the run continues without L2
+`host_cap_exceeded`, `not_on_interface:<iface>`, `pulse.unavailable`,
+`rate_cap_unenforceable:<max_rate>`, `timeout_unreachable:<seconds>s`, or
+command failure). A sweep that exceeds
+`timeout_seconds` is recorded as `arp.failed:TimeoutExpired` and the run continues without L2
 evidence; at a low `max_discover_rate`, size `max_hosts` so that
-`max_hosts / max_rate` fits inside `timeout_seconds`. ARP-alive hosts seed the
+`max_hosts / pulse_rate` fits inside `timeout_seconds`, where
+`pulse_rate = max_rate // divisor` with `divisor = mcast_solicit + 2` (both
+recorded in the artifact). A
+sweep whose estimate (`candidates / pulse_rate + mcast_solicit`) already exceeds
+it is not started: `timeout_unreachable:<estimate>s`. ARP-alive hosts seed the
 ordinary discovery result, so a device that ignores routed ICMP/TCP probes still
 continues into port scanning. Link-local names are marked `l2`; they are not
 misrepresented as forward DNS.

@@ -28,11 +28,10 @@ Nmap. See [Pulse backend](pulse-backend.md).
 ## What needs Nmap
 
 The scanner looks for the binary with `shutil.which("nmap")` and calls it by
-name. Three features depend on it:
+name. Two features depend on it:
 
 | Feature | Enabled by | Where in the code |
 |---|---|---|
-| L2 discovery: ARP sweep plus UDP/137 NetBIOS and UDP/5353 mDNS name probes | `discovery.l2.enabled: true` (off by default) | `scanner/pipeline/l2_discovery.py` |
 | NSE / `-sV` / `-O` stage | `service_probe.backend: nmap` or `hybrid` (default is `pulse`); profile from `nse_profiles` | `scanner/pipeline/nse.py` |
 | Pulse-versus-Nmap shadow comparison | `service_probe.shadow: true` or `OCTO_PULSE_SHADOW=1` | `scanner/pipeline/pulse_shadow.py`, `scanner/main.py` |
 
@@ -43,9 +42,6 @@ Nmap.
 
 The scan does not fail, and the skip is not silent:
 
-- L2 discovery logs `nmap binary not found on PATH; skipping L2 discovery` at
-  `WARNING` and writes `skipped_reason: "nmap.unavailable"` into
-  `l2_discovery.json`.
 - The NSE stage logs `nmap binary not found on PATH; skipping NSE stage` at
   `WARNING`, creates the marker file `nmap/SKIPPED_NMAP_MISSING` and returns an
   empty `nmap/` directory. Both messages point to this page.
@@ -60,7 +56,7 @@ Vulscan came from separate Git repositories, not from the Nmap package; see
 
 ## Capabilities Nmap needs
 
-ARP sweeps (`-sn -PR`), UDP name probes (`-sU`), SYN scans and OS detection
+SYN scans and OS detection
 (`-O`) send raw packets. The old images granted this to the non-root runtime
 user with file capabilities:
 
@@ -225,18 +221,15 @@ are GPL-3.0.
    docker run --rm --entrypoint sh <your image> -c 'nmap --version | head -n 1; getcap /usr/bin/nmap'
    ```
 
-2. Start a scan that uses the feature: set `discovery.l2.enabled: true` for a
-   target on a directly attached IPv4 segment (the sensor's own L2 domain), or
-   `service_probe.backend: hybrid` (or `nmap`).
+2. Start a scan that uses the feature: set `service_probe.backend: hybrid` (or `nmap`).
 
 3. Look at the run output directory:
 
    | Stage | Ran | Skipped |
    |---|---|---|
-   | L2 discovery | `l2_discovery.json` has `alive_hosts` and no `skipped_reason` | `skipped_reason` is `nmap.unavailable` (no binary), `l2.disabled`, or `no_in_scope_local_networks` (no eligible target network) |
    | NSE | `nmap/` holds `*.xml`; no `nmap/SKIPPED_NMAP_MISSING` | `nmap/SKIPPED_NMAP_MISSING` exists |
 
-   `stage_timings.json` lists `discover-l2` and `nse`. A stage that found no
+   `stage_timings.json` lists `nse`. A stage that found no
    Nmap still returns normally, so its timing record does not show the skip;
    use the artifacts above.
 
