@@ -1,0 +1,1366 @@
+{
+  "version": "2026.08.21",
+  "probes": [
+    {
+      "name": "ssh-greeting",
+      "ports": [
+        22,
+        222,
+        2222,
+        2200
+      ],
+      "rarity": 1,
+      "payload": "",
+      "matches": [
+        {
+          "pattern": "^SSH-([0-9.]+)-OpenSSH_([0-9a-zA-Z._-]+)",
+          "service": "ssh",
+          "product": "OpenSSH",
+          "version": "$2"
+        },
+        {
+          "pattern": "^SSH-([0-9.]+)-dropbear_([0-9a-zA-Z._-]+)",
+          "service": "ssh",
+          "product": "Dropbear sshd",
+          "version": "$2"
+        },
+        {
+          "pattern": "^SSH-([0-9.]+)-libssh_([0-9a-zA-Z._-]+)",
+          "service": "ssh",
+          "product": "libssh",
+          "version": "$2"
+        },
+        {
+          "pattern": "^SSH-([0-9.]+)-libssh-([0-9a-zA-Z._-]+)",
+          "service": "ssh",
+          "product": "libssh",
+          "version": "$2"
+        },
+        {
+          "pattern": "^SSH-([0-9.]+)-ROSSSH",
+          "service": "ssh",
+          "product": "MikroTik RouterOS sshd"
+        },
+        {
+          "pattern": "^SSH-([0-9.]+)-Cisco-([0-9.]+)",
+          "service": "ssh",
+          "product": "Cisco SSH",
+          "version": "$2"
+        },
+        {
+          "pattern": "^SSH-([0-9.]+)-Huawei-([0-9a-zA-Z._-]+)",
+          "service": "ssh",
+          "product": "Huawei VRP sshd",
+          "version": "$2"
+        },
+        {
+          "pattern": "^SSH-([0-9.]+)-FortiSSH",
+          "service": "ssh",
+          "product": "Fortinet FortiOS sshd"
+        },
+        {
+          "pattern": "^SSH-([0-9.]+)-PuTTY_KiTTY",
+          "service": "ssh",
+          "product": "KiTTY sshd"
+        },
+        {
+          "pattern": "^SSH-([0-9.]+)-AsyncSSH_([0-9a-zA-Z._-]+)",
+          "service": "ssh",
+          "product": "AsyncSSH",
+          "version": "$2"
+        },
+        {
+          "pattern": "^SSH-([0-9.]+)-TinySSH_([0-9a-zA-Z._-]+)",
+          "service": "ssh",
+          "product": "TinySSH",
+          "version": "$2"
+        },
+        {
+          "pattern": "^SSH-([0-9.]+)-BitviseSSH_([0-9a-zA-Z._-]+)",
+          "service": "ssh",
+          "product": "Bitvise SSH Server",
+          "version": "$2"
+        },
+        {
+          "pattern": "^SSH-([0-9.]+)-paramiko_([0-9a-zA-Z._-]+)",
+          "service": "ssh",
+          "product": "Paramiko SSH",
+          "version": "$2"
+        },
+        {
+          "pattern": "^SSH-([0-9.]+)-APACHE-SSHD-([0-9a-zA-Z._-]+)",
+          "service": "ssh",
+          "product": "Apache Mina SSHD",
+          "version": "$2"
+        },
+        {
+          "pattern": "^SSH-([0-9.]+)-TwistedSSH_([0-9a-zA-Z._-]+)",
+          "service": "ssh",
+          "product": "Twisted Conch SSH",
+          "version": "$2"
+        },
+        {
+          "pattern": "^SSH-([0-9.]+)-ErlangSSH_([0-9a-zA-Z._-]+)",
+          "service": "ssh",
+          "product": "Erlang OTP SSH",
+          "version": "$2"
+        },
+        {
+          "pattern": "^SSH-([0-9.]+)-GoSSH_([0-9a-zA-Z._-]+)",
+          "service": "ssh",
+          "product": "Go crypto/ssh",
+          "version": "$2"
+        },
+        {
+          "pattern": "^SSH-([0-9.]+)-",
+          "service": "ssh",
+          "soft": true
+        }
+      ]
+    },
+    {
+      "name": "null",
+      "ports": [
+        21,
+        23,
+        25,
+        110,
+        143,
+        587,
+        993,
+        995,
+        3306,
+        5432,
+        5900,
+        5901,
+        4222
+      ],
+      "rarity": 1,
+      "payload": "",
+      "matches": [
+        {
+          "pattern": "(?i)^220[- ].*vsftpd\\s+([0-9.]+)",
+          "service": "ftp",
+          "product": "vsftpd",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)^220[- ].*vsftpd",
+          "service": "ftp",
+          "product": "vsftpd"
+        },
+        {
+          "pattern": "(?i)^220[- ].*proftpd\\s+([0-9a-zA-Z._-]+)",
+          "service": "ftp",
+          "product": "ProFTPD",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)^220[- ].*pure-ftpd",
+          "service": "ftp",
+          "product": "Pure-FTPd"
+        },
+        {
+          "pattern": "(?i)^220[- ].*filezilla\\s+server\\s+([0-9a-zA-Z._-]+)",
+          "service": "ftp",
+          "product": "FileZilla Server",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)^220[- ].*microsoft\\s+ftp\\s+service",
+          "service": "ftp",
+          "product": "Microsoft ftpd"
+        },
+        {
+          "pattern": "(?i)^220[- ].*wu-ftpd-([0-9a-zA-Z._-]+)",
+          "service": "ftp",
+          "product": "WU-FTPD",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)^220[- ].*gene6\\s+ftp\\s+server\\s+v([0-9.]+)",
+          "service": "ftp",
+          "product": "Gene6 FTP Server",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)^220[- ].*serv-u\\s+ftp\\s+server\\s+v([0-9.]+)",
+          "service": "ftp",
+          "product": "Serv-U FTP Server",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)^220[- ].*(?:ftp|ftpd|file transfer)",
+          "service": "ftp",
+          "product": "Generic FTP",
+          "soft": true
+        },
+        {
+          "pattern": "(?i)^220[- ].*esmtp\\s+postfix(?:\\s*\\(([0-9a-zA-Z._-]+)\\))?",
+          "service": "smtp",
+          "product": "Postfix smtpd",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)^220[- ].*exim\\s+([0-9a-zA-Z._-]+)",
+          "service": "smtp",
+          "product": "Exim smtpd",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)^220[- ].*sendmail\\s+([0-9a-zA-Z._-]+)",
+          "service": "smtp",
+          "product": "Sendmail",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)^220[- ].*haraka\\s+([0-9a-zA-Z._-]+)",
+          "service": "smtp",
+          "product": "Haraka smtpd",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)^220[- ].*microsoft\\s+esmtp\\s+mail\\s+service",
+          "service": "smtp",
+          "product": "Microsoft Exchange smtpd"
+        },
+        {
+          "pattern": "(?i)^220[- ].*zimbra\\s+mail\\s+server",
+          "service": "smtp",
+          "product": "Zimbra Collaboration smtpd"
+        },
+        {
+          "pattern": "(?i)^220[- ].*qmail",
+          "service": "smtp",
+          "product": "qmail smtpd"
+        },
+        {
+          "pattern": "(?i)^220[- ].*mailenable\\s+service",
+          "service": "smtp",
+          "product": "MailEnable smtpd"
+        },
+        {
+          "pattern": "(?i)^220[- ].*(?:smtp|esmtp|mail)",
+          "service": "smtp",
+          "product": "Generic SMTP",
+          "soft": true
+        },
+        {
+          "pattern": "(?i)^\\+OK\\s+dovecot\\s+ready",
+          "service": "pop3",
+          "product": "Dovecot pop3d"
+        },
+        {
+          "pattern": "(?i)^\\* OK\\s+\\[CAPABILITY.*\\]\\s+Dovecot\\s+ready",
+          "service": "imap",
+          "product": "Dovecot imapd"
+        },
+        {
+          "pattern": "(?i)^\\* OK\\s+.*Courier-IMAP\\s+ready",
+          "service": "imap",
+          "product": "Courier imapd"
+        },
+        {
+          "pattern": "(?i)^\\+OK\\s+.*Courier-POP3\\s+ready",
+          "service": "pop3",
+          "product": "Courier pop3d"
+        },
+        {
+          "pattern": "(?i)^\\* OK\\s+.*Cyrus\\s+IMAP\\s+v?([0-9.]+)",
+          "service": "imap",
+          "product": "Cyrus imapd",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)^\\+OK\\s+.*Cyrus\\s+POP3\\s+v?([0-9.]+)",
+          "service": "pop3",
+          "product": "Cyrus pop3d",
+          "version": "$1"
+        },
+        {
+          "pattern": "\\x00\\x00\\x00\\x0a([0-9.]+)-MariaDB",
+          "service": "mysql",
+          "product": "MariaDB",
+          "version": "$1"
+        },
+        {
+          "pattern": "\\x00\\x00\\x00\\x0a([0-9.]+)(?:-[0-9a-zA-Z._-]+)?\\x00",
+          "service": "mysql",
+          "product": "MySQL",
+          "version": "$1"
+        },
+        {
+          "pattern": "^RFB\\s+([0-9]{3}\\.[0-9]{3})\\n",
+          "service": "vnc",
+          "product": "VNC (RFB)",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)^INFO\\s+\\{.*\"server_id\":.*\"version\":\"([0-9.]+)\"",
+          "service": "nats",
+          "product": "NATS Server",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)^INFO\\s+\\{.*\"server_name\":",
+          "service": "nats",
+          "product": "NATS Server"
+        }
+      ]
+    },
+    {
+      "name": "http-head",
+      "ports": [
+        80,
+        81,
+        82,
+        88,
+        3000,
+        4000,
+        5000,
+        7000,
+        8000,
+        8008,
+        8080,
+        8081,
+        8088,
+        8090,
+        8180,
+        8443,
+        8880,
+        8888,
+        9000,
+        9080,
+        9090,
+        5601,
+        9200,
+        2375,
+        2376
+      ],
+      "rarity": 1,
+      "payload": "HEAD / HTTP/1.0\\r\\nHost: {host}\\r\\nUser-Agent: pulse\\r\\nAccept: */*\\r\\nConnection: close\\r\\n\\r\\n",
+      "matches": [
+        {
+          "pattern": "(?i)server:\\s*openresty/([0-9][0-9a-z.]*)",
+          "service": "http",
+          "product": "OpenResty",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*openresty",
+          "service": "http",
+          "product": "OpenResty"
+        },
+        {
+          "pattern": "(?i)server:\\s*nginx/([0-9][0-9a-z.]*)",
+          "service": "http",
+          "product": "nginx",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*nginx",
+          "service": "http",
+          "product": "nginx"
+        },
+        {
+          "pattern": "(?i)server:\\s*apache/([0-9][0-9a-z.]*)",
+          "service": "http",
+          "product": "Apache httpd",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*apache",
+          "service": "http",
+          "product": "Apache httpd"
+        },
+        {
+          "pattern": "(?i)server:\\s*apache-traffic-server/([0-9.]+)",
+          "service": "http",
+          "product": "Apache Traffic Server",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*microsoft-iis/([0-9.]+)",
+          "service": "http",
+          "product": "Microsoft IIS",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*microsoft-iis",
+          "service": "http",
+          "product": "Microsoft IIS"
+        },
+        {
+          "pattern": "(?i)server:\\s*microsoft-httpapi/([0-9.]+)",
+          "service": "http",
+          "product": "Microsoft HTTPAPI",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*cloudflare",
+          "service": "http",
+          "product": "Cloudflare Edge"
+        },
+        {
+          "pattern": "(?i)server:\\s*caddy(?:/v?([0-9.]+))?",
+          "service": "http",
+          "product": "Caddy",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*envoy",
+          "service": "http",
+          "product": "Envoy proxy"
+        },
+        {
+          "pattern": "(?i)server:\\s*traefik(?:/v?([0-9.]+))?",
+          "service": "http",
+          "product": "Traefik",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*litespeed",
+          "service": "http",
+          "product": "LiteSpeed Web Server"
+        },
+        {
+          "pattern": "(?i)server:\\s*openlitespeed/([0-9.]+)",
+          "service": "http",
+          "product": "OpenLiteSpeed",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*lighttpd/([0-9.]+)",
+          "service": "http",
+          "product": "lighttpd",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*h2o/([0-9.]+)",
+          "service": "http",
+          "product": "H2O",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*haproxy(?:/([0-9.]+))?",
+          "service": "http",
+          "product": "HAProxy",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*squid/([0-9.]+)",
+          "service": "http",
+          "product": "Squid http proxy",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*var-varnish",
+          "service": "http",
+          "product": "Varnish Cache"
+        },
+        {
+          "pattern": "(?i)x-varnish:",
+          "service": "http",
+          "product": "Varnish Cache"
+        },
+        {
+          "pattern": "(?i)server:\\s*cherokee/([0-9.]+)",
+          "service": "http",
+          "product": "Cherokee Web Server",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*monkey/([0-9.]+)",
+          "service": "http",
+          "product": "Monkey HTTP Server",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*boa/([0-9.]+)",
+          "service": "http",
+          "product": "Boa Webserver",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*thttpd/([0-9.]+)",
+          "service": "http",
+          "product": "thttpd",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*miniupnpd/([0-9.]+)",
+          "service": "http",
+          "product": "MiniUPnPd",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*rompager/([0-9.]+)",
+          "service": "http",
+          "product": "Allegro RomPager",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*goahead-webs/([0-9.]+)",
+          "service": "http",
+          "product": "GoAhead Web Server",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*apache-coyote/([0-9.]+)",
+          "service": "http",
+          "product": "Apache Tomcat Coyote",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*glassfish(?:\\s+server)?\\s+open\\s+source\\s+edition\\s+([0-9.]+)",
+          "service": "http",
+          "product": "GlassFish",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*jetty\\(?([0-9a-zA-Z._-]+)?\\)?",
+          "service": "http",
+          "product": "Eclipse Jetty",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*wildfly(?:/([0-9.]+))?",
+          "service": "http",
+          "product": "WildFly",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*weblogic",
+          "service": "http",
+          "product": "Oracle WebLogic"
+        },
+        {
+          "pattern": "(?i)server:\\s*websphere",
+          "service": "http",
+          "product": "IBM WebSphere"
+        },
+        {
+          "pattern": "(?i)server:\\s*payara(?:\\s+server)?(?:\\s+([0-9.]+))?",
+          "service": "http",
+          "product": "Payara Server",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*jboss-web/([0-9.]+)",
+          "service": "http",
+          "product": "JBoss Web",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*resin/([0-9.]+)",
+          "service": "http",
+          "product": "Caucho Resin",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*gunicorn/([0-9.]+)",
+          "service": "http",
+          "product": "Gunicorn",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*gunicorn",
+          "service": "http",
+          "product": "Gunicorn"
+        },
+        {
+          "pattern": "(?i)server:\\s*uvicorn(?:/([0-9.]+))?",
+          "service": "http",
+          "product": "Uvicorn",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*werkzeug/([0-9.]+)",
+          "service": "http",
+          "product": "Werkzeug (Flask)",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*tornado(?:server)?/([0-9.]+)",
+          "service": "http",
+          "product": "Tornado",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*twistedweb/([0-9.]+)",
+          "service": "http",
+          "product": "TwistedWeb",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*cherrypy/([0-9.]+)",
+          "service": "http",
+          "product": "CherryPy",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*wsgiserver/([0-9.]+)",
+          "service": "http",
+          "product": "WSGIServer",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*daphne(?:/([0-9.]+))?",
+          "service": "http",
+          "product": "Daphne (Django Channels)",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*hypercorn(?:/([0-9.]+))?",
+          "service": "http",
+          "product": "Hypercorn",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*puma(?:\\s+([0-9.]+))?",
+          "service": "http",
+          "product": "Puma",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*passenger(?:/([0-9.]+))?",
+          "service": "http",
+          "product": "Phusion Passenger",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*thin(?:\\s+([0-9.]+))?",
+          "service": "http",
+          "product": "Thin",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*unicorn",
+          "service": "http",
+          "product": "Unicorn"
+        },
+        {
+          "pattern": "(?i)server:\\s*webrick/([0-9.]+)",
+          "service": "http",
+          "product": "WEBrick",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)x-powered-by:\\s*express",
+          "service": "http",
+          "product": "Express (Node.js)"
+        },
+        {
+          "pattern": "(?i)x-powered-by:\\s*next\\.js(?:\\s+([0-9.]+))?",
+          "service": "http",
+          "product": "Next.js",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)x-powered-by:\\s*sails",
+          "service": "http",
+          "product": "Sails.js"
+        },
+        {
+          "pattern": "(?i)x-powered-by:\\s*nuxt",
+          "service": "http",
+          "product": "Nuxt.js"
+        },
+        {
+          "pattern": "(?i)x-powered-by:\\s*strapi",
+          "service": "http",
+          "product": "Strapi CMS"
+        },
+        {
+          "pattern": "(?i)x-powered-by:\\s*fastify",
+          "service": "http",
+          "product": "Fastify"
+        },
+        {
+          "pattern": "(?i)x-powered-by:\\s*koa",
+          "service": "http",
+          "product": "Koa.js"
+        },
+        {
+          "pattern": "(?i)server:\\s*actix-web/([0-9.]+)",
+          "service": "http",
+          "product": "Actix-Web (Rust)",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*axum",
+          "service": "http",
+          "product": "Axum (Rust)"
+        },
+        {
+          "pattern": "(?i)server:\\s*rocket",
+          "service": "http",
+          "product": "Rocket (Rust)"
+        },
+        {
+          "pattern": "(?i)server:\\s*warp",
+          "service": "http",
+          "product": "Warp (Rust)"
+        },
+        {
+          "pattern": "(?i)server:\\s*fiber",
+          "service": "http",
+          "product": "Fiber (Go)"
+        },
+        {
+          "pattern": "(?i)server:\\s*gin",
+          "service": "http",
+          "product": "Gin (Go)"
+        },
+        {
+          "pattern": "(?i)server:\\s*echo",
+          "service": "http",
+          "product": "Echo (Go)"
+        },
+        {
+          "pattern": "(?i)server:\\s*caddy",
+          "service": "http",
+          "product": "Caddy (Go)"
+        },
+        {
+          "pattern": "(?i)server:\\s*cowboy",
+          "service": "http",
+          "product": "Cowboy (Erlang/Elixir)"
+        },
+        {
+          "pattern": "(?i)server:\\s*elli",
+          "service": "http",
+          "product": "Elli (Erlang)"
+        },
+        {
+          "pattern": "(?i)x-powered-by:\\s*php/([0-9.]+)",
+          "service": "http",
+          "product": "PHP",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)x-powered-by:\\s*php",
+          "service": "http",
+          "product": "PHP"
+        },
+        {
+          "pattern": "(?i)server:\\s*litespeed",
+          "service": "http",
+          "product": "LiteSpeed"
+        },
+        {
+          "pattern": "(?i)server:\\s*kestrel",
+          "service": "http",
+          "product": "Microsoft Kestrel (.NET)"
+        },
+        {
+          "pattern": "(?i)x-powered-by:\\s*asp\\.net",
+          "service": "http",
+          "product": "ASP.NET"
+        },
+        {
+          "pattern": "(?i)server:\\s*mikrotik\\s+httpproxy",
+          "service": "http",
+          "product": "MikroTik WebFig"
+        },
+        {
+          "pattern": "(?i)server:\\s*dlink-httpd",
+          "service": "http",
+          "product": "D-Link Router httpd"
+        },
+        {
+          "pattern": "(?i)server:\\s*netgear-httpd",
+          "service": "http",
+          "product": "Netgear Router httpd"
+        },
+        {
+          "pattern": "(?i)server:\\s*asuswrt-httpd",
+          "service": "http",
+          "product": "Asuswrt httpd"
+        },
+        {
+          "pattern": "(?i)server:\\s*zyxel-httpd",
+          "service": "http",
+          "product": "Zyxel Router httpd"
+        },
+        {
+          "pattern": "(?i)server:\\s*sonicwall",
+          "service": "http",
+          "product": "SonicWALL firewall"
+        },
+        {
+          "pattern": "(?i)server:\\s*f5-bigip",
+          "service": "http",
+          "product": "F5 BIG-IP"
+        },
+        {
+          "pattern": "(?i)server:\\s*paloalto-panos",
+          "service": "http",
+          "product": "Palo Alto PAN-OS"
+        },
+        {
+          "pattern": "^HTTP/1\\.[01]\\s+[0-9]{3}",
+          "service": "http",
+          "product": "Generic HTTP",
+          "soft": true
+        }
+      ]
+    },
+    {
+      "name": "http-get-api",
+      "ports": [
+        80,
+        8000,
+        8080,
+        8088,
+        8888,
+        9000,
+        9090,
+        9200,
+        9300,
+        2375,
+        2376,
+        8500,
+        2379,
+        10250,
+        10255,
+        6443
+      ],
+      "rarity": 2,
+      "payload": "GET / HTTP/1.0\\r\\nHost: {host}\\r\\nUser-Agent: pulse\\r\\nAccept: */*\\r\\nConnection: close\\r\\n\\r\\n",
+      "matches": [
+        {
+          "pattern": "(?i)\"number\"\\s*:\\s*\"([0-9.]+)\"[^}]*\"build_flavor\"\\s*:\\s*\"default\"[^}]*\"lucene_version\"",
+          "service": "http",
+          "product": "Elasticsearch",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)\"number\"\\s*:\\s*\"([0-9.]+)\"[^}]*\"distribution\"\\s*:\\s*\"opensearch\"",
+          "service": "http",
+          "product": "OpenSearch",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)\"tagline\"\\s*:\\s*\"You Know, for Search\"",
+          "service": "http",
+          "product": "Elasticsearch"
+        },
+        {
+          "pattern": "(?i)\"ApiVersion\"\\s*:\\s*\"([0-9.]+)\"[^}]*\"Version\"\\s*:\\s*\"([0-9a-zA-Z._-]+)\"",
+          "service": "docker",
+          "product": "Docker Daemon Engine",
+          "version": "$2"
+        },
+        {
+          "pattern": "(?i)\"Components\"\\s*:\\s*\\[.*\"Name\"\\s*:\\s*\"Engine\".*\"Version\"\\s*:\\s*\"([0-9a-zA-Z._-]+)\"",
+          "service": "docker",
+          "product": "Docker Daemon Engine",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)\"couchdb\"\\s*:\\s*\"Welcome\"[^}]*\"version\"\\s*:\\s*\"([0-9.]+)\"",
+          "service": "couchdb",
+          "product": "Apache CouchDB",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*MinIO(?:/([0-9a-zA-Z._-]+))?",
+          "service": "http",
+          "product": "MinIO Object Storage",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)x-amz-request-id:.*minio",
+          "service": "http",
+          "product": "MinIO Object Storage"
+        },
+        {
+          "pattern": "(?i)<title>Prometheus\\s+Time\\s+Series\\s+Collection\\s+and\\s+Processing\\s+Server</title>",
+          "service": "prometheus",
+          "product": "Prometheus Monitoring Server"
+        },
+        {
+          "pattern": "(?i)<title>Grafana(?:\\s*-\\s*v?([0-9.]+))?</title>",
+          "service": "grafana",
+          "product": "Grafana",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)<title>Kibana</title>",
+          "service": "kibana",
+          "product": "Elastic Kibana"
+        },
+        {
+          "pattern": "(?i)<title>Jaeger UI</title>",
+          "service": "jaeger",
+          "product": "Jaeger Tracing UI"
+        },
+        {
+          "pattern": "(?i)<title>RabbitMQ Management</title>",
+          "service": "rabbitmq-mgmt",
+          "product": "RabbitMQ Management HTTP"
+        },
+        {
+          "pattern": "(?i)<title>Kafka Manager|CMAK</title>",
+          "service": "kafka-manager",
+          "product": "Kafka CMAK / Manager"
+        },
+        {
+          "pattern": "(?i)x-jenkins:\\s*([0-9.]+)",
+          "service": "jenkins",
+          "product": "Jenkins CI",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)x-jenkins-session:",
+          "service": "jenkins",
+          "product": "Jenkins CI"
+        },
+        {
+          "pattern": "(?i)<title>SonarQube</title>",
+          "service": "sonarqube",
+          "product": "SonarQube"
+        },
+        {
+          "pattern": "(?i)<title>Sign in · GitLab</title>",
+          "service": "gitlab",
+          "product": "GitLab"
+        },
+        {
+          "pattern": "(?i)<title>Nexus Repository Manager</title>",
+          "service": "nexus",
+          "product": "Sonatype Nexus"
+        },
+        {
+          "pattern": "(?i)<title>Artifactory</title>",
+          "service": "artifactory",
+          "product": "JFrog Artifactory"
+        },
+        {
+          "pattern": "(?i)<title>Harbor</title>",
+          "service": "harbor",
+          "product": "VMware Harbor Registry"
+        },
+        {
+          "pattern": "(?i)<title>Portainer</title>",
+          "service": "portainer",
+          "product": "Portainer Container Management"
+        },
+        {
+          "pattern": "(?i)<title>Rancher</title>",
+          "service": "rancher",
+          "product": "SUSE Rancher"
+        },
+        {
+          "pattern": "(?i)<title>phpMyAdmin</title>",
+          "service": "phpmyadmin",
+          "product": "phpMyAdmin"
+        },
+        {
+          "pattern": "(?i)<title>Webmin</title>",
+          "service": "webmin",
+          "product": "Webmin Control Panel"
+        },
+        {
+          "pattern": "(?i)<title>Keycloak</title>",
+          "service": "keycloak",
+          "product": "Keycloak IAM"
+        },
+        {
+          "pattern": "(?i)x-consul-effective-consistency:",
+          "service": "consul",
+          "product": "HashiCorp Consul"
+        },
+        {
+          "pattern": "(?i)x-vault-default-max-request-duration:",
+          "service": "vault",
+          "product": "HashiCorp Vault"
+        },
+        {
+          "pattern": "(?i)<title>Nomad</title>",
+          "service": "nomad",
+          "product": "HashiCorp Nomad"
+        },
+        {
+          "pattern": "(?i)\"status\"\\s*:\\s*\"UP\"[^}]*\"diskSpace\"",
+          "service": "http",
+          "product": "Spring Boot Actuator"
+        },
+        {
+          "pattern": "(?i)\"status\"\\s*:\\s*\"UP\"[^}]*\"components\"",
+          "service": "http",
+          "product": "Spring Boot Actuator Health"
+        },
+        {
+          "pattern": "(?i)\"neo4j_version\"\\s*:\\s*\"([0-9.]+)\"",
+          "service": "neo4j",
+          "product": "Neo4j Graph Database",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)\"cockroachdb\"",
+          "service": "cockroachdb",
+          "product": "CockroachDB"
+        },
+        {
+          "pattern": "(?i)X-Influxdb-Version:\\s*([0-9a-zA-Z._-]+)",
+          "service": "influxdb",
+          "product": "InfluxDB",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)\"paths\"\\s*:\\s*\\[.*\"/api\".*\"/apis\".*\"/healthz\"",
+          "service": "k8s-api",
+          "product": "Kubernetes API Server"
+        },
+        {
+          "pattern": "(?i)Unauthorized",
+          "service": "k8s-kubelet",
+          "product": "Kubernetes Kubelet",
+          "soft": true
+        }
+      ]
+    },
+    {
+      "name": "redis-info",
+      "ports": [
+        6379,
+        6380,
+        6381,
+        16379
+      ],
+      "rarity": 1,
+      "payload": "INFO\\r\\n",
+      "matches": [
+        {
+          "pattern": "(?i)redis_version:([0-9a-zA-Z._-]+)",
+          "service": "redis",
+          "product": "Redis",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)keydb_version:([0-9a-zA-Z._-]+)",
+          "service": "redis",
+          "product": "KeyDB",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)dragonfly_version:([0-9a-zA-Z._-]+)",
+          "service": "redis",
+          "product": "Dragonfly",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)-NOAUTH\\s+Authentication\\s+required",
+          "service": "redis",
+          "product": "Redis (auth required)"
+        },
+        {
+          "pattern": "(?i)-ERR\\s+unknown\\s+command",
+          "service": "redis",
+          "product": "Redis-compatible",
+          "soft": true
+        }
+      ]
+    },
+    {
+      "name": "redis-ping",
+      "ports": [
+        6379,
+        6380,
+        6381,
+        16379
+      ],
+      "rarity": 1,
+      "payload": "*1\\r\\n$4\\r\\nPING\\r\\n",
+      "matches": [
+        {
+          "pattern": "^\\+PONG\\r\\n",
+          "service": "redis",
+          "product": "Redis key-value store"
+        },
+        {
+          "pattern": "(?i)^-NOAUTH",
+          "service": "redis",
+          "product": "Redis (auth required)"
+        }
+      ]
+    },
+    {
+      "name": "memcached-stats",
+      "ports": [
+        11211
+      ],
+      "rarity": 1,
+      "payload": "stats\\r\\n",
+      "matches": [
+        {
+          "pattern": "(?i)STAT\\s+version\\s+([0-9.]+)",
+          "service": "memcached",
+          "product": "Memcached",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)STAT\\s+pid\\s+[0-9]+",
+          "service": "memcached",
+          "product": "Memcached"
+        }
+      ]
+    },
+    {
+      "name": "postgres-startup",
+      "ports": [
+        5432,
+        5433,
+        6432
+      ],
+      "rarity": 1,
+      "payload": "\\x00\\x00\\x00\\x08\\x04\\xd2\\x16\\x2f",
+      "matches": [
+        {
+          "pattern": "^[NER]\\x00",
+          "service": "postgresql",
+          "product": "PostgreSQL database"
+        },
+        {
+          "pattern": "(?i)pg_hba.conf",
+          "service": "postgresql",
+          "product": "PostgreSQL database"
+        },
+        {
+          "pattern": "(?i)FATAL:.*database",
+          "service": "postgresql",
+          "product": "PostgreSQL database"
+        },
+        {
+          "pattern": "(?i)pgbouncer",
+          "service": "postgresql",
+          "product": "PgBouncer pooler"
+        }
+      ]
+    },
+    {
+      "name": "mongodb-isMaster",
+      "ports": [
+        27017,
+        27018,
+        27019
+      ],
+      "rarity": 1,
+      "payload": "\\x3a\\x00\\x00\\x00\\xa1\\x12\\x00\\x00\\x00\\x00\\x00\\x00\\xd4\\x07\\x00\\x00\\x00\\x00\\x00\\x00admin.$cmd\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x13\\x00\\x00\\x00\\x10isMaster\\x00\\x01\\x00\\x00\\x00\\x00",
+      "matches": [
+        {
+          "pattern": "(?i)version\"\\s*:\\s*\"([0-9.]+)\"",
+          "service": "mongodb",
+          "product": "MongoDB",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)ismaster|maxBsonObjectSize",
+          "service": "mongodb",
+          "product": "MongoDB"
+        }
+      ]
+    },
+    {
+      "name": "clickhouse-ping",
+      "ports": [
+        8123,
+        9000
+      ],
+      "rarity": 1,
+      "payload": "GET /ping HTTP/1.0\\r\\nHost: {host}\\r\\nConnection: close\\r\\n\\r\\n",
+      "matches": [
+        {
+          "pattern": "(?i)Ok\\.\\n",
+          "service": "clickhouse",
+          "product": "ClickHouse DBMS"
+        },
+        {
+          "pattern": "(?i)X-ClickHouse-Server-Display-Name:",
+          "service": "clickhouse",
+          "product": "ClickHouse DBMS"
+        }
+      ]
+    },
+    {
+      "name": "rabbitmq-amqp",
+      "ports": [
+        5672,
+        5671
+      ],
+      "rarity": 1,
+      "payload": "AMQP\\x00\\x00\\x09\\x01",
+      "matches": [
+        {
+          "pattern": "^AMQP\\x00\\x00\\x09\\x01",
+          "service": "amqp",
+          "product": "RabbitMQ / AMQP message broker"
+        },
+        {
+          "pattern": "^AMQP",
+          "service": "amqp",
+          "product": "AMQP broker",
+          "soft": true
+        }
+      ]
+    },
+    {
+      "name": "mqtt-connect",
+      "ports": [
+        1883,
+        8883
+      ],
+      "rarity": 1,
+      "payload": "\\x10\\x12\\x00\\x04MQTT\\x04\\x02\\x00\\x3c\\x00\\x06pulse1",
+      "matches": [
+        {
+          "pattern": "^\\x20\\x02\\x00\\x00",
+          "service": "mqtt",
+          "product": "MQTT Broker (Connected)"
+        },
+        {
+          "pattern": "^\\x20\\x02\\x00",
+          "service": "mqtt",
+          "product": "MQTT Broker (Mosquitto/EMQX)",
+          "soft": true
+        }
+      ]
+    },
+    {
+      "name": "kafka-api-versions",
+      "ports": [
+        9092,
+        9093,
+        9094
+      ],
+      "rarity": 1,
+      "payload": "\\x00\\x00\\x00\\x16\\x00\\x12\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x05pulse\\x00\\x00",
+      "matches": [
+        {
+          "pattern": "^\\x00\\x00\\x00.*\\x00\\x00\\x00\\x01",
+          "service": "kafka",
+          "product": "Apache Kafka message broker"
+        }
+      ]
+    },
+    {
+      "name": "etcd-version",
+      "ports": [
+        2379,
+        2380
+      ],
+      "rarity": 1,
+      "payload": "GET /version HTTP/1.0\\r\\nHost: {host}\\r\\nConnection: close\\r\\n\\r\\n",
+      "matches": [
+        {
+          "pattern": "(?i)\"etcdserver\"\\s*:\\s*\"([0-9.]+)\"",
+          "service": "etcd",
+          "product": "etcd key-value store",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)\"etcdcluster\"\\s*:\\s*\"([0-9.]+)\"",
+          "service": "etcd",
+          "product": "etcd cluster",
+          "version": "$1"
+        }
+      ]
+    },
+    {
+      "name": "rdp-negotiate",
+      "ports": [
+        3389
+      ],
+      "rarity": 1,
+      "payload": "\\x03\\x00\\x00\\x13\\x0e\\xe0\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x08\\x00\\x03\\x00\\x00\\x00",
+      "matches": [
+        {
+          "pattern": "^\\x03\\x00\\x00\\x13\\x0e\\xd0",
+          "service": "rdp",
+          "product": "Microsoft Remote Desktop (RDP)"
+        },
+        {
+          "pattern": "^\\x03\\x00\\x00\\x11\\x0e\\xd0",
+          "service": "rdp",
+          "product": "xrdp (Linux RDP)"
+        },
+        {
+          "pattern": "^\\x03\\x00",
+          "service": "rdp",
+          "product": "Remote Desktop Protocol",
+          "soft": true
+        }
+      ]
+    },
+    {
+      "name": "sip-options",
+      "ports": [
+        5060,
+        5061
+      ],
+      "rarity": 2,
+      "payload": "OPTIONS sip:pulse@{host} SIP/2.0\\r\\nVia: SIP/2.0/TCP {host}:5060;branch=z9hG4bK-pulse\\r\\nFrom: <sip:pulse@{host}>;tag=pulse\\r\\nTo: <sip:pulse@{host}>\\r\\nCall-ID: pulse-call-id\\r\\nCSeq: 1 OPTIONS\\r\\nContact: <sip:pulse@{host}>\\r\\nContent-Length: 0\\r\\n\\r\\n",
+      "matches": [
+        {
+          "pattern": "(?i)server:\\s*asterisk(?:\\s+pbX)?(?:\\s+([0-9a-zA-Z._-]+))?",
+          "service": "sip",
+          "product": "Asterisk PBX",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)user-agent:\\s*freeswitch(?:\\s+([0-9a-zA-Z._-]+))?",
+          "service": "sip",
+          "product": "FreeSWITCH",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)server:\\s*kamailio(?:\\s*\\(([0-9a-zA-Z._-]+)\\))?",
+          "service": "sip",
+          "product": "Kamailio SIP Server",
+          "version": "$1"
+        },
+        {
+          "pattern": "(?i)^SIP/2\\.0",
+          "service": "sip",
+          "product": "Generic SIP",
+          "soft": true
+        }
+      ]
+    },
+    {
+      "name": "telnet-do",
+      "ports": [
+        23,
+        2323
+      ],
+      "rarity": 1,
+      "payload": "\\xff\\xfd\\x18\\xff\\xfd\\x20\\xff\\xfd\\x23\\xff\\xfd\\x27",
+      "matches": [
+        {
+          "pattern": "(?i)login:",
+          "service": "telnet",
+          "product": "Telnet daemon",
+          "soft": true
+        },
+        {
+          "pattern": "(?i)mikrotik",
+          "service": "telnet",
+          "product": "MikroTik RouterOS telnetd"
+        },
+        {
+          "pattern": "(?i)cisco",
+          "service": "telnet",
+          "product": "Cisco IOS telnetd"
+        },
+        {
+          "pattern": "\\xff[\\xfb-\\xfe]",
+          "service": "telnet",
+          "product": "Telnet service",
+          "soft": true
+        }
+      ]
+    }
+  ]
+}

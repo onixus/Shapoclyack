@@ -105,6 +105,9 @@ function ServiceRow({
     : t("services.reason.pending");
   const counts = service.match_counts ?? {};
   const product = [service.product, service.version].filter(Boolean).join(" ");
+  // The package revision is not part of the version NVD ranges are compared
+  // with; it is what tells a backported build from an unpatched one.
+  const packaging = [service.distro, service.distro_revision].filter(Boolean).join(" ");
 
   return (
     <tr className="align-top transition-colors hover:bg-muted">
@@ -114,6 +117,15 @@ function ServiceRow({
       <td className="px-3.5 py-3 text-foreground">{service.service || "—"}</td>
       <td className="px-3.5 py-3">
         <p className="font-mono text-foreground">{product || "—"}</p>
+        {packaging ? (
+          <p
+            className="font-mono text-[10px] text-muted-foreground"
+            title={t("services.packageRevision")}
+            data-testid="service-packaging"
+          >
+            {packaging}
+          </p>
+        ) : null}
         {service.banner && service.banner !== product ? (
           <p className="max-w-[18rem] truncate text-[10px] text-muted-foreground" title={service.banner}>
             {service.banner}

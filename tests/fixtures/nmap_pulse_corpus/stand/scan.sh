@@ -2,7 +2,8 @@
 # Runs INSIDE the scanner container (see ../record.sh). Both tools get the same
 # targets and ports; Pulse gets the flags the Shapoclyack adapter would pass
 # (pulse_probe.build_pulse_command: banners, --os --os-mode sinfp, --cve) with an
-# empty HOME, so nothing under ~/.pulse leaks in.
+# empty HOME, so nothing under ~/.pulse leaks in, and the same pinned --services-db /
+# --probe-db files (#543, #546), bind-mounted from scanner/pipeline/pulse_data.
 #
 # RECORD_PARTS (default "nmap,pulse") picks what to record: "pulse" leaves the
 # Nmap fixtures alone, which is how the plugin run was added after Nmap was
@@ -18,6 +19,10 @@ UDP_PORTS=161
 UDP_TARGET=172.29.41.41
 
 mkdir -p "$CORPUS/nmap" "$CORPUS/pulse"
+# The pipeline's pinned inputs (pulse_probe.build_pulse_command, #543/#546): the
+# IANA port table and our probe database, mounted read-only by docker-compose.yml.
+PULSE_INPUTS=(--services-db /pulse_data/services.tsv --probe-db /pulse_data/probes.json)
+
 export HOME
 HOME="$(mktemp -d)"   # empty, as the adapter's private HOME will be (#543)
 
@@ -34,17 +39,17 @@ fi
 if want pulse; then
   echo "==> pulse tcp (adapter flags)"
   pulse --targets-file "$TARGETS" -p "$TCP_PORTS" -c 100 -t 3000 \
-    -b --os --os-mode sinfp --cve -f json -q > "$CORPUS/pulse/tcp.json"
+    -b --os --os-mode sinfp --cve -f json -q "${PULSE_INPUTS[@]}" > "$CORPUS/pulse/tcp.json"
 
   echo "==> pulse udp"
   pulse --targets-file <(echo "$UDP_TARGET") -p "$UDP_PORTS" --protocol udp -t 3000 \
-    -b --cve -f json -q > "$CORPUS/pulse/udp.json"
+    -b --cve -f json -q "${PULSE_INPUTS[@]}" > "$CORPUS/pulse/udp.json"
 
   # The adapter's run with plugins (#544): --script-dir /plugins, in the empty
   # directory that is also HOME, stderr kept (plugin errors are printed there).
   echo "==> pulse tcp with the Shapoclyack plugins (--script-dir)"
   (cd "$HOME" && pulse --targets-file "$TARGETS" -p "$TCP_PORTS" -c 100 -t 3000 \
-    -b --os --os-mode sinfp --cve --script-dir /plugins -f json -q \
+    -b --os --os-mode sinfp --cve --script-dir /plugins -f json -q "${PULSE_INPUTS[@]}" \
     > "$CORPUS/pulse/tcp-plugins.json" 2> "$CORPUS/pulse/tcp-plugins.stderr")
   # Pulse colours its warnings even when stderr is a file.
   sed -i 's/\x1b\[[0-9;]*m//g' "$CORPUS/pulse/tcp-plugins.stderr"

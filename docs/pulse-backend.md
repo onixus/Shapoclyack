@@ -131,6 +131,8 @@ config could name services differently. The adapter therefore pins the inputs
   [third-party.md](third-party.md)). If the file is missing the adapter passes
   `/dev/null` and Pulse uses its embedded table; it never falls back to the
   host's Nmap files.
+- `--probe-db scanner/pipeline/pulse_data/probes.json` on every invocation, once
+  the file passes the adapter's own checks (see [Probe database](#probe-database)).
 - `--os-mode sinfp` whenever `--os` is on. `os_mode: nmap` is
   rejected at config load with a message to switch to `sinfp`. `os_mode: auto`
   (the old default) still loads, runs as `sinfp` and logs a deprecation warning.
@@ -170,6 +172,102 @@ the name from the matched probe (onixus/GenDec#31).
 The service name is still taken from the port table, not from the probe that
 matched (GenDec#31): port 2222 is named `ethernet-ip-1` even when the banner
 says OpenSSH, until the engine reports the probe's name.
+
+### Probe database
+
+`scanner/pipeline/pulse_data/probes.json` is the rule set Pulse identifies
+products with (`--probe-db`, #546). `--probe-db` **replaces** Pulse's embedded
+set wholesale, so the file begins with GenDec's `src/scanner/probes.json` at the
+pinned tag (`v1.3.0`, version `2026.08.21`, MIT, copied byte for byte in the
+first commit that added it) and everything of ours comes after it: new probes at
+the end of `probes`, new `matches` at the end of an existing probe's list. The
+file's `version` is the upstream one plus `+shapo.N`. Licence, source tag and
+sha256 of the base are in `probes.json.LICENSE` (and `NOTICE`,
+[third-party.md](third-party.md)); `tests/fixtures/pulse_probe_db/probes.v1.3.0.json`
+is the pinned upstream copy, and `tests/test_pulse_probe_db.py` fails if an
+upstream probe, its ports, payload or the order of its matches change. Bumping
+Pulse means re-importing the new embedded set as the base, re-appending ours
+and updating the pin and the fixture in the same change.
+
+**The adapter validates the file before passing it.** Pulse answers a file it
+cannot read, parse or compile with one stderr line (`probe-db <path>: ... --
+using the embedded set`) and carries on with the stock rules. So
+`scanner/pipeline/pulse_probe_db.py` checks, before passing the file:
+
+- the JSON itself as serde_json reads it (no `NaN`/`Infinity`, no lone
+  surrogate escape), the shape of probes and matches, port and rarity ranges,
+  and `payload_hex` (whitespace allowed, as Pulse's `decode_hex` strips it);
+- that every pattern compiles in Python **and** stays inside the *common subset*
+  of Python's `re` and Rust's `regex`. The rule is "patterns must be in the
+  common subset", not "everything Rust accepts": no look-around, no
+  back-references or octal escapes, no `(?#...)`, no flags except `i`, `m`, `s`
+  (bare ones only at the start; scoped `(?i:...)` is fine), no possessive
+  quantifiers, only `\d \D \s \S \w \W \b \B \A \n \r \t \f \v \a`, `\xHH` and
+  escaped punctuation, no nested, POSIX or `&&`/`--`/`~~` classes, `{` only as a
+  counted repetition. This rejects some Rust-only syntax too (`(?<n>`, `\pL`,
+  `\x{41}`, `\z`), on purpose, so the verdict does not depend on the Python
+  version;
+- an estimated compiled size of at most 1000 per pattern (a literal is 1,
+  `\w \d \s` and negated classes are 10, counted repetitions multiply and
+  nest). Rust refuses programs over its size limit, which Python does not
+  notice (`\w{500}`, `(\w{1,1000}){1,1000}`). `\w{200}` compiles and `\w{300}`
+  does not under regex 1.13.1; the budget is half the former, and the largest
+  shipped pattern is a fraction of it.
+
+The subset was checked against a real `regex` 1.13.1 compile of every shipped
+pattern, a battery of edge cases and a few thousand generated patterns: none the
+validator accepted was refused by Rust. A file that fails is **not** passed: the
+run logs a warning once and records `adapter.probe_db: null` with the reason
+in `adapter.probe_db_skipped`. A file that passes is recorded as
+`adapter.probe_db` (path), `probe_db_version` and `probe_db_sha256`; if Pulse
+still printed its fallback line, it is kept in `adapter.probe_db_fallback` and
+logged, so a run that did not use our rules does not look like one that did.
+
+**Adding a rule.** Write it from a banner you observed (the stand in
+`tests/fixtures/nmap_pulse_corpus/stand/`, a container, a protocol
+specification or vendor documentation), never from another scanner's rule
+file; `nmap-service-probes` is NPSL and is neither copied nor paraphrased
+here. Then:
+
+1. Append the probe (or the match) to `probes.json`. The product string must be
+   the vendor's own name and must be either a `retro_match.PRODUCT_TABLE` row
+   (with NVD keys checked against NVD's CPE dictionary) or an
+   `UNMAPPED_PROBE_PRODUCTS` entry with the reason; `tests/test_pulse_probe_db_cpe.py`
+   enforces it, because Pulse emits no CPE of its own.
+2. Payload bytes go in `payload_hex`. Pulse 1.3.0 does not decode `\xNN` in
+   `payload` (it sends the four characters literally), which is why seven stock
+   probes (`postgres-startup`, `mongodb-isMaster`, `rabbitmq-amqp`,
+   `mqtt-connect`, `kafka-api-versions`, `rdp-negotiate`, `telnet-do`) cannot
+   provoke the replies their rules wait for. Patterns see the reply decoded as
+   lossy UTF-8, so a byte >= 0x80 is U+FFFD and `\xd0` in a pattern never
+   matches it.
+3. Add the reply to `tests/fixtures/pulse_probe_db/observed_banners.json` with
+   what a live run reported. The test replays it through a small Python
+   re-implementation of `probe_db.rs` matching (first hard match wins, then the
+   first soft one; `$N` expands to capture N). That emulates the engine, it
+   does not run it: check new rules with `pulse --probe-db` against the stand
+   too.
+
+The stock `postgres-startup` probe is still sent first on 5432 (probes are
+tried cheapest first and ours is appended), and a PostgreSQL server logs
+`invalid length of startup packet` for its literal-text payload (and
+`incomplete startup packet` for the listen-only `null` probe). On the stand the
+chain went on regardless: the run reported `PostgreSQL database`, banner `N`,
+`detection_method: probe-db` from `postgres-sslrequest` (Pulse 1.3.0,
+2026-10-10).
+
+Rules added so far: `postgres-sslrequest` (5432/5433/6432). A PostgreSQL server
+answers the SSLRequest with the single byte `N` or `S`; the stock rule wants
+`^[NER]\x00` and its probe never sends the request, so Pulse reported
+`postgresql` from the port table only. Now it reports the product; the version
+is not on the wire before authentication. A pooler that speaks the PostgreSQL
+protocol answers the same way and is reported as PostgreSQL too.
+
+What the database cannot do: Samba/SMB. The stand's Samba answers an SMB2
+negotiate with a dialect, a GUID and the generic SPNEGO hint, and no product or
+version; reading more takes a second round trip (session setup), and a probe is
+one payload and one reply. Anything that needs authentication is out of reach
+for the same reason.
 
 ## Artifacts
 
@@ -623,12 +721,97 @@ Nuclei skips cleanly if the binary or `templates_dir` is missing
 (host installs without the Docker bake). Disable with
 `nuclei.enabled: false`.
 
+## L2 discovery
+
+`discovery.l2.enabled: true` (off by default) finds silent hosts on a directly
+attached IPv4 segment and records their MAC and link-local names. It runs
+Pulse, not Nmap (#542); the artifact is `l2_discovery.json` with
+`engine: "pulse"`, and `discover/l2-pulse.json` keeps the raw output.
+
+One run does it all:
+`pulse --targets-file <selected networks> -D --discover-method arp --rate R --max-hosts <max_hosts> -f json -q --all --protocol udp -p 137,5353 -b`.
+
+- **What goes on the wire.** "ARP" is the kernel's neighbour resolution: Pulse
+  sends a 1-byte UDP datagram to port 9 of every candidate address and the
+  kernel ARPs for it (three requests per dead address). Live hosts then get UDP
+  probes on 137 (NetBIOS wildcard NBSTAT query, `netbios: true`) and 5353
+  (mDNS service query, `mdns: true`); a port in `ports.exclude_ports` is
+  dropped. With neither name probe left, the pass touches only port 9. Port 9
+  itself in `exclude_ports` switches the stage off
+  (`arp.trigger_port_excluded:9`): the trigger cannot be moved.
+- **iproute2.** Pulse's ARP method reads the neighbours through
+  `ip -4 neigh`. Without `ip` on its `PATH` it reports 0 live hosts, prints
+  nothing and exits 0, indistinguishable from an empty segment. The scanner
+  images install `iproute2` for this; on a host install, put it on `PATH`. The
+  adapter checks for `ip` first and otherwise skips the stage with
+  `pulse.arp_needs_iproute2`.
+- **Targets.** CIDR networks are accepted in the targets file, and `--max-hosts`
+  counts a /24 as 254, like `max_hosts` here.
+- **Rate.** `--rate` paces candidate addresses, not packets, so a candidate
+  costs `mcast_solicit + 1` packets (the sysctl of the configured interface; without one the largest value over
+  `/proc/sys/net/ipv4/neigh/*` except `lo`; 3 if unreadable). The adapter passes
+  `--rate ⌊max_rate / divisor⌋` and records it as `pulse_rate` with
+  `rate_divisor` in the artifact, where `divisor = mcast_solicit + 2`: the
+  trigger datagram, the ARP retries, and one more for what the measurements
+  show on top of that, with or without name probes. Measured on a Docker
+  bridge with `mcast_solicit` 3, on 4 and on 55 live hosts of 253 candidates
+  (peak tx packets per second): without name probes `--rate 25` gave 86 and
+  103 against a ceiling of 100, `--rate 20` gave 79, 68 and 71; with name
+  probes `--rate 25` gave 101 and 86, `--rate 20` gave 74, 69, 70 and 83. Runs
+  differ a lot from each other, so this is an estimate for other
+  `mcast_solicit` values and longer replies, not a proof. When the quotient is
+  0 the rate cannot be approached (`--rate 0` would mean unlimited) and the
+  stage is skipped with `rate_cap_unenforceable:<max_rate>`.
+- **Time budget.** Before the run the adapter estimates
+  `candidates / pulse_rate + mcast_solicit` seconds (the last dead candidate
+  still waits out its ARP retries). Over `timeout_seconds` the stage is skipped
+  with `timeout_unreachable:<estimate>s` rather than killed half-way with no
+  result.
+- **Interface.** Pulse cannot be told which interface to use; the routing
+  table decides. With `discovery.l2.interface` set, the adapter reads
+  `/proc/net/route` and scans only the parts of the networks the kernel really
+  sends out of that interface without a gateway. The kernel takes the longest
+  prefix and, at an equal prefix, the lowest metric, so a network (or part of
+  one) is dropped when a more specific route of any interface covers it, or an
+  equal route has a metric that is not strictly worse than this interface's.
+  The dropped parts go to `skipped_networks` as `not_on_interface:<iface>`. An unreadable route table skips the stage
+  (`interface.unverifiable`). Without `interface` no route check is made, as
+  before.
+- **MAC.** Not in Pulse's output. After the run the adapter reads the kernel
+  neighbour table (`/proc/net/arp`), complete entries only, of the configured
+  interface when one is set, for alive in-scope hosts. A host whose entry
+  vanished has `mac: null`. `vendor` is always `null`: there is no OUI
+  database (Nmap's came from `nmap-mac-prefixes`).
+- **Names.** NetBIOS: the unique names of the NBSTAT table in the banner;
+  group names (workgroup) are dropped by their group bit, and the table is
+  cut at about 150 characters. The statistics block after the table starts
+  with the adapter's MAC and would read as a name, so only names of letters,
+  digits, `-` and `_` (up to 15) are kept: a NetBIOS name with a space, a `.`
+  or a `$` is dropped, and that is the price of the filter. `__MSBROWSE__`
+  falls out the same way (it carries non-printable bytes, shown as dots). A logged-in user name (suffix `0x03`) is
+  indistinguishable from the machine name in that text and may appear. mDNS:
+  only `*.local` host names, never service types. Pulse asks
+  `_services._dns-sd._udp.local` and usually gets `_ssh._tcp`-style service
+  types back, so mDNS names are rare (Nmap's `dns-service-discovery` gave none
+  either). Evidence rows carry `script_id` `pulse:netbios-ns` / `pulse:mdns`.
+- **Failure.** No live host is empty output with exit code 0 and is not an
+  error. A non-zero exit code is `arp.failed:<code>`, a timeout or start error
+  `arp.failed:<ExceptionName>`, unparsable output `arp.failed:invalid_json`; a
+  missing binary is `pulse.unavailable` with a warning pointing here, a missing `ip`
+  `pulse.arp_needs_iproute2`. The scan
+  continues in every case.
+
+Pulse is missing MAC and names in structured output, a packet-rate cap in
+discovery, a discovery-only mode and an interface choice
+([GenDec#35](https://github.com/onixus/GenDec/issues/35)); the workarounds above
+go away when it lands. Measurements: [ADR 0002](adr/0002-replacing-nmap-functions.md).
+
 ## Optional nmap
 
 Nmap is not bundled in the images (NPSL, [#97](https://github.com/onixus/Shapoclyack/issues/97));
 `0.47-1009-rc1` is the last release that published `-nmap` tags. It is not
-required for the default Pulse path. For `backend: nmap|hybrid`, `vuln_legacy`
-and the L2 ARP sweep, install your own and let it be found on `PATH`:
+required for the default Pulse path. For `backend: nmap|hybrid`, and
+`vuln_legacy`, install your own and let it be found on `PATH`:
 [Using your own Nmap](nmap-external.md).
 
 When nmap is absent, `run_nse` logs a warning, writes `nmap/SKIPPED_NMAP_MISSING`
@@ -679,19 +862,22 @@ empty `HOME` (the adapter's run after #544). The earlier run with bare `--script
 is gone: it loaded nothing (no `./scripts` in its working directory), so its "added
 nothing" measured an empty plugin set. Both got the same targets and ports
 (21, 22, 80, 139, 443, 445, 3306, 3389, 5432, 6379, and UDP 161). The scanner
-image has the distribution `nmap` installed, so Pulse could read
-`/usr/share/nmap/nmap-services` (ADR 0002, measurement 1): service names that
-come from the port table in the Pulse column are NPSL-derived. That is the
-as-is state of a sensor with Nmap installed, and #543 changes it.
+image has the distribution `nmap` installed, but Pulse is given `--services-db`
+(IANA table) and `--probe-db` explicitly, as the adapter does (#543, #546), so
+nothing NPSL-derived reaches the Pulse column. (The first recording, from before
+#543, let Pulse read `/usr/share/nmap/nmap-services`; the service names did not
+change when re-recorded with the IANA table, 18 of 19 still agree.)
 
-**Starting gap** (Nmap 7.93 and Pulse 1.3.0, before any Pulse or adapter
-change; the same numbers are pinned in the test):
+**Gap** (Nmap 7.93 and Pulse 1.3.0 re-recorded on 2026-10-10 with the adapter's
+pinned `--services-db` and `--probe-db`; the same numbers are pinned in the test.
+The first recording, before `probes.json` (#546), differed in one row: Product
+was 14 agree / 3 missing / 1 differs):
 
 | Dimension | Nmap | Pulse 1.3.0 | Gap |
 |---|---|---|---|
 | Open endpoints (TCP + UDP) | 19 | 19 | none (19 of 19 shared) |
 | Service name | 19 | 18 agree | 1: port 445, Nmap `netbios-ssn`, Pulse `smb` |
-| Product (of 18 Nmap names) | 18 | 14 agree | 3 missing (Samba x2, PostgreSQL), 1 differs (SNMP) |
+| Product (of 18 Nmap names) | 18 | 14 agree | 2 missing (Samba x2), 2 differ (SNMP; PostgreSQL: Pulse `PostgreSQL database`, Nmap `PostgreSQL DB`) |
 | Version | 17 given | 11 exact, 3 upstream-only | 3 missing; the 3 upstream-only lack the distribution revision (`8.2p1 Ubuntu 4ubuntu0.13` against `8.2p1`) |
 | CPE | 17 endpoints | 0 | Pulse's `open[]` rows carry a `cpe` field, but it is `[]` on every row (70 of 70 in the fixture); nothing fills it |
 | OS family (14 hosts) | 14 | 14 agree (Linux) | family only; Nmap `Linux 4.15 - 5.6`, Pulse `Linux (modern, TS+SACK+WS)`, real kernel 6.12 |
@@ -728,7 +914,8 @@ Reading it:
 
 - Pulse's service/product/version detection is close on what its probe DB
   covers (SSH, HTTP servers, MySQL, Redis, FTP) and absent where it has no rule
-  (Samba, PostgreSQL). That is #546's job.
+  (Samba). PostgreSQL gained a product through `probes.json` (#546) but still
+  no version: the server does not state it before authentication.
 - The distribution revision and the CPE are the two fields that disappear when
   Nmap does (`retro_match` and `asset_services` prefer them): #546, with the
   Pulse change in #543.
@@ -747,6 +934,9 @@ above stays a baseline; `tcp-plugins.json` is a separate run, and
 shipped files differ.
 
 Re-recording everything: `PULSE_BIN=<linux pulse> tests/fixtures/nmap_pulse_corpus/record.sh`
+(`stand/scan.sh` passes Pulse the same `--services-db` and `--probe-db` as the
+adapter, bind-mounted from `scanner/pipeline/pulse_data/`, so a probe-database
+change shows up in the next recording)
 (the header explains how to get a digest-checked Linux binary, and `MIRROR=` for
 an unreachable Docker Hub). It needs Docker with NET_RAW and takes a few
 minutes; the stand is removed when the script ends. Re-record only when the

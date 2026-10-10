@@ -27,6 +27,27 @@ All notable changes to Shapoclyack are documented in this file.
   Pulse side) and reports which NSE scripts a plugin answers.
 - Three plugins are adapted from GenDec scripts (MIT); `NOTICE` and
   [third-party.md](docs/third-party.md) carry the attribution.
+- The asset page's Services table shows `distro` / `distro_revision` under the product and version (#546).
+- Pulse runs with a probe database we own
+  ([#546](https://github.com/onixus/Shapoclyack/issues/546)). Every invocation
+  gets `--probe-db scanner/pipeline/pulse_data/probes.json`: GenDec v1.3.0's
+  embedded set verbatim (MIT, attribution in `probes.json.LICENSE`, `NOTICE`) plus
+  rules of our own, written from observed banners and not from Nmap's NPSL
+  `nmap-service-probes`. The adapter validates the file first (Pulse silently
+  falls back to its embedded set on a bad one), records the file's version and
+  sha256 as `adapter.probe_db*` in `pulse/raw.json`, and notes when Pulse still
+  fell back. First rule: PostgreSQL via an SSLRequest (stock Pulse named the
+  service but not the product).
+- The package revision is a field of its own: `ServiceRecord.distro` /
+  `distro_revision` (`8.2p1` stays the version, `ubuntu` / `4ubuntu0.13` is the
+  revision), stored in new `asset_services` columns (migration `0084`, expand
+  only; old rows keep the banner fallback) and read first by the retro matcher's
+  backport step. Forward-compatible with GenDec#33. A pre-existing row gets the
+  fields filled at its next scan without counting as a changed fingerprint.
+- Every product string the probe database can emit is in `retro_match`'s
+  `PRODUCT_TABLE` (33 new rows, NVD keys checked 2026-10-10) or in
+  `UNMAPPED_PROBE_PRODUCTS` (122 entries) with the reason; a test enforces it. This changes
+  `rules_version`, so listeners are matched once more.
 
 ### Changed
 
@@ -42,7 +63,23 @@ All notable changes to Shapoclyack are documented in this file.
 - The corpus no longer carries `pulse/tcp-scripts.json`, the run with bare
   `--scripts`: it loaded nothing, so the "13 findings, nothing added" it pinned
   measured an empty plugin set.
-
+- **Breaking:** L2 discovery runs through Pulse instead of Nmap
+  ([#542](https://github.com/onixus/Shapoclyack/issues/542)). `discovery.l2`
+  needs a Pulse binary (`service_probe.pulse.bin`) and no longer Nmap; a missing
+  binary is `skipped_reason: "pulse.unavailable"` (was `nmap.unavailable`). One
+  `pulse -D --discover-method arp` pass finds live hosts and reads the NetBIOS
+  and mDNS names; `max_rate` stays the target packet rate (Pulse gets
+  `max_rate // (mcast_solicit + 2)`, recorded as
+  `pulse_rate` and `rate_divisor`; an estimate measured on 4 and 55 live hosts
+  of 253, not a guarantee). The MAC comes
+  from `/proc/net/arp` and `vendor` is now always `null`. `interface` can no
+  longer be passed to the tool, so networks not routed on-link through it are
+  skipped (`not_on_interface:<iface>`). Port 9 in `ports.exclude_ports` turns
+  the stage off. New skip reasons: `arp.trigger_port_excluded:9`,
+  `rate_cap_unenforceable:<n>`, `timeout_unreachable:<n>s`, `interface.unverifiable`, `pulse.arp_needs_iproute2` (Pulse's ARP needs `ip`;
+  the scanner images now install iproute2); the artifact gains
+  `engine`, `pulse_rate`, `rate_divisor` and loses `names_skipped_reason`.
+  See [L2 discovery](docs/pulse-backend.md#l2-discovery).
 - **Breaking:** the Pulse adapter pins its inputs
   ([#543](https://github.com/onixus/Shapoclyack/issues/543)). Every Pulse
   invocation gets `--services-db scanner/pipeline/pulse_data/services.tsv` (an

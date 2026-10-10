@@ -31,6 +31,14 @@ class ServiceRecord(BaseModel):
     # still validates; the retro CVE matcher (docs/retro-cve-matching.md)
     # prefers these over its product-name table when present.
     cpe: list[str] = Field(default_factory=list)
+    # Distribution and package revision the listener's own greeting states, kept
+    # apart from ``version``: ``SSH-2.0-OpenSSH_8.2p1 Ubuntu-4ubuntu0.13`` is
+    # version ``8.2p1``, distro ``ubuntu``, distro_revision ``4ubuntu0.13``.
+    # Empty when nothing is stated (and on a services.json written before the
+    # fields existed). The retro matcher compares ``version`` with NVD and uses
+    # the revision for the backport step (docs/retro-cve-matching.md).
+    distro: str = ""
+    distro_revision: str = ""
 
 
 class OsMatchRank(BaseModel):

@@ -132,4 +132,7 @@ services:
       # The plugins Shapoclyack hands to Pulse with --script-dir (#544): the stand
       # runs the files in the repository, not a copy.
       - ../../../../scanner/pipeline/pulse_data/plugins:/plugins:ro
+      # The inputs the adapter pins (--services-db, --probe-db); scan.sh passes them.
+      - ../../../../scanner/pipeline/pulse_data/services.tsv:/pulse_data/services.tsv:ro
+      - ../../../../scanner/pipeline/pulse_data/probes.json:/pulse_data/probes.json:ro
     networks: { stand: { ipv4_address: 172.29.41.250 } }
