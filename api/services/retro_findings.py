@@ -143,6 +143,8 @@ def _fingerprint(row: models.AssetService) -> retro_match.Fingerprint:
         banner=row.banner or "",
         cpe=tuple(str(c) for c in (row.cpe or [])),
         service=row.service or "",
+        distro=row.distro or "",
+        distro_revision=row.distro_revision or "",
     )
 
 

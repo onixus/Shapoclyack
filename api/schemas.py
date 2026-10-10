@@ -3787,6 +3787,8 @@ class AssetServiceInfo(BaseModel):
     version: str = ""
     banner: str = ""
     cpe: list[str] = Field(default_factory=list)
+    distro: str = ""
+    distro_revision: str = ""
     source: str = ""
     first_seen_at: str | None = None
     last_seen_at: str | None = None

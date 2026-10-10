@@ -491,6 +491,11 @@ offered for these, for the same reason it is not offered for software findings:
 the API refuses the dispatch, because a re-scan that does not know the CVE
 would "verify" it by silence.
 
+On the asset page, the **Services** table shows the package revision a listener
+disclosed (`ubuntu 4ubuntu0.13`) as a muted line under `product version`; it is
+kept apart from the version NVD ranges are compared with, and nothing is shown
+for a listener that stated none.
+
 Above the table, the **Retro CVE matching** card shows the active tenant's
 queue from `GET /api/retro-match/status`: listeners stored, assessed, awaiting
 re-check, possible-but-untracked matches, open retro findings by confidence, the

@@ -106,6 +106,34 @@ describe("AssetServicesPanel", () => {
     expect(within(ssh).getByText("4")).toBeInTheDocument();
   });
 
+  it("shows the package revision apart from the version, and nothing when there is none", async () => {
+    vi.spyOn(apiModule, "fetchAssetServices").mockResolvedValue([
+      service({ version: "8.2p1", distro: "ubuntu", distro_revision: "4ubuntu0.13" }),
+      service({ id: 5, port: 2222, version: "9.9", distro: "", distro_revision: "" }),
+      service({ id: 6, port: 2200, version: "7.4" }),
+    ]);
+    renderPanel();
+
+    await screen.findByText("22/tcp");
+    const ssh = rowOf("22/tcp");
+    expect(within(ssh).getByText("OpenSSH 8.2p1")).toBeInTheDocument();
+    expect(within(ssh).getByTestId("service-packaging")).toHaveTextContent("ubuntu 4ubuntu0.13");
+    expect(within(rowOf("2222/tcp")).queryByTestId("service-packaging")).not.toBeInTheDocument();
+    // An API older than the fields omits them altogether.
+    expect(within(rowOf("2200/tcp")).queryByTestId("service-packaging")).not.toBeInTheDocument();
+  });
+
+  it("labels the package revision in Russian too", async () => {
+    useAppearanceStore.setState({ locale: "ru" });
+    vi.spyOn(apiModule, "fetchAssetServices").mockResolvedValue([
+      service({ distro: "debian", distro_revision: "2+deb12u3" }),
+    ]);
+    renderPanel();
+
+    await screen.findByText("22/tcp");
+    expect(screen.getByTestId("service-packaging")).toHaveAttribute("title", "Ревизия пакета");
+  });
+
   it("keeps possible CVEs collapsed and apart from tracked ones", async () => {
     vi.spyOn(apiModule, "fetchAssetServices").mockResolvedValue([APACHE]);
     renderPanel();

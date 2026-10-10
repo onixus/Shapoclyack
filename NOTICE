@@ -64,6 +64,17 @@ with ones from ProjectDiscovery's nuclei-templates (MIT,
 https://github.com/projectdiscovery/nuclei-templates). No endorsement by the
 authors is implied.
 
+Pulse service probes
+--------------------
+
+scanner/pipeline/pulse_data/probes.json starts from the probe database embedded
+in GenDec/Pulse v1.3.0 (https://github.com/onixus/GenDec, src/scanner/probes.json,
+MIT, Copyright (c) GenA), copied verbatim; the licence text and the file's
+sha256 are in scanner/pipeline/pulse_data/probes.json.LICENSE. Rules added after
+that base are written from scratch for this project and are not derived from
+Nmap's nmap-service-probes (NPSL). For the base, we rely on GenDec's own
+statements (see probes.json.LICENSE); we have not verified them independently.
+
 LGPL components
 ---------------
 

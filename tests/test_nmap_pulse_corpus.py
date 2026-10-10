@@ -25,11 +25,13 @@ from pulse_corpus import SCHEMA, compare_corpus, format_table  # noqa: E402
 
 CORPUS = Path(__file__).parent / "fixtures" / "nmap_pulse_corpus"
 
-# Gap before any Pulse/adapter change. Keep in step with docs/pulse-backend.md.
+# Gap as recorded on 2026-10-10 with the adapter's pinned inputs (--services-db,
+# --probe-db). Before probes.json (#546) product was 14 match / 1 mismatch /
+# 3 missing_in_pulse. Keep in step with docs/pulse-backend.md.
 EXPECTED_SUMMARY = {
     "endpoints": {"nmap": 19, "pulse": 19, "both": 19, "only_nmap": 0, "only_pulse": 0},
     "service": {"match": 18, "mismatch": 1},
-    "product": {"nmap_has_product": 18, "match": 14, "mismatch": 1, "missing_in_pulse": 3},
+    "product": {"nmap_has_product": 18, "match": 14, "mismatch": 2, "missing_in_pulse": 2},
     "version": {"exact": 11, "base_only": 3, "mismatch": 0, "missing_in_pulse": 3, "not_in_nmap": 2},
     "cpe": {"endpoints_nmap": 17, "endpoints_pulse": 0},
     "tls": {
