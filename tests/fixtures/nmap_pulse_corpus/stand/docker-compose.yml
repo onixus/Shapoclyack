@@ -129,4 +129,7 @@ services:
     volumes:
       - ${PULSE_BIN:?set PULSE_BIN to a linux Pulse binary (see ../record.sh)}:/usr/local/bin/pulse:ro
       - ..:/corpus
+      # The inputs the adapter pins (--services-db, --probe-db); scan.sh passes them.
+      - ../../../../scanner/pipeline/pulse_data/services.tsv:/pulse_data/services.tsv:ro
+      - ../../../../scanner/pipeline/pulse_data/probes.json:/pulse_data/probes.json:ro
     networks: { stand: { ipv4_address: 172.29.41.250 } }

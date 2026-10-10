@@ -761,19 +761,22 @@ versions are in the fixtures (banners), not in the compose file.
 (`-b --os --os-mode sinfp --cve -f json`, connect scan) with an empty `HOME`,
 plus a second run with `--scripts`. Both got the same targets and ports
 (21, 22, 80, 139, 443, 445, 3306, 3389, 5432, 6379, and UDP 161). The scanner
-image has the distribution `nmap` installed, so Pulse could read
-`/usr/share/nmap/nmap-services` (ADR 0002, measurement 1): service names that
-come from the port table in the Pulse column are NPSL-derived. That is the
-as-is state of a sensor with Nmap installed, and #543 changes it.
+image has the distribution `nmap` installed, but Pulse is given `--services-db`
+(IANA table) and `--probe-db` explicitly, as the adapter does (#543, #546), so
+nothing NPSL-derived reaches the Pulse column. (The first recording, from before
+#543, let Pulse read `/usr/share/nmap/nmap-services`; the service names did not
+change when re-recorded with the IANA table, 18 of 19 still agree.)
 
-**Starting gap** (Nmap 7.93 and Pulse 1.3.0, before any Pulse or adapter
-change; the same numbers are pinned in the test):
+**Gap** (Nmap 7.93 and Pulse 1.3.0 re-recorded on 2026-10-10 with the adapter's
+pinned `--services-db` and `--probe-db`; the same numbers are pinned in the test.
+The first recording, before `probes.json` (#546), differed in one row: Product
+was 14 agree / 3 missing / 1 differs):
 
 | Dimension | Nmap | Pulse 1.3.0 | Gap |
 |---|---|---|---|
 | Open endpoints (TCP + UDP) | 19 | 19 | none (19 of 19 shared) |
 | Service name | 19 | 18 agree | 1: port 445, Nmap `netbios-ssn`, Pulse `smb` |
-| Product (of 18 Nmap names) | 18 | 14 agree | 3 missing (Samba x2, PostgreSQL), 1 differs (SNMP) |
+| Product (of 18 Nmap names) | 18 | 14 agree | 2 missing (Samba x2), 2 differ (SNMP; PostgreSQL: Pulse `PostgreSQL database`, Nmap `PostgreSQL DB`) |
 | Version | 17 given | 11 exact, 3 upstream-only | 3 missing; the 3 upstream-only lack the distribution revision (`8.2p1 Ubuntu 4ubuntu0.13` against `8.2p1`) |
 | CPE | 17 endpoints | 0 | Pulse's `open[]` rows carry a `cpe` field, but it is `[]` on every row (70 of 70 in the fixture); nothing fills it |
 | OS family (14 hosts) | 14 | 14 agree (Linux) | family only; Nmap `Linux 4.15 - 5.6`, Pulse `Linux (modern, TS+SACK+WS)`, real kernel 6.12 |
@@ -788,7 +791,8 @@ Reading it:
 
 - Pulse's service/product/version detection is close on what its probe DB
   covers (SSH, HTTP servers, MySQL, Redis, FTP) and absent where it has no rule
-  (Samba, PostgreSQL). That is #546's job.
+  (Samba). PostgreSQL gained a product through `probes.json` (#546) but still
+  no version: the server does not state it before authentication.
 - The distribution revision and the CPE are the two fields that disappear when
   Nmap does (`retro_match` and `asset_services` prefer them): #546, with the
   Pulse change in #543.
@@ -800,6 +804,9 @@ Reading it:
   workaround short of #545.
 
 Re-recording: `PULSE_BIN=<linux pulse> tests/fixtures/nmap_pulse_corpus/record.sh`
+(`stand/scan.sh` passes Pulse the same `--services-db` and `--probe-db` as the
+adapter, bind-mounted from `scanner/pipeline/pulse_data/`, so a probe-database
+change shows up in the next recording)
 (the header explains how to get a digest-checked Linux binary, and `MIRROR=` for
 an unreachable Docker Hub). It needs Docker with NET_RAW and takes a few
 minutes; the stand is removed when the script ends. Re-record only when the
