@@ -20,10 +20,11 @@ All notable changes to Shapoclyack are documented in this file.
   `distro_revision` (`8.2p1` stays the version, `ubuntu` / `4ubuntu0.13` is the
   revision), stored in new `asset_services` columns (migration `0084`, expand
   only; old rows keep the banner fallback) and read first by the retro matcher's
-  backport step. Forward-compatible with GenDec#33.
+  backport step. Forward-compatible with GenDec#33. A pre-existing row gets the
+  fields filled at its next scan without counting as a changed fingerprint.
 - Every product string the probe database can emit is in `retro_match`'s
-  `PRODUCT_TABLE` (about forty new rows, NVD keys checked 2026-10-10) or in
-  `UNMAPPED_PROBE_PRODUCTS` with the reason; a test enforces it. This changes
+  `PRODUCT_TABLE` (33 new rows, NVD keys checked 2026-10-10) or in
+  `UNMAPPED_PROBE_PRODUCTS` (122 entries) with the reason; a test enforces it. This changes
   `rules_version`, so listeners are matched once more.
 
 ### Changed

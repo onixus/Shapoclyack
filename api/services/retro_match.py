@@ -325,7 +325,8 @@ PRODUCT_TABLE: dict[str, tuple[str, ...]] = {
     "goahead web server": ("a:embedthis:goahead",),  # [50]
     "paramiko ssh": ("a:paramiko:paramiko",),  # [114]
     "asyncssh": ("a:asyncssh_project:asyncssh",),  # [63]
-    "apache mina sshd": ("a:apache:mina_sshd",),  # [56]
+    # CVE-2023-35887 is filed under apache:sshd; mina_sshd is the older spelling of the same product.
+    "apache mina sshd": ("a:apache:sshd", "a:apache:mina_sshd"),  # [40, 56]
     "cyrus imapd": ("a:cyrusimap:cyrus_imap",),  # [242]
     "cyrus pop3d": ("a:cyrusimap:cyrus_imap",),
     "grafana": ("a:grafana:grafana",),  # [1289]

@@ -51,3 +51,8 @@ def test_mapped_probe_products_name_wellformed_nvd_keys():
     for product in named:
         for key in retro_match.PRODUCT_TABLE.get(retro_match.normalize_product(product), ()):
             assert re.fullmatch(r"[aho]:[a-z0-9_.\-]+:[a-z0-9_.\-]+", key), (product, key)
+
+
+def test_apache_mina_sshd_is_filed_under_both_nvd_spellings():
+    # CVE-2023-35887 is on apache:sshd; apache:mina_sshd is the older spelling (NVD CPE API, 2026-10-10).
+    assert set(retro_match.PRODUCT_TABLE["apache mina sshd"]) == {"a:apache:sshd", "a:apache:mina_sshd"}
