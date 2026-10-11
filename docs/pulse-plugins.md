@@ -10,8 +10,8 @@ reachability of SMB, RDP and VNC, and HTTP TRACE over plain HTTP. They live in
 `scanner/data/`, for the same reason `services.tsv` does: an enrichment volume
 mounted over `scanner/data` would hide them.
 
-On by default wherever Pulse is the report backend (`service_probe.backend:
-pulse` or `hybrid`). Off with `service_probe.pulse.plugins: false` (also per
+On by default wherever Pulse runs (`service_probe.backend: pulse`, the only
+backend). Off with `service_probe.pulse.plugins: false` (also per
 speed profile under `profiles.<mode>.pulse.plugins`).
 
 ## What ships
@@ -122,9 +122,7 @@ The plugins' connections are not paced by `--rate` and are not counted by
 `per_host_rate` ("packets aimed at any single host") cannot be honoured for a burst
 of up to eight connections a plugin run, so a policy with that ceiling turns the
 plugins off in every speed profile (`scan_policy.apply_policy`). `skip_service_probe`
-already skips the whole Pulse stage. A shadow run (`backend: nmap` with `shadow`)
-runs Pulse only to compare services and discards its findings, so it makes no
-plugin connections.
+already skips the whole Pulse stage.
 
 ### The receipt
 

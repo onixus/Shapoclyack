@@ -145,7 +145,6 @@ read by the script and by the in-process fetcher that shares the feed.
 | Microsoft Update Guide (CVRF) | `MSRC_CVRF_BASE_URL` | `https://api.msrc.microsoft.com/cvrf/v3.0` | `<base>/updates` and `<base>/cvrf/<month>`, the API's own paths |
 | Exploit-DB index | `EXPLOITDB_CSV_URL` | `https://gitlab.com/exploit-database/exploitdb/-/raw/main/files_exploits.csv` | The same CSV |
 | Metasploit module metadata | `METASPLOIT_MODULES_URL` | `https://raw.githubusercontent.com/rapid7/metasploit-framework/master/db/modules_metadata_base.json` | The same JSON |
-| vulscan CSVs (nmap `vuln-offline`) | `VULSCAN_BASE_URLS` | GitHub, then computec.ch | `<base>/<db>.csv`; a space-separated list, tried in order |
 | nuclei templates | `NUCLEI_TEMPLATES_REPO`, `NUCLEI_TEMPLATES_REF`, `NUCLEI_TEMPLATES_COMMIT` | nuclei's own `-update-templates` | A git mirror of `projectdiscovery/nuclei-templates` — see §5 |
 
 Notes that matter:
@@ -484,10 +483,6 @@ ProjectDiscovery's public OAST servers (`oast.pro` and five more) and wait on
 their DNS. See
 [network-requirements.md](network-requirements.md#out-of-band-testing-interactsh).
 
-**vulscan** (only for the legacy nmap `vuln-offline` NSE profile):
-`VULSCAN_BASE_URLS=https://mirror.internal.example/vulscan
-scripts/fetch-vulscan-db.sh`.
-
 ## 6. Update cadence
 
 What the upstreams publish, and so how stale a bundle becomes:
@@ -523,7 +518,6 @@ Nothing here fails a scan; each is either off by default or degrades to
 | Related domains (`org_profile.related_domains`) | crt.sh and the RDAP/DNS sources | off |
 | Credential leaks (`org_profile.credential_leaks`) | Have I Been Pwned | off |
 | Pulse online CVE lookup (`service_probe.pulse.cve_online`) | NVD | off |
-| nmap `vulners` NSE (`nse_profiles.vuln_legacy`) | vulners.com | only with the nmap backend; use `vuln-offline` (vulscan) instead |
 | Run notifications to Slack/Telegram, DoH checks (`alerts`) | those services | off |
 | OIDC, webhooks, ticket trackers, SMTP | whatever you configure | unset |
 

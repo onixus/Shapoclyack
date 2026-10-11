@@ -1,68 +1,36 @@
 # Pulse service probe backend
 
-Shapoclyack can enrich open ports with **[Pulse](https://github.com/onixus/GenDec)**
-instead of (or in addition to) Nmap NSE.
+Shapoclyack enriches open ports with **[Pulse](https://github.com/onixus/GenDec)**.
+It is the only service-probe backend: the Nmap NSE stage, the `hybrid` backend
+and the shadow comparison were removed in #548 (see
+[Migrating off Nmap](nmap-migration.md) for what replaces which setting, how old
+runs are still read, and the gaps listed at the end of this page).
 
 Migration plan (full): see GenDec `docs/shapoclyack-migration.md`.
 
-## When to use which backend
+## Backend
 
-| `service_probe.backend` | Behaviour |
-|-------------------------|-----------|
-| `pulse` (**default**, Phase 4.1) | Pulse OS / banner / CVE only; no nmap NSE |
-| `nmap` | Classic NSE stage only (`vuln_legacy` / `baseline`) |
-| `hybrid` | Pulse first, then nmap NSE |
-
-Precedence: `OCTO_SERVICE_BACKEND` → `profiles.<mode>.service_backend` →
-`service_probe.backend`.
+`service_probe.backend` takes `pulse` and nothing else. `nmap`, `hybrid`,
+`service_probe.shadow`, `profiles.<mode>.service_backend: nmap|hybrid`,
+`OCTO_SERVICE_BACKEND=nmap|hybrid` and `OCTO_PULSE_SHADOW=1` stop the scanner
+with exit code 2 and a message naming the replacement; they are not ignored.
 
 ### Speed profiles (Pulse knobs)
 
-| Mode | Profile `pulse.*` overrides | NSE if backend nmap/hybrid |
-|------|-----------------------------|----------------------------|
-| `safe` | c=300 rate=500 host-parallel=4 os=sinfp | `baseline` |
-| `balanced` | c=800 rate=2000 host-parallel=16 os=auto | `vuln_legacy` |
-| `fast` | c=1200 rate=5000 host-parallel=32 os=sinfp | `vuln_legacy` |
+| Mode | Profile `pulse.*` overrides |
+|------|-----------------------------|
+| `safe` | c=300 rate=500 host-parallel=4 os=sinfp |
+| `balanced` | c=800 rate=2000 host-parallel=16 os=sinfp |
+| `fast` | c=1200 rate=5000 host-parallel=32 os=sinfp |
 
-### Escape hatch: full NSE
-
-```yaml
-service_probe:
-  backend: nmap   # or hybrid
-```
-
-```bash
-export OCTO_SERVICE_BACKEND=nmap
-```
+These replace what `nmap_timing` and `nse_max_rate` / `nse_concurrency` set per
+profile ([the mapping](nmap-migration.md#nmap_timing)).
 
 ### Ports-only L1
 
-`--skip-nse` skips **both** Pulse and nmap. Default path already uses Pulse
-without nmap — you do not need `--skip-nse` for that.
-
-### Shadow mode (Phase 3)
-
-Run **both** Pulse and Nmap and write coverage diff. With `backend: nmap`,
-the report still prefers nmap XML; Pulse CVEs can still attach.
-
-```bash
-export OCTO_PULSE_SHADOW=1
-export OCTO_SERVICE_BACKEND=nmap   # report stays on nmap
-# export OCTO_SERVICE_BACKEND=hybrid  # report prefers services.json
-```
-
-YAML: `service_probe.shadow: true`
-
-Artifact: **`diff_pulse_nmap.json`**
-
-Fair live compare (avoid multi-A inflation):
-
-```bash
-scripts/compare-pulse-nmap.py --one-ip-per-host \
-  scanme.nmap.org example.com 1.1.1.1
-```
- — endpoint Jaccard, only_pulse / only_nmap
-samples, OS family agree/disagree.
+`--skip-nse` (or `runtime.skip_nse: true`) skips the Pulse probe: discover,
+ports, reports. The flag's name predates Pulse and is kept. Re-run with
+`--resume` to enrich.
 
 Override without editing YAML:
 
@@ -75,8 +43,7 @@ export OCTO_PULSE_BIN=/usr/local/bin/pulse
 
 ```yaml
 service_probe:
-  backend: pulse   # nmap | hybrid
-  shadow: false    # or OCTO_PULSE_SHADOW=1
+  backend: pulse   # the only value
   pulse:
     bin: ""                  # OCTO_PULSE_BIN overrides this; else this path; else PATH
     concurrency: 500
@@ -102,7 +69,6 @@ profiles:
       rate: 2000
       host_parallel: 16
       os_mode: sinfp
-    nse_profile: vuln_legacy   # only if backend is nmap|hybrid
 ```
 
 NVD online: set `NVD_API_KEY` in the sensor's environment. Pulse's own
@@ -276,17 +242,19 @@ for the same reason.
 |------|---------|
 | `services.json` | `octo.service.v1` open services |
 | `pulse/tls.json` | Pulse TLS cert posture (`octo.pulse_tls.v1`) |
-| `tls_posture.json` | Unified TLS findings (nmap / pulse-tls / probe) |
+| `tls_posture.json` | Unified TLS findings (pulse-tls / probe; `nmap-nse` only from a run recorded before #548) |
 | `os.json` | `octo.os.v1` OS guesses |
 | `pulse_cves.json` | Pulse findings (`octo.cve.v1`: version_cve / keyword_cve / exposure / tls) |
 | `pulse/raw.json` | Merged raw Pulse JSON |
 | `pulse/REPORT_PRIMARY` | Marker: report prefers Pulse services/OS |
-| `diff_pulse_nmap.json` | Shadow/hybrid comparison |
-| `nmap/**` | Written when backend is `nmap`/`hybrid` or shadow |
 
-`report.py` prefers `services.json` / `os.json` when backend is pulse/hybrid
-(or `REPORT_PRIMARY` exists), and still merges nmap script findings from XML
-when hybrid/nmap ran.
+`diff_pulse_nmap.json` and `nmap/**` are no longer written. A run directory
+recorded before #548 keeps them, and `report.py` still reads its Nmap XML
+([Migrating off Nmap](nmap-migration.md#old-data-is-still-read)).
+
+`report.py` prefers `services.json` / `os.json` (the `REPORT_PRIMARY` marker is
+written on every run), and merges the script findings of an old run's Nmap XML
+when it is given one.
 
 ## Image install
 
@@ -389,11 +357,11 @@ the build log.
 
 **Building without Pulse.** `--build-arg INSTALL_PULSE=0` skips the fetch
 entirely, so the image builds with no GenDec token at all. That image has no
-service-probe backend of its own: with the default `service_probe.backend:
-pulse` the scanner aborts the run with an error naming both fixes, rather than
-silently falling back to nmap and producing a different finding set under the
-same profile. Run such an image with `OCTO_SERVICE_BACKEND=nmap` with a
-self-installed Nmap ([Using your own Nmap](nmap-external.md)).
+service-probe backend of its own: the scanner aborts the run with an error
+naming the fixes, rather than
+silently skipping the stage and producing a different finding set under the
+same profile. Run such an image ports-only (`--skip-nse`), or give it a Pulse
+binary of your own (`OCTO_PULSE_BIN`).
 
 Local image build (GenDec is private, so pass a token with `contents:read`):
 
@@ -405,7 +373,7 @@ docker build -f Dockerfile \
   -t shapoclyack-scanner:local .
 ```
 
-No token, no Pulse (needs `OCTO_SERVICE_BACKEND=nmap` at runtime):
+No token, no Pulse (runs ports-only, or with your own Pulse binary):
 
 ```bash
 docker build -f Dockerfile --build-arg INSTALL_PULSE=0 -t shapoclyack-scanner:nopulse .
@@ -423,9 +391,9 @@ scripts/smoke-pulse.sh
 
 `GH_TOKEN` is accepted as an alias.
 
-System UI / API status probes `pulse --version` alongside nmap/naabu/nuclei.
+System UI / API status probes `pulse --version` alongside naabu/nuclei/dnsx.
 
-Connect-mode Pulse works without root; SYN/OS still need caps/root like nmap.
+Connect-mode Pulse works without root; SYN/OS still need caps/root.
 
 **A release ships the latest Pulse.** `scripts/check-pulse-latest.sh <version>`
 compares a version with GenDec's latest non-prerelease release (token from
@@ -438,7 +406,7 @@ latest* stage before the build — a failure for a real publish, a warning for
 ## Checkpoint
 
 Shapoclyack's own stage checkpoint (`CheckpointStore`) marks hosts done under
-key `pulse` (and `nse` for nmap) for chunks that returned at least one
+key `pulse` (a pre-#548 checkpoint may also hold `nse`, which nothing reads) for chunks that returned at least one
 service; the stage itself is marked done only when no chunk was left
 unresolved, so `--resume` re-probes exactly the hosts that never got an
 answer.
@@ -459,7 +427,7 @@ the `chunks[]` records in `pulse/raw.json` stay attributable across runs.
 | Situation | Behaviour |
 |-----------|-----------|
 | No `pulse` binary and there are TCP ports to probe | The stage fails immediately with `FileNotFoundError` naming `scripts/install-pulse.sh`, `OCTO_PULSE_BIN` and `service_probe.pulse.bin`. Pulse is the default backend and the only source of services on that path, so this is a deployment error to surface, not a stage to skip. With no TCP ports at all the stage writes empty artifacts and never looks for the binary. |
-| `os_detect: true` but no raw sockets (unprivileged host install, pod without `NET_RAW`) | Pulse aborts the whole invocation, not just OS detection. The adapter recognises its "OS detection needs raw sockets" refusal, drops `--os` for the rest of the run, re-runs the chunk at once and logs a warning; services, banners, TLS and CVEs are kept. `pulse/raw.json` records it under `adapter.os_detect_degraded`. This mirrors nse.py, which drops nmap `-O` when not root. |
+| `os_detect: true` but no raw sockets (unprivileged host install, pod without `NET_RAW`) | Pulse aborts the whole invocation, not just OS detection. The adapter recognises its "OS detection needs raw sockets" refusal, drops `--os` for the rest of the run, re-runs the chunk at once and logs a warning; services, banners, TLS and CVEs are kept. `pulse/raw.json` records it under `adapter.os_detect_degraded`. |
 | `syn: true` without raw sockets | Not downgraded: SYN is an explicit opt-in. The chunk fails, is re-run once at once, its hosts stay unresolved, and the crash-loop breaker above ends the stage after three such chunks. |
 | A chunk reports every port closed | A contradiction, not a result: naabu proved those ports open moments ago. The chunk is re-probed after `retry_settle_seconds`. A chunk that is still empty afterwards leaves its hosts unmarked so `--resume` asks again. |
 | Pulse exits non-zero without JSON for any other reason | Logged as a crash with its stderr (not as "0 services") and re-run **at once** — the settle pause is for a saturated network path, not for exit 2. After three consecutive chunks that still end in a crash the stage raises `PulseCrashLoopError` naming the exit code and stderr: a crash that repeats across chunks is a broken binary or a bad flag, and sleeping through the rest of a large run would only delay the same empty result. |
@@ -471,8 +439,8 @@ answered (`rate_pps` recomputed from the totals).
 
 ## TLS posture without nmap (Phase 4)
 
-When `tls_posture.enabled: true` and nmap produced no `ssl-cert` /
-`ssl-enum-ciphers` output (Pulse backend, `--skip-nse`, empty `nmap/`),
+When `tls_posture.enabled: true` and there is no `ssl-cert` /
+`ssl-enum-ciphers` output from an old run's `nmap/` XML (every new run),
 Shapoclyack can **probe open TLS ports directly** via stdlib `ssl`
 (`scanner/pipeline/tls_probe.py`).
 
@@ -496,7 +464,7 @@ sensor, for a container sensor as a mounted file.
 
 | Source | When | Covers |
 |--------|------|--------|
-| `nmap-nse` | SSL scripts present in nmap XML | cert validity / self-signed heuristic / key size and signature digest + full cipher grades and every offered version |
+| `nmap-nse` | SSL scripts present in the Nmap XML of a run recorded before #548 (read-only) | cert validity / self-signed heuristic / key size and signature digest + full cipher grades and every offered version |
 | `pulse-tls` | `pulse/tls.json` has rows | cert validity / self-signed / Pulse's own legacy-protocol probe (`requires_confirmation`); with a suite enumeration (see below, expected GenDec#34) also the offered versions and suites with A-F grades |
 | `pulse-tls-probe` | fallback handshake | cert and chain validity / self-signed / chain trust / key size and signature digest / TLS 1.0 and 1.1 acceptance |
 
@@ -735,8 +703,10 @@ tls_posture:
   hostname_mismatch: true       # default true
 ```
 
-Full cipher-suite enumeration (nmap grade A–F) still needs nmap NSE or a
-future dedicated enumerator. Key size and signature algorithm on the probe
+Full cipher-suite enumeration (the A–F grade Nmap's `ssl-enum-ciphers` gave)
+has no source on the Pulse path until Pulse enumerates suites
+([GenDec#34](https://github.com/onixus/GenDec/issues/34), #545): a real scan
+gets no grade today. Key size and signature algorithm on the probe
 path need the `cryptography` package (both images; see the limits above).
 
 ## CVE stack without nmap-vulners (Phase 4.2)
@@ -759,8 +729,8 @@ reference corpus the seed yields 5 range hits on 3 endpoints where Nmap's `vulne
 (host, port, CVE) triples and `pulse --cve` 3. Where each Nmap `vuln` script goes, and the
 Nuclei network pass: [NSE vuln coverage](nse-vuln-coverage.md).
 
-nmap-**vulners** / **vulscan** only run when `service_probe.backend` is
-`nmap` or `hybrid` and the profile uses `vuln_legacy` / `vuln-offline`.
+nmap-**vulners** / **vulscan** are gone with the NSE stage; their rows in old
+runs are still shown as `nmap-nse`.
 
 ### Finding taxonomy and prioritisation
 
@@ -884,26 +854,21 @@ discovery, a discovery-only mode and an interface choice
 ([GenDec#35](https://github.com/onixus/GenDec/issues/35)); the workarounds above
 go away when it lands. Measurements: [ADR 0002](adr/0002-replacing-nmap-functions.md).
 
-## Optional nmap
+## Nmap
 
-Nmap is not bundled in the images (NPSL, [#97](https://github.com/onixus/Shapoclyack/issues/97));
-`0.47-1009-rc1` is the last release that published `-nmap` tags. It is not
-required for the default Pulse path. For `backend: nmap|hybrid`, and
-`vuln_legacy`, install your own and let it be found on `PATH`:
-[Using your own Nmap](nmap-external.md).
-
-When nmap is absent, `run_nse` logs a warning, writes `nmap/SKIPPED_NMAP_MISSING`
-and continues (Pulse + Nuclei + TLS probe still run).
-
-System UI marks **nmap** as optional and shows `service_probe.backend`.
+Nmap is not bundled in the images (NPSL, [#97](https://github.com/onixus/Shapoclyack/issues/97))
+and, since #548, not used: see [Migrating off Nmap](nmap-migration.md) for the
+refused settings, the old data that is still read, and the known gaps. The
+system page no longer probes for it.
 
 K8s caps (`NET_RAW` / `NET_ADMIN` + `allowPrivilegeEscalation: true`) remain
 required for **naabu** and Pulse SYN/OS — see `k8s/README.md`.
 
 ## Reference corpus: Nmap versus Pulse (#541)
 
-`pulse_shadow` compares endpoints and OS family on a live run. The golden corpus
-is the same comparison frozen: Nmap and Pulse run once against a fixed stand,
+The former `pulse_shadow` module compared endpoints and OS family on a live run;
+its comparison now lives in `scripts/pulse_corpus.py`. The golden corpus
+is that comparison frozen: Nmap and Pulse run once against a fixed stand,
 the outputs are committed, and the gap is measured offline in CI. It exists
 because Nmap is going away ([ADR 0002](adr/0002-replacing-nmap-functions.md)) and
 what Pulse is measured against has to be recorded while Nmap still runs.
@@ -1046,16 +1011,22 @@ Limits of the numbers:
   change; expect to re-pin every OS and timing-dependent number.
 
 Fixture size is 620 KB, 438 KB of it the Nmap XML (the `vuln` scripts and
-`vulners` output). It is stored as recorded so that `_parse_nmap_xml` reads it
-exactly as it reads a run directory.
+`vulners` output). It is stored as recorded so that `legacy_nmap.parse_nmap_xml` reads it
+exactly as it reads an old run directory.
 
 ## Limitations (current)
 
-- Does not run NSE scripts (`ssl-enum-ciphers`, vulners, …) on the default path.
+- Does not run NSE scripts (there are none to run since #548).
   The plugins ([Pulse plugins](pulse-plugins.md)) cover weak SSH algorithms,
   anonymous FTP, cleartext services and HTTP TRACE; SMB signing is answered by a Nuclei
   network template ([NSE vuln coverage](nse-vuln-coverage.md)); RDP NTLM information, SSH host
   keys and SNMP are not reachable from Pulse's sandbox.
-- TLS probe fallback ≠ full `ssl-enum-ciphers` grade table.
-- UDP enrichment still relies on naabu (and optional nmap) paths.
+- TLS probe fallback ≠ a full cipher-suite grade table (no A–F on the Pulse path
+  until GenDec#34).
+- UDP enrichment still relies on naabu paths.
 - Banner ≠ full nmap `-sV` product/version.
+- Not covered, and tracked ([Migrating off Nmap](nmap-migration.md#known-gaps)):
+  `smb-vuln-ms17-010`, `smb-vuln-ms10-061`, `smb-protocols` and
+  `rdp-enum-encryption` (GenDec#38); the pinned-inputs work (#543) waits for
+  GenDec#31 / GenDec#32 (service names still come from the port table, not from
+  the matched probe).

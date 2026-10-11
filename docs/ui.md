@@ -66,7 +66,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/service-tokens` | Non-interactive API credentials for the selected tenant | `tenant.credential.manage` — the tenant's admin or a token-admin |
 | `/agents` | **Sensors** — the fleet of sensors (API resource `agents`, `agent_kind = scanner`): live health tiles, a sensor drawer, the SSH deploy dialog and on-request provisioning keys (the page is labelled "Sensors"; the route stays `/agents`) | Operator; `tenant.credential.manage` alone (a `token-admin`) gets the tiles and the **Deploy Sensor** dialog without the fleet list |
 | `/security` | Your own second factor: enrol an authenticator, keep the recovery codes, turn it off | Any role, for the signed-in account only |
-| `/system` | Versions, dependencies, stages, runtime, retention state, safe config | Viewer; the config panel needs `config.read` and edits need platform admin. A viewer also sees the tenant/sensor counters as `—`: they span every tenant on the installation ([#318](https://github.com/onixus/Shapoclyack/issues/318)) |
+| `/system` | Versions, dependencies, stages, runtime, retention state, safe config (Nmap is neither probed nor listed since #548; the speed-profile panel shows the service-probe backend, always `pulse`, and the configurator offers no timing select or shadow toggle: [Migrating off Nmap](nmap-migration.md)) | Viewer; the config panel needs `config.read` and edits need platform admin. A viewer also sees the tenant/sensor counters as `—`: they span every tenant on the installation ([#318](https://github.com/onixus/Shapoclyack/issues/318)) |
 
 ## Application shell
 

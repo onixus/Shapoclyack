@@ -55,7 +55,7 @@
 
 [`Jenkinsfile.publish`](../../Jenkinsfile.publish) built five images (the table
 below, as of 0.47-1009-rc1; afterwards three: the `-nmap` variants were dropped,
-see [nmap-external.md](../nmap-external.md)) and never
+see [nmap-migration.md](../nmap-migration.md)) and never
 passes `INSTALL_PULSE=0`; the Dockerfiles default it to `1`, and the stage fails
 the build if no binary came out (`test -x`). So:
 

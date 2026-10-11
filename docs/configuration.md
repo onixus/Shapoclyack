@@ -41,8 +41,7 @@ value on the System page rather than assuming the file was applied.
 | `batching` | Bounded IPv4/IPv6 subnet batching | [Scan performance](scan-performance.md), [Architecture](architecture.md) |
 | `discovery` | Alive-host discovery: source, discovery profile, CT logs, brute force, Cloudflare, ASN, cloud resources, domain monitoring, delta | [Discovery modules](#discovery-modules), [Scan performance](scan-performance.md) |
 | `ports` | Port stage: protocol, port lists, UDP top-N, naabu scan type | [Protocol selection](#protocol-selection) |
-| `nse_profiles` | Named NSE script sets a speed profile can reference | [NSE and vulnerability checks](#nse-and-vulnerability-checks) |
-| `service_probe` | Service/version detection backend: `pulse` (default), `nmap`, `hybrid`, and shadow comparison; `pulse.plugins` (default `true`) switches the Rhai plugins on or off | [Pulse backend](pulse-backend.md), [Pulse plugins](pulse-plugins.md) |
+| `service_probe` | Service/version detection: `backend` is `pulse` and nothing else (`nmap`, `hybrid` and `shadow` are refused, [Migrating off Nmap](nmap-migration.md)); `pulse.plugins` (default `true`) switches the Rhai plugins on or off | [Pulse backend](pulse-backend.md), [Pulse plugins](pulse-plugins.md) |
 | `reporting` | Which report formats a run writes (Markdown, HTML, CSV, JSON, PDF) and the PDF's title/org | [Operations](operations.md), [Reports and compliance](reports-and-compliance.md) |
 | `enrichment` | CVSS v4, GeoIP and ASN datasets | [Enrichment sources](#enrichment-sources) |
 | `fingerprint` | HTTP fingerprinting of already-open web ports: technology catalogue, versions, CPE, exposed consoles and gateways | [Web fingerprinting](web-fingerprinting.md), [Scan performance](scan-performance.md) |
@@ -65,14 +64,14 @@ up is the usual reason a run behaves unlike the one that was intended.
 
 ### Speed profile (`runtime.mode`, `--mode`)
 
-Picks one entry of the YAML's `profiles:` map: probe rates, top-ports count,
-timing and the NSE profile to run. Accepted values are `safe`, `balanced`
+Picks one entry of the YAML's `profiles:` map: probe rates, top-ports count and
+the Pulse pace (`pulse.rate`, `pulse.concurrency`, `pulse.host_parallel`). Accepted values are `safe`, `balanced`
 (default) and `fast`; the shipped `default.yaml` also defines a `test` profile
 for the test suite, which `runtime.mode` does not accept.
 
 | `runtime.mode` | Behavior | Recommended use |
 |---|---|---|
-| `safe` | Lower rates, conservative external-tool settings, baseline NSE | First scan, fragile or remote links |
+| `safe` | Lower rates, conservative external-tool settings, gentle Pulse pace | First scan, fragile or remote links |
 | `balanced` | Normal rates and staged gap handling | Routine authorized scanning |
 | `fast` | Higher rates and reduced secondary work | Controlled, high-capacity environments |
 
@@ -151,15 +150,25 @@ intermediate artifacts and in the aggregate.
 
 ## NSE and vulnerability checks
 
-NSE profiles control which scripts run after port discovery. Start with
-service-specific and safe checks, then enable broader vulnerability scripts for
-authorized targets and a suitable maintenance window.
+There are no NSE profiles any more: the Nmap stage was removed (#548), and
+`nse_profiles`, `profiles.<mode>.nmap_timing` / `nse_profile` / `nse_concurrency` /
+`nse_max_rate`, `runtime.nse_concurrency` / `nse_max_rate` / `nse_hosts_per_scan`,
+`service_probe.shadow` and `service_probe.backend: nmap|hybrid` stop the scanner
+at load time ([Migrating off Nmap](nmap-migration.md) has the replacement for
+each). What is checked after port discovery is Pulse's probes and Rhai plugins,
+Nuclei, and the TLS stage; enable the broader Nuclei severities for authorized
+targets and a suitable maintenance window.
+
+`runtime.nse_timeout_seconds` is kept: it caps one Pulse invocation. The
+environment variables `OCTO_SERVICE_BACKEND` (only `pulse` is accepted) and
+`OCTO_PULSE_SHADOW` (refused when truthy) are the other two places the old
+choice could be made.
 
 Nuclei is an optional stage. Template version, severity filters, concurrency,
 and rate limits should be pinned in production.
 
 `nuclei.network_templates` (default `true`) adds a second pass for services that are
-not web: a short table of templates that stand in for Nmap's SMB checks (today
+not web: a short table of templates that stand in for the removed Nmap SMB checks (today
 `smb-signing-not-required`, for `smb2-security-mode`), run against `host:port` of the
 endpoints Pulse named as that service, on whatever port. It follows `nuclei.severities`
 and `nuclei.exclude_tags`, is skipped in a pinned (`template_ids`) verification run, never

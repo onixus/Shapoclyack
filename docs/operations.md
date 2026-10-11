@@ -83,7 +83,7 @@ The directory can contain:
 - open ports and service aggregates;
 - `hosts_without_open_ports.json`, the alive inventory that answered discovery but
   exposed no port from this run's scanned set;
-- Nmap XML and tool logs;
+- tool logs (and, in a run recorded before #548, Nmap XML);
 - vulnerability and enrichment JSON;
 - Markdown, HTML, and PDF reports;
 - `sarif.json` — OASIS SARIF v2.1.0 export of the run's vulnerabilities
@@ -449,10 +449,10 @@ and not the next is not a ceiling:
   The knob that does apply to a range is the rate itself: to hold a range to a
   per-device figure, lower `max_discover_rate` and `max_port_rate`, or put the
   devices in scope as addresses rather than as a CIDR. Where per-host means
-  what it says without qualification is nuclei (`rate_limit`), NSE
-  (`nse_max_rate`) and pulse (`rate`), which meter per target rather than per
+  what it says without qualification is nuclei (`rate_limit`) and pulse
+  (`rate`), which meter per target rather than per
   batch.
-* **The service-probe stage off** means nmap NSE, pulse *and nuclei*. Nuclei is
+* **The service-probe stage off** means pulse *and nuclei*. Nuclei is
   the stage that sends HTTP payloads rather than counting SYN/ACKs — ~8.9k
   templates at whatever web interface an engineering station exposes — so a
   fragile run turns it off entirely. It also turns fingerprint HTTP requests
@@ -4476,6 +4476,36 @@ bundle, what stays unavailable — is [air-gap.md](air-gap.md).
 > and grace periods below limit the gap in a rollout without closing it. The
 > multi-replica profile that turns them into a genuinely non-disruptive rollout
 > is [high-availability.md](high-availability.md#rolling-upgrade-without-5xx).
+
+### Before upgrading to the release that removes Nmap
+
+[#548](https://github.com/onixus/Shapoclyack/issues/548), **breaking**. A sensor
+that starts with a config or environment naming the Nmap stage stops with exit
+code 2 before any stage runs, and the message names the replacement. Search your
+own sensor configs and ConfigMaps (and any `config/*.yaml` you mount over the
+bundled one) and the sensors' environments for:
+
+- `nmap_timing`, `nse_profile`, `nse_concurrency`, `nse_max_rate` under
+  `profiles.*`; `nse_concurrency`, `nse_max_rate`, `nse_hosts_per_scan` under
+  `runtime`; and the whole `nse_profiles:` section;
+- `service_probe.backend: nmap` or `hybrid`, `service_probe.shadow`, and
+  `profiles.*.service_backend: nmap|hybrid`;
+- `OCTO_SERVICE_BACKEND=nmap|hybrid` and `OCTO_PULSE_SHADOW`.
+
+Replace `nmap_timing` with `pulse.rate` / `pulse.concurrency` per profile (the
+table is in [Migrating off Nmap](nmap-migration.md#nmap_timing)); delete the
+rest. Order on a fleet: upgrade the API first (migration `0085` removes the two
+console overrides that cannot be set any more; a saved
+`service_probe.backend: nmap|hybrid` is left for you to change in the console),
+fix the mounted configs, then the sensors. An older sensor keeps working against
+the new API, because the API no longer sends `nmap_timing` or `shadow` in a
+config overlay; a new sensor given an overlay from an old API refuses the run
+and says why, so do not upgrade sensors ahead of the API.
+
+Nothing about stored data changes: past runs keep their `nmap/` directories and
+are read as before, `nmap-nse` findings and `prober: nmap` rows stay as they
+are. What is missing on the Pulse path (TLS suite grades, four SMB/RDP checks)
+is listed under [Known gaps](nmap-migration.md#known-gaps).
 
 ### Before upgrading to the release that pins Pulse's inputs
 

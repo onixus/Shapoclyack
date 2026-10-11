@@ -31,7 +31,7 @@ publishes `linux/arm64` only), and pushes:
 | `ghcr.io/onixus/shapoclyack-api` | `<tag>` | no |
 
 A stable release also moves `latest`; a prerelease never does. The images
-contain no Nmap ([Using your own Nmap](nmap-external.md)). Releases up to and
+contain no Nmap and the scanner no longer runs it ([Migrating off Nmap](nmap-migration.md)). Releases up to and
 including `0.47-1009-rc1` also published `<tag>-nmap` variants and moved
 `latest-nmap`; those tags stay as published and `latest-nmap` is no longer
 updated.
@@ -139,11 +139,11 @@ mixing one release's scanner with another release's Pulse.
 - **How the fix ships.** A signed GenDec release, pinned by the procedure above,
   in a new Shapoclyack release tag for every line SECURITY.md lists as receiving
   security fixes. The `CHANGELOG.md` entry goes under *Security*.
-- **Until a fix ships.** `OCTO_SERVICE_BACKEND=nmap` on a sensor with a
-  self-installed Nmap ([Using your own Nmap](nmap-external.md)) takes Pulse out
-  of the scan. It is an explicit switch with a different finding set,
-  not an equivalent; it is also available per profile
-  ([Pulse backend](pulse-backend.md#escape-hatch-full-nse)).
+- **Until a fix ships.** There is no second engine to switch to: the Nmap
+  backend was removed in #548 ([Migrating off Nmap](nmap-migration.md)). A
+  deployment that cannot run a Pulse with a known flaw runs ports-only
+  (`--skip-nse`, or `runtime.skip_nse: true`) until the fixed release is
+  pinned.
 
 ### Backporting a fix to an older line
 
@@ -311,12 +311,11 @@ GenDec token, and has **no service-probe backend of its own**. No published tag
 is built that way.
 
 - With the default `service_probe.backend: pulse`, a run that has TCP ports to
-  probe **fails** with an error naming both fixes — install Pulse, or switch the
-  backend to `nmap` on a sensor that has Nmap installed. It never falls back to Nmap on its
-  own and never completes as a scan with no services.
-- Running such an image means choosing the engine explicitly:
-  `OCTO_SERVICE_BACKEND=nmap` (or `service_probe.backend: nmap`) with a
-  self-installed Nmap ([Using your own Nmap](nmap-external.md)).
+  probe **fails** with an error naming the fixes — install Pulse, or run
+  ports-only with `--skip-nse`. It never completes as a scan with no services.
+- Running such an image means giving it a Pulse binary of your own
+  (`OCTO_PULSE_BIN`, `service_probe.pulse.bin`) or running ports-only; there is
+  no other engine (the Nmap backend was removed in #548).
 - `GET /api/system` lists `pulse` as `not installed`; `verify-pulse-image.py`
   exits `3`.
 

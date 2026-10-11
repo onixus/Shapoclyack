@@ -83,7 +83,7 @@ The Shapoclyack architecture consists of cooperating subsystems with clearly sep
 | **Shapoclyack Sensor** | [`agent/worker.py`](agent/worker.py) & [`scanner/`](scanner/) | Remote or local network scan node (`agent_kind = "scanner"`); claims scan jobs and executes network reconnaissance, service discovery, and vulnerability checks. | Pulls jobs via HTTP claim polling (`POST /api/agent/jobs/claim`) or NATS JetStream (`jobs.scan.{tenant}`, stream `JOBS`). Uses Pulse, Nmap, Nuclei. |
 | **Pulse Probe Engine** | **[onixus/GenDec](https://github.com/onixus/GenDec)** | High-performance OS fingerprinting, service banner grabbing, and CVE correlation engine. Primary default backend for the scanner pipeline (`service_probe.backend: pulse`). | Sourced from `onixus/GenDec` via [`scripts/install-pulse.sh`](scripts/install-pulse.sh). Documentation in [`docs/pulse-backend.md`](docs/pulse-backend.md). |
 | **Control Plane API** | [`api/`](api/) | Central FastAPI service; manages RBAC, tenant isolation, scan scheduling, endpoint ingestion, asset reconciliation, and retention lifecycle. | Backed by PostgreSQL and optional NATS broker. |
-| **Scanner Core Pipeline** | [`scanner/pipeline/`](scanner/pipeline/) | Python orchestration pipeline executing scan stages: port discovery, service probe ([`pulse_probe.py`](scanner/pipeline/pulse_probe.py), [`nse.py`](scanner/pipeline/nse.py)), TLS posture, Nuclei. | Invokes local CLI binaries (`pulse`, `nmap`, `nuclei`). |
+| **Scanner Core Pipeline** | [`scanner/pipeline/`](scanner/pipeline/) | Python orchestration pipeline executing scan stages: port discovery, service probe ([`pulse_probe.py`](scanner/pipeline/pulse_probe.py)), TLS posture, Nuclei. | Invokes local CLI binaries (`pulse`, `nuclei`). |
 | **Message Broker & Job Queue** | NATS JetStream | Dispatches scan jobs (`jobs.scan`, stream `JOBS`) and optional internal endpoint events (`ingest.endpoint_inventory.{tenant_id}`). | NATS server with JetStream enabled. |
 | **Primary Database** | PostgreSQL | Authoritative relational store for tenants, assets, vulnerabilities, endpoint devices, software items, and change events. | Managed migrations via Alembic (`api/db/migrations/`). |
 | **Web Console UI** | [`web-next/`](web-next/) | Next.js operator dashboard; provides vulnerability management, asset cards with endpoint/software panels, and system health status. | Communicates via authenticated REST APIs (`/api/*`). |
@@ -116,10 +116,7 @@ The **Pulse** module is an external native binary probe engine developed in the 
 
 3. **Runtime Configuration:**
    Configured in [`scanner/config/default.yaml`](scanner/config/default.yaml) or environment variables:
-   - `OCTO_SERVICE_BACKEND=pulse` (Default mode — fast banner, OS, and CVE probing)
-   - `OCTO_SERVICE_BACKEND=hybrid` (Pulse probe followed by Nmap NSE)
-   - `OCTO_SERVICE_BACKEND=nmap` (Legacy NSE fallback)
-   - `OCTO_PULSE_SHADOW=1` (Shadow mode: runs both Pulse and Nmap, producing diff coverage artifact `diff_pulse_nmap.json`)
+   - `OCTO_SERVICE_BACKEND=pulse` (The only backend — fast banner, OS, and CVE probing). `nmap`, `hybrid` and `OCTO_PULSE_SHADOW` are refused at startup; see [`docs/nmap-migration.md`](docs/nmap-migration.md).
 
 Detailed usage, benchmark timings, and profile tuning are documented in [`docs/pulse-backend.md`](docs/pulse-backend.md). Which Pulse a release ships, how its pin changes and how a customer verifies it are in [`docs/release-contract.md`](docs/release-contract.md); how Pulse is distributed at all is the proposed [ADR 0001](docs/adr/0001-pulse-distribution-model.md) (#340).
 

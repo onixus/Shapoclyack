@@ -18,22 +18,21 @@ the images — see the next section.
 
 ## Scanner tools
 
-**Nmap is not part of the distribution.** The published
-`ghcr.io/onixus/shapoclyack-scanner` and `...-aio` images contain no Nmap binary,
-no NSE data, and no `nmap-vulners`/`Vulscan` scripts — Pulse is the default
-`service_probe.backend` and covers service/OS/CVE detection without Nmap. This
-removes the Nmap Public Source License redistribution question for every
-artifact Shapoclyack publishes. `shapoclyack-0.47-1009-rc1` is the last release
-that also published `-nmap` image tags (built with `INSTALL_NMAP=1`); the build
-argument and the tags are gone from the next release on. Users who need Nmap
-install it themselves next to the sensor, which puts the licence decision with
-them: [Using your own Nmap](nmap-external.md). The sensor image (the remote
-scanning node, `agent/worker.py`) is the scanner image, so the same choice
-applies to every sensor host.
+**Nmap is not part of the distribution, and the product does not run it.** The
+published `ghcr.io/onixus/shapoclyack-scanner` and `...-aio` images contain no
+Nmap binary, no NSE data, and no `nmap-vulners`/`Vulscan` scripts, and since
+#548 no code path calls Nmap: Pulse is the only `service_probe.backend` and
+covers service/OS/CVE detection. This removes the Nmap Public Source License
+question for every artifact Shapoclyack publishes and for every sensor host.
+`shapoclyack-0.47-1009-rc1` is the last release that also published `-nmap`
+image tags (built with `INSTALL_NMAP=1`). What replaced which setting, and what
+is still missing, is in [Migrating off Nmap](nmap-migration.md). The recorded
+Nmap output of the comparison corpus (`tests/fixtures/nmap_pulse_corpus/`) was
+produced on a test stand and ships in no image.
 
 | Component | Documented pin/source | License family | Notes |
 |---|---|---|---|
-| Nmap | Debian package | Nmap Public Source License v0.95 | **Not bundled.** Install it yourself ([Using your own Nmap](nmap-external.md)); review the commercial/OEM redistribution restrictions before redistributing an image that contains it |
+| Nmap | Debian package | Nmap Public Source License v0.95 | **Not bundled and not used** ([Migrating off Nmap](nmap-migration.md)). If you install it for your own purposes, review the commercial/OEM redistribution restrictions before redistributing an image that contains it |
 | Naabu | `v2.6.1` (`NAABU_VERSION`) | MIT | ProjectDiscovery |
 | DNSx | `v1.2.3` (`DNSX_VERSION`) | MIT | ProjectDiscovery |
 | Pulse | GenDec release tag (`PULSE_VERSION`, currently `v1.3.0`) + per-platform sha256 pinned in `scripts/pulse-pinned.sha256` | MIT | Default service-probe backend (banner/OS/CVE detection); replaces Nmap in the default image. **`onixus/GenDec` is a private repository** — see the note below |
@@ -41,8 +40,8 @@ applies to every sensor host.
 | DejaVu Sans | Debian package `fonts-dejavu-core` (API and all-in-one images); a 27 KB Latin+Cyrillic subset in `tests/fixtures/fonts/` | Bitstream Vera licence + public domain (DejaVu changes) | Unicode face for PDF reports (`api/services/reports/render.py`); without it the renderer falls back to fpdf2's Latin-1 core fonts. The subset is a test fixture only, not shipped in any image |
 | Playwright / Chromium | not pinned; optional host install | Apache-2.0 (Playwright) | **Not in the default image.** P4.4 screenshots skip when the package or browser is missing |
 | nuclei-templates | Git reference (`NUCLEI_TEMPLATES_REF`, currently `v9.9.4`) | MIT | Template content has its own provenance |
-| nmap-vulners | Git reference | GPL-3.0 | **Not bundled.** Optional, user-installed (see [Using your own Nmap](nmap-external.md)); NSE vulnerability lookup |
-| Vulscan | Git reference (pinned commit, see nmap-external.md) | GPL-3.0 | **Not bundled.** Optional, user-installed (see [Using your own Nmap](nmap-external.md)); NSE scripts and local data |
+| nmap-vulners | Git reference | GPL-3.0 | **Not bundled and not used** (the NSE stage is gone). CVE by version is `retro_match` and `pulse --cve` |
+| Vulscan | — | GPL-3.0 | **Not bundled and not used** (the NSE stage is gone; `scripts/fetch-vulscan-db.sh` was removed with it) |
 
 **Pulse comes from a private repository.** `onixus/GenDec` is not public, so
 a `docker build` of `Dockerfile` or `Dockerfile.allinone` needs a GitHub token
@@ -69,9 +68,9 @@ GenDec's release workflow, not that the code that went into it was reviewed by
 anyone outside the organisation. For a reviewer who cannot read the repository,
 that remains the gap.
 `--build-arg INSTALL_PULSE=0` builds an image without Pulse and without a
-token; that image has no service-probe backend of its own and must be run with
-`service_probe.backend: nmap` on a sensor with a self-installed Nmap — the scanner fails
-the run with an explicit error rather than scanning without services.
+token; that image has no service-probe backend of its own: the scanner fails the run
+with an explicit error rather than scanning without services, so run it
+ports-only (`--skip-nse`) or give it a Pulse binary of your own.
 
 Whether to publish GenDec's binary releases publicly (with the SBOM already
 being built) or to build the sources here is the proposed
@@ -79,15 +78,6 @@ being built) or to build the sources here is the proposed
 decision; until it is taken, a customer's supply-chain review of the default
 image ends at a repository they cannot read. What a customer can already check,
 and how, is in the [release contract](release-contract.md#what-a-customer-can-verify-and-how).
-
-**Vulscan's CVE databases no longer come from computec.ch.** Vulscan's own
-`update.sh` downloads its eight CSV databases from `www.computec.ch`, which now
-sits behind a Cloudflare managed challenge: every non-browser client gets
-`HTTP 403` with a `cf-mitigated: challenge` header, regardless of User-Agent.
-`scripts/fetch-vulscan-db.sh` therefore pulls them from `scipag/vulscan` on
-GitHub — the same maintainer, the same files, at the same GPL-3.0 terms as the
-pinned clone the images already ship. `VULSCAN_BASE_URLS` overrides the source
-list for closed networks; computec.ch remains the second entry in the default.
 
 ## Base runtime
 

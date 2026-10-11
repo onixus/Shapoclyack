@@ -135,7 +135,7 @@ See [Development](docs/development.md#continuous-integration).
 | Sensors (remote scanning nodes; API resource `agents`, `agent_kind = scanner`), DefectDojo, PDF reports | Done |
 | Kubernetes (`k8s/shapoclyack/`) + all-in-one compose | Done |
 | GHCR images `shapoclyack-{aio,scanner,api}` | Done |
-| Nmap made optional / non-default in published images ([#97](https://github.com/onixus/Shapoclyack/issues/97) Phase 1) — Pulse is the default service-probe backend; `-aio`/`-scanner` images ship Nmap-free; the legacy `-nmap` tags were published for the last time with `0.47-1009-rc1`, and users who want classic NSE install their own Nmap ([docs/nmap-external.md](docs/nmap-external.md)) | Done |
+| Nmap made optional / non-default in published images ([#97](https://github.com/onixus/Shapoclyack/issues/97) Phase 1) — Pulse is the default service-probe backend; `-aio`/`-scanner` images ship Nmap-free; the legacy `-nmap` tags were published for the last time with `0.47-1009-rc1`, and since #548 the product no longer runs Nmap at all ([docs/nmap-migration.md](docs/nmap-migration.md)) | Done |
 
 The phases below are the **next platform evolution** toward multi-tenant MSSP scale.
 
