@@ -1470,7 +1470,7 @@ def get_deployment_snippets(
         f"--server {clean_server} --key {provisioning_key} --tenant {tenant_id}"
     )
     # NET_RAW and NET_ADMIN, as scripts/install-agent.sh --docker adds them:
-    # the image grants both to naabu/pulse/nmap as file capabilities, and
+    # the image grants both to naabu/pulse as file capabilities, and
     # Docker's default set lacks NET_ADMIN, so without it their execve fails
     # with EPERM.
     docker_run = (
@@ -1585,7 +1585,7 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-          # NET_RAW/NET_ADMIN: the image grants both to naabu/pulse/nmap as file
+          # NET_RAW/NET_ADMIN: the image grants both to naabu/pulse as file
           # capabilities, and a binary whose file capabilities are not all in
           # the bounding set fails execve with EPERM. allowPrivilegeEscalation:
           # true, because no_new_privs makes the kernel ignore file capabilities

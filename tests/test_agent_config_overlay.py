@@ -274,6 +274,30 @@ def test_the_scanner_refuses_a_path_outside_its_allow_list(tmp_path, config):
         config_overlay.load_overlay(path)
 
 
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"profiles": {"balanced": {"nmap_timing": "T2"}}},
+        {"service_probe": {"shadow": True}},
+        {"service_probe": {"backend": "hybrid"}},
+    ],
+)
+def test_an_overlay_from_an_older_api_cannot_bring_the_nmap_stage_back(tmp_path, config):
+    """#548: the paths stay in the released versions' allow-lists (a version's
+    set never changes), so the document is understood; the schema is what
+    refuses the merged config, naming the replacement, and the run does not
+    start. Not applied, not dropped."""
+    from scanner import main as scanner_main
+
+    overlay = _write(tmp_path, {"overlay_version": 1, "config": config})
+    args = argparse.Namespace(
+        config=str(K8S_CONFIG), config_overlay=str(overlay), scan_policy=None, mode="balanced", delta=False
+    )
+    with pytest.raises(scanner_main._RunConfigError) as exc:
+        scanner_main._config_for_run(args)
+    assert "docs/nmap-migration.md" in str(exc.value)
+
+
 def test_the_scanner_refuses_an_overlay_version_it_does_not_know(tmp_path):
     from scanner.pipeline import config_overlay
 
@@ -444,12 +468,12 @@ def test_an_overlay_cannot_drop_the_hosts_nuclei_exclusions(tmp_path):
 
 
 def test_an_overlay_can_slow_a_sensor_down_but_not_speed_it_up(tmp_path):
-    """The sensor's own file is its ceiling for rates and timing: a tenant
-    with no scan policy was otherwise one console override away from T5 and
-    100k pps on a network whose owner configured 2000."""
+    """The sensor's own file is its ceiling for rates: a tenant with no scan
+    policy was otherwise one console override away from 100k pps on a network
+    whose owner configured 2000."""
     fast = _overlay_claim(
         {
-            "profiles": {"balanced": {"port_rate": 90_000, "discover_rate": 90_000, "nmap_timing": "T5"}},
+            "profiles": {"balanced": {"port_rate": 90_000, "discover_rate": 90_000}},
             "nuclei": {"rate_limit": 10_000, "concurrency": 100},
         }
     )
@@ -457,16 +481,14 @@ def test_an_overlay_can_slow_a_sensor_down_but_not_speed_it_up(tmp_path):
     config, _ = _executor_run_config(tmp_path, fast)
     assert config.profiles["balanced"].port_rate == host.profiles["balanced"].port_rate
     assert config.profiles["balanced"].discover_rate == host.profiles["balanced"].discover_rate
-    assert config.profiles["balanced"].nmap_timing == host.profiles["balanced"].nmap_timing
     assert config.nuclei.rate_limit == host.nuclei.rate_limit
     assert config.nuclei.concurrency == host.nuclei.concurrency
 
     slow = _overlay_claim(
-        {"profiles": {"balanced": {"port_rate": 50, "nmap_timing": "T2"}}, "nuclei": {"rate_limit": 5}}
+        {"profiles": {"balanced": {"port_rate": 50}}, "nuclei": {"rate_limit": 5}}
     )
     config, _ = _executor_run_config(tmp_path, slow)
     assert config.profiles["balanced"].port_rate == 50
-    assert config.profiles["balanced"].nmap_timing == "T2"
     assert config.nuclei.rate_limit == 5
 
 

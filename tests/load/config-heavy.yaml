@@ -4,9 +4,6 @@ runtime:
   retries: 1
   timeout_seconds: 600
   nse_timeout_seconds: 120
-  nse_concurrency: 4
-  nse_max_rate: 0
-  nse_hosts_per_scan: 8
   discover_concurrency: 1
   ports_concurrency: 1
   per_run_output: true
@@ -16,23 +13,23 @@ profiles:
     discover_rate: 3000
     port_rate: 3000
     top_ports: 100
-    nmap_timing: T4
-    nse_profile: load
-    nse_concurrency: 4
+    pulse:
+      rate: 2000
+      concurrency: 500
   balanced:
     discover_rate: 3000
     port_rate: 3000
     top_ports: 100
-    nmap_timing: T4
-    nse_profile: load
-    nse_concurrency: 4
+    pulse:
+      rate: 2000
+      concurrency: 500
   fast:
     discover_rate: 3000
     port_rate: 3000
     top_ports: 100
-    nmap_timing: T4
-    nse_profile: load
-    nse_concurrency: 4
+    pulse:
+      rate: 2000
+      concurrency: 500
 
 batching:
   enabled: true
@@ -47,13 +44,6 @@ discovery:
 ports:
   source: naabu
   custom_ports_file: scanner/inputs/ports.txt
-
-nse_profiles:
-  load:
-    # Fast offline scripts — default NSE suite is too slow at 32+ hosts on GHA.
-    scripts: "banner"
-    version_detection: true
-    os_detection: false
 
 reporting:
   markdown_summary: true

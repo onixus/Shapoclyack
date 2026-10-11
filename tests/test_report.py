@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from scanner.pipeline.legacy_nmap import parse_nmap_xml
 from scanner.pipeline.report import (
     _build_vulnerabilities,
     _extract_cves,
-    _parse_nmap_xml,
     _severity,
     build_reports,
 )
@@ -64,7 +64,7 @@ def test_extract_cves_with_and_without_scores():
 
 def test_parse_nmap_xml_extracts_services_os_and_scripts(tmp_path: Path):
     nmap_dir = _setup(tmp_path)
-    services, os_matches, scripts = _parse_nmap_xml(nmap_dir)
+    services, os_matches, scripts = parse_nmap_xml(nmap_dir)
 
     assert {s["port"] for s in services} == {"22", "445"}  # closed port excluded
     assert len(os_matches) == 2
@@ -225,7 +225,7 @@ def test_parse_nmap_xml_keeps_cpe_and_extrainfo(tmp_path: Path):
     nmap_dir = tmp_path / "nmap"
     nmap_dir.mkdir()
     (nmap_dir / "10.0.0.7.xml").write_text(CPE_XML, encoding="utf-8")
-    services, _, _ = _parse_nmap_xml(nmap_dir)
+    services, _, _ = parse_nmap_xml(nmap_dir)
     assert services[0]["cpe"] == ["cpe:/a:openbsd:openssh:8.2p1", "cpe:/o:linux:linux_kernel"]
     assert services[0]["extrainfo"] == "Ubuntu Linux; protocol 2.0"
 

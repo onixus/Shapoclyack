@@ -44,9 +44,8 @@ def cli(tmp_path, monkeypatch):
     config = load_config({
         "runtime": {"mode": "safe", "output_dir": str(output), "state_dir": str(state)},
         "ports": {"custom_ports_file": str(tmp_path / "absent-ports.txt")},
-        "profiles": {name: {"discover_rate": 10, "port_rate": 10, "top_ports": 100,
-                             "nse_profile": "baseline"} for name in ("safe", "balanced", "fast")},
-        "nse_profiles": {"baseline": {"scripts": "default,safe"}},
+        "profiles": {name: {"discover_rate": 10, "port_rate": 10, "top_ports": 100}
+                     for name in ("safe", "balanced", "fast")},
         # Plugins have their own tests below; here subprocess.run is forbidden and
         # `pulse plugin check` is one.
         "service_probe": {"backend": "pulse", "pulse": {"retry_settle_seconds": 0, "plugins": False}},
@@ -70,7 +69,7 @@ def cli(tmp_path, monkeypatch):
         "import_cloudflare_dns_targets", "discover_ct_subdomains_sync", "discover_asn_ranges",
         "resolve_ownership", "discover_cloud_buckets_sync", "resolve_fqdns", "monitor_domains",
         "check_dns_hygiene", "check_mail_posture", "run_l2_discovery", "run_discovery_stage",
-        "enrich_discovery_hostnames", "fast_port_scan", "run_nse", "check_tls_posture",
+        "enrich_discovery_hostnames", "fast_port_scan", "check_tls_posture",
         "fingerprint_hosts_sync", "capture_screenshots_sync", "run_nuclei_scan",
         "discover_related_domains", "check_credential_leaks", "send_alerts", "export_to_defectdojo",
     ):
@@ -154,12 +153,8 @@ def test_main_failed_replay_cannot_reinstate_old_coarse_or_host_completion(cli):
     assert len(cli.calls) == 4
 
 
-@pytest.mark.parametrize("disabled_by", ["skip-nse", "backend"])
-def test_resume_validation_does_not_enable_a_disabled_pulse_stage(cli, monkeypatch, disabled_by):
-    if disabled_by == "skip-nse":
-        monkeypatch.setattr(sys, "argv", [*sys.argv, "--skip-nse"])
-    else:
-        monkeypatch.setenv("OCTO_SERVICE_BACKEND", "nmap")
+def test_resume_validation_does_not_enable_a_disabled_pulse_stage(cli, monkeypatch):
+    monkeypatch.setattr(sys, "argv", [*sys.argv, "--skip-nse"])
     assert cli.main() == 0
     assert cli.calls == []
     assert CheckpointStore(cli.checkpoint).done_items("pulse") == set(HOSTS)
@@ -260,12 +255,24 @@ def test_a_per_host_rate_ceiling_keeps_plugins_off_end_to_end(plugins_on, monkey
     assert all("--script-dir" not in command for command in plugins_on.commands)
 
 
-def test_a_shadow_pulse_run_makes_no_plugin_connections(plugins_on, monkeypatch, tmp_path):
-    """backend=nmap + shadow runs Pulse only to compare services; its plugin
-    findings are discarded, so the connections would be for nothing."""
-    plugins_on.config.service_probe.shadow = True
-    monkeypatch.setenv("OCTO_SERVICE_BACKEND", "nmap")
-    monkeypatch.setattr(plugins_on.sm, "run_nse", lambda *args, **kwargs: tmp_path)
-    assert plugins_on.main() == 0
-    assert plugins_on.commands, "the shadow run did not call pulse"
-    assert all("--script-dir" not in command for command in plugins_on.commands)
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("OCTO_SERVICE_BACKEND", "nmap"),
+        ("OCTO_SERVICE_BACKEND", "hybrid"),
+        ("OCTO_PULSE_SHADOW", "1"),
+    ],
+)
+def test_the_removed_nmap_environment_stops_the_run_before_any_stage(monkeypatch, variable, value):
+    """#548: ``_config_for_run`` is the one door every run goes through, so a
+    sensor started with the removed Nmap environment exits 2 there, with the
+    replacement named, before discovery or ports have run."""
+    from scanner import main as sm
+
+    monkeypatch.setenv(variable, value)
+    ns = SimpleNamespace(config="scanner/config/default.yaml", config_overlay=None, scan_policy=None,
+                         mode=None, delta=False)
+    with pytest.raises(sm._RunConfigError) as exc:
+        sm._config_for_run(ns)
+    assert variable in str(exc.value)
+    assert "docs/nmap-migration.md" in str(exc.value)

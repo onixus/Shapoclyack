@@ -114,7 +114,7 @@ spec:
             #   value: nats://agent:$(NATS_PASSWORD)@shapoclyack-nats-client:4222
           # The scanner-executor's securityContext, for its reasons
           # (base/scanner-executor/statefulset.yaml): NET_RAW/NET_ADMIN because
-          # the image grants them to naabu/pulse/nmap as file capabilities, and
+          # the image grants them to naabu/pulse as file capabilities, and
           # allowPrivilegeEscalation: true because no_new_privs would make the
           # kernel ignore those. Everything else is the restricted baseline.
           securityContext:

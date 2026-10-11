@@ -99,11 +99,10 @@ ARG PULSE_SKIP_CHECKSUM=0
 # GenDec is a private repository, so the default build needs a token. Set
 # INSTALL_PULSE=0 to build the image without Pulse and without a token:
 #   docker build --build-arg INSTALL_PULSE=0 …
-# The result has no service-probe backend of its own -- the scanner refuses to
-# start a run with `service_probe.backend: pulse` and no binary rather than
-# quietly producing a scan with no services (scanner/pipeline/pulse_probe.py),
-# so such an image needs a self-installed Nmap (docs/nmap-external.md) and
-# `backend: nmap`.
+# The result has no service-probe backend: Pulse is the only one, and the
+# scanner refuses to start a run with no binary rather than quietly producing a
+# scan with no services (scanner/pipeline/pulse_probe.py). Such an image can run
+# ports-only (`--skip-nse`) or be given a Pulse binary of your own.
 ARG INSTALL_PULSE=1
 # One implementation for host installs and images: the script resolves the
 # asset (via the API when a token is present -- the plain releases/download
@@ -157,7 +156,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Nmap is not bundled (NPSL licence, issue #97); see docs/nmap-external.md.
+# Nmap is not bundled and not used (NPSL licence, issue #97; docs/nmap-migration.md).
 RUN set -eux; \
     apt-get update; \
     # iproute2: Pulse's ARP discovery (discovery.l2) reads neighbours through
@@ -210,9 +209,8 @@ RUN set -eux; \
 # host discovery / SYN scans / OS detection work as the non-root 'scanner' user.
 # (A container-level --cap-add alone is NOT inherited by a non-root process on
 # exec without this — the binary needs the file capability bit set too.)
-# Both cap_net_raw and cap_net_admin are required for naabu SYN, Pulse SYN/OS
-# (and a self-installed nmap -O, docs/nmap-external.md). NET_ADMIN is NOT in
-# Docker's default bounding set,
+# Both cap_net_raw and cap_net_admin are required for naabu SYN, Pulse SYN/OS.
+# NET_ADMIN is NOT in Docker's default bounding set,
 # so every place this image actually runs scans already grants it explicitly:
 # docker-compose.yml's cap_add, tests/e2e/run.sh's --cap-add, and the k8s
 # api/agent/job/cronjob manifests' capabilities.add. A file capability that

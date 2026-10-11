@@ -32,7 +32,6 @@ LOG = logging.getLogger(__name__)
 
 _SCOPE = "global"
 _PROFILES = ("safe", "balanced", "fast", "test")
-_TIMINGS = {"T0", "T1", "T2", "T3", "T4", "T5"}
 _SEVERITIES = {"critical", "high", "medium", "low", "info"}
 _PROFILE_INT_MAX = 1_000_000
 #: Derived from the schema so the two constraints cannot drift apart.
@@ -61,12 +60,6 @@ def _int_choices(choices: tuple[int, ...]) -> Callable[[Any], int]:
         return value
 
     return check
-
-
-def _timing(value: Any) -> str:
-    if value not in _TIMINGS:
-        raise ValueError(f"expected one of {sorted(_TIMINGS)}")
-    return value
 
 
 def _severities(value: Any) -> list[str]:
@@ -99,7 +92,7 @@ def _enum(choices: tuple[str, ...]) -> Callable[[Any], str]:
     return check
 
 
-_SERVICE_BACKENDS = ("nmap", "pulse", "hybrid")
+_SERVICE_BACKENDS = ("pulse",)
 
 #: Placeholder returned instead of a stored secret, and accepted back on update
 #: to mean "leave the stored value alone".
@@ -134,7 +127,6 @@ _STATIC_SPEC: dict[str, Callable[[Any], Any]] = {
     "nuclei.retries": _int_range(0, 5),
     "reporting.pdf_summary": _as_bool,
     "service_probe.backend": _enum(_SERVICE_BACKENDS),
-    "service_probe.shadow": _as_bool,
     "enrichment.cvss4.nvd_api_key": _secret,
 }
 # Per-profile editable leaf → validator (path is profiles.<profile>.<leaf>).
@@ -146,7 +138,6 @@ _PROFILE_SPEC: dict[str, Callable[[Any], Any]] = {
     # configurator names the two accepted values, instead of bouncing off the
     # AppConfig re-validation with a less specific message.
     "top_ports": _int_choices(_NAABU_TOP_PORTS),
-    "nmap_timing": _timing,
 }
 
 EDITABLE_PATHS: list[str] = [
@@ -188,6 +179,18 @@ def _validator_for(path: str) -> Callable[[Any], Any] | None:
     return None
 
 
+def _removed_hint(path: str) -> str | None:
+    """What replaced a setting of the removed Nmap stage (#548), if ``path`` was one."""
+    if path == "service_probe.shadow":
+        return "removed with the Nmap stage; there is nothing to compare Pulse against (docs/nmap-migration.md)"
+    if path.startswith("profiles.") and path.endswith(".nmap_timing"):
+        return (
+            "removed with the Nmap stage; set the profile's pulse.rate / pulse.concurrency "
+            "in the scanner config (docs/nmap-migration.md)"
+        )
+    return None
+
+
 def validate_overrides(data: dict[str, Any]) -> dict[str, Any]:
     """Whitelist + type/range check. Raises ValueError with a readable message
     listing every rejected path. Returns the (normalized) overrides dict."""
@@ -197,7 +200,8 @@ def validate_overrides(data: dict[str, Any]) -> dict[str, Any]:
     for path, value in _flatten(data).items():
         validator = _validator_for(path)
         if validator is None:
-            errors.append(f"{path}: not an editable setting")
+            hint = _removed_hint(path)
+            errors.append(f"{path}: {hint}" if hint else f"{path}: not an editable setting")
             continue
         try:
             validator(value)

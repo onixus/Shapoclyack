@@ -50,7 +50,7 @@ describe("ScanLauncher", () => {
       app_version: "0.45",
       tools: [],
       enrichment: [],
-      scan_config: { profiles: [], nse_profiles: [], stages: {}, service_backend: "pulse" },
+      scan_config: { profiles: [], stages: {}, service_backend: "pulse" },
       runtime: {
         allow_scan_start: true,
         job_execution_mode: jobExecutionMode,

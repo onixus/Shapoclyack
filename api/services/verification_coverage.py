@@ -49,7 +49,10 @@ The evidence, per detector:
     accepted, not merely what was on disk (pulse skips a script that does not
     compile, silently).
 ``nmap-nse``
-    An nmap XML that finished with ``exit="success"``, was run with the
+    Read-only since the Nmap stage was removed (#548): no new run writes the
+    XML, so a finding this detector made is covered only by a run recorded
+    before that, or waived when another detector of the finding covers the same
+    hosts. An nmap XML that finished with ``exit="success"``, was run with the
     script named in ``--script`` (a category such as ``vuln`` does not count:
     which scripts it expanded to is not in the file), and lists the host with
     the port open. A host-level script finding has no port and needs the host.

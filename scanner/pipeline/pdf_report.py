@@ -341,7 +341,7 @@ def write_business_pdf(
         5,
         _safe(
             "This report is generated automatically from Shapoclyack pipeline artifacts. "
-            "CVE matches come from NSE scripts (vuln/vulners/vulscan) and may include "
+            "CVE matches come from Pulse, Nuclei templates and (runs recorded before the Nmap stage was removed) NSE scripts, and may include "
             "version-based associations that require analyst validation. Use only on "
             "assets you are authorized to assess."
         ),

@@ -139,7 +139,7 @@ spec:
             # docs/k8s-hardening.md (#338):
             #
             # capabilities.add NET_RAW, NET_ADMIN — naabu (SYN), pulse (SYN, OS
-            #   fingerprint), nmap -O and fping send raw packets. The image
+            #   fingerprint) and fping send raw packets. The image
             #   grants these to the binaries as file capabilities
             #   (`setcap cap_net_raw,cap_net_admin+eip`, Dockerfile.allinone).
             #   Both have to be in the bounding set: a binary whose file

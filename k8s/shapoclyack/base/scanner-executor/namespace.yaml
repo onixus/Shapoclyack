@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/component: scanner-executor
     # `privileged`, i.e. not enforced, and the only such namespace this
     # repository creates (#338). Not a preference: SYN and ICMP discovery need
-    # NET_RAW, the file capabilities on naabu/pulse/nmap also carry NET_ADMIN,
+    # NET_RAW, the file capabilities on naabu/pulse also carry NET_ADMIN,
     # and Pod Security `baseline` allows neither (its capability allow-list is
     # AUDIT_WRITE, CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL, MKNOD,
     # NET_BIND_SERVICE, SETFCAP, SETGID, SETPCAP, SETUID, SYS_CHROOT). There is

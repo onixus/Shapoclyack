@@ -4,8 +4,6 @@ runtime:
   retries: 1
   timeout_seconds: 600
   nse_timeout_seconds: 240
-  nse_concurrency: 4
-  nse_max_rate: 0
   per_run_output: false
 
 profiles:
@@ -13,23 +11,23 @@ profiles:
     discover_rate: 2000
     port_rate: 2000
     top_ports: 100
-    nmap_timing: T4
-    nse_profile: load
-    nse_concurrency: 4
+    pulse:
+      rate: 2000
+      concurrency: 500
   balanced:
     discover_rate: 2000
     port_rate: 2000
     top_ports: 100
-    nmap_timing: T4
-    nse_profile: load
-    nse_concurrency: 4
+    pulse:
+      rate: 2000
+      concurrency: 500
   fast:
     discover_rate: 2000
     port_rate: 2000
     top_ports: 100
-    nmap_timing: T4
-    nse_profile: load
-    nse_concurrency: 4
+    pulse:
+      rate: 2000
+      concurrency: 500
 
 batching:
   enabled: true
@@ -44,12 +42,6 @@ discovery:
 ports:
   source: naabu
   custom_ports_file: scanner/inputs/ports.txt
-
-nse_profiles:
-  load:
-    scripts: "default"
-    version_detection: true
-    os_detection: false
 
 reporting:
   markdown_summary: true

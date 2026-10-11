@@ -1,7 +1,7 @@
 # The API as it was before #338: it runs scanner.main itself, so its container
 # needs what the scanner-executor has — NET_RAW/NET_ADMIN in the bounding set
 # and allowPrivilegeEscalation: true, without which no_new_privs makes the
-# kernel ignore the file capabilities on naabu/pulse/nmap (the reasoning is in
+# kernel ignore the file capabilities on naabu/pulse (the reasoning is in
 # base/scanner-executor/statefulset.yaml). Seccomp, the read-only image and the
 # rest of base's securityContext stay.
 #

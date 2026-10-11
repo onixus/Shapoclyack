@@ -1,4 +1,4 @@
-"""Build-time enrichment data: provenance manifest and the vulscan refresh.
+"""Build-time enrichment data: provenance manifest.
 
 Both cover the same defect from two ends (#246). A third-party feed going down
 during an image build is tolerated on purpose — and that tolerance had turned
@@ -9,12 +9,10 @@ or on the image said which data it had actually ended up with.
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-import pytest
 
 from scripts.enrichment_manifest import (
     EXIT_DEGRADED,
@@ -203,36 +201,3 @@ def test_cvss4_fetcher_is_importable_as_a_script(tmp_path):
 
     assert proc.returncode == 0, proc.stderr
     assert "ModuleNotFoundError" not in proc.stderr
-
-
-@pytest.mark.skipif(shutil.which("curl") is None, reason="curl not installed")
-def test_vulscan_fetch_falls_back_past_a_challenge_page(tmp_path):
-    """www.computec.ch answers every non-browser client with a Cloudflare
-    challenge, which is what took all eight databases down at once. The fetch
-    must move on to the next mirror — and must never accept an HTML page as a
-    database, which is the failure mode a 200-serving portal would produce."""
-    databases = [
-        "cve", "exploitdb", "openvas", "osvdb",
-        "scipvuldb", "securityfocus", "securitytracker", "xforce",
-    ]
-    blocked = tmp_path / "blocked"
-    mirror = tmp_path / "mirror"
-    blocked.mkdir()
-    mirror.mkdir()
-    for db in databases:
-        (blocked / f"{db}.csv").write_text("<!DOCTYPE html><html>Attention Required</html>", encoding="utf-8")
-        (mirror / f"{db}.csv").write_text(f"1;{db} entry;;;\n", encoding="utf-8")
-    out = tmp_path / "out"
-
-    proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        ["bash", str(REPO_ROOT / "scripts" / "fetch-vulscan-db.sh"), "-o", str(out)],
-        capture_output=True,
-        text=True,
-        check=False,
-        env={"PATH": "/usr/bin:/bin:/usr/local/bin",
-             "VULSCAN_BASE_URLS": f"file://{blocked} file://{mirror}"},
-    )
-
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    for db in databases:
-        assert (out / f"{db}.csv").read_text(encoding="utf-8").startswith("1;")

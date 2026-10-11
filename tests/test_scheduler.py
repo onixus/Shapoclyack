@@ -16,25 +16,18 @@ def _minimal_config(**overrides: object) -> dict:
                 "discover_rate": 1000,
                 "port_rate": 1000,
                 "top_ports": 100,
-                "nmap_timing": "T3",
-                "nse_profile": "baseline",
             },
             "balanced": {
                 "discover_rate": 3000,
                 "port_rate": 3000,
                 "top_ports": 1000,
-                "nmap_timing": "T4",
-                "nse_profile": "baseline",
             },
             "fast": {
                 "discover_rate": 7000,
                 "port_rate": 7000,
                 "top_ports": 1000,
-                "nmap_timing": "T4",
-                "nse_profile": "baseline",
             },
         },
-        "nse_profiles": {"baseline": {"scripts": "default,safe"}},
     }
     base.update(overrides)
     return base

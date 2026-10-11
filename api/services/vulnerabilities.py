@@ -2280,8 +2280,9 @@ class VerificationPlan:
     ``ips``/``names`` are the hosts the detectors observed it on, spelled as
     they saw them — a finding a template matched on a virtual host is re-checked
     on that name, not on the address behind it. ``template_ids`` pins nuclei to
-    the templates that found it, whatever their severity; ``nse`` turns the
-    service probe to ``hybrid`` so the NSE script that found it runs at all.
+    the templates that found it, whatever their severity; ``nse`` records that an
+    NSE script (a run from before the Nmap stage was removed, #548) is among the
+    detectors: nothing can re-run it, so it is judged by ``verification_coverage``.
     """
 
     ips: tuple[str, ...]
@@ -2301,8 +2302,10 @@ class VerificationPlan:
         extra: dict[str, Any] = {"reachability": {"enabled": True}}
         if self.template_ids:
             extra["nuclei"] = {"enabled": True, "template_ids": list(self.template_ids)}
-        if self.nse:
-            extra["service_probe"] = {"backend": "hybrid"}
+        # No service_probe override for ``nse``: the Nmap stage is gone, so a
+        # finding an NSE script made is re-checked by whatever else detected it
+        # (verification_coverage waives the NSE detector when another covers the
+        # same hosts) and otherwise stays inconclusive.
         return extra
 
     def as_detail(self) -> dict[str, Any]:

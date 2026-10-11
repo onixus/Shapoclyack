@@ -157,7 +157,7 @@ jobs:
 
   image:
     # Builds the actual distributed image (no nmap, nmap-vulners or vulscan;
-    # issue #97). This is what ghcr.io/onixus/shapoclyack-{scanner,aio} ship.
+    # issue #97, removed from the product in #548). This is what ghcr.io/onixus/shapoclyack-{scanner,aio} ship.
     name: Image (build, smoke, e2e, scan, SBOM)
     runs-on: ubuntu-latest
     steps:
@@ -187,7 +187,7 @@ jobs:
       - name: Smoke-check toolchain in image
         # naabu/pulse carry cap_net_raw+cap_net_admin as file capabilities
         # (see Dockerfile); --cap-add must match compose / e2e / k8s manifests.
-        # No nmap here: the image does not bundle it (docs/nmap-external.md).
+        # No nmap here: nothing in the product runs it (docs/nmap-migration.md); this keeps it out.
         run: |
           docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN --entrypoint sh network-scan-cli:ci -c '
             set -e

@@ -2,7 +2,7 @@
 
 The API used to tell a remote agent exactly one thing about aggressiveness:
 ``--mode``. Every number behind that word — 2000 packets per second for
-``safe`` discovery, the host concurrency, the nmap timing — was read from the
+``safe`` discovery, the host concurrency, the Pulse pace — was read from the
 ``scanner/config/default.yaml`` on the *agent's own host*. Three consequences,
 all of them the platform operator's problem and none of them theirs to fix:
 the pace could not be set centrally, an agent installed by the customer's own
@@ -124,7 +124,7 @@ PROFILE_FLOORS: dict[str, dict[str, Any]] = {
         "max_host_concurrency": 1,
         "per_host_rate": 25,
         # Service probing is the stage that sends protocol-specific payloads
-        # (nmap NSE, pulse banner grabs). On an OT estate that is the single
+        # (pulse banner grabs and plugins). On an OT estate that is the single
         # most likely thing to put a device into a fault state, and the port
         # inventory a fragile run is really asked for does not need it.
         "skip_service_probe": True,

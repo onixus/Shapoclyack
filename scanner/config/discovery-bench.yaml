@@ -7,8 +7,6 @@ runtime:
   retries: 1
   timeout_seconds: 3600
   nse_timeout_seconds: 120
-  nse_concurrency: 4
-  nse_hosts_per_scan: 16
   discover_concurrency: 8
   ports_concurrency: 4
   per_run_output: false
@@ -19,23 +17,23 @@ profiles:
     discover_rate: 3000
     port_rate: 3000
     top_ports: 100
-    nmap_timing: T4
-    nse_profile: bench
-    nse_concurrency: 4
+    pulse:
+      rate: 2000
+      concurrency: 500
   balanced:
     discover_rate: 6000
     port_rate: 3000
     top_ports: 100
-    nmap_timing: T4
-    nse_profile: bench
-    nse_concurrency: 4
+    pulse:
+      rate: 2000
+      concurrency: 500
   fast:
     discover_rate: 12000
     port_rate: 5000
     top_ports: 100
-    nmap_timing: T4
-    nse_profile: bench
-    nse_concurrency: 4
+    pulse:
+      rate: 2000
+      concurrency: 500
 
 batching:
   enabled: true
@@ -55,12 +53,6 @@ ports:
   source: naabu
   protocol: tcp
   custom_ports_file: scanner/inputs/bench/ports.txt
-
-nse_profiles:
-  bench:
-    scripts: "default"
-    version_detection: true
-    os_detection: false
 
 reporting:
   markdown_summary: true

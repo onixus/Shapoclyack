@@ -54,14 +54,13 @@ and no NodePort (so it does not take the kind stand's port `8080`).
 
 ### A note on NET_RAW/NET_ADMIN and `allowPrivilegeEscalation`
 
-**Default path (Phase 4–5):** service enrichment is **Pulse** + Nuclei, not
-nmap NSE. Caps still matter for:
+Service enrichment is **Pulse** + Nuclei; there is no nmap NSE stage any more
+(#548). Caps still matter for:
 
 | Binary | Why caps |
 |--------|----------|
 | **naabu** | SYN / host discovery |
 | **pulse** | SYN mode and OS fingerprint (connect mode needs no raw caps) |
-| **nmap** | Optional and not in the images (`backend: nmap\|hybrid`, L2 discovery); only with a derived image of your own, see [docs/nmap-external.md](../docs/nmap-external.md) |
 | **fping** | ICMP discovery |
 
 Raw sockets are granted via file capabilities baked into the image at build
@@ -73,7 +72,7 @@ blocks those file capabilities from taking effect on exec, regardless of what
 `capabilities.add` lists; and leaving `NET_ADMIN` out makes the exec itself
 fail with EPERM, since the files carry it. This is a Linux capabilities
 interaction, not a Docker-vs-Kubernetes difference. Don't "fix" it back to
-`false` on any manifest that runs naabu/pulse/nmap directly.
+`false` on any manifest that runs naabu/pulse directly.
 
 Since [#338](https://github.com/onixus/Shapoclyack/issues/338) exactly one pod
 does: the **scanner-executor** (`base/scanner-executor/`), in its own namespace
@@ -88,10 +87,11 @@ snippets and the upgrade steps are in
 contain no Nmap binary, NSE data, or `nmap-vulners`/Vulscan scripts, so the
 Nmap Public Source License's redistribution terms don't apply to those
 artifacts (see [issue #97](https://github.com/onixus/Shapoclyack/issues/97)).
-`0.47-1009-rc1` is the last release that also published `-nmap` tags. To use
-Nmap, derive an image of your own and point the overlay at it:
-[docs/nmap-external.md](../docs/nmap-external.md). The NSE stage and L2
-discovery skip with a warning if Nmap is absent.
+`0.47-1009-rc1` is the last release that also published `-nmap` tags. Nothing
+in the product calls Nmap any more, so a derived image with one gains nothing;
+a ConfigMap that still sets `nmap_timing`, `nse_profiles`, `backend: nmap|hybrid`
+or `shadow` makes the scanner exit with code 2 and the replacement in the log
+([docs/nmap-migration.md](../docs/nmap-migration.md)).
 
 ## Layout
 

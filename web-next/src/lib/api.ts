@@ -1428,7 +1428,7 @@ export type ToolVersion = {
   name: string;
   version: string | null;
   error: string | null;
-  /** Phase 5: true for tools not required on the default Pulse path (e.g. nmap). */
+  /** True for a tool a scan can run without, and for every tool on a pod that only dispatches scans. */
   optional?: boolean;
 };
 
@@ -1453,8 +1453,7 @@ export type EnrichmentDb = {
 
 export type ScanConfigSummary = {
   profiles: string[];
-  nse_profiles: string[];
-  /** service_probe.backend: pulse | nmap | hybrid */
+  /** service_probe.backend; "pulse" is the only one since #548. */
   service_backend?: string;
   stages: Record<string, boolean>;
 };

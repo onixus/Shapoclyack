@@ -22,8 +22,8 @@ whole run on anything else rather than applying the part it recognises.
 
 And one installation-wide console override now reaches every tenant's
 sensors, so for the settings that decide how hard a sensor hits its network
-the host's own file stays the limit: rates, concurrency and
-nmap timing take the lower of the two, nuclei's excluded tags are the union,
+the host's own file stays the limit: rates and
+concurrency take the lower of the two, nuclei's excluded tags are the union,
 and screenshots run only where the host enabled them. An overlay can make a
 sensor gentler, never rougher; a tenant scan policy (#362) lowers it further.
 """
@@ -78,6 +78,11 @@ BASE_CAPABILITY = capability(1)
 CAPABILITIES: tuple[str, ...] = tuple(capability(v) for v in range(1, OVERLAY_VERSION + 1))
 
 _PROFILES = ("safe", "balanced", "fast", "test")
+# ``nmap_timing`` (and ``service_probe.shadow`` below) stay in the allow-list on
+# purpose: a released version's set never changes (see OVERLAY_VERSION), so a
+# document an older API wrote is still *understood*. What they set no longer
+# exists, and the schema refuses the merged config naming the replacement
+# (config_schema._reject_removed_profile_keys, #548) -- the run does not start.
 _PROFILE_LEAVES = ("discover_rate", "port_rate", "top_ports", "nmap_timing")
 _ORG_PROFILE_STAGES = (
     "ownership",
@@ -216,10 +221,6 @@ def _merge(raw: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _timing_level(value: str) -> int:
-    return int(str(value)[1:])
-
-
 def apply_overlay(
     raw: dict[str, Any], overlay: dict[str, Any], host: AppConfig | None = None
 ) -> dict[str, Any]:
@@ -239,10 +240,6 @@ def apply_overlay(
         for leaf in _CEILINGS_PROFILE:
             if leaf in settings:
                 target[leaf] = min(settings[leaf], getattr(own, leaf))
-        if "nmap_timing" in settings:
-            target["nmap_timing"] = min(
-                settings["nmap_timing"], own.nmap_timing, key=_timing_level
-            )
     nuclei = overlay.get("nuclei") or {}
     for leaf in _CEILINGS_NUCLEI:
         if leaf in nuclei:

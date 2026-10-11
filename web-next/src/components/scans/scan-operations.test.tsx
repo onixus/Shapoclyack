@@ -90,7 +90,7 @@ describe("ScanOperations with no sensor", () => {
       app_version: "0.46",
       tools: [],
       enrichment: [],
-      scan_config: { profiles: [], nse_profiles: [], stages: {} },
+      scan_config: { profiles: [], stages: {} },
       runtime: { allow_scan_start: true, job_execution_mode: "agent" },
       inventory: { tenants: 1, agents_total: 0, agents_online: 0 },
       endpoint_inventory: {

@@ -17,14 +17,14 @@ import {
 } from "@/components/ui/select";
 import { useConfig, useUpdateConfig } from "@/hooks/use-config";
 
-const TIMINGS = ["T0", "T1", "T2", "T3", "T4", "T5"];
-const SERVICE_BACKENDS = ["nmap", "pulse", "hybrid"];
+// Pulse is the only service-probe backend; the Nmap stage was removed (#548).
+const SERVICE_BACKENDS = ["pulse"];
 // naabu's -top-ports is a named port set, not a count: only 100 and 1000 are
 // accepted (see NaabuTopPorts in scanner/pipeline/config_schema.py). A number
 // input invites 500, which the API rejects — so offer the two real choices.
 const TOP_PORTS = [100, 1000];
 
-type Widget = "bool" | "int" | "timing" | "backend" | "list" | "text" | "secret" | "topports";
+type Widget = "bool" | "int" | "backend" | "list" | "text" | "secret" | "topports";
 
 // `value` is the effective (or default) value the API reported for this path.
 // Any boolean gets a checkbox: the name-based list below only ever covered the
@@ -33,10 +33,9 @@ type Widget = "bool" | "int" | "timing" | "backend" | "list" | "text" | "secret"
 // mis-typed control makes the setting unchangeable, not merely ugly.
 function widgetFor(path: string, value?: unknown): Widget {
   if (typeof value === "boolean") return "bool";
-  if (path.endsWith(".enabled") || path === "reporting.pdf_summary" || path === "service_probe.shadow") {
+  if (path.endsWith(".enabled") || path === "reporting.pdf_summary") {
     return "bool";
   }
-  if (path.endsWith(".nmap_timing")) return "timing";
   if (path.endsWith(".top_ports")) return "topports";
   if (path === "service_probe.backend" || path.endsWith(".service_backend")) return "backend";
   if (path === "nuclei.severities" || path === "nuclei.exclude_tags") return "list";
@@ -145,23 +144,6 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
                         onCheckedChange={(c) => setValue(path, Boolean(c))}
                         className="border-border data-[state=checked]:bg-sky-500 data-[state=checked]:border-sky-500"
                       />
-                    ) : widget === "timing" ? (
-                      <Select
-                        value={String(values[path] ?? "")}
-                        onValueChange={(v) => setValue(path, v)}
-                        disabled={!canEdit}
-                      >
-                        <SelectTrigger className="w-24 h-8 bg-card border-border text-foreground font-mono text-xs">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent className="bg-card border-border text-foreground font-mono text-xs">
-                          {TIMINGS.map((t) => (
-                            <SelectItem key={t} value={t}>
-                              {t}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
                     ) : widget === "topports" ? (
                       <Select
                         value={String(values[path] ?? "")}

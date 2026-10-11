@@ -1520,7 +1520,7 @@ def test_a_name_out_of_scope_is_refused_not_swapped_for_the_address(tmp_path):
         assert session.query(models.Job).filter(models.Job.tenant_id == tenant_id).count() == 0
 
 
-def test_an_nse_finding_is_re_scanned_with_nse_on(tmp_path):
+def test_an_nse_finding_is_re_scanned_without_asking_for_a_nmap_backend(tmp_path):
     settings, tenant_id = _seed(tmp_path, findings=[NSE])
     approve_scan_scope(settings)
     vuln = _tracked(settings, tenant_id, [NSE])
@@ -1528,7 +1528,8 @@ def test_an_nse_finding_is_re_scanned_with_nse_on(tmp_path):
     job = _dispatch(settings, tenant_id, vuln["vuln_id"])
 
     assert _inputs(settings, job.job_id, "ranges.txt") == [HOST]
-    assert job.scan_options["config_overlay"]["service_probe"] == {"backend": "hybrid"}
+    # The Nmap stage is gone (#548): an NSE detector no longer asks the sensor for a backend.
+    assert "service_probe" not in job.scan_options["config_overlay"]
     assert job.scan_options["config_overlay"]["reachability"] == {"enabled": True}
     # Nothing to pin, and still a verification: asked for v2 explicitly.
     assert "template_ids" not in job.scan_options["config_overlay"]["nuclei"]

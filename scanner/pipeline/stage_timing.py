@@ -23,13 +23,13 @@ logger = logging.getLogger(__name__)
 def process_resources() -> dict[str, float] | None:
     """CPU-seconds and peak memory of this scan and of the tools it ran (#337).
 
-    Per run, not per stage: stages overlap (Pulse and NSE run concurrently),
+    Per run, not per stage: stages overlap (secondary stages can overlap),
     and a child's usage is only credited once it has been waited for, so a
     per-stage split would be wrong in exactly the runs worth measuring. For
     the whole pipeline it is exact, and it is what sizing a sensor needs:
     ``scale_measure runs-dir`` fits CPU-seconds per host from it.
 
-    ``children_max_rss_mb`` is the largest *single* tool process (one nmap,
+    ``children_max_rss_mb`` is the largest *single* tool process (one pulse,
     one nuclei), not the sum of those that ran side by side.
     """
     try:

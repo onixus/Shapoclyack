@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<!-- A run directory as the Nmap stage left it, before it was removed (#548).
+     Synthetic: addresses are RFC 5737/TEST-NET style and the outputs are made
+     up to the shapes the parsers read; it is not a recording of a scan. -->
+<nmaprun scanner="nmap" args="nmap -n -Pn -T4 -sV -O --script vulners,ssl-cert,ssl-enum-ciphers -p 22,443,445 10.0.0.5 -oA /out/tcp_10.0.0.5" version="7.95">
+  <host>
+    <status state="up"/>
+    <address addr="10.0.0.5" addrtype="ipv4"/>
+    <os>
+      <osmatch name="Linux 5.4 - 5.15" accuracy="95"/>
+      <osmatch name="Linux 4.15" accuracy="88"/>
+    </os>
+    <ports>
+      <port protocol="tcp" portid="22">
+        <state state="open"/>
+        <service name="ssh" product="OpenSSH" version="8.2p1 Ubuntu 4ubuntu0.5" extrainfo="Ubuntu Linux; protocol 2.0">
+          <cpe>cpe:/a:openbsd:openssh:8.2p1</cpe>
+        </service>
+        <script id="vulners" output="cpe:/a:openbsd:openssh:8.2p1:&#10;    CVE-2016-10012    9.8    https://vulners.com/cve/CVE-2016-10012&#10;    CVE-2018-15473    5.3    https://vulners.com/cve/CVE-2018-15473"/>
+      </port>
+      <port protocol="tcp" portid="443">
+        <state state="open"/>
+        <service name="https" product="nginx" version="1.18.0"/>
+        <script id="ssl-cert" output="Subject: commonName=internal.local&#10;Issuer: commonName=internal.local&#10;Public Key type: rsa&#10;Public Key bits: 1024&#10;Signature Algorithm: sha1WithRSAEncryption&#10;Not valid before: 2020-01-01T00:00:00&#10;Not valid after:  2021-01-01T00:00:00&#10;"/>
+      </port>
+      <port protocol="tcp" portid="445">
+        <state state="open"/>
+        <service name="microsoft-ds"/>
+        <script id="smb-vuln-ms17-010" output="&#10;  VULNERABLE:&#10;  Remote Code Execution vulnerability in Microsoft SMBv1 servers (ms17-010)&#10;    State: VULNERABLE"/>
+      </port>
+      <port protocol="tcp" portid="9">
+        <state state="closed"/>
+        <service name="discard"/>
+      </port>
+    </ports>
+  </host>
+  <runstats><finished exit="success"/></runstats>
+</nmaprun>

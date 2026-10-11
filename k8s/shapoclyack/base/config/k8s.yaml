@@ -9,9 +9,6 @@ runtime:
   retries: 2
   timeout_seconds: 7200
   nse_timeout_seconds: 600
-  nse_concurrency: 2
-  nse_max_rate: 1500
-  nse_hosts_per_scan: 1
   discover_concurrency: 2
   ports_concurrency: 2
   skip_nse: false
@@ -21,15 +18,11 @@ runtime:
   log_backup_count: 5
 
 profiles:
-  # Phase 4.1: default service_probe.backend is pulse; nse_profile used only for nmap|hybrid.
+  # Pulse is the only service-probe backend; profiles.<mode>.pulse.* sets its pace.
   safe:
     discover_rate: 1000
     port_rate: 1000
     top_ports: 100
-    nmap_timing: T3
-    nse_profile: baseline
-    nse_concurrency: 2
-    nse_max_rate: 500
     pulse:
       concurrency: 300
       rate: 500
@@ -39,10 +32,6 @@ profiles:
     discover_rate: 2000
     port_rate: 2000
     top_ports: 1000
-    nmap_timing: T4
-    nse_profile: vuln-offline
-    nse_concurrency: 2
-    nse_max_rate: 1500
     pulse:
       concurrency: 800
       rate: 2000
@@ -52,10 +41,6 @@ profiles:
     discover_rate: 5000
     port_rate: 5000
     top_ports: 1000
-    nmap_timing: T4
-    nse_profile: vuln-offline
-    nse_concurrency: 4
-    nse_max_rate: 3000
     pulse:
       concurrency: 1200
       rate: 5000
@@ -68,10 +53,6 @@ profiles:
     discover_rate: 4000
     port_rate: 3000
     top_ports: 100
-    nmap_timing: T4
-    nse_profile: baseline
-    nse_concurrency: 4
-    nse_max_rate: 2000
     pulse:
       concurrency: 800
       rate: 2000
@@ -188,11 +169,10 @@ ports:
   top_udp_ports: 100
   udp_probes: true
 
-# Phase 4.1: Pulse default. Override with OCTO_SERVICE_BACKEND=nmap|hybrid for NSE.
+# Pulse is the only service-probe backend (docs/nmap-migration.md).
 # Image bakes /usr/local/bin/pulse; NVD key via NVD_API_KEY secret if cve_online.
 service_probe:
   backend: pulse
-  shadow: false   # true or OCTO_PULSE_SHADOW=1 → dual-run + diff_pulse_nmap.json
   pulse:
     concurrency: 500
     rate: 2000
@@ -203,28 +183,6 @@ service_probe:
     os_mode: sinfp
     cve: true
     cve_online: false
-
-nse_profiles:
-  baseline:
-    scripts: "default,safe"
-    version_detection: true
-    os_detection: true
-  vuln_legacy:
-    scripts: "default,safe,vuln,vulners"
-    version_detection: true
-    os_detection: true
-  vuln:
-    scripts: "default,safe,vuln,vulners"
-    version_detection: true
-    os_detection: true
-  vuln-offline:
-    scripts: "default,safe,vuln,vulscan/vulscan.nse"
-    version_detection: true
-    os_detection: true
-  service_specific:
-    scripts: "http-*,ssl-cert,smb-*,ssh-*,dns-*"
-    version_detection: true
-    os_detection: false
 
 reporting:
   markdown_summary: true

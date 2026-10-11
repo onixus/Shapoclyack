@@ -46,8 +46,8 @@ jobs:
       matrix:
         include:
           # Container packages are Shapoclyack-scoped (the legacy octo-man GHCR package is gone).
-          # The images ship without Nmap (NPSL licence, issue #97); docs/nmap-external.md
-          # explains how to add your own.
+          # The images ship without Nmap (NPSL licence, issue #97) and the product no longer
+          # runs it at all (docs/nmap-migration.md).
           - name: scanner
             dockerfile: Dockerfile
             image: ghcr.io/onixus/shapoclyack-scanner

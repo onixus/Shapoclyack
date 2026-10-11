@@ -26,7 +26,7 @@ function status(enrichment: EnrichmentDb[]): SystemStatus {
     app_version: "0.44-0907",
     tools: [],
     enrichment,
-    scan_config: { profiles: [], nse_profiles: [], stages: {} },
+    scan_config: { profiles: [], stages: {} },
     runtime: {
       allow_scan_start: true,
       job_execution_mode: "local",

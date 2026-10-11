@@ -2,7 +2,7 @@
 
 A scan learns what each open port runs — ``OpenSSH 8.2p1 Ubuntu 4ubuntu0.5``,
 ``nginx 1.18.0`` — and until this module that knowledge lived only in the run
-directory (``services.json`` from Pulse, the nmap XML), which
+directory (``services.json`` from Pulse; the nmap XML of older runs), which
 ``run_retention_days`` deletes. The findings a scan produced were kept; the
 facts that would let a *later* CVE be checked against the same host were not.
 ``docs/retro-cve-matching.md`` is what these rows are for.
@@ -15,7 +15,8 @@ for an installation upgrading into this feature
 (``scripts/backfill-asset-services.py``).
 
 **Which record wins.** A run can carry the same listener twice — Pulse's
-``services.json`` and nmap's XML on a hybrid or shadow run. They are merged:
+``services.json`` and nmap's XML (a run recorded before the Nmap stage was
+removed, #548, or backfilled from one). They are merged:
 nmap's CPE names and its ``version`` string (which is where nmap puts the
 distribution revision) are kept, Pulse fills what nmap left empty, and the raw
 banner is preferred over nmap's ``extrainfo``. A listener is identified by
@@ -47,7 +48,7 @@ from api.services import runs as runs_service
 from api.services import vulnerabilities as vulns_service
 from api.settings import Settings
 from scanner.pipeline import distro_revision
-from scanner.pipeline.report import _parse_nmap_xml
+from scanner.pipeline.legacy_nmap import parse_nmap_xml
 from scanner.pipeline.service_schema import OsRecord, ServiceRecord
 
 LOG = logging.getLogger("shapoclyack.asset-services")
@@ -159,7 +160,7 @@ def fingerprints_from_run_dir(run_dir: Path) -> list[dict[str, Any]]:
 
     nmap_dir = run_dir / "nmap"
     if nmap_dir.is_dir():
-        services, _, _ = _parse_nmap_xml(nmap_dir)
+        services, _, _ = parse_nmap_xml(nmap_dir)
         for entry in services:
             fold(_normalized(entry, source="nmap"))
 
@@ -212,7 +213,7 @@ def os_guesses_from_run_dir(run_dir: Path) -> dict[str, dict[str, Any]]:
 
     nmap_dir = run_dir / "nmap"
     if nmap_dir.is_dir():
-        _, os_matches, _ = _parse_nmap_xml(nmap_dir)
+        _, os_matches, _ = parse_nmap_xml(nmap_dir)
         for entry in os_matches:
             offer(str(entry.get("host") or ""), str(entry.get("name") or ""), entry.get("accuracy"), "nmap")
     raw_os = _load_json(run_dir / "os.json")

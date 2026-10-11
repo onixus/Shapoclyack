@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from scanner.pipeline.config_schema import (
-    PulseProbeConfig,
     ProfilePulseConfig,
+    PulseProbeConfig,
+    RemovedNmapSettingError,
+    check_service_probe_env,
     load_config,
     merge_pulse_config,
     resolve_service_probe_backend,
@@ -22,8 +26,6 @@ def test_default_yaml_backend_is_pulse():
         )
     )
     assert cfg.service_probe.backend == "pulse"
-    assert "vuln_legacy" in cfg.nse_profiles
-    assert cfg.profiles["balanced"].nse_profile == "vuln_legacy"
     assert cfg.profiles["safe"].pulse.concurrency == 300
     assert cfg.profiles["safe"].pulse.os_mode == "sinfp"
     assert cfg.profiles["balanced"].pulse.host_parallel == 16
@@ -102,86 +104,36 @@ def test_profile_pulse_config_bounds_match_base():
         )
 
 
-def test_resolve_service_probe_backend_precedence():
-    # env wins over profile wins over YAML
-    r = resolve_service_probe_backend(
-        env_backend="nmap",
-        profile_backend="hybrid",
-        yaml_backend="pulse",
-        yaml_shadow=False,
-        env_shadow="",
-        skip_nse=False,
-    )
-    assert r.backend == "nmap"
-    assert r.run_nmap_nse is True
-    assert r.run_pulse is False
-    assert r.report_primary_pulse is False
-
-    r = resolve_service_probe_backend(
-        env_backend="",
-        profile_backend="hybrid",
-        yaml_backend="pulse",
-        yaml_shadow=False,
-        env_shadow="",
-        skip_nse=False,
-    )
-    assert r.backend == "hybrid"
-    assert r.run_pulse is True
-    assert r.run_nmap_nse is True
-    assert r.report_primary_pulse is True
-
-    r = resolve_service_probe_backend(
-        env_backend="",
-        profile_backend=None,
-        yaml_backend="pulse",
-        yaml_shadow=False,
-        env_shadow="",
-        skip_nse=False,
-    )
+def test_resolve_service_probe_backend_is_pulse_unless_skipped():
+    r = resolve_service_probe_backend(env_backend="", skip_nse=False)
+    assert (r.backend, r.run_pulse, r.report_primary_pulse) == ("pulse", True, True)
+    r = resolve_service_probe_backend(env_backend="pulse", env_shadow="0", skip_nse=False)
     assert r.backend == "pulse"
+    # --skip-nse is the ports-only L1 switch: no probe, report preference unchanged.
+    r = resolve_service_probe_backend(env_backend="", skip_nse=True)
+    assert (r.run_pulse, r.report_primary_pulse) == (False, True)
 
 
-def test_resolve_service_probe_backend_shadow_forces_dual_run():
-    r = resolve_service_probe_backend(
-        env_backend="nmap",
-        profile_backend=None,
-        yaml_backend="pulse",
-        yaml_shadow=True,
-        env_shadow="",
-        skip_nse=False,
-    )
-    assert r.backend == "nmap"
-    assert r.shadow is True
-    assert r.run_pulse is True
-    assert r.run_nmap_nse is True
-    # Shadow forces both stages to run, but report preference still follows
-    # the resolved backend, not the shadow flag.
-    assert r.report_primary_pulse is False
+@pytest.mark.parametrize("backend", ["nmap", "hybrid", "NMAP", " hybrid ", "bogus"])
+def test_env_service_backend_other_than_pulse_is_refused(backend):
+    """#548: it used to warn and fall back to pulse for an unknown value, and
+    ran nmap for the known ones. Neither is possible now; silently running Pulse
+    for ``nmap`` would hide that the operator's choice has no effect."""
+    with pytest.raises(RemovedNmapSettingError) as exc:
+        resolve_service_probe_backend(env_backend=backend, skip_nse=False)
+    assert "OCTO_SERVICE_BACKEND" in str(exc.value)
+    assert "docs/nmap-migration.md" in str(exc.value)
+    with pytest.raises(RemovedNmapSettingError):
+        check_service_probe_env(backend)
 
 
-def test_resolve_service_probe_backend_skip_nse_disables_both():
-    r = resolve_service_probe_backend(
-        env_backend="",
-        profile_backend=None,
-        yaml_backend="hybrid",
-        yaml_shadow=True,
-        env_shadow="",
-        skip_nse=True,
-    )
-    assert r.run_pulse is False
-    assert r.run_nmap_nse is False
+@pytest.mark.parametrize("value", ["1", "true", "YES", "on"])
+def test_env_pulse_shadow_is_refused(value):
+    with pytest.raises(RemovedNmapSettingError) as exc:
+        resolve_service_probe_backend(env_backend="", env_shadow=value, skip_nse=False)
+    assert "OCTO_PULSE_SHADOW" in str(exc.value)
 
 
-def test_resolve_service_probe_backend_unknown_falls_back_to_pulse():
-    warnings: list[str] = []
-    r = resolve_service_probe_backend(
-        env_backend="bogus",
-        profile_backend=None,
-        yaml_backend="pulse",
-        yaml_shadow=False,
-        env_shadow="",
-        skip_nse=False,
-        warn=warnings.append,
-    )
-    assert r.backend == "pulse"
-    assert warnings
+@pytest.mark.parametrize("value", ["", "0", "false", "off"])
+def test_env_pulse_shadow_off_is_fine(value):
+    check_service_probe_env("", value)

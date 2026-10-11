@@ -396,8 +396,8 @@ def start_scan(
     surface = scan_surface.resolve(
         request.surface, request.ranges, request.domains
     )
-    # A fragile (OT/ICS) policy turns the service-probe stage off: nmap's NSE
-    # scripts and pulse's banner grabs are the packets that put a PLC into a
+    # A fragile (OT/ICS) policy turns the service-probe stage off: pulse's
+    # banner grabs and plugins are the packets that put a PLC into a
     # fault state, and the port inventory a fragile run is really asked for
     # does not need them. Expressed on the command line as well as in the
     # policy document the scanner applies, so a reader of the job — and the

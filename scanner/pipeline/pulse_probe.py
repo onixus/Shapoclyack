@@ -1,4 +1,4 @@
-"""Pulse service/OS probe stage (nmap alternative for enrichment).
+"""Pulse service/OS probe stage (the only service-probe backend since #548).
 
 Invokes the Pulse CLI (https://github.com/onixus/GenDec) against hosts that
 already have open ports from naabu, writes canonical artifacts:
@@ -21,13 +21,12 @@ Exact planning, resume and diagnostic contracts: docs/pulse-endpoints.md.
 
 ``--os`` needs raw sockets. When pulse refuses for that reason the stage does
 not fail: it drops ``--os`` for the rest of the run and keeps services,
-banners and CVEs (mirrors nse.py, which drops nmap ``-O`` when not root).
+banners and CVEs.
 
-Does **not** replace NSE scripts (ssl-enum-ciphers, vulners, …). Use
-``service_probe.backend: hybrid`` or ``nmap`` when those are required. What it
-does replace of ``default,safe`` is the part Rhai plugins can do from inside
-Pulse's sandbox (#544): ``--script-dir`` hands over ``pulse_data/plugins/`` --
-see ``pulse_plugins.py`` and docs/pulse-plugins.md.
+There are no NSE scripts any more (docs/nmap-migration.md). What is left of
+``default,safe`` is the part Rhai plugins can do from inside Pulse's sandbox
+(#544): ``--script-dir`` hands over ``pulse_data/plugins/`` -- see
+``pulse_plugins.py`` and docs/pulse-plugins.md.
 
 Does **not** invoke Pulse product features that duplicate Shapoclyack:
 ``pulse monitor``, ``--server``, ``--alert-*``, ``--inventory``, and bare
@@ -116,7 +115,7 @@ SERVICES_DB = Path(__file__).resolve().parent / "pulse_data" / "services.tsv"
 PROBE_DB = Path(__file__).resolve().parent / "pulse_data" / "probes.json"
 
 #: The only OS engine the adapter runs. ``nmap``/``auto`` make Pulse read
-#: ``nmap-os-db`` from the host.
+#: ``nmap-os-db`` from the host's Nmap install (NPSL data, #543).
 OS_MODE = "sinfp"
 
 
@@ -768,13 +767,13 @@ def load_service_artifacts(
 def sync_report_primary_marker(pulse_dir: Path, report_primary: bool | None) -> None:
     """Write or remove ``pulse/REPORT_PRIMARY`` to match ``report_primary``.
 
-    When ``report_primary`` is None, falls back to ``OCTO_SERVICE_BACKEND`` in
-    {pulse, hybrid}. Callers that already know the resolved backend (e.g.
+    When ``report_primary`` is None, falls back to ``OCTO_SERVICE_BACKEND`` being
+    ``pulse``. Callers that already know the resolved backend (e.g.
     scanner/main.py) should always pass an explicit bool.
     """
     if report_primary is None:
         backend = os.environ.get("OCTO_SERVICE_BACKEND", "").strip().lower()
-        report_primary = backend in ("pulse", "hybrid")
+        report_primary = backend == "pulse"
     marker = pulse_dir / "REPORT_PRIMARY"
     if report_primary:
         marker.write_text("pulse\n", encoding="utf-8")
@@ -878,15 +877,14 @@ def _run_pulse_probe(
 
     ``report_primary``: when True, write ``pulse/REPORT_PRIMARY`` so report.py
     prefers services.json/os.json. When None, fall back to
-    ``OCTO_SERVICE_BACKEND`` in {pulse, hybrid}.
+    ``OCTO_SERVICE_BACKEND`` being ``pulse``.
 
     Raises ``FileNotFoundError`` when there is work to do and no pulse binary:
     Pulse is the default backend and the only source of services on that path,
     so a missing binary is a deployment error to surface, not a stage to skip.
-    Deliberately not a silent fallback to nmap -- an image built with
-    ``--build-arg INSTALL_PULSE=0`` would then produce a scan with a different
-    finding set under the same profile, and nobody would see it happen. The
-    message names both fixes instead.
+    Deliberately not a silent skip -- an image built with
+    ``--build-arg INSTALL_PULSE=0`` would produce a scan with a different
+    finding set under the same profile, and nobody would see it happen.
     Raises ``PulseCrashLoopError`` after ``MAX_CONSECUTIVE_CRASHED_CHUNKS``
     chunks in a row end in a pulse exit without JSON, and its subclass
     ``PulseTimeoutLoopError`` after ``MAX_CONSECUTIVE_TIMED_OUT_CHUNKS`` chunks
@@ -1038,14 +1036,12 @@ def _run_pulse_probe(
 
     if not _pulse_available(pulse_bin):
         raise FileNotFoundError(
-            f"pulse binary not found ({pulse_bin!r}) and service_probe.backend "
-            "asks for it, so this run would report no services at all. Either "
-            "install it (scripts/install-pulse.sh, or point OCTO_PULSE_BIN / "
-            "service_probe.pulse.bin at an existing binary), or switch the "
-            "backend to nmap (OCTO_SERVICE_BACKEND=nmap / service_probe."
-            "backend: nmap) on a sensor that has nmap installed (docs/nmap-external.md). An image built with "
-            "--build-arg INSTALL_PULSE=0 ships no pulse by design and must be "
-            "configured that way; see docs/pulse-backend.md."
+            f"pulse binary not found ({pulse_bin!r}) and Pulse is the only service-probe "
+            "backend, so this run would report no services at all. Install it "
+            "(scripts/install-pulse.sh, or point OCTO_PULSE_BIN / "
+            "service_probe.pulse.bin at an existing binary) or run ports-only with "
+            "--skip-nse. An image built with --build-arg INSTALL_PULSE=0 ships no "
+            "pulse by design; see docs/pulse-backend.md."
         )
 
     script_dir = str(plugin_staging) if loaded else None
@@ -1150,8 +1146,7 @@ def _run_pulse_probe(
         # pulse aborts the whole invocation -- not just OS detection -- when
         # --os cannot open raw sockets (unprivileged host install, a pod
         # without NET_RAW). Losing services, banners and CVEs over a missing
-        # OS guess is the wrong trade, and nse.py already makes the same call
-        # for nmap -O. Drop --os for the rest of the run and ask again now.
+        # OS guess is the wrong trade. Drop --os for the rest of the run and ask again now.
         if (
             returncode != 0
             and not payload

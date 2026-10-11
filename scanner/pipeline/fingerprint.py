@@ -33,7 +33,7 @@ another port, another address, a host name -- is recorded as
 contacts nothing the run did not already reach, and a name is the
 virtual-host case, which is a target of its own. The client ignores ``HTTP(S)_PROXY`` (``trust_env``
 off): scan traffic must not go through whatever proxy the sensor's
-environment names. NSE (``nse.py``) emits no structured HTTP data this could
+environment names. Pulse emits no structured HTTP data this could
 reuse, so this is the one HTTP client per endpoint; a ``/favicon.ico`` hash or
 a probe of a known login path would identify more and would be a request of
 its own, which is not made.

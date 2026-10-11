@@ -81,7 +81,8 @@ def test_default_nuclei_enabled():
 def test_nse_rows_keep_the_protocol_nmap_saw_them_on(tmp_path):
     """A UDP finding must never be judged by a TCP re-check (#451): the row
     says which one it was."""
-    from scanner.pipeline.report import _build_vulnerabilities, _parse_nmap_xml
+    from scanner.pipeline.legacy_nmap import parse_nmap_xml
+    from scanner.pipeline.report import _build_vulnerabilities
 
     nmap = tmp_path / "nmap"
     nmap.mkdir()
@@ -95,7 +96,7 @@ def test_nse_rows_keep_the_protocol_nmap_saw_them_on(tmp_path):
         "</ports></host></nmaprun>",
         encoding="utf-8",
     )
-    _services, _os, scripts = _parse_nmap_xml(nmap)
+    _services, _os, scripts = parse_nmap_xml(nmap)
     rows = {row["cve"]: row for row in _build_vulnerabilities(scripts)}
     assert rows["CVE-2023-0001"]["protocol"] == "udp"
     assert rows["CVE-2023-0002"]["protocol"] == "tcp"
