@@ -11,10 +11,15 @@ Fallback paths (Phase 4): when nmap XML has no SSL scripts (Pulse backend,
 1. **Pulse TLS JSON** (preferred) — if ``pulse/tls.json`` or ``pulse/raw.json``
    contains a ``tls`` array from Pulse ``--cve`` / TLS probe, convert those
    cert/weak-protocol fields into the same finding shape (``source: pulse-tls``).
+   Pulse's TLS probe covers only some ports, so with ``probe_fallback`` the
+   stdlib probe adds the open ``probe_tls_ports`` Pulse has no row for (those rows
+   carry ``source: pulse-tls-probe``). A ``tls[]`` row may carry a suite
+   ``enumeration`` (expected GenDec#34); suites are then graded A-F here, by
+   ``tls_grading``, and fed to the same ``_classify_ciphers`` as nmap's.
 2. **stdlib probe** — when ``probe_fallback`` is enabled and Pulse TLS is
    missing, open a direct handshake via ``tls_probe`` (``source: pulse-tls-probe``).
 
-Does not replace full nmap cipher grading; covers cert expiry, self-signed
+Without a suite enumeration there is no cipher grading on the Pulse path; it covers cert expiry, self-signed
 heuristic, key and signature strength, and weak protocol acceptance. The probe
 also judges chain trust (``cert_untrusted``, by ``chain_trust`` mode), the
 validity of the verified chain (``cert_chain_expired``) and tries TLS 1.0/1.1
@@ -84,6 +89,7 @@ FQDN; that is not adding targets.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 import xml.etree.ElementTree as ET  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
@@ -100,6 +106,7 @@ from .cert_names import dns_name_from, expected_names, hostname_mismatch
 from .cert_strength import cert_strength_issues
 from .config_schema import TlsPostureConfig
 from .pulse_probe import load_pulse_tls_artifact
+from .tls_enumeration import parse_enumeration
 from .tls_probe import _parse_tls_endpoints, probe_tls_endpoints, write_tls_probe_json
 from .utils import save_json, write_lines
 
@@ -561,10 +568,31 @@ def findings_from_pulse_tls(
                 }
             )
 
+        # Suite enumeration (expected GenDec#34, see tls_enumeration): graded on our
+        # side and classified by the very function the nmap path uses. Not
+        # complete -> every finding drawn from it needs confirming.
+        try:
+            enumeration = parse_enumeration(row)
+        except Exception:  # noqa: BLE001 -- fail-soft: the enumeration is an optional extra of a
+            # producer we do not control; a row it garbles keeps its certificate findings
+            LOG.warning("tls_posture: unreadable suite enumeration for %s:%s ignored", ip, port, exc_info=True)
+            enumeration = None
+        enum_weak_versions: set[str] = set()
+        if enumeration is not None:
+            enum_issues = _classify_ciphers(enumeration.versions)
+            for issue in enum_issues:
+                if not enumeration.complete:
+                    issue["requires_confirmation"] = True
+                if issue["kind"] == "weak_protocol":
+                    enum_weak_versions.add(issue["version"])
+            issues.extend(enum_issues)
+
         weak_accepted = row.get("accepts_weak_protocols") or []
         if isinstance(weak_accepted, list):
             for proto in weak_accepted:
                 label = _normalize_proto_label(str(proto))
+                if label in enum_weak_versions:
+                    continue  # the enumeration already says it, with its suites
                 if label in _WEAK_PROTOCOLS or str(proto).upper().startswith("TLSV1"):
                     issues.append(
                         {
@@ -594,7 +622,9 @@ def findings_from_pulse_tls(
                 )
 
         cipher_versions: list[dict[str, Any]] = []
-        if neg_label:
+        if enumeration is not None:
+            cipher_versions = enumeration.versions
+        elif neg_label:
             cipher_versions.append(
                 {"version": neg_label, "ciphers": [], "least_strength": None}
             )
@@ -608,6 +638,7 @@ def findings_from_pulse_tls(
             "issues": issues,
             "source": "pulse-tls",
             "negotiated_protocol": neg_label,
+            **({"enumeration_complete": enumeration.complete} if enumeration is not None else {}),
             "accepts_weak_protocols": [
                 _normalize_proto_label(str(p)) for p in (weak_accepted or [])
             ]
@@ -748,6 +779,60 @@ def _persist(output_dir: Path, result: dict[str, Any]) -> None:
     write_lines(output_dir / "tls_posture_findings.txt", lines)
 
 
+def _canonical_host(host: str) -> str:
+    """IP literals compare in one spelling (``::1`` == ``0:0:0:0:0:0:0:1``); names as they are."""
+    try:
+        return str(ipaddress.ip_address(host.strip()))
+    except ValueError:
+        return host.strip()
+
+
+def _pulse_gap_endpoints(
+    open_ports: list[str] | None, config: TlsPostureConfig, covered: set[tuple[str, str]]
+) -> list[str]:
+    """Open ``probe_tls_ports`` endpoints that Pulse returned no ``tls[]`` row for.
+
+    Empty unless ``probe_fallback`` is on. Returned as ``host:port`` strings.
+    """
+    if not config.probe_fallback or not open_ports:
+        return []
+    covered = {(_canonical_host(h), p) for h, p in covered}
+    return [
+        f"{host}:{port}"  # parse_endpoint splits on the LAST colon, so a bare IPv6 host survives
+        for host, port in _parse_tls_endpoints(open_ports, set(config.probe_tls_ports))
+        if (_canonical_host(host), str(port)) not in covered
+    ]
+
+
+def _probe_endpoints(
+    endpoints: list[str],
+    hostnames: dict[str, Any] | None,
+    config: TlsPostureConfig,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    # Send the FQDN that resolved to each address in SNI: dialling an address
+    # gets the default virtual host's certificate, which cannot answer "does
+    # this endpoint serve the right certificate for the name we scanned".
+    sni_by_host = {
+        ip: names[0]
+        for ip, entry in (hostnames or {}).items()
+        if (names := expected_names(entry))
+    }
+    return probe_tls_endpoints(
+        endpoints,
+        sni_by_host=sni_by_host,
+        max_targets=config.max_targets,
+        timeout_seconds=config.probe_timeout_seconds,
+        concurrency=config.probe_concurrency,
+        expiring_soon_days=config.expiring_soon_days,
+        tls_ports=set(config.probe_tls_ports),
+        now=now,
+        probe_legacy_protocols=config.probe_legacy_protocols,
+        ca_bundle=config.ca_bundle,
+        chain_trust=config.chain_trust,
+    )
+
+
 def check_tls_posture(
     nmap_dir: Path,
     config: TlsPostureConfig,
@@ -850,10 +935,30 @@ def check_tls_posture(
             max_targets=config.max_targets,
         )
         if pulse_findings:
+            # Pulse probes TLS only on a couple of ports (443/8443 as of v1.3.0: measured
+            # live on the corpus stand with extra openssl s_server listeners on 443, 8443,
+            # 465, 636, 993 and 9443, recorded in docs/adr/0002-replacing-nmap-functions.md,
+            # section "TLS (#545)" -- not in the corpus fixtures); the other
+            # ``probe_tls_ports`` that are open would go unchecked, so
+            # the stdlib probe fills them in. Its rows keep their own
+            # ``source: pulse-tls-probe``; the run-level ``source`` stays pulse-tls.
+            pulse_count = len(target_keys) or len(pulse_findings)
+            gap_ports = _pulse_gap_endpoints(
+                open_ports, config, {(r["host"], str(r["port"])) for r in pulse_findings}
+            )
+            budget = max(0, config.max_targets - len(pulse_findings))
+            probe_rows: list[dict[str, Any]] = []
+            if gap_ports and budget:
+                probe_rows = _probe_endpoints(gap_ports[:budget], hostnames, config, now)
+                write_tls_probe_json(output_dir, probe_rows)
+            pulse_findings = sorted(
+                [*pulse_findings, *probe_rows], key=lambda r: (r["host"], int(r["port"]))
+            )
+            truncated = truncated or len(gap_ports) > budget
             _apply_hostname_mismatch(
                 pulse_findings, hostnames, enabled=config.hostname_mismatch
             )
-            result["targets_considered"] = min(len(target_keys) or len(pulse_findings), config.max_targets)
+            result["targets_considered"] = min(pulse_count + len(gap_ports), config.max_targets)
             result["checked_count"] = len(pulse_findings)
             result["findings"] = pulse_findings
             result["truncated"] = truncated
@@ -861,8 +966,9 @@ def check_tls_posture(
             with_issues = sum(1 for f in pulse_findings if f.get("issues"))
             _persist(output_dir, result)
             LOG.info(
-                "tls_posture: %d endpoint(s) checked (pulse-tls) -> %d with finding(s)%s",
+                "tls_posture: %d endpoint(s) checked (pulse-tls, %d by probe) -> %d with finding(s)%s",
                 len(pulse_findings),
+                len(probe_rows),
                 with_issues,
                 " [truncated]" if truncated else "",
             )
@@ -882,27 +988,7 @@ def check_tls_posture(
 
     considered = _parse_tls_endpoints(open_ports, set(config.probe_tls_ports))
     truncated = len(considered) > config.max_targets
-    # Send the FQDN that resolved to each address in SNI: dialling an address
-    # gets the default virtual host's certificate, which cannot answer "does
-    # this endpoint serve the right certificate for the name we scanned".
-    sni_by_host = {
-        ip: names[0]
-        for ip, entry in (hostnames or {}).items()
-        if (names := expected_names(entry))
-    }
-    probe_findings = probe_tls_endpoints(
-        open_ports,
-        sni_by_host=sni_by_host,
-        max_targets=config.max_targets,
-        timeout_seconds=config.probe_timeout_seconds,
-        concurrency=config.probe_concurrency,
-        expiring_soon_days=config.expiring_soon_days,
-        tls_ports=set(config.probe_tls_ports),
-        now=now,
-        probe_legacy_protocols=config.probe_legacy_protocols,
-        ca_bundle=config.ca_bundle,
-        chain_trust=config.chain_trust,
-    )
+    probe_findings = _probe_endpoints(open_ports, hostnames, config, now)
     _apply_hostname_mismatch(probe_findings, hostnames, enabled=config.hostname_mismatch)
     write_tls_probe_json(output_dir, probe_findings)
 
