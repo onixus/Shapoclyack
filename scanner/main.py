@@ -6,8 +6,7 @@ import logging
 import os
 import sys
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
-from contextvars import ContextVar, copy_context
+from contextvars import ContextVar
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -23,6 +22,8 @@ from scanner.pipeline.config_schema import (
     load_config,
     merge_nuclei_config,
     merge_pulse_config,
+    RemovedNmapSettingError,
+    check_service_probe_env,
     resolve_service_probe_backend,
 )
 from scanner.pipeline.config_overlay import (
@@ -58,7 +59,6 @@ from scanner.pipeline.hostnames import (
     enrich_discovery_hostnames,
     merge_name_lists,
 )
-from scanner.pipeline.nse import run_nse
 from scanner.pipeline.ownership import resolve_ownership
 from scanner.pipeline.ports import custom_tcp_ports, fast_port_scan
 from scanner.pipeline.coverage_tracker import expand_target_ips
@@ -70,7 +70,6 @@ from scanner.pipeline.scan_policy import (
     load_policy as load_scan_policy,
     require_secondary_active_stage_policy,
 )
-from scanner.pipeline.pulse_shadow import write_pulse_nmap_diff
 from scanner.pipeline.alerts import send_alerts
 from scanner.pipeline.defectdojo import export_to_defectdojo
 from scanner.pipeline.pdf_report import write_business_pdf
@@ -84,7 +83,7 @@ from scanner.pipeline.stage_timing import StageTimer
 from scanner.pipeline.utils import load_json, load_yaml, read_lines, save_json, setup_logging, write_lines
 
 # Active run timer (set for the duration of _run_pipeline). ContextVar so the
-# pulse+nse ThreadPoolExecutor workers still see the same collector.
+# ThreadPoolExecutor workers still see the same collector.
 _STAGE_TIMER: ContextVar[StageTimer | None] = ContextVar("stage_timer", default=None)
 
 
@@ -154,9 +153,8 @@ def parse_args() -> argparse.Namespace:
         "--skip-nse",
         action="store_true",
         help=(
-            "Ports-only L1: skip Pulse and nmap NSE (discover + ports + reports). "
-            "Default path already uses Pulse without nmap; use backend nmap|hybrid "
-            "for full NSE. Re-run with --resume to enrich after ports-only."
+            "Ports-only L1: skip the Pulse service probe (discover + ports + reports). "
+            "Re-run with --resume to enrich after ports-only."
         ),
     )
     parser.add_argument(
@@ -259,6 +257,15 @@ def _config_for_run(args: argparse.Namespace) -> tuple[AppConfig, str, str]:
     ``--delta``, and the tenant's scan policy last (#362) — so neither the
     console's overrides nor an intent can lift a rate above the ceiling.
     """
+    # Before anything else is read or any stage runs: a sensor started with the
+    # removed Nmap backend in its environment stops here (#548), not after
+    # discovery and ports have already spent their time.
+    try:
+        check_service_probe_env(
+            os.environ.get("OCTO_SERVICE_BACKEND", ""), os.environ.get("OCTO_PULSE_SHADOW", "")
+        )
+    except RemovedNmapSettingError as exc:
+        raise _RunConfigError(str(exc)) from exc
     raw = load_yaml(Path(args.config))
     overlay_path = getattr(args, "config_overlay", None)
     if overlay_path:
@@ -905,56 +912,42 @@ def _run_pipeline_body(
     alive_hosts = _run_stage("verify_alive", _verify_alive)
 
     skip_nse = args.skip_nse or runtime.skip_nse
+    # Pre-#548 runs kept Nmap XML in <run>/nmap/. Nothing writes it now; the
+    # path is still handed to the TLS-posture and report stages so that
+    # --resume / a rebuild of an old run directory reads what is there.
     nmap_dir = paths.output_dir / "nmap"
-    # service_probe.backend: pulse (Phase 4.1 default) | nmap | hybrid.
-    # Precedence: OCTO_SERVICE_BACKEND > profiles.<mode>.service_backend > YAML.
+    # service_probe.backend: pulse is the only value. The schema has already
+    # refused nmap/hybrid/shadow in the YAML and _config_for_run the environment.
     resolution = resolve_service_probe_backend(
         env_backend=os.environ.get("OCTO_SERVICE_BACKEND", ""),
-        profile_backend=profile.service_backend,
-        yaml_backend=config.service_probe.backend,
-        yaml_shadow=config.service_probe.shadow,
         env_shadow=os.environ.get("OCTO_PULSE_SHADOW", ""),
         skip_nse=skip_nse,
-        warn=lambda msg: logging.warning(msg),
     )
-    service_backend = resolution.backend
-    shadow = resolution.shadow
-    run_pulse = resolution.run_pulse
-    run_nmap_nse = resolution.run_nmap_nse
-    report_primary_pulse = resolution.report_primary_pulse
+    # A run directory recorded before the Nmap stage was removed (Nmap XML, no
+    # pulse/REPORT_PRIMARY) is a run whose report was built from that XML.
+    # Resuming it must not flip its services/OS to Pulse's, so no marker is
+    # written and Pulse's output stays beside it, as in a pre-#548 shadow run.
+    legacy_nmap_run = (
+        nmap_dir.is_dir()
+        and any(nmap_dir.rglob("*.xml"))
+        and not (paths.output_dir / "pulse" / "REPORT_PRIMARY").exists()
+    )
+    if legacy_nmap_run:
+        logging.info("resuming a run recorded before the Nmap stage was removed: reports keep reading its Nmap XML")
+    report_primary_pulse = resolution.report_primary_pulse and not legacy_nmap_run
 
-    # Keep pulse/REPORT_PRIMARY in sync with the *resolved* backend on every
+    # Keep pulse/REPORT_PRIMARY in sync with the resolved backend on every
     # invocation, not just when the pulse stage itself runs -- otherwise a
-    # --resume that switches the backend away from pulse/hybrid leaves a
-    # stale marker from an earlier run and report.py silently keeps
-    # preferring outdated Pulse data (see build_reports' report_primary arg).
+    # --resume of a pre-#548 run directory leaves a stale marker from an
+    # earlier run (see build_reports' report_primary arg).
     (paths.output_dir / "pulse").mkdir(parents=True, exist_ok=True)
     sync_report_primary_marker(paths.output_dir / "pulse", report_primary_pulse)
 
-    if shadow and not skip_nse:
-        logging.info(
-            "service_probe shadow enabled (backend=%s): running pulse + nmap, will write diff",
-            service_backend,
-        )
-    elif not skip_nse:
-        logging.info(
-            "service_probe backend=%s (pulse=%s nmap_nse=%s)",
-            service_backend,
-            run_pulse,
-            run_nmap_nse,
-        )
-
     if skip_nse:
-        logging.info("Skipping service probe / NSE stage (skip_nse: ports-only L1)")
+        logging.info("Skipping service probe stage (skip_nse: ports-only L1)")
         timer.skip("pulse", "skip_nse")
-        timer.skip("nse", "skip_nse")
-        nmap_dir.mkdir(parents=True, exist_ok=True)
     else:
-        # A stage flag is not proof of persisted endpoint evidence or success.
-        # Always enter the adapter: validated all-done resume rebuilds artifacts
-        # without spawning Pulse; legacy/missing evidence is safely replayed.
-        pulse_pending = run_pulse
-        nse_pending = run_nmap_nse and not (args.resume and checkpoint.is_done("nse"))
+        logging.info("service_probe backend=pulse")
 
         def _do_pulse() -> None:
             pulse_cfg = merge_pulse_config(config.service_probe.pulse, profile.pulse)
@@ -1001,97 +994,15 @@ def _run_pipeline_body(
             else:
                 checkpoint.mark_done("pulse")
 
-        def _do_nse() -> Path:
-            nse_profile = config.nse_profiles[profile.nse_profile]
-            nse_timeout = runtime.nse_timeout_seconds
-            nse_concurrency = profile.nse_concurrency or runtime.nse_concurrency
-            nse_max_rate = (
-                profile.nse_max_rate if profile.nse_max_rate is not None else runtime.nse_max_rate
-            )
-            result_dir = _run_stage(
-                "nse",
-                lambda: run_nse(
-                    open_ports,
-                    output_dir=paths.output_dir,
-                    scripts=nse_profile.scripts,
-                    version_detection=nse_profile.version_detection,
-                    os_detection=nse_profile.os_detection,
-                    nmap_timing=profile.nmap_timing,
-                    timeout=nse_timeout,
-                    retries=retries,
-                    concurrency=nse_concurrency,
-                    max_rate=nse_max_rate,
-                    hosts_per_scan=runtime.nse_hosts_per_scan,
-                    done_hosts=checkpoint.done_items("nse") if args.resume else set(),
-                    on_host_done=lambda host: checkpoint.mark_item_done("nse", host),
-                ),
-            )
-            checkpoint.mark_done("nse")
-            return result_dir
-
-        if pulse_pending and nse_pending:
-            # Pulse and nmap NSE are independent subprocess-based stages over
-            # the same open_ports (no data dependency) -- only reachable when
-            # both run (shadow/hybrid). Run them concurrently instead of
-            # paying the full sum of both wall-clocks; CheckpointStore is
-            # thread-safe and the two stages write to disjoint output paths.
-            # Note: stages_sum_sec can exceed pipeline_wall_sec when concurrent.
-            # copy_context so StageTimer ContextVar is visible in worker threads.
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                pulse_future = pool.submit(copy_context().run, _do_pulse)
-                nse_future = pool.submit(copy_context().run, _do_nse)
-                pulse_exc: Exception | None = None
-                nse_exc: Exception | None = None
-                try:
-                    pulse_future.result()
-                except Exception as exc:  # noqa: BLE001
-                    pulse_exc = exc
-                try:
-                    nmap_dir = nse_future.result()
-                except Exception as exc:  # noqa: BLE001
-                    nse_exc = exc
-                if pulse_exc is not None:
-                    raise pulse_exc
-                if nse_exc is not None:
-                    raise nse_exc
-        else:
-            if run_pulse:
-                _do_pulse()
-            else:
-                timer.skip("pulse", "backend")
-            if run_nmap_nse:
-                if nse_pending:
-                    nmap_dir = _do_nse()
-                else:
-                    timer.skip("nse")
-            else:
-                timer.skip("nse", "backend")
-                nmap_dir.mkdir(parents=True, exist_ok=True)
-
-        # Shadow / hybrid: compare Pulse vs Nmap coverage when both sides exist.
-        if (shadow or service_backend == "hybrid") and not (
-            args.resume and checkpoint.is_done("pulse_shadow")
-        ):
-            if (paths.output_dir / "services.json").exists() or any(nmap_dir.rglob("*.xml")):
-                _run_stage(
-                    "pulse_shadow",
-                    lambda: write_pulse_nmap_diff(
-                        paths.output_dir,
-                        nmap_dir,
-                        extra={
-                            "backend": service_backend,
-                            "shadow": shadow,
-                            "open_ports": len(open_ports),
-                        },
-                    ),
-                )
-                checkpoint.mark_done("pulse_shadow")
-        elif args.resume and checkpoint.is_done("pulse_shadow"):
-            timer.skip("pulse_shadow")
+        # A stage flag is not proof of persisted endpoint evidence or success.
+        # Always enter the adapter: validated all-done resume rebuilds artifacts
+        # without spawning Pulse; legacy/missing evidence is safely replayed.
+        _do_pulse()
 
     # Phase 9.2 + Pulse Phase 4: TLS/certificate posture (findings-only,
-    # non-escalating -- see tls_posture.py). Prefers nmap ssl-cert/ssl-enum-ciphers;
-    # else Pulse pulse/tls.json; else probe_fallback stdlib handshake (tls_probe).
+    # non-escalating -- see tls_posture.py). Reads Pulse pulse/tls.json, else the
+    # probe_fallback stdlib handshake (tls_probe); the Nmap ssl-* XML of a
+    # pre-#548 run directory still wins when present.
     if args.resume and checkpoint.is_done("tls_posture"):
         timer.skip("tls_posture")
     else:
@@ -1132,7 +1043,7 @@ def _run_pipeline_body(
         checkpoint.mark_done("screenshots")
 
     # Phase 4.2: Nuclei web CVE/misconfig scan (default on; see nuclei_scan.py).
-    # CVE path without nmap-vulners: Pulse --cve + Nuclei + CVSS4 enrichment.
+    # CVE path: Pulse --cve + Nuclei + CVSS4 enrichment.
     # CVE-tagged matches feed into build_reports alongside Pulse/NSE vulns.
     # Under --resume, reload prior result from disk (reports still regenerate).
     if args.resume and checkpoint.is_done("nuclei"):
@@ -1310,6 +1221,14 @@ def _validate_config_only(config_path: Path) -> int:
         load_config(raw)
     except ValidationError as exc:
         print(format_validation_error(exc), file=sys.stderr)
+        return exit_codes.CONFIG_ERROR
+    # The environment is part of the configuration a run would use (#548).
+    try:
+        check_service_probe_env(
+            os.environ.get("OCTO_SERVICE_BACKEND", ""), os.environ.get("OCTO_PULSE_SHADOW", "")
+        )
+    except RemovedNmapSettingError as exc:
+        print(str(exc), file=sys.stderr)
         return exit_codes.CONFIG_ERROR
     print(f"configuration OK: {config_path}")
     return exit_codes.SUCCESS

@@ -358,7 +358,7 @@ _RAW_SOCKETS = frozenset({
     "allowPrivilegeEscalation!=false",
 })
 _RAW_SOCKETS_WHY = (
-    "naabu/pulse/nmap carry `cap_net_raw,cap_net_admin+eip` file capabilities: "
+    "naabu/pulse carry `cap_net_raw,cap_net_admin+eip` file capabilities: "
     "both must be in the bounding set or execve fails with EPERM, and "
     "no_new_privs (allowPrivilegeEscalation: false) makes the kernel ignore them"
 )

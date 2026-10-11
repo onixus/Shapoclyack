@@ -104,9 +104,12 @@ compatible version by reinstalling it in the image.
 Nmap
 ----
 
-The images contain no Nmap, nmap-vulners or Vulscan. Releases up to and
-including 0.47-1009-rc1 published an opt-in "-nmap" image tag that did; later
-releases do not. Users who install Nmap (Nmap Public Source License) next to
-the sensor, or in an image of their own, are responsible for the obligations
-that licence carries, including its restrictions on commercial and OEM
-redistribution. See docs/nmap-external.md and docs/third-party.md.
+The images contain no Nmap, nmap-vulners or Vulscan, and Shapoclyack no longer
+calls Nmap: the NSE stage was removed. Releases up to and including
+0.47-1009-rc1 published an opt-in "-nmap" image tag that bundled it; later
+releases do not. The recorded Nmap output under tests/fixtures/nmap_pulse_corpus
+was produced by running Nmap on a test stand and is kept as a reference corpus
+for the replacement checks; it is not part of any image. Users who install Nmap
+(Nmap Public Source License) for their own purposes are responsible for the
+obligations that licence carries, including its restrictions on commercial and
+OEM redistribution. See docs/nmap-migration.md and docs/third-party.md.

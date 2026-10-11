@@ -122,5 +122,7 @@ python -m pytest tests/test_server_installer.py tests/test_agent_install_pins.py
 поддерживаемые версии — в [политике безопасности](.github/SECURITY.md).
 
 Образы используют Pulse и не содержат Nmap/NSE (последний релиз с тегом
-`-nmap` — `0.47-1009-rc1`). Nmap подпадает под NPSL; если он нужен, установите
-свой рядом с сенсором: [Using your own Nmap](docs/nmap-external.md) (на английском).
+`-nmap` — `0.47-1009-rc1`), а сам продукт Nmap больше не запускает: конфигурация
+с бэкендом Nmap или `nmap_timing` отклоняется при загрузке. Что заменено, как
+читаются старые прогоны и какие разрывы остались — в
+[Migrating off Nmap](docs/nmap-migration.md) (на английском).

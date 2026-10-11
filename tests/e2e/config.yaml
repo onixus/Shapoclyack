@@ -5,8 +5,6 @@ runtime:
   retries: 1
   timeout_seconds: 300
   nse_timeout_seconds: 180
-  nse_concurrency: 2
-  nse_max_rate: 0
   per_run_output: false
 
 profiles:
@@ -14,23 +12,23 @@ profiles:
     discover_rate: 1000
     port_rate: 1000
     top_ports: 100
-    nmap_timing: T4
-    nse_profile: e2e
-    nse_concurrency: 2
+    pulse:
+      rate: 2000
+      concurrency: 500
   balanced:
     discover_rate: 1000
     port_rate: 1000
     top_ports: 100
-    nmap_timing: T4
-    nse_profile: e2e
-    nse_concurrency: 2
+    pulse:
+      rate: 2000
+      concurrency: 500
   fast:
     discover_rate: 1000
     port_rate: 1000
     top_ports: 100
-    nmap_timing: T4
-    nse_profile: e2e
-    nse_concurrency: 2
+    pulse:
+      rate: 2000
+      concurrency: 500
 
 batching:
   enabled: true
@@ -45,14 +43,6 @@ discovery:
 ports:
   source: naabu
   custom_ports_file: scanner/inputs/ports.txt
-
-nse_profiles:
-  # Fast and offline: no vulners (needs internet), no OS detection (slow/unreliable
-  # between containers). Just default scripts + service version detection.
-  e2e:
-    scripts: "default"
-    version_detection: true
-    os_detection: false
 
 reporting:
   markdown_summary: true

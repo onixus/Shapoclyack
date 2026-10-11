@@ -6,10 +6,11 @@ runs. This module reads it and counts, per ``host:port/proto``, where Pulse
 differs from Nmap: service, product, version, CPE, TLS (protocols, suites,
 certificate) and script findings. No network, no scanner binaries.
 
-Parsing is not duplicated: Nmap XML goes through ``report._parse_nmap_xml`` and
+Parsing is not duplicated: Nmap XML goes through ``legacy_nmap.parse_nmap_xml`` and
 ``tls_posture``'s ``ssl-enum-ciphers`` / ``ssl-cert`` parsers (what the pipeline
 itself uses), Pulse JSON through ``pulse_probe.parse_pulse_json``, and the
-endpoint/OS comparison is ``pulse_shadow.compare_pulse_nmap`` run on artifacts
+endpoint/OS comparison is ``compare_pulse_nmap`` below (the former
+``pulse_shadow`` module, removed with the Nmap stage in #548), run on artifacts
 written the way the pipeline writes them.
 
 Lives in ``scripts/`` (imported by the CLI next to it and by the test with
@@ -19,7 +20,8 @@ images and nothing there calls this. It therefore reaches into private names;
 a rename in these modules breaks this file, and ``tests/test_nmap_pulse_corpus.py``
 is what notices:
 
-- ``report``: ``_parse_nmap_xml``, ``_build_vulnerabilities``
+- ``legacy_nmap``: ``parse_nmap_xml``
+- ``report``: ``_build_vulnerabilities``
 - ``tls_posture``: ``_WEAK_PROTOCOLS``, ``_iter_ssl_scripts``,
   ``_normalize_proto_label``, ``_parse_ssl_cert_output``,
   ``_parse_ssl_enum_ciphers_output``
@@ -45,8 +47,9 @@ from typing import Any
 
 from scanner.pipeline.pulse_plugins import PLUGINS_DIR
 from scanner.pipeline.pulse_probe import extract_pulse_tls, parse_pulse_json, write_pulse_artifacts
-from scanner.pipeline.pulse_shadow import compare_pulse_nmap
-from scanner.pipeline.report import _build_vulnerabilities, _parse_nmap_xml
+from scanner.pipeline.legacy_nmap import parse_nmap_xml
+from scanner.pipeline.protocol import format_endpoint
+from scanner.pipeline.report import _build_vulnerabilities
 from scanner.pipeline.tls_posture import (
     _WEAK_PROTOCOLS,
     _iter_ssl_scripts,
@@ -56,6 +59,163 @@ from scanner.pipeline.tls_posture import (
 )
 
 SCHEMA = "octo.nmap_pulse_corpus_gap.v1"
+
+
+def _endpoint_key(host: str, port: str | int, protocol: str = "tcp") -> str:
+    proto = (protocol or "tcp").lower()
+    if proto in ("tcpsyn", "syn"):
+        proto = "tcp"
+    return format_endpoint(host, str(port), proto)
+
+
+def _services_from_pulse(output_dir: Path) -> set[str]:
+    path = output_dir / "services.json"
+    if not path.exists():
+        return set()
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    if not isinstance(rows, list):
+        return set()
+    keys: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ip = str(row.get("ip") or row.get("host") or "").strip()
+        port = row.get("port")
+        if not ip or port is None:
+            continue
+        proto = str(row.get("protocol") or "tcp")
+        keys.add(_endpoint_key(ip, port, proto))
+    return keys
+
+
+def _services_from_nmap(nmap_dir: Path) -> set[str]:
+    services, _, _ = parse_nmap_xml(nmap_dir)
+    keys: set[str] = set()
+    for row in services:
+        host = str(row.get("host") or "")
+        port = row.get("port") or ""
+        proto = str(row.get("protocol") or "tcp")
+        if host and port:
+            keys.add(_endpoint_key(host, port, proto))
+    return keys
+
+
+def _os_from_pulse(output_dir: Path) -> dict[str, dict[str, Any]]:
+    path = output_dir / "os.json"
+    if not path.exists():
+        return {}
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(rows, list):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ip = str(row.get("ip") or "").strip()
+        if not ip:
+            continue
+        out[ip] = {
+            "family": str(row.get("family") or ""),
+            "detail": str(row.get("detail") or ""),
+            "confidence": row.get("confidence"),
+            "source": str(row.get("source") or "pulse"),
+        }
+    return out
+
+
+def _os_from_nmap(nmap_dir: Path) -> dict[str, dict[str, Any]]:
+    _, os_matches, _ = parse_nmap_xml(nmap_dir)
+    out: dict[str, dict[str, Any]] = {}
+    for row in os_matches:
+        host = str(row.get("host") or "")
+        if not host or host in out:
+            continue  # first/best match only
+        acc = row.get("accuracy") or "0"
+        try:
+            conf = int(float(acc))
+        except (TypeError, ValueError):
+            conf = 0
+        name = str(row.get("name") or "")
+        family = name.split()[0] if name else ""
+        out[host] = {
+            "family": family,
+            "detail": name,
+            "confidence": conf,
+            "source": "nmap",
+        }
+    return out
+
+
+def _family_agree(a: str, b: str) -> bool:
+    a = (a or "").strip().lower()
+    b = (b or "").strip().lower()
+    if not a or not b or a == "unknown" or b == "unknown":
+        return False
+    return a == b or a in b or b in a
+
+
+def compare_pulse_nmap(output_dir: Path, nmap_dir: Path | None = None) -> dict[str, Any]:
+    """Build a comparison dict for one run directory."""
+    nmap_dir = nmap_dir or (output_dir / "nmap")
+    pulse_eps = _services_from_pulse(output_dir)
+    nmap_eps = _services_from_nmap(nmap_dir)
+    only_pulse = sorted(pulse_eps - nmap_eps)
+    only_nmap = sorted(nmap_eps - pulse_eps)
+    both = sorted(pulse_eps & nmap_eps)
+
+    pulse_os = _os_from_pulse(output_dir)
+    nmap_os = _os_from_nmap(nmap_dir)
+    os_hosts = sorted(set(pulse_os) | set(nmap_os))
+    os_agree = 0
+    os_disagree: list[dict[str, Any]] = []
+    for host in os_hosts:
+        p = pulse_os.get(host)
+        n = nmap_os.get(host)
+        if p and n and _family_agree(str(p.get("family")), str(n.get("family"))):
+            os_agree += 1
+        elif p and n:
+            os_disagree.append(
+                {
+                    "host": host,
+                    "pulse": p,
+                    "nmap": n,
+                }
+            )
+
+    both_count = len(both)
+    union = len(pulse_eps | nmap_eps)
+    jaccard = (both_count / union) if union else 1.0
+
+    return {
+        "schema": "octo.pulse_nmap_diff.v1",
+        "endpoints": {
+            "pulse_count": len(pulse_eps),
+            "nmap_count": len(nmap_eps),
+            "both_count": both_count,
+            "only_pulse_count": len(only_pulse),
+            "only_nmap_count": len(only_nmap),
+            "jaccard": round(jaccard, 4),
+            "only_pulse_sample": only_pulse[:50],
+            "only_nmap_sample": only_nmap[:50],
+        },
+        "os": {
+            "pulse_hosts": len(pulse_os),
+            "nmap_hosts": len(nmap_os),
+            "hosts_with_both": sum(1 for h in os_hosts if h in pulse_os and h in nmap_os),
+            "family_agree": os_agree,
+            "family_disagree_count": len(os_disagree),
+            "family_disagree_sample": os_disagree[:20],
+        },
+        "pulse_present": bool(pulse_eps or pulse_os or (output_dir / "services.json").exists()),
+        "nmap_present": nmap_dir.exists() and any(nmap_dir.rglob("*.xml")),
+    }
+
 
 # Names that are the same service under two labelling conventions: Pulse says
 # "https" where Nmap says "http" with a TLS tunnel, Nmap's table says
@@ -470,7 +630,7 @@ def _nse_vuln_section(n_scripts: list[dict[str, Any]], findings: list[Any]) -> d
 def compare_corpus(corpus_dir: Path) -> dict[str, Any]:
     """Build the gap report for one corpus directory (``nmap/`` + ``pulse/``)."""
     nmap_dir, pulse_dir = corpus_dir / "nmap", corpus_dir / "pulse"
-    n_services, _, n_scripts = _parse_nmap_xml(nmap_dir)
+    n_services, _, n_scripts = parse_nmap_xml(nmap_dir)
     payloads = _load_pulse(pulse_dir)
     # The adapter-shaped run: TCP (banners, --os sinfp, --cve) plus the UDP probe.
     primary = {name: p for name, p in payloads.items() if name in ("tcp", "udp")}
@@ -535,7 +695,7 @@ def compare_corpus(corpus_dir: Path) -> dict[str, Any]:
         "cve_only_pulse": len(pulse_cves - nmap_cves),
     }
 
-    # Endpoint set and OS family: the pipeline's own shadow comparison, run on
+    # Endpoint set and OS family: the endpoint/OS comparison, run on
     # Pulse artifacts written the way the pipeline writes them.
     with tempfile.TemporaryDirectory() as tmp:
         services, os_records = [], []

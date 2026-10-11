@@ -21,7 +21,7 @@ Two sides throughout:
 2. [Feeds: a mirror, or a bundle](#2-feeds-a-mirror-or-a-bundle)
 3. [Pointing every feed at a mirror](#3-pointing-every-feed-at-a-mirror)
 4. [The offline bundle](#4-the-offline-bundle) — build, transfer, load, verify
-5. [nuclei templates and vulscan](#5-nuclei-templates-and-vulscan)
+5. [nuclei templates](#5-nuclei-templates)
 6. [Update cadence](#6-update-cadence)
 7. [What stays unavailable offline](#7-what-stays-unavailable-offline)
 
@@ -145,7 +145,6 @@ read by the script and by the in-process fetcher that shares the feed.
 | Microsoft Update Guide (CVRF) | `MSRC_CVRF_BASE_URL` | `https://api.msrc.microsoft.com/cvrf/v3.0` | `<base>/updates` and `<base>/cvrf/<month>`, the API's own paths |
 | Exploit-DB index | `EXPLOITDB_CSV_URL` | `https://gitlab.com/exploit-database/exploitdb/-/raw/main/files_exploits.csv` | The same CSV |
 | Metasploit module metadata | `METASPLOIT_MODULES_URL` | `https://raw.githubusercontent.com/rapid7/metasploit-framework/master/db/modules_metadata_base.json` | The same JSON |
-| vulscan CSVs (nmap `vuln-offline`) | `VULSCAN_BASE_URLS` | GitHub, then computec.ch | `<base>/<db>.csv`; a space-separated list, tried in order |
 | nuclei templates | `NUCLEI_TEMPLATES_REPO`, `NUCLEI_TEMPLATES_REF`, `NUCLEI_TEMPLATES_COMMIT` | nuclei's own `-update-templates` | A git mirror of `projectdiscovery/nuclei-templates` — see §5 |
 
 Notes that matter:
@@ -440,10 +439,11 @@ reports `origin: bundle` with the feed's own `updated` date. On the volume,
 full record, and `enrichment-bundle-history.jsonl` beside it has one line per
 install (bundle, built/installed times, host, user).
 
-## 5. nuclei templates and vulscan
+## 5. nuclei templates
 
-Both are tool data baked into the image at build time, not enrichment
-datasets, so they are not in the bundle. **In Kubernetes the scanner uses the
+The templates are tool data baked into the image at build time, not
+enrichment datasets, so they are not in the bundle (the Vulscan databases that
+used to sit beside them went with the NSE stage, #548). **In Kubernetes the scanner uses the
 copies in the image it runs** — nothing in the manifests mounts templates from
 elsewhere — so there they are refreshed by mirroring a newer release image, or
 by building one inside the perimeter with the script below pointed at a mirror.
@@ -484,10 +484,6 @@ ProjectDiscovery's public OAST servers (`oast.pro` and five more) and wait on
 their DNS. See
 [network-requirements.md](network-requirements.md#out-of-band-testing-interactsh).
 
-**vulscan** (only for the legacy nmap `vuln-offline` NSE profile):
-`VULSCAN_BASE_URLS=https://mirror.internal.example/vulscan
-scripts/fetch-vulscan-db.sh`.
-
 ## 6. Update cadence
 
 What the upstreams publish, and so how stale a bundle becomes:
@@ -523,7 +519,6 @@ Nothing here fails a scan; each is either off by default or degrades to
 | Related domains (`org_profile.related_domains`) | crt.sh and the RDAP/DNS sources | off |
 | Credential leaks (`org_profile.credential_leaks`) | Have I Been Pwned | off |
 | Pulse online CVE lookup (`service_probe.pulse.cve_online`) | NVD | off |
-| nmap `vulners` NSE (`nse_profiles.vuln_legacy`) | vulners.com | only with the nmap backend; use `vuln-offline` (vulscan) instead |
 | Run notifications to Slack/Telegram, DoH checks (`alerts`) | those services | off |
 | OIDC, webhooks, ticket trackers, SMTP | whatever you configure | unset |
 

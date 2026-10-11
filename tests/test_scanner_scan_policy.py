@@ -80,25 +80,19 @@ def _config(**runtime: object):
                     "discover_rate": 2000,
                     "port_rate": 1000,
                     "top_ports": 100,
-                    "nse_profile": "baseline",
-                    "nse_concurrency": 2,
-                    "nse_max_rate": 500,
                     "pulse": {"concurrency": 300, "rate": 500, "host_parallel": 4},
                 },
                 "balanced": {
                     "discover_rate": 4000,
                     "port_rate": 3000,
                     "top_ports": 1000,
-                    "nse_profile": "baseline",
                 },
                 "fast": {
                     "discover_rate": 10000,
                     "port_rate": 7000,
                     "top_ports": 1000,
-                    "nse_profile": "baseline",
                 },
             },
-            "nse_profiles": {"baseline": {"scripts": "default,safe"}},
         }
     )
 
@@ -139,18 +133,26 @@ def test_a_policy_never_raises_a_rate_the_config_already_lowered():
 
 
 def test_an_unlimited_rate_is_not_read_as_the_strictest_one():
-    """``nse_max_rate: 0`` means *unlimited* in this config, so a naive min()
+    """``pulse.rate: 0`` means *unlimited* in this config, so a naive min()
     would compute 0 and turn a 25 pps ceiling into no ceiling at all — the one
     mistake here that would be silent and would show up as a dead PLC."""
-    tightened = apply_policy(_config(nse_max_rate=0), _policy(per_host_rate=25))
-    assert tightened.runtime.nse_max_rate == 25
+    config = _config()
+    config = config.model_copy(
+        update={
+            "profiles": {
+                name: profile.model_copy(update={"pulse": profile.pulse.model_copy(update={"rate": 0})})
+                for name, profile in config.profiles.items()
+            }
+        }
+    )
+    tightened = apply_policy(config, _policy(per_host_rate=25))
+    assert tightened.profiles["safe"].pulse.rate == 25
 
 
 def test_concurrency_is_held_down_everywhere_a_batch_can_widen():
     tightened = apply_policy(_config(), _policy(max_host_concurrency=1))
     assert tightened.runtime.discover_concurrency == 1
     assert tightened.runtime.ports_concurrency == 1
-    assert tightened.runtime.nse_concurrency == 1
     assert tightened.profiles["safe"].pulse.host_parallel == 1
     assert tightened.tls_posture.probe_concurrency == 1
     assert tightened.fingerprint.concurrency == 1
@@ -409,11 +411,11 @@ def test_the_derived_rate_of_the_later_passes_has_no_floor_of_its_own():
     from scanner.pipeline.discovery_runner import _wave2_rate
 
     profile = ProfileConfig(
-        discover_rate=100, port_rate=50, top_ports=100, nse_profile="baseline"
+        discover_rate=100, port_rate=50, top_ports=100
     )
     assert _wave2_rate(profile, None) == 100
     # A config that never had a ceiling keeps the coarse figure it always had.
-    fast = ProfileConfig(discover_rate=10_000, port_rate=7000, top_ports=100, nse_profile="baseline")
+    fast = ProfileConfig(discover_rate=10_000, port_rate=7000, top_ports=100)
     assert _wave2_rate(fast, None) == 2500
 
 

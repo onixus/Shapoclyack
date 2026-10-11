@@ -364,7 +364,7 @@ sizes put them far lower than a reader of the settings would guess:
   `archive not inlined` and inserts nothing.
 - Over 512 MiB *expanded* (`results_ingest.MAX_UNCOMPRESSED_BYTES`) a sensor's
   upload is refused outright. At the report-stage floor of 11.4 KiB per host
-  that is about 46 000 hosts in one run; real runs, with nmap XML and tool
+  that is about 46 000 hosts in one run; real runs, with tool
   logs on top, reach it sooner.
 
 The archive figures are a floor twice over: the run directory holds only what
@@ -620,9 +620,9 @@ node — of which only the unconsumed messages matter.
 
 ## What is not measured here
 
-- **The scan itself.** naabu, nmap, nuclei and Pulse need live targets; this
+- **The scan itself.** naabu, nuclei and Pulse need live targets; this
   container has none of them and must not scan anything. Sensor CPU per host,
-  sensor peak memory and the raw tool output in a run directory (nmap XML,
+  sensor peak memory and the raw tool output in a run directory (Pulse JSON,
   nuclei JSONL, `pipeline.log`, the PDF, `diff.json`) come from `runs-dir` on a
   stand. Until then the sensor rows print `n/m`, the artifact volume is a
   floor, and the shipped sensor values (the scanner-executor's 500m/1Gi

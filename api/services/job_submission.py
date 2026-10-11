@@ -276,6 +276,9 @@ def start_scan(
         # Before anything is admitted or written: a setting a sensor would
         # refuse is refused where the job is created, as the overlay is.
         config_overlay.check_config(config_extra)
+    # The saved console overrides, too (#548): a leftover Nmap setting is
+    # refused here, for every way a scan starts, not by the sensor afterwards.
+    config_override_service.assert_runnable(settings, config_extra)
 
     job_id = uuid.uuid4().hex[:12]
     execution = (
@@ -396,8 +399,8 @@ def start_scan(
     surface = scan_surface.resolve(
         request.surface, request.ranges, request.domains
     )
-    # A fragile (OT/ICS) policy turns the service-probe stage off: nmap's NSE
-    # scripts and pulse's banner grabs are the packets that put a PLC into a
+    # A fragile (OT/ICS) policy turns the service-probe stage off: pulse's
+    # banner grabs and plugins are the packets that put a PLC into a
     # fault state, and the port inventory a fragile run is really asked for
     # does not need them. Expressed on the command line as well as in the
     # policy document the scanner applies, so a reader of the job — and the

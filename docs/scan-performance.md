@@ -21,7 +21,7 @@ stage timings: pipeline_wall=…s stages_sum=…s top=[nuclei=…, ports=…, �
 | Field | Meaning |
 |---|---|
 | `pipeline_wall_sec` | End-to-end wall clock of the process |
-| `stages_sum_sec` | Sum of timed stages (can **exceed** wall when pulse+nse run concurrently) |
+| `stages_sum_sec` | Sum of timed stages (can exceed wall when stages overlap) |
 | `stages[]` | Ordered list with `duration_sec` and `status` (`ok` / `skipped` / `error`) |
 | `top_stages` | Slowest successful stages |
 | `resources` | Whole-run `cpu_sec` and peak `max_rss_mb` of the scan process, and `children_cpu_sec` / `children_max_rss_mb` of the tools it waited for (the largest single tool, not a sum); `null` without `getrusage`. Sizes a sensor (`scale_measure runs-dir`, [sizing.md](sizing.md#sensors)) |
@@ -88,7 +88,7 @@ Same sensors, same packet budget, far less average wall-clock per day.
 
 ## What *not* to do first
 
-- Raising `nse_concurrency` / nuclei `rate_limit` on a saturated NIC or target
+- Raising `pulse.concurrency` / nuclei `rate_limit` on a saturated NIC or target
   ACL usually **hurts** completeness for little wall-clock gain.
 - Widening Prometheus HTTP buckets to hide p95 > 10 s (API) — that is a
   product/query problem, not a scan problem ([scale-profile.md](scale-profile.md)).

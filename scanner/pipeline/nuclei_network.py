@@ -80,7 +80,7 @@ _UNNAMED = frozenset({"", "unknown"})
 def load_service_names(output_dir: Path) -> dict[tuple[str, int], str]:
     """``{(host, port): service}`` of the TCP rows of ``services.json``, lower case.
 
-    Empty when the file is missing or unreadable (a ``backend: nmap`` run, a
+    Empty when the file is missing or unreadable (a ports-only run, a
     chunk Pulse did not finish): the planner then falls back to default ports.
     Never raises.
     """

@@ -22,15 +22,13 @@ def test_system_status_shape():
     assert isinstance(body["app_version"], str) and body["app_version"]
 
     tool_names = {tool["name"] for tool in body["tools"]}
-    assert tool_names == {"pulse", "naabu", "nuclei", "dnsx", "nmap"}
+    # Nmap is not probed any more (#548): the product does not run it.
+    assert tool_names == {"pulse", "naabu", "nuclei", "dnsx"}
     # Fail-soft: a tool absent from the CI runner reports version=None + an error
     # string rather than 500-ing the endpoint.
     for tool in body["tools"]:
         assert tool["version"] is not None or tool["error"] is not None
-        if tool["name"] == "nmap":
-            assert tool.get("optional") is True
-        else:
-            assert tool.get("optional") is False
+        assert tool.get("optional") is False
 
     enrichment_names = {db["name"] for db in body["enrichment"]}
     # The vendor advisory datasets behind software→CVE matching (Track E M1)
@@ -72,7 +70,8 @@ def test_system_status_shape():
         "pdf_summary",
     }
     assert "balanced" in body["scan_config"]["profiles"]
-    assert body["scan_config"].get("service_backend") in ("pulse", "nmap", "hybrid", None)
+    assert body["scan_config"].get("service_backend") in ("pulse", None)
+    assert "nse_profiles" not in body["scan_config"]
 
     runtime = body["runtime"]
     assert isinstance(runtime["postgres_enabled"], bool)
@@ -292,7 +291,7 @@ def test_system_status_does_not_require_a_toolchain_of_a_pod_that_does_not_scan(
     monkeypatch.setattr(system_status, "_tool_cache", None)
     agent = configured_client(tmp_path, monkeypatch, job_execution_mode="agent")
     tools = agent.get("/api/system", headers=auth_headers(agent, "admin")).json()["tools"]
-    assert {tool["name"] for tool in tools} == {"pulse", "naabu", "nuclei", "dnsx", "nmap"}
+    assert {tool["name"] for tool in tools} == {"pulse", "naabu", "nuclei", "dnsx"}
     assert all(tool["optional"] is True for tool in tools)
 
     # Local execution is unchanged: this container scans, so the default stack

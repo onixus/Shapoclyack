@@ -236,15 +236,6 @@ export default function SystemPage() {
                     ))}
                   </div>
                 </div>
-                <div>
-                  <p className="text-muted-foreground font-semibold mb-1">{t("ui.legacyNmapNseProfiles")}</p>
-                  <p className="text-[10px] text-muted-foreground mb-1.5">{t("ui.usedOnlyWhenBackendIsNmap")}</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {data.scan_config.nse_profiles.map((p) => (
-                      <Badge key={p} variant="outline" className="border-border text-foreground font-mono text-[11px]">{p}</Badge>
-                    ))}
-                  </div>
-                </div>
               </div>
             </Card>
 

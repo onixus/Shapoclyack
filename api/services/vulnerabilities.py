@@ -2280,8 +2280,9 @@ class VerificationPlan:
     ``ips``/``names`` are the hosts the detectors observed it on, spelled as
     they saw them — a finding a template matched on a virtual host is re-checked
     on that name, not on the address behind it. ``template_ids`` pins nuclei to
-    the templates that found it, whatever their severity; ``nse`` turns the
-    service probe to ``hybrid`` so the NSE script that found it runs at all.
+    the templates that found it, whatever their severity; ``nse`` records that an
+    NSE script (a run from before the Nmap stage was removed, #548) is among the
+    detectors: nothing can re-run it, so it is judged by ``verification_coverage``.
     """
 
     ips: tuple[str, ...]
@@ -2301,8 +2302,10 @@ class VerificationPlan:
         extra: dict[str, Any] = {"reachability": {"enabled": True}}
         if self.template_ids:
             extra["nuclei"] = {"enabled": True, "template_ids": list(self.template_ids)}
-        if self.nse:
-            extra["service_probe"] = {"backend": "hybrid"}
+        # No service_probe override for ``nse``: the Nmap stage is gone, so a
+        # finding an NSE script made is re-checked by whatever else detected it
+        # (verification_coverage waives the NSE detector when another covers the
+        # same hosts) and otherwise stays inconclusive.
         return extra
 
     def as_detail(self) -> dict[str, Any]:
@@ -2354,11 +2357,26 @@ def _verification_plan(session: Any, row: models.Vulnerability) -> VerificationP
             f"Vulnerability '{row.vuln_id}' was found by nuclei templates a sensor "
             f"cannot be asked to load by id: {', '.join(refused) or len(refs)}"
         )
+    nse = any(entry.get("detector") == verification_coverage.NMAP_NSE for entry in detectors)
+    can_be_covered = any(
+        entry.get("detector") in verification_coverage.KNOWN_DETECTORS
+        and entry.get("detector") != verification_coverage.NMAP_NSE
+        for entry in detectors
+    )
+    if nse and not can_be_covered:
+        # Only an NSE script saw it, and nothing runs NSE any more (#548): the
+        # re-scan could not demonstrate the script looked, so every one would
+        # end inconclusive. Refused now, with the way out, not after a scan.
+        raise VerificationDispatchError(
+            f"Vulnerability '{row.vuln_id}' was found only by an Nmap NSE script, and the "
+            "Nmap stage was removed, so no re-scan can re-check it. Close the finding by "
+            "hand with a reason (docs/nmap-migration.md)."
+        )
     return VerificationPlan(
         ips=ips,
         names=names,
         template_ids=tuple(refs),
-        nse=any(entry.get("detector") == verification_coverage.NMAP_NSE for entry in detectors),
+        nse=nse,
         from_detectors=bool(detectors) and all(entry.get("host") for entry in detectors),
         agent_group=next((str(e["agent_group"]) for e in detectors if e.get("agent_group")), None),
     )

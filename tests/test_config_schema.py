@@ -22,26 +22,17 @@ def _minimal_config(**overrides: object) -> dict:
                 "discover_rate": 1000,
                 "port_rate": 1000,
                 "top_ports": 100,
-                "nmap_timing": "T3",
-                "nse_profile": "baseline",
             },
             "balanced": {
                 "discover_rate": 3000,
                 "port_rate": 3000,
                 "top_ports": 1000,
-                "nmap_timing": "T4",
-                "nse_profile": "baseline",
             },
             "fast": {
                 "discover_rate": 7000,
                 "port_rate": 7000,
                 "top_ports": 1000,
-                "nmap_timing": "T4",
-                "nse_profile": "baseline",
             },
-        },
-        "nse_profiles": {
-            "baseline": {"scripts": "default,safe"},
         },
     }
     base.update(overrides)
@@ -79,13 +70,42 @@ def test_load_config_rejects_unknown_runtime_mode():
         load_config(raw)
 
 
-def test_load_config_rejects_missing_nse_profile_ref():
+@pytest.mark.parametrize(
+    ("mutate", "key", "instead"),
+    [
+        (lambda raw: raw["profiles"]["balanced"].update(nmap_timing="T3"), "profiles.<mode>.nmap_timing", "pulse.rate"),
+        (lambda raw: raw["profiles"]["balanced"].update(nse_profile="baseline"), "profiles.<mode>.nse_profile", "Delete"),
+        (lambda raw: raw["profiles"]["fast"].update(nse_concurrency=4), "profiles.<mode>.nse_concurrency", "pulse.concurrency"),
+        (lambda raw: raw["profiles"]["fast"].update(nse_max_rate=100), "profiles.<mode>.nse_max_rate", "pulse.rate"),
+        (lambda raw: raw["profiles"]["safe"].update(service_backend="hybrid"), "service_backend: hybrid", "pulse"),
+        (lambda raw: raw.update(nse_profiles={"baseline": {"scripts": "default"}}), "nse_profiles", "Delete the section"),
+        (lambda raw: raw["runtime"].update(nse_concurrency=2), "runtime.nse_concurrency", "pulse.concurrency"),
+        (lambda raw: raw["runtime"].update(nse_max_rate=2), "runtime.nse_max_rate", "pulse.rate"),
+        (lambda raw: raw["runtime"].update(nse_hosts_per_scan=2), "runtime.nse_hosts_per_scan", "chunk_hosts"),
+        (lambda raw: raw.update(service_probe={"backend": "nmap"}), "service_probe.backend: nmap", "'pulse'"),
+        (lambda raw: raw.update(service_probe={"backend": "hybrid"}), "service_probe.backend: hybrid", "'pulse'"),
+        (lambda raw: raw.update(service_probe={"shadow": False}), "service_probe.shadow", "Delete"),
+    ],
+)
+def test_load_config_refuses_every_removed_nmap_key_and_names_the_replacement(mutate, key, instead):
+    """#548: pydantic ignores unknown keys, so each of these would have loaded
+    and quietly run on Pulse. They are refused, naming what to use instead."""
     raw = _minimal_config()
-    raw["profiles"]["balanced"]["nse_profile"] = "missing"
+    mutate(raw)
     with pytest.raises(ValidationError) as exc:
         load_config(raw)
     msg = format_validation_error(exc.value)
-    assert "nse_profile" in msg
+    assert key in msg
+    assert instead in msg
+    assert "docs/nmap-migration.md" in msg
+
+
+def test_load_config_still_accepts_pulse_spelled_out():
+    raw = _minimal_config(service_probe={"backend": "pulse"})
+    raw["profiles"]["safe"]["service_backend"] = "pulse"
+    cfg = load_config(raw)
+    assert cfg.service_probe.backend == "pulse"
+    assert cfg.profiles["safe"].service_backend == "pulse"
 
 
 def test_load_config_rejects_invalid_ipv4_prefix():
@@ -200,9 +220,9 @@ def test_k8s_yaml_discovery_completeness_knobs():
     assert cfg.batching.ipv6_prefix == 120
     assert cfg.batching.max_ipv6_batches == 4096
     assert cfg.batching.max_targets_per_batch == 1024
-    # Keep reverse DNS and vuln-offline — not bench-only settings.
+    # Keep reverse DNS — not a bench-only setting.
     assert cfg.discovery.hostnames.reverse is True
-    assert cfg.profiles["balanced"].nse_profile == "vuln-offline"
+    assert cfg.profiles["balanced"].pulse.rate == 2000
 
 
 def test_default_yaml_parses():
@@ -214,7 +234,6 @@ def test_default_yaml_parses():
     assert cfg.runtime.nse_timeout_seconds == 600
     assert cfg.runtime.discover_concurrency == 4
     assert cfg.runtime.ports_concurrency == 4
-    assert cfg.runtime.nse_hosts_per_scan == 1
     assert cfg.ports.protocol == "tcp"
     assert cfg.ports.udp_probes is True
     assert cfg.screenshots.enabled is False
@@ -337,7 +356,7 @@ def test_validate_config_flag_reports_a_bad_file(tmp_path: Path, capsys):
     from scanner.main import _validate_config_only
 
     bad = tmp_path / "bad.yaml"
-    bad.write_text("runtime:\n  mode: nope\nprofiles: {}\nnse_profiles: {}\n", encoding="utf-8")
+    bad.write_text("runtime:\n  mode: nope\nprofiles: {}\n", encoding="utf-8")
     assert _validate_config_only(bad) == exit_codes.CONFIG_ERROR
     assert "runtime.mode" in capsys.readouterr().err
 

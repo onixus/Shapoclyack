@@ -90,7 +90,7 @@ spec:
         - name: api
           # The API image (Dockerfile.api): the API and the web console, and
           # none of the scanner toolchain (#338 review). This pod no longer
-          # scans, so naabu, nmap and pulse with their file capabilities were
+          # scans, so naabu and pulse with their file capabilities were
           # attack surface in the one pod holding every credential. The
           # migration above runs from the same image, so the two cannot
           # disagree on the schema; base/local-scan puts the all-in-one back.
@@ -226,7 +226,7 @@ spec:
           # moved to the scanner-executor with the capabilities (#338). One
           # visible side effect: GET /api/system probes the scanner binaries
           # baked into this image, and the ones carrying file capabilities
-          # (naabu, pulse, nmap) now fail execve with EPERM here — correctly,
+          # (naabu, pulse) now fail execve with EPERM here — correctly,
           # since nothing here may run them; in agent mode the System page
           # lists them as not required of this container.
           securityContext:

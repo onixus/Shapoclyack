@@ -1,12 +1,12 @@
 """TLS / certificate posture (Phase 9.2 + Pulse Phase 4).
 
-Primary path: reuses already-collected NSE output from the ``nse`` stage --
-parses free-text ``output`` of nmap's ``ssl-cert`` / ``ssl-enum-ciphers``
-scripts from ``nmap/tcp/*.xml`` (and ``nmap/udp/*.xml``), the same XML
-walked generically by ``report.py``.
+Legacy path (read-only): a run directory recorded before the Nmap stage was
+removed (#548) holds ``nmap/tcp/*.xml`` (and ``nmap/udp/*.xml``); when it has
+``ssl-cert`` / ``ssl-enum-ciphers`` scripts, their free-text ``output`` is
+parsed here as it always was (``source: nmap-nse``). Nothing writes that XML
+any more; the same files are read generically by ``legacy_nmap.py``.
 
-Fallback paths (Phase 4): when nmap XML has no SSL scripts (Pulse backend,
-``--skip-nse``, empty nmap dir):
+Current paths (a new run has an empty or missing nmap dir):
 
 1. **Pulse TLS JSON** (preferred) — if ``pulse/tls.json`` or ``pulse/raw.json``
    contains a ``tls`` array from Pulse ``--cve`` / TLS probe, convert those
@@ -841,10 +841,13 @@ def check_tls_posture(
     open_ports: list[str] | None = None,
     hostnames: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build TLS posture findings from nmap NSE, Pulse TLS JSON, or stdlib probe.
+    """Build TLS posture findings from legacy nmap XML, Pulse TLS JSON, or stdlib probe.
+
+    ``nmap_dir`` is ``<run>/nmap``: present only in a run recorded before the
+    Nmap stage was removed, absent or empty otherwise.
 
     Priority:
-      1. nmap ``ssl-cert`` / ``ssl-enum-ciphers`` (richest cipher grades)
+      1. legacy nmap ``ssl-cert`` / ``ssl-enum-ciphers`` XML of an old run
       2. Pulse ``pulse/tls.json`` / ``pulse/raw.json`` ``tls`` array
       3. stdlib ``tls_probe`` when ``probe_fallback`` and ``open_ports`` set
 

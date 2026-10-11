@@ -1133,7 +1133,7 @@ def _terminate_process_group(proc: "subprocess.Popen[str]", *, use_session: bool
     """Put down the scanner and everything it started.
 
     The process group rather than the process: a scan is ``scanner.main``
-    shelling out to nmap, httpx and nuclei, and killing only the parent would
+    shelling out to pulse, httpx and nuclei, and killing only the parent would
     leave the tool that is actually touching the target running with no one to
     report it. SIGTERM first so the pipeline can close its files, SIGKILL five
     seconds later for whatever ignored it.

@@ -124,6 +124,43 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Removed
 
+- **Breaking:** the Nmap code is gone
+  ([#548](https://github.com/onixus/Shapoclyack/issues/548), last step of epic
+  [#549](https://github.com/onixus/Shapoclyack/issues/549); [Migrating off
+  Nmap](docs/nmap-migration.md)). Removed: the NSE stage
+  (`scanner/pipeline/nse.py`), the `hybrid` and `nmap` service-probe backends,
+  the Pulse-versus-Nmap shadow run (`pulse_shadow.py`, `diff_pulse_nmap.json`,
+  `scripts/compare-pulse-nmap.py`), the NSE profiles, the `nmap` entry of
+  `/api/system` and the console's system page, the timing select and shadow
+  toggle of the configurator, and `scripts/fetch-vulscan-db.sh`. **Refused at
+  load time with the replacement named (exit code 2; not ignored):**
+  `service_probe.backend: nmap|hybrid`, `service_probe.shadow`,
+  `profiles.<mode>.service_backend: nmap|hybrid`, `profiles.<mode>.nmap_timing`
+  / `nse_profile` / `nse_concurrency` / `nse_max_rate`, the `nse_profiles:`
+  section, `runtime.nse_concurrency` / `nse_max_rate` / `nse_hosts_per_scan`,
+  `OCTO_SERVICE_BACKEND=nmap|hybrid` (an unknown value used to fall back to
+  Pulse with a warning; it is refused now) and a truthy `OCTO_PULSE_SHADOW`; the
+  same check covers a config overlay from an older API and `PUT /api/config`
+  (422). `nmap_timing` becomes `pulse.rate` / `pulse.concurrency` in every
+  shipped profile (`scanner/config/*.yaml`, `tests/load`, `tests/e2e`,
+  `k8s/shapoclyack/base/config/k8s.yaml`); migration `0085` deletes the two
+  console overrides that can no longer be set (`profiles.*.nmap_timing`,
+  `service_probe.shadow`) and leaves a saved `service_probe.backend` for the
+  operator to change. A verification re-scan no longer asks the sensor for
+  `service_probe.backend: hybrid`; a finding only an NSE script detected is refused
+  a verification at once (`VerificationDispatchError`, close it by hand). A saved
+  `service_probe.backend: nmap|hybrid` is refused when a scan, schedule tick or
+  verification is queued (422 from `POST /api/jobs`), not by the sensor; the
+  console shows it flagged as removed. **Kept:** the `nmap/` XML of past runs is read as
+  before (`scanner/pipeline/legacy_nmap.py`, the report, TLS posture, evidence
+  and verification coverage), and the strings `nmap-nse` and `prober: nmap` stay
+  valid in the database, API and console; `--skip-nse`, `runtime.skip_nse` and
+  `runtime.nse_timeout_seconds` keep their names. **Known gaps:** no TLS
+  cipher-suite grades A-F on the Pulse path until Pulse enumerates suites
+  (#545, GenDec#34); `smb-vuln-ms17-010`, `smb-vuln-ms10-061`, `smb-protocols`
+  and `rdp-enum-encryption` are not covered (GenDec#38); the pinned Pulse inputs
+  (#543) wait for GenDec#31/#32. Upgrade steps:
+  [operations](docs/operations.md#before-upgrading-to-the-release-that-removes-nmap).
 - **Breaking:** Shapoclyack no longer builds or distributes Nmap (NPSL, #97).
   `shapoclyack-0.47-1009-rc1` is the last release with the `-nmap` image tags
   (`shapoclyack-scanner:<tag>-nmap`, `shapoclyack-aio:<tag>-nmap`,
@@ -133,7 +170,8 @@ All notable changes to Shapoclyack are documented in this file.
   job are gone. Deployments that run `service_probe.backend: nmap|hybrid`, the
   `vuln_legacy` NSE profile or `discovery.l2` must install `nmap` themselves
   next to the sensor or in a derived image; the scanner uses it whenever it is
-  on `PATH`. See [docs/nmap-external.md](docs/nmap-external.md).
+  on `PATH`. (That note, `docs/nmap-external.md`, is replaced by
+  [docs/nmap-migration.md](docs/nmap-migration.md); see the next entry.)
 
 ### Changed
 
@@ -147,7 +185,7 @@ All notable changes to Shapoclyack are documented in this file.
   differ in timing and in what is reported on busy hosts. Verified against a
   live `127.0.0.1:8081/tcp` probe with `run_pulse_probe`.
 - The L2 discovery and NSE stages now log a warning that points to
-  `docs/nmap-external.md` when `nmap` is not on `PATH`.
+  the Nmap note (now `docs/nmap-migration.md`) when `nmap` is not on `PATH`.
 
 ### Added
 

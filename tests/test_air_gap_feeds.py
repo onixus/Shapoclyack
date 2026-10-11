@@ -149,7 +149,6 @@ OVERRIDES = [
     ("MSRC_CVRF_BASE_URL", ["api/services/advisories/fetch.py"]),
     ("EXPLOITDB_CSV_URL", ["scripts/fetch-exploit-db.py"]),
     ("METASPLOIT_MODULES_URL", ["scripts/fetch-exploit-db.py"]),
-    ("VULSCAN_BASE_URLS", ["scripts/fetch-vulscan-db.sh"]),
     ("NUCLEI_TEMPLATES_REPO", ["scripts/fetch-nuclei-templates.sh"]),
     ("NUCLEI_TEMPLATES_REF", ["scripts/fetch-nuclei-templates.sh"]),
     ("NUCLEI_TEMPLATES_COMMIT", ["scripts/fetch-nuclei-templates.sh"]),

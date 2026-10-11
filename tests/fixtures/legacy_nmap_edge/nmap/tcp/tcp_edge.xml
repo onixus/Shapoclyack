@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+<!-- Synthetic edge cases of old Nmap output (#548): a script with no `output`
+     attribute, an IPv6 host, host-level scripts, a host that was down, a host
+     with only a MAC address and a service element with no name. -->
+<nmaprun scanner="nmap" args="nmap -n -Pn -6 -sV --script vulners,smb-os-discovery 2001:db8::5 10.0.0.9 10.0.0.10 10.0.0.11" version="7.95">
+  <host>
+    <status state="up"/>
+    <address addr="2001:db8::5" addrtype="ipv6"/>
+    <ports>
+      <port protocol="tcp" portid="22">
+        <state state="open"/>
+        <service name="ssh" product="OpenSSH" version="9.2p1"/>
+        <script id="vulners"/>
+      </port>
+      <port protocol="udp" portid="161">
+        <state state="open"/>
+        <script id="snmp-info" output="VULNERABLE: community string public"/>
+      </port>
+    </ports>
+  </host>
+  <host>
+    <status state="up"/>
+    <address addr="00:11:22:33:44:55" addrtype="mac"/>
+    <address addr="10.0.0.9" addrtype="ipv4"/>
+    <hostscript>
+      <script id="smb-vuln-ms17-010" output="&#10;  VULNERABLE:&#10;  CVE-2017-0143 9.3"/>
+      <script id="smb-os-discovery" output="OS: Windows Server 2008 R2"/>
+    </hostscript>
+    <ports>
+      <port protocol="tcp" portid="445">
+        <state state="open"/>
+        <service/>
+      </port>
+    </ports>
+  </host>
+  <host>
+    <status state="down"/>
+    <address addr="10.0.0.10" addrtype="ipv4"/>
+  </host>
+  <host>
+    <status state="up"/>
+    <address addr="00:aa:bb:cc:dd:ee" addrtype="mac"/>
+    <ports>
+      <port protocol="tcp" portid="80"><state state="open"/><service name="http"/></port>
+    </ports>
+  </host>
+  <runstats><finished exit="success"/></runstats>
+</nmaprun>

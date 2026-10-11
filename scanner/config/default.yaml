@@ -5,23 +5,13 @@ runtime:
   logs_dir: scanner/output/logs
   retries: 2
   timeout_seconds: 1800
-  # Per-host nmap (NSE/OS) timeout, separate from the global command timeout (max 600 s).
+  # Wall-clock cap for one Pulse invocation, separate from the global command timeout (max 600 s).
+  # The nse_ name is historical (it bounded the removed Nmap NSE stage).
   nse_timeout_seconds: 600
-  # Default number of nmap processes run in parallel during the NSE/OS stage.
-  nse_concurrency: 4
-  # Global packets/sec budget for the NSE/OS stage, shared across all parallel
-  # nmap processes (each gets nse_max_rate / nse_concurrency). 0 = unlimited.
-  nse_max_rate: 0
-  # Hosts scanned per nmap process (reduces startup overhead). 1 = one host per nmap.
-  # Lowered from 8: bundling several hosts into one nmap invocation means one
-  # slow host (heavy vulners/ssl-enum-ciphers NSE work) can blow the shared
-  # nse_timeout_seconds budget (hard-capped at 600s, see config_schema.py) for
-  # the whole group, failing hosts that would've finished fine on their own.
-  nse_hosts_per_scan: 1
   # Parallel naabu batches for discovery and port scan (each batch is independent).
   discover_concurrency: 4
   ports_concurrency: 4
-  # Set true or pass --skip-nse for L1-only runs (discover + ports). Re-run with --resume for NSE.
+  # Set true or pass --skip-nse for L1-only runs (discover + ports). Re-run with --resume to enrich.
   skip_nse: false
   keep_intermediate: true
   # Each run writes to output_dir/runs/<run_id>/ and state_dir/runs/<run_id>/.
@@ -34,17 +24,13 @@ profiles:
   # rather than a count, and naabu rejects anything else. For a different port
   # range use ports.custom_ports_file (passed to naabu as -p), which takes
   # arbitrary lists and ranges and overrides top_ports when non-empty.
-  # Phase 4.1: default service_probe.backend is pulse (OS/banner/CVE).
-  # nse_profile is used only when backend is nmap|hybrid (escape hatch).
-  # profiles.<mode>.pulse.* overrides service_probe.pulse for that speed mode.
+  # Pulse is the only service-probe backend (OS/banner/CVE).
+  # profiles.<mode>.pulse.* overrides service_probe.pulse for that speed mode:
+  # rate and concurrency there are what nmap_timing used to set (docs/nmap-migration.md).
   safe:
     discover_rate: 2000
     port_rate: 1000
     top_ports: 100
-    nmap_timing: T3
-    nse_profile: baseline
-    nse_concurrency: 2
-    nse_max_rate: 500
     pulse:
       concurrency: 300
       rate: 500
@@ -57,10 +43,6 @@ profiles:
     discover_rate: 4000
     port_rate: 3000
     top_ports: 1000
-    nmap_timing: T4
-    nse_profile: vuln_legacy
-    nse_concurrency: 4
-    nse_max_rate: 2000
     pulse:
       concurrency: 800
       rate: 2000
@@ -73,10 +55,6 @@ profiles:
     discover_rate: 10000
     port_rate: 7000
     top_ports: 1000
-    nmap_timing: T4
-    nse_profile: vuln_legacy
-    nse_concurrency: 8
-    nse_max_rate: 5000
     pulse:
       concurrency: 1200
       rate: 5000
@@ -93,10 +71,6 @@ profiles:
     # Top 100 rather than 1000: enough to hit the usual web/mail ports that
     # give the later stages something to chew on, without the long tail.
     top_ports: 100
-    nmap_timing: T4
-    nse_profile: baseline
-    nse_concurrency: 4
-    nse_max_rate: 2000
     pulse:
       concurrency: 800
       rate: 2000
@@ -300,36 +274,6 @@ ports:
   # entry written here survives whatever the API pushes.
   exclude_ports: []
 
-# ssl-enum-ciphers must be present in the active profile's `scripts` for
-# weak-cipher/protocol TLS posture findings (Phase 9.2) to populate; cert
-# expiry/self-signed findings work off ssl-cert alone, already covered by
-# nmap's default/safe categories.
-nse_profiles:
-  baseline:
-    scripts: "default,safe"
-    version_detection: true
-    os_detection: true
-  # Phase 4.5 escape hatch: full NSE + vulners when backend is nmap|hybrid.
-  # Default Pulse path uses Pulse --cve + Nuclei + CVSS4 instead (Phase 4.2).
-  vuln_legacy:
-    scripts: "default,safe,vuln,vulners,ssl-enum-ciphers"
-    version_detection: true
-    os_detection: true
-  vuln:
-    # Alias of vuln_legacy (kept for older configs / overrides).
-    scripts: "default,safe,vuln,vulners,ssl-enum-ciphers"
-    version_detection: true
-    os_detection: true
-  vuln-offline:
-    # Fully offline CVE matching via vulscan's bundled local databases.
-    scripts: "default,safe,vuln,vulscan/vulscan.nse"
-    version_detection: true
-    os_detection: true
-  service_specific:
-    scripts: "http-*,ssl-cert,ssl-enum-ciphers,smb-*,ssh-*,dns-*"
-    version_detection: true
-    os_detection: false
-
 reporting:
   markdown_summary: true
   html_summary: true
@@ -397,9 +341,8 @@ screenshots:
   verify_tls: false
 
 # Nuclei template-based web vuln/misconfig scan (Phase 4.2 default ON).
-# Together with Pulse --cve + CVSS4 enrichment this replaces nmap-vulners on
-# the default Pulse path. nmap-vulners remains only in nse_profiles.vuln_legacy
-# when service_probe.backend is nmap|hybrid.
+# Together with Pulse --cve + CVSS4 enrichment this replaced nmap-vulners
+# (the NSE stage is gone, docs/nmap-migration.md).
 # Skips cleanly if binary or templates_dir is missing (host installs).
 # Conservative: severities floor + exclude intrusive/fuzz/dos tags.
 # CVE-tagged matches → vulnerabilities.json (source: "nuclei"); other findings
@@ -443,19 +386,15 @@ nuclei:
   interactsh_server: ""
 
 # Service / OS enrichment after open ports (naabu).
-# Phase 4.1 default is pulse (OS/banner/CVE; no nmap NSE required).
-# backend:
-#   pulse  — Pulse only (default; tls_posture uses probe_fallback)
-#   nmap   — classic NSE (scripts + nmap XML); set for vuln_legacy path
-#   hybrid — Pulse first, then nmap NSE
-# Override: OCTO_SERVICE_BACKEND=pulse|nmap|hybrid
-# Per-profile: profiles.<safe|balanced|fast>.service_backend / .pulse.*
+# Pulse (OS/banner/CVE) is the only backend; the Nmap stage was removed (#548).
+# backend: nmap|hybrid, shadow, nmap_timing, nse_profiles and
+# OCTO_SERVICE_BACKEND=nmap|hybrid are refused at load time with the
+# replacement named; see docs/nmap-migration.md.
+# Per-profile: profiles.<safe|balanced|fast>.pulse.*
 # Pulse binary: OCTO_PULSE_BIN=/usr/local/bin/pulse
 # See docs/pulse-backend.md
 service_probe:
   backend: pulse
-  # shadow: true  # or OCTO_PULSE_SHADOW=1 — run pulse+nmap and write diff_pulse_nmap.json
-  shadow: false
   pulse:
     bin: ""
     concurrency: 500
@@ -472,9 +411,9 @@ service_probe:
     max_hosts: 65536
     chunk_hosts: 64
 
-# TLS / certificate posture (Phase 9.2 + Pulse Phase 4): prefers nmap
-# ssl-cert / ssl-enum-ciphers NSE output from the nse stage. When those are
-# missing (Pulse backend / --skip-nse): prefer pulse/tls.json from Pulse, else
+# TLS / certificate posture (Phase 9.2 + Pulse Phase 4): prefers
+# pulse/tls.json from Pulse (the ssl-cert / ssl-enum-ciphers XML of runs recorded
+# before the Nmap stage was removed is still read), else
 # if probe_fallback is true open a stdlib TLS handshake on probe_tls_ports.
 # Opt-in; findings only, never merged into scan scope.
 # hostname_mismatch (P4.1) flags cert_name_mismatch when the certificate's

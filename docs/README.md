@@ -8,7 +8,7 @@ Commands assume the repository root unless a guide explicitly says otherwise.
 
 Three words are used precisely throughout these guides:
 
-- **Sensor** — a remote scanning node. It runs `agent/worker.py`, claims scan jobs from the API (over NATS JetStream or by HTTPS polling), executes the scanner (nmap/httpx/nuclei/…) and uploads the results. Registered in the `agents` table with `agent_kind = "scanner"`.
+- **Sensor** — a remote scanning node. It runs `agent/worker.py`, claims scan jobs from the API (over NATS JetStream or by HTTPS polling), executes the scanner (pulse/httpx/nuclei/…) and uploads the results. Registered in the `agents` table with `agent_kind = "scanner"`.
 - **Agent** — the Lariska in-guest endpoint inventory agent installed on a managed host. It submits inventory snapshots to `POST /api/endpoint/inventory` and never claims scan jobs. Registered in the same `agents` table with `agent_kind = "endpoint"`.
 - **Endpoint** — a managed host that has the Agent installed.
 
@@ -111,9 +111,9 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | [Asset business context](asset-context.md) | Owner, service, environment, classification, exposure; CMDB/AD file import (`POST /api/assets/import`) and audit trail |
 | [Asset identity](asset-identity.md) | When an IP observation and an FQDN observation are treated as one asset, and when they deliberately are not |
 | [Troubleshooting](troubleshooting.md) | Startup, authentication, scanner, broker, database, UI diagnostics |
-| [Pulse backend](pulse-backend.md) | Pulse service-probe backend and Nmap compatibility choices |
+| [Pulse backend](pulse-backend.md) | Pulse service-probe backend (the only one) and the Nmap comparison corpus |
 | [Pulse plugins](pulse-plugins.md) | Rhai plugins passed to Pulse with `--script-dir` (SSH algorithms, anonymous FTP, cleartext services): contract, limits, receipt, verification (#544) |
-| [Using your own Nmap](nmap-external.md) | Why Nmap is not bundled, how to connect your own to a host, container or Kubernetes sensor, and how to confirm the NSE stage ran |
+| [Migrating off Nmap](nmap-migration.md) | #548: which Nmap settings are now refused and what replaces them, which old data is still read, and the known gaps (TLS suite grades, four SMB/RDP checks, pinned Pulse inputs) |
 | [Exact Naabu → Pulse endpoints](pulse-endpoints.md) | The exact-endpoint planner and resume between port discovery and Pulse (#448) |
 | [Server installation](server-install.ru.md) 🇷🇺 | `scripts/install-server.py`: prebuilt all-in-one image and PostgreSQL via Docker Compose, no build on the server |
 

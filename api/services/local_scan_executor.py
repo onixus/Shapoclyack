@@ -86,7 +86,7 @@ def _terminate(proc: "subprocess.Popen[str]") -> None:
     """Put down one scanner and everything it started.
 
     The process *group*, for the reason ``agent/worker.py`` gives: a scan is
-    ``scanner.main`` driving nmap, httpx and nuclei, and killing only the
+    ``scanner.main`` driving pulse, httpx and nuclei, and killing only the
     parent leaves the tool that is actually touching the target running with
     nobody to report it. SIGTERM first so the pipeline can close its files,
     SIGKILL for whatever ignores it.

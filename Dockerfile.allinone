@@ -97,11 +97,10 @@ ARG PULSE_SKIP_CHECKSUM=0
 # GenDec is a private repository, so the default build needs a token. Set
 # INSTALL_PULSE=0 to build the image without Pulse and without a token:
 #   docker build --build-arg INSTALL_PULSE=0 …
-# The result has no service-probe backend of its own -- the scanner refuses to
-# start a run with `service_probe.backend: pulse` and no binary rather than
-# quietly producing a scan with no services (scanner/pipeline/pulse_probe.py),
-# so such an image needs a self-installed Nmap (docs/nmap-external.md) and
-# `backend: nmap`.
+# The result has no service-probe backend: Pulse is the only one, and the
+# scanner refuses to start a run with no binary rather than quietly producing a
+# scan with no services (scanner/pipeline/pulse_probe.py). Such an image can run
+# ports-only (`--skip-nse`) or be given a Pulse binary of your own.
 ARG INSTALL_PULSE=1
 # One implementation for host installs and images: the script resolves the
 # asset (via the API when a token is present -- the plain releases/download
@@ -165,7 +164,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     OCTO_STATE_DIR=scanner/state \
     OCTO_CONFIG=scanner/config/default.yaml
 
-# Nmap is not bundled (NPSL licence, issue #97); see docs/nmap-external.md.
+# Nmap is not bundled and not used (NPSL licence, issue #97; docs/nmap-migration.md).
 RUN set -eux; \
     apt-get update; \
     # openssh-client: the SSH push deployment (api/services/agent_deployer.py)

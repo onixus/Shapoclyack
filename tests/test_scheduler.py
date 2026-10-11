@@ -16,25 +16,18 @@ def _minimal_config(**overrides: object) -> dict:
                 "discover_rate": 1000,
                 "port_rate": 1000,
                 "top_ports": 100,
-                "nmap_timing": "T3",
-                "nse_profile": "baseline",
             },
             "balanced": {
                 "discover_rate": 3000,
                 "port_rate": 3000,
                 "top_ports": 1000,
-                "nmap_timing": "T4",
-                "nse_profile": "baseline",
             },
             "fast": {
                 "discover_rate": 7000,
                 "port_rate": 7000,
                 "top_ports": 1000,
-                "nmap_timing": "T4",
-                "nse_profile": "baseline",
             },
         },
-        "nse_profiles": {"baseline": {"scripts": "default,safe"}},
     }
     base.update(overrides)
     return base
@@ -79,3 +72,23 @@ def test_build_scan_command_flags():
     assert "--skip-nse" in command
     assert "--notify" in command
     assert "--export-defectdojo" in command
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [("OCTO_SERVICE_BACKEND", "nmap"), ("OCTO_SERVICE_BACKEND", "hybrid"), ("OCTO_PULSE_SHADOW", "true")],
+)
+def test_the_scheduler_refuses_the_removed_nmap_environment_at_start(monkeypatch, capsys, variable, value):
+    """#548: every child run would exit 2 on this, so the loop must not start."""
+    import sys
+
+    from scanner import scheduler
+
+    monkeypatch.setenv(variable, value)
+    monkeypatch.setattr(sys, "argv", ["scheduler", "--config", "scanner/config/default.yaml", "--once"])
+    monkeypatch.setattr(
+        scheduler, "run_scheduler", lambda *a, **k: pytest.fail("the scheduler started a run")
+    )
+    assert scheduler.main() == 2
+    err = capsys.readouterr().err
+    assert variable in err and "docs/nmap-migration.md" in err

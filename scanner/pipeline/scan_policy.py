@@ -45,7 +45,7 @@ class ScanPolicyError(ValueError):
 #: ceiling lowers the first field. ``skip_service_probe`` sets the second one
 #: to false. For fingerprint/screenshots that disables the whole stage; for
 #: TLS posture it disables only the direct-handshake fallback and preserves
-#: passive parsing of NSE/Pulse evidence already collected by another stage.
+#: passive parsing of Pulse evidence already collected by another stage.
 #:
 #: Pipeline call sites go through :func:`require_secondary_active_stage_policy`,
 #: which stops the run on a name missing here. That runtime guard only sees the
@@ -82,7 +82,6 @@ NON_SECONDARY_ACTIVE_STAGES: dict[str, str] = {
         "primary: pulse rate/concurrency/host_parallel; off with skip_service_probe; "
         "its Rhai plugins (serial, outside --rate) are off under per_host_rate"
     ),
-    "nse": "primary: nse_max_rate, nse_concurrency; off with skip_service_probe",
     "nuclei": "primary: rate_limit, concurrency; off with skip_service_probe",
     # Third-party sources and DNS: no connection to an address in scope.
     "cloudflare": "Cloudflare API zone export",
@@ -108,7 +107,6 @@ NON_SECONDARY_ACTIVE_STAGES: dict[str, str] = {
     "related_domains": "crt.sh organisation search",
     "credential_leaks": "breach-database provider API",
     # Artifact-only: read what earlier stages wrote, open no connection.
-    "pulse_shadow": "diff of pulse and nmap artifacts",
     "report": "report build from stage artifacts and local enrichment databases",
     "controls": "controls matrix from stage artifacts",
 }
@@ -147,7 +145,7 @@ def _ceiling(current: int | None, limit: int | None, *, zero_is_unlimited: bool 
     """``min`` over two ceilings, where None — and sometimes 0 — mean "no limit".
 
     ``zero_is_unlimited`` is for the config fields that spell "unlimited" as 0
-    (``runtime.nse_max_rate``, ``pulse.rate``). Without it a policy of 50 pps
+    (``pulse.rate``). Without it a policy of 50 pps
     would compute ``min(0, 50) == 0`` and read as *unlimited*, which is the one
     mistake in this file that would be silent and catastrophic.
     """
@@ -285,16 +283,6 @@ def apply_policy(config: AppConfig, policy: dict[str, Any]) -> AppConfig:
             updates["discover_rate"] = _ceiling(profile.discover_rate, max_discover)
         if max_port is not None:
             updates["port_rate"] = _ceiling(profile.port_rate, max_port)
-        if max_concurrency is not None:
-            updates["nse_concurrency"] = _ceiling(profile.nse_concurrency, max_concurrency)
-        if per_host_rate is not None:
-            # The NSE budget is shared by every parallel nmap, so holding the
-            # whole stage to the per-host ceiling is stricter than the policy
-            # asks for and never looser — which is the direction this file is
-            # allowed to be wrong in.
-            updates["nse_max_rate"] = _ceiling(
-                profile.nse_max_rate, per_host_rate, zero_is_unlimited=True
-            )
         pulse_updates: dict[str, Any] = {}
         if per_host_rate is not None:
             pulse_updates["rate"] = _ceiling(
@@ -345,13 +333,6 @@ def apply_policy(config: AppConfig, policy: dict[str, Any]) -> AppConfig:
         runtime_updates["ports_concurrency"] = _ceiling(
             config.runtime.ports_concurrency, max_concurrency
         )
-        runtime_updates["nse_concurrency"] = _ceiling(
-            config.runtime.nse_concurrency, max_concurrency
-        )
-    if per_host_rate is not None:
-        runtime_updates["nse_max_rate"] = _ceiling(
-            config.runtime.nse_max_rate, per_host_rate, zero_is_unlimited=True
-        )
     if policy.get("skip_service_probe"):
         # One direction only: a policy can turn the stage that sends
         # protocol-specific payloads off, and nothing here turns it back on.
@@ -395,7 +376,7 @@ def apply_policy(config: AppConfig, policy: dict[str, Any]) -> AppConfig:
     if policy.get("skip_service_probe"):
         # ARP remains host discovery. mDNS and NetBIOS are protocol-specific
         # UDP requests and therefore follow the same "ports only" decision as
-        # pulse/NSE/nuclei; a fragile policy can turn them off, never on.
+        # pulse/nuclei; a fragile policy can turn them off, never on.
         l2_updates["mdns"] = False
         l2_updates["netbios"] = False
     if l2_updates:
@@ -428,7 +409,7 @@ def apply_policy(config: AppConfig, policy: dict[str, Any]) -> AppConfig:
         # SYN/ACKs: ~8.9k templates of HTTP requests aimed at an engineering
         # station's web interface. ``skip_service_probe`` is the policy saying
         # "inventory the ports, do not talk to the devices", and a run that
-        # honoured it for pulse and NSE while nuclei kept going would honour it
+        # honoured it for pulse while nuclei kept going would honour it
         # in name only. One direction, like ``skip_nse``: never turned back on.
         nuclei_updates["enabled"] = False
 

@@ -19,7 +19,7 @@ def test_validate_accepts_whitelisted():
             "fingerprint.enabled": True,
             "screenshots.enabled": True,
             "nuclei.severities": ["critical", "high"],
-            "profiles.balanced.nmap_timing": "T3",
+            "profiles.balanced.top_ports": 100,
             "profiles.fast.top_ports": 1000,
         }
     )
@@ -36,8 +36,6 @@ def test_validate_rejects_bad_types_and_ranges():
         cfg.validate_overrides({"nuclei": {"enabled": "yes"}})
     with pytest.raises(ValueError, match="one of"):
         cfg.validate_overrides({"profiles": {"safe": {"top_ports": 0}}})
-    with pytest.raises(ValueError, match="one of"):
-        cfg.validate_overrides({"profiles": {"safe": {"nmap_timing": "T9"}}})
     with pytest.raises(ValueError, match="unknown severities"):
         cfg.validate_overrides({"nuclei": {"severities": ["nope"]}})
 
@@ -79,16 +77,25 @@ def test_validate_rejects_nuclei_performance_knobs_out_of_range():
         cfg.validate_overrides({"nuclei": {"templates_dir": 123}})
 
 
-def test_validate_accepts_service_probe_backend_and_shadow():
-    data = cfg.unflatten({"service_probe.backend": "hybrid", "service_probe.shadow": True})
+def test_validate_accepts_service_probe_backend_pulse():
+    data = cfg.unflatten({"service_probe.backend": "pulse"})
     assert cfg.validate_overrides(data) is data
 
 
-def test_validate_rejects_unknown_service_probe_backend():
+@pytest.mark.parametrize("backend", ["nmap", "hybrid", "wireshark"])
+def test_validate_rejects_every_service_probe_backend_but_pulse(backend):
     with pytest.raises(ValueError, match="one of"):
-        cfg.validate_overrides({"service_probe": {"backend": "wireshark"}})
-    with pytest.raises(ValueError, match="expected a boolean"):
-        cfg.validate_overrides({"service_probe": {"shadow": "yes"}})
+        cfg.validate_overrides({"service_probe": {"backend": backend}})
+
+
+def test_validate_names_the_replacement_of_the_removed_nmap_settings():
+    """#548: the console used to save these; the message says what happened to them."""
+    with pytest.raises(ValueError, match=r"service_probe\.shadow: removed with the Nmap stage"):
+        cfg.validate_overrides({"service_probe": {"shadow": True}})
+    with pytest.raises(ValueError, match=r"nmap_timing: removed with the Nmap stage.*pulse\.rate"):
+        cfg.validate_overrides({"profiles": {"safe": {"nmap_timing": "T3"}}})
+    assert "profiles.safe.nmap_timing" not in cfg.EDITABLE_PATHS
+    assert "service_probe.shadow" not in cfg.EDITABLE_PATHS
 
 
 def test_deep_merge_via_effective_paths():

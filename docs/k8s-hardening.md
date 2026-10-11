@@ -125,7 +125,7 @@ The API container and its `migrate` init container run the **API image**
 (`ghcr.io/onixus/shapoclyack-api`, `Dockerfile.api`): the API, the web console
 and the `scanner` package it reads configs and reports with, `openssh-client`
 for the SSH deployer — and none of the scanner toolchain. The API does not scan
-any more, so naabu, pulse and nmap with their file capabilities were attack
+any more, so naabu and pulse with their file capabilities were attack
 surface in the one pod that holds every credential. `fetch-enrichment` (with
 base/enrichment) stays on the all-in-one image because its fetchers need
 `curl`; so do the executor, the local-scan topology and the kind stands, which
@@ -152,7 +152,7 @@ test refuses anything new that does.
 ### `shapoclyack-scanner-executor` — `NET_RAW`, `NET_ADMIN`, `allowPrivilegeEscalation: true`
 
 - **`NET_RAW`**: naabu's SYN discovery, pulse's SYN mode and OS fingerprint,
-  nmap `-O` and fping's ICMP all open raw sockets.
+  and fping's ICMP all open raw sockets.
 - **`NET_ADMIN`**: not used by anything we know of at run time — but the
   images grant it, with `NET_RAW`, as a file capability
   (`setcap cap_net_raw,cap_net_admin+eip` in `Dockerfile` and
@@ -281,7 +281,7 @@ anything else.
 One installation-wide override now reaches every tenant's sensors, so for the
 settings that decide how hard a sensor hits its network **the sensor's own
 file stays the limit**: discovery and port rates, nuclei's rate limit and
-concurrency, and nmap timing take the lower of the file's value and the
+and concurrency take the lower of the file's value and the
 overlay's; nuclei's excluded tags are the union of the two, so an override
 cannot re-enable `intrusive`, `fuzz` or `dos` templates a sensor excludes; and
 screenshots run only where the sensor's file enables them. An overlay can make

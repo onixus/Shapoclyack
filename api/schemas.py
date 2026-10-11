@@ -1891,7 +1891,8 @@ class ToolVersion(BaseModel):
     name: str
     version: str | None = None
     error: str | None = None
-    # Phase 5: tools not required for default Pulse path (e.g. nmap).
+    # A tool a scan can run without; also set for every tool on a pod that
+    # dispatches scans to sensors instead of running them.
     optional: bool = False
 
 
@@ -1928,8 +1929,7 @@ class EnrichmentDb(BaseModel):
 
 class ScanConfigSummary(BaseModel):
     profiles: list[str]
-    nse_profiles: list[str]
-    # service_probe.backend (pulse | nmap | hybrid); optional for older responses.
+    # service_probe.backend (always "pulse" now); optional for older responses.
     service_backend: str | None = None
     stages: dict[str, bool]
 

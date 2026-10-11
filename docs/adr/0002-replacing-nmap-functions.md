@@ -5,25 +5,26 @@
 | **Status** | **Accepted** — onixus, 2026-10-10 |
 | **Issue** | [#549](https://github.com/onixus/Shapoclyack/issues/549) (epic) |
 | **Date** | 2026-10-10, against `claude/drop-bundled-nmap` at `6cf272a` ([#539](https://github.com/onixus/Shapoclyack/pull/539)) |
-| **Related** | [ADR 0001](0001-pulse-distribution-model.md) (how Pulse is distributed — still Proposed), [#97](https://github.com/onixus/Shapoclyack/issues/97) (NPSL), [#447](https://github.com/onixus/Shapoclyack/issues/447) (Naabu / Pulse / Nuclei chain), [#450](https://github.com/onixus/Shapoclyack/issues/450) (Nuclei planning by Pulse services), [Using your own Nmap](../nmap-external.md) |
+| **Related** | [ADR 0001](0001-pulse-distribution-model.md) (how Pulse is distributed — still Proposed), [#97](https://github.com/onixus/Shapoclyack/issues/97) (NPSL), [#447](https://github.com/onixus/Shapoclyack/issues/447) (Naabu / Pulse / Nuclei chain), [#450](https://github.com/onixus/Shapoclyack/issues/450) (Nuclei planning by Pulse services), [Migrating off Nmap](../nmap-migration.md) |
 
 ## Context
 
 [#539](https://github.com/onixus/Shapoclyack/pull/539) stops building and
 distributing Nmap: `0.47-1009-rc1` is the last release with `-nmap` image tags.
-The scanner still calls an `nmap` it finds on `PATH`
-([nmap-external.md](../nmap-external.md)). The owner's decision is to go
+At the time of writing the scanner still called an `nmap` it found on `PATH`
+(the note on installing your own Nmap, since replaced by
+[nmap-migration.md](../nmap-migration.md)). The owner's decision is to go
 further: Shapoclyack stops depending on Nmap at all, and every function Nmap
 provided either lands in Pulse or in Shapoclyack, or is dropped on purpose.
 
-### What still calls Nmap
+### What still called Nmap (when this was written; none of it does after #548)
 
 L2 discovery (ARP sweep, NetBIOS and mDNS names) no longer does: it runs through Pulse since [#542](https://github.com/onixus/Shapoclyack/issues/542), see [pulse-backend.md](../pulse-backend.md#l2-discovery).
 
 | Function | Code | Default |
 |---|---|---|
-| `-sV` / `-O` / NSE stage, profiles `baseline` (`default,safe`), `vuln_legacy` (`+vuln,vulners,ssl-enum-ciphers`), `vuln-offline` (Vulscan), `service_specific` | [`nse.py`](../../scanner/pipeline/nse.py), `nse_profiles` in [`default.yaml`](../../scanner/config/default.yaml) | only with `service_probe.backend: nmap\|hybrid` |
-| Pulse-versus-Nmap coverage diff (`diff_pulse_nmap.json`) | [`pulse_shadow.py`](../../scanner/pipeline/pulse_shadow.py) | only with `service_probe.shadow: true` |
+| `-sV` / `-O` / NSE stage, profiles `baseline` (`default,safe`), `vuln_legacy` (`+vuln,vulners,ssl-enum-ciphers`), `vuln-offline` (Vulscan), `service_specific` | `nse.py` (removed in #548), `nse_profiles` in [`default.yaml`](../../scanner/config/default.yaml) | only with `service_probe.backend: nmap\|hybrid` |
+| Pulse-versus-Nmap coverage diff (`diff_pulse_nmap.json`) | `pulse_shadow.py` (removed in #548) | only with `service_probe.shadow: true` |
 | TLS cipher-suite enumeration and grades (`ssl-enum-ciphers`); SSLv2/SSLv3 detection | `nmap-nse` source in [`tls_posture.py`](../../scanner/pipeline/tls_posture.py) | only when NSE ran; the stdlib probe [`tls_probe.py`](../../scanner/pipeline/tls_probe.py) does not enumerate suites |
 | CPE names and the distribution revision in `version` (`8.2p1 Ubuntu 4ubuntu0.5`), preferred on merge | [`retro_match.py`](../../api/services/retro_match.py), [`asset_services.py`](../../api/services/asset_services.py) | only when NSE ran |
 
@@ -198,8 +199,8 @@ nothing.
   enumeration, possibly L2 names). They are filed in GenDec and pinned by
   version in Shapoclyack as usual.
 - Until work item 8 lands, the `PATH` Nmap from #539 keeps working; after it,
-  Nmap is not called at all and [nmap-external.md](../nmap-external.md) is
-  replaced by a migration note.
+  Nmap is not called at all and the note on installing your own Nmap is
+  replaced by [nmap-migration.md](../nmap-migration.md) (done in #548).
 - ADR 0001 is not decided by this record, but this one moves weight away from
   the private repository: what is checked becomes public, only the engine
   stays in GenDec.
@@ -325,6 +326,35 @@ the reference has to be recorded while Nmap still runs.
 7. [#547](https://github.com/onixus/Shapoclyack/issues/547) — NSE `vuln` coverage mapped onto Nuclei network templates; gaps to Rhai.
    **Implemented** — table, network pass and live checks in [NSE `vuln` coverage](../nse-vuln-coverage.md).
 8. [#548](https://github.com/onixus/Shapoclyack/issues/548) — Remove the Nmap code paths; keep readers for past data; config migration.
+   **Done** — see [Status after #548](#status-after-548).
+
+## Status after #548
+
+Nmap is no longer called by anything in the product. Work item 8 removed the NSE
+stage, the `nmap` and `hybrid` backends, `nse_profiles`, the shadow run and the
+`PATH` lookups, and turned `backend: nmap|hybrid`, `shadow`, `nmap_timing`,
+`OCTO_SERVICE_BACKEND=nmap|hybrid` and the other removed keys into load-time
+errors that name the replacement ([Migrating off
+Nmap](../nmap-migration.md) lists each, and where it is checked). The `nmap/`
+XML of past runs, `nmap-nse` findings and `prober: nmap` rows stay readable
+(`scanner/pipeline/legacy_nmap.py`); the golden corpus of #541 stays as the
+reference it was recorded to be.
+
+**Consequences that were accepted, not solved.** The decision above set Pulse
+and Shapoclyack up to replace each function; three of them are not replaced yet,
+and #548 went ahead without waiting for them (the owner's decision, 2026-10-11):
+
+1. **TLS suite enumeration and A-F grades (#545).** The grading and the contract
+   are in place; Pulse does not enumerate suites until GenDec#34. A real scan on
+   the Pulse path has no grade.
+2. **`smb-vuln-ms17-010`, `smb-vuln-ms10-061`, `smb-protocols`,
+   `rdp-enum-encryption`** have no destination: binary-safe payloads are
+   GenDec#38 ([NSE `vuln` coverage](../nse-vuln-coverage.md)).
+3. **Pinned inputs (#543)** are only partly pinned: service names still come from
+   the port table rather than the matched probe (GenDec#31, GenDec#32).
+
+A verification re-scan can no longer re-run an NSE script, so a finding that only
+an NSE script detected stays inconclusive after it and is closed by hand.
 
 ## Not decided here
 

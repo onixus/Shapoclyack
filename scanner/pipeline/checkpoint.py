@@ -12,7 +12,7 @@ class CheckpointStore:
 
     Tracks coarse stage completion (``stages``) and fine-grained per-item
     progress (``items``: batches, hosts) so ``--resume`` skips finished work.
-    Thread-safe: the NSE stage marks per-host progress from worker threads.
+    Thread-safe: stages mark per-host progress from worker threads.
     """
 
     def __init__(self, state_file: Path) -> None:
@@ -60,7 +60,7 @@ class CheckpointStore:
 
         The caller owns artifact validation. Persist the replacement before
         replaying rejected work so a failed replay cannot revive stale items.
-        One locked save preserves unrelated stages, including concurrent NSE.
+        One locked save preserves unrelated stages, including concurrent stages.
         """
         with self._lock:
             self.stages.pop(stage, None)

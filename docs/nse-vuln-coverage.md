@@ -7,6 +7,12 @@ matching, or a stated refusal
 [#547](https://github.com/onixus/Shapoclyack/issues/547)). Read it as a list of
 what is covered, by what, under which configuration, and what is **not**.
 
+Status after #548: the NSE stage is gone, so this is now the whole answer to
+"what replaced the `vuln` category", not a plan. The four scripts marked as gaps
+below (`smb-vuln-ms17-010`, `smb-vuln-ms10-061`, `smb-protocols`,
+`rdp-enum-encryption`) have no replacement, and neither does the TLS part until
+Pulse enumerates suites ([Migrating off Nmap](nmap-migration.md#known-gaps)).
+
 Sources of the table:
 
 - The Nmap side is the recorded corpus

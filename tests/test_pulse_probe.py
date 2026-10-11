@@ -651,12 +651,14 @@ def test_missing_binary_fails_fast_with_an_install_hint(tmp_path, monkeypatch):
     with pytest.raises(FileNotFoundError, match="install-pulse.sh") as excinfo:
         pp.run_pulse_probe(["10.0.0.1:22/tcp"], output_dir=tmp_path)
     # An image built with --build-arg INSTALL_PULSE=0 hits this path on its
-    # first real run. Failing is the intended behaviour (a silent fallback to
-    # nmap would change the finding set under the same profile), so the message
-    # has to carry the whole fix: what is missing, and both ways out of it.
+    # first real run. Failing is the intended behaviour (a silent skip would
+    # change the finding set under the same profile), so the message has to
+    # carry the whole fix: what is missing, and the ways out of it. There is no
+    # second backend to point at any more (#548).
     message = str(excinfo.value)
     assert "INSTALL_PULSE=0" in message
-    assert "OCTO_SERVICE_BACKEND=nmap" in message
+    assert "--skip-nse" in message
+    assert "nmap" not in message.lower()
     assert "no services at all" in message
 
 

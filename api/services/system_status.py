@@ -37,18 +37,18 @@ ENRICHMENT_STALE_DAYS = 30
 _DEFAULT_MANIFEST_PATH = "scanner/data/enrichment-manifest.json"
 
 # `<binary>: <version-probe args>` for the external scanner toolchain.
-# Phase 5: nmap is optional (default path is Pulse); pulse/nuclei/naabu/dnsx
-# cover the default stack. ``optional`` tools may report "not installed".
+# pulse/nuclei/naabu/dnsx are the scan stack (Nmap is no longer probed: the
+# product does not run it, docs/nmap-migration.md). ``optional`` tools may
+# report "not installed".
 _TOOL_COMMANDS: dict[str, list[str]] = {
     "pulse": ["pulse", "--version"],
     "naabu": ["naabu", "-version"],
     "nuclei": ["nuclei", "-version"],
     "dnsx": ["dnsx", "-version"],
-    # Optional: only required for service_probe.backend nmap|hybrid.
-    "nmap": ["nmap", "--version"],
 }
-# Tools that are not required for the default Pulse path (Phase 5).
-_OPTIONAL_TOOLS: frozenset[str] = frozenset({"nmap"})
+# Tools a scan can run without. None today; kept so a future optional tool is
+# one line (``tool_versions`` also marks every tool optional off a scanning pod).
+_OPTIONAL_TOOLS: frozenset[str] = frozenset()
 _VERSION_RE = re.compile(r"v?\d+\.\d+(?:\.\d+)?")
 
 # Probing four subprocesses on every page poll is wasteful and the answer only
@@ -93,11 +93,10 @@ def _probe_tool(command: list[str]) -> dict[str, str | None]:
 
 
 def tool_versions(*, force: bool = False, scans_here: bool = True) -> list[dict[str, Any]]:
-    """Versions of pulse/naabu/nuclei/dnsx/nmap, cached for ``_TOOL_TTL_SECONDS``.
+    """Versions of pulse/naabu/nuclei/dnsx, cached for ``_TOOL_TTL_SECONDS``.
 
-    Each entry includes ``optional: true`` for tools not needed on the default
-    Pulse path (currently ``nmap``) — and for every tool when ``scans_here`` is
-    False, i.e. jobs go to sensors: this container then runs none of them for a
+    Each entry includes ``optional: true`` for tools a scan can run without
+    (none at present) — and for every tool when ``scans_here`` is False, i.e. jobs go to sensors: this container then runs none of them for a
     scan, and since #338 its securityContext does not let it run the ones with
     file capabilities at all. They are still probed, because the answer says
     what the image carries, but a missing capability must not read as a broken
@@ -313,13 +312,10 @@ def _effective_overrides(settings: Settings) -> dict[str, Any]:
 def scan_config_summary(config: dict[str, Any], effective: dict[str, Any] | None = None) -> dict[str, Any]:
     effective = effective or {}
     profiles = config.get("profiles", {})
-    nse = config.get("nse_profiles", {})
     service_probe = config.get("service_probe") if isinstance(config.get("service_probe"), dict) else {}
     backend = str(service_probe.get("backend") or "pulse")
     return {
         "profiles": sorted(profiles.keys()) if isinstance(profiles, dict) else [],
-        # Legacy nmap NSE profiles (used only when backend is nmap|hybrid).
-        "nse_profiles": sorted(nse.keys()) if isinstance(nse, dict) else [],
         "service_backend": backend,
         "stages": {
             # fingerprint/tls_posture/nuclei/pdf_summary are editable via the

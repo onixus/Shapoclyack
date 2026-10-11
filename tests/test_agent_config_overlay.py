@@ -274,6 +274,30 @@ def test_the_scanner_refuses_a_path_outside_its_allow_list(tmp_path, config):
         config_overlay.load_overlay(path)
 
 
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"profiles": {"balanced": {"nmap_timing": "T2"}}},
+        {"service_probe": {"shadow": True}},
+        {"service_probe": {"backend": "hybrid"}},
+    ],
+)
+def test_an_overlay_from_an_older_api_cannot_bring_the_nmap_stage_back(tmp_path, config):
+    """#548: the paths stay in the released versions' allow-lists (a version's
+    set never changes), so the document is understood; the schema is what
+    refuses the merged config, naming the replacement, and the run does not
+    start. Not applied, not dropped."""
+    from scanner import main as scanner_main
+
+    overlay = _write(tmp_path, {"overlay_version": 1, "config": config})
+    args = argparse.Namespace(
+        config=str(K8S_CONFIG), config_overlay=str(overlay), scan_policy=None, mode="balanced", delta=False
+    )
+    with pytest.raises(scanner_main._RunConfigError) as exc:
+        scanner_main._config_for_run(args)
+    assert "docs/nmap-migration.md" in str(exc.value)
+
+
 def test_the_scanner_refuses_an_overlay_version_it_does_not_know(tmp_path):
     from scanner.pipeline import config_overlay
 
@@ -444,12 +468,12 @@ def test_an_overlay_cannot_drop_the_hosts_nuclei_exclusions(tmp_path):
 
 
 def test_an_overlay_can_slow_a_sensor_down_but_not_speed_it_up(tmp_path):
-    """The sensor's own file is its ceiling for rates and timing: a tenant
-    with no scan policy was otherwise one console override away from T5 and
-    100k pps on a network whose owner configured 2000."""
+    """The sensor's own file is its ceiling for rates: a tenant with no scan
+    policy was otherwise one console override away from 100k pps on a network
+    whose owner configured 2000."""
     fast = _overlay_claim(
         {
-            "profiles": {"balanced": {"port_rate": 90_000, "discover_rate": 90_000, "nmap_timing": "T5"}},
+            "profiles": {"balanced": {"port_rate": 90_000, "discover_rate": 90_000}},
             "nuclei": {"rate_limit": 10_000, "concurrency": 100},
         }
     )
@@ -457,16 +481,14 @@ def test_an_overlay_can_slow_a_sensor_down_but_not_speed_it_up(tmp_path):
     config, _ = _executor_run_config(tmp_path, fast)
     assert config.profiles["balanced"].port_rate == host.profiles["balanced"].port_rate
     assert config.profiles["balanced"].discover_rate == host.profiles["balanced"].discover_rate
-    assert config.profiles["balanced"].nmap_timing == host.profiles["balanced"].nmap_timing
     assert config.nuclei.rate_limit == host.nuclei.rate_limit
     assert config.nuclei.concurrency == host.nuclei.concurrency
 
     slow = _overlay_claim(
-        {"profiles": {"balanced": {"port_rate": 50, "nmap_timing": "T2"}}, "nuclei": {"rate_limit": 5}}
+        {"profiles": {"balanced": {"port_rate": 50}}, "nuclei": {"rate_limit": 5}}
     )
     config, _ = _executor_run_config(tmp_path, slow)
     assert config.profiles["balanced"].port_rate == 50
-    assert config.profiles["balanced"].nmap_timing == "T2"
     assert config.nuclei.rate_limit == 5
 
 
@@ -712,3 +734,86 @@ def test_a_group_whose_sensors_cannot_take_the_job_says_so(tmp_path, monkeypatch
 
     assert start().agent_group_unavailable is False
     assert start(min_overlay_version=2, verification_of="vln_1").agent_group_unavailable is True
+
+
+# ---------------------------------------------------------------------------
+# A saved Nmap setting is refused where the scan is queued (#548)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=False)
+def _clean_override_row():
+    """``config_overrides`` has no FK to tenants, so nothing else clears it and a
+    leaked row would make every later scan in the session refuse (shared test DB)."""
+    yield
+    from api.auth import get_settings
+    from api.db import models
+    from api.db.engine import get_session
+
+    with get_session(get_settings().postgres_url) as session:
+        row = session.get(models.ConfigOverride, "global")
+        if row is not None:
+            session.delete(row)
+
+
+def _store_override(settings, data: dict) -> None:
+    """Straight into the row: ``PUT /api/config`` would refuse it, which is the point."""
+    from datetime import UTC, datetime
+
+    from api.db import models
+    from api.db.engine import get_session
+
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.ConfigOverride, "global")
+        if row is None:
+            session.add(models.ConfigOverride(scope="global", data=data, updated_at=datetime.now(UTC)))
+        else:
+            row.data = data
+
+
+@requires_postgres
+@pytest.mark.parametrize(
+    "stored",
+    [
+        {"service_probe": {"backend": "nmap"}},
+        {"service_probe": {"backend": "hybrid"}},
+        {"service_probe": {"shadow": True}},
+        {"profiles": {"balanced": {"nmap_timing": "T3"}}},
+    ],
+)
+def test_a_saved_nmap_override_is_refused_at_queue_time_not_by_the_sensor(_clean_override_row, tmp_path, monkeypatch, stored):
+    from api.auth import get_settings
+
+    client = _client(tmp_path, monkeypatch)
+    _store_override(get_settings(), stored)
+
+    response = client.post(
+        "/api/jobs",
+        headers=auth_headers(client, "operator"),
+        json={"mode": "balanced", "ranges": "127.0.0.1\n", "domains": "\n"},
+    )
+    assert response.status_code == 422, response.text
+    assert "docs/nmap-migration.md" in response.text
+    assert "exit code 2" in response.text
+    # Nothing was queued for a sensor to fail on.
+    assert _claim(client, _register(client, "exec", CURRENT_AGENT)).status_code != 200
+
+
+@requires_postgres
+def test_a_pulse_override_still_queues(_clean_override_row, tmp_path, monkeypatch):
+    from api.auth import get_settings
+
+    client = _client(tmp_path, monkeypatch)
+    _store_override(get_settings(), {"service_probe": {"backend": "pulse"}})
+    assert _start(client)["job_id"]
+
+
+@requires_postgres
+def test_the_same_gate_covers_a_verification_extra(_clean_override_row, tmp_path, monkeypatch):
+    """Every start goes through ``start_scan``, so a per-job extra that names the
+    removed stage is refused by the same call (here directly)."""
+    from api.auth import get_settings
+
+    _client(tmp_path, monkeypatch)
+    with pytest.raises(config_override.RemovedNmapOverride):
+        config_override.assert_runnable(get_settings(), {"service_probe": {"backend": "hybrid"}})

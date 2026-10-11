@@ -4,19 +4,14 @@ import csv
 import json
 import os
 import re
-import xml.etree.ElementTree as ET  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 from collections import Counter
 from pathlib import Path
-
-# Parsing goes through defusedxml (entity-expansion DoS: nmap XML embeds
-# attacker-influenced banner/NSE text). The stdlib import stays for ET.Element
-# and ET.ParseError -- defusedxml.ElementTree does not export Element.
-from defusedxml.ElementTree import fromstring as safe_fromstring
 
 from .cvss4 import Cvss4Database, enrich_vulnerabilities
 from .asn_enrich import AsnDatabase, enrich_hosts_asn
 from .geoip import GeoIpDatabase, attach_geo_to_records, enrich_hosts_geo
 from .pulse_probe import load_service_artifacts
+from .legacy_nmap import parse_nmap_xml
 from .protocol import parse_endpoint
 from .sarif_report import build_sarif_report
 from .utils import save_json
@@ -56,90 +51,6 @@ def _extract_cves(output: str) -> list[tuple[str, float | None]]:
     for match in _CVE_RE.finditer(output):
         found.setdefault(match.group(0).upper(), None)
     return list(found.items())
-
-
-def _host_address(host: ET.Element) -> str:
-    for address in host.findall("address"):
-        if address.attrib.get("addrtype") in ("ipv4", "ipv6"):
-            return address.attrib.get("addr", "unknown")
-    address_node = host.find("address")
-    return address_node.attrib.get("addr", "unknown") if address_node is not None else "unknown"
-
-
-def _script_record(host: str, port: str, script: ET.Element, protocol: str | None = None) -> dict:
-    output = (script.attrib.get("output", "") or "").strip()
-    has_cve = bool(_CVE_RE.search(output))
-    return {
-        "host": host,
-        "port": port,
-        # tcp | udp from nmap's <port protocol=...>; None for a host script.
-        # A UDP finding must never be judged by a TCP re-check (#451).
-        "protocol": protocol,
-        "script_id": script.attrib.get("id", ""),
-        "output": output,
-        "vulnerable": "VULNERABLE" in output.upper() or has_cve,
-    }
-
-
-def _parse_nmap_xml(nmap_dir: Path) -> tuple[list[dict], list[dict], list[dict]]:
-    """Return (services, os_matches, script_findings) parsed from Nmap XML files."""
-    services: list[dict] = []
-    os_matches: list[dict] = []
-    script_findings: list[dict] = []
-
-    for xml_file in sorted(nmap_dir.rglob("*.xml")):
-        try:
-            root = safe_fromstring(xml_file.read_text(encoding="utf-8"))
-        except ET.ParseError:
-            continue
-        for host in root.findall("host"):
-            address = _host_address(host)
-
-            for osmatch in host.findall("./os/osmatch"):
-                os_matches.append(
-                    {
-                        "host": address,
-                        "name": osmatch.attrib.get("name", ""),
-                        "accuracy": osmatch.attrib.get("accuracy", ""),
-                    }
-                )
-
-            for script in host.findall("./hostscript/script"):
-                script_findings.append(_script_record(address, "", script))
-
-            for port in host.findall("./ports/port"):
-                state = port.find("state")
-                if state is None or state.attrib.get("state") != "open":
-                    continue
-                service = port.find("service")
-                portid = port.attrib.get("portid", "")
-                services.append(
-                    {
-                        "host": address,
-                        "port": portid,
-                        "protocol": port.attrib.get("protocol", ""),
-                        "service": (service.attrib.get("name", "unknown") if service is not None else "unknown"),
-                        "product": (service.attrib.get("product", "") if service is not None else ""),
-                        "version": (service.attrib.get("version", "") if service is not None else ""),
-                        # Kept for the retro CVE matcher (docs/retro-cve-matching.md):
-                        # extrainfo is where nmap puts the distribution hint
-                        # ("Ubuntu Linux; protocol 2.0"), and <cpe> is the
-                        # vendor:product it resolved. Both used to be dropped
-                        # here, which left nothing to re-match a run against.
-                        "extrainfo": (service.attrib.get("extrainfo", "") if service is not None else ""),
-                        "cpe": (
-                            [c.text.strip() for c in service.findall("cpe") if c.text and c.text.strip()]
-                            if service is not None
-                            else []
-                        ),
-                    }
-                )
-                for script in port.findall("script"):
-                    script_findings.append(
-                        _script_record(address, portid, script, port.attrib.get("protocol") or None)
-                    )
-
-    return services, os_matches, script_findings
 
 
 def _build_vulnerabilities(script_findings: list[dict]) -> list[dict]:
@@ -269,12 +180,13 @@ def build_reports(
     OCTO_SERVICE_BACKEND plus the on-disk pulse/REPORT_PRIMARY marker.
     """
     hostnames = hostnames_map or {}
-    # Prefer Pulse artifacts only when backend is pulse/hybrid (not mere shadow).
-    # Shadow (nmap primary + dual-run) still writes services.json for diff, but
-    # report must keep nmap as source of truth for services/OS.
+    # Pulse artifacts are the source of truth for every run recorded since the
+    # Nmap stage was removed. A run directory from before that, with no
+    # ``pulse/REPORT_PRIMARY`` marker, is rebuilt from its Nmap XML as it
+    # always was (``legacy_nmap.py``).
     if report_primary is None:
         backend = os.environ.get("OCTO_SERVICE_BACKEND", "").strip().lower()
-        prefer_pulse = backend in ("pulse", "hybrid") or (
+        prefer_pulse = backend == "pulse" or (
             output_dir / "pulse" / "REPORT_PRIMARY"
         ).exists()
     else:
@@ -282,7 +194,7 @@ def build_reports(
 
     pulse_artifacts = load_service_artifacts(output_dir)
     pulse_extra_vulns: list[dict] = []
-    nmap_services, nmap_os, script_findings = _parse_nmap_xml(nmap_dir)
+    nmap_services, nmap_os, script_findings = parse_nmap_xml(nmap_dir)
 
     services_source = "Nmap XML"
     if prefer_pulse and pulse_artifacts is not None:
@@ -295,7 +207,7 @@ def build_reports(
             os_matches = nmap_os
     else:
         findings, os_matches = nmap_services, nmap_os
-        # Still attach Pulse CVEs when shadow produced them
+        # Still attach Pulse CVEs when a run recorded them next to its Nmap XML
         if pulse_artifacts is not None:
             _, _, pulse_extra_vulns = pulse_artifacts
     if hostnames:

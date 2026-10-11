@@ -224,7 +224,7 @@ def _run_naabu(
     }
     save_json(record_file, record)
 
-    # -Pn: same reasoning as the nmap path in nse.py -- these hosts were already
+    # -Pn: these hosts were already
     # proven alive by the discovery phase, so naabu's own host discovery is pure
     # duplication. Worse, when it fails it drops the host silently and the batch
     # reports zero open ports: inside a container naabu falls back to a CONNECT

@@ -1349,7 +1349,7 @@ sets the status yet — see
 | `/api/compliance` | PCI DSS 4.0, CIS Controls v8, ISO/IEC 27001:2022, ФСТЭК orders 117 / 21 / 239 and ГОСТ Р 57580.1-2017 control status over this tenant's findings, asset context and endpoint inventory. Read-only, `viewer`. A platform admin gets no cross-tenant view here: a control status is a statement about one organisation — see [reports-and-compliance.md](reports-and-compliance.md) |
 | `/api/reports` | Report factory: branding (`admin`), templates (`operator`), scheduled delivery (`admin` — it sends this tenant's findings outside the installation), on-demand generation (`operator`) and downloads (`viewer`) |
 | `/api/system` | Non-secret installation status |
-| `/api/config` | Validated, whitelisted scanner overrides. Read needs `config.read` (not a viewer), write is platform admin |
+| `/api/config` | Validated, whitelisted scanner overrides. Read needs `config.read` (not a viewer), write is platform admin. Since #548 a write that names `service_probe.shadow`, a profile's `nmap_timing`, or a `service_probe.backend` other than `pulse` is a 422 that says what replaced it ([Migrating off Nmap](nmap-migration.md)); `GET /api/system` no longer lists `nmap` among the tools nor `nse_profiles` in `scan_config` |
 
 `POST /api/jobs/{job_id}/cancel` stops a scan. It requires the **`scan.cancel`**
 permission — held by `operator`, `scan-operator`, `admin` and the platform
@@ -2404,7 +2404,7 @@ The approved scope says *what* a tenant may be pointed at. The scan policy says
 at what pace, and it is the answer to a gap that was total before
 [#362](https://github.com/onixus/Shapoclyack/issues/362): the API sent a
 sensor `--mode` and every actual number — 2000 packets per second for `safe`
-discovery, the host concurrency, the nmap timing — came from the
+discovery, the host concurrency, the Pulse pace (the nmap timing before #548) — came from the
 `scanner/config/default.yaml` on **the sensor's own host**. The platform
 operator, who answers for the traffic, could not set it.
 
@@ -2431,7 +2431,7 @@ document lands in `audit_events` as `scan_policy.update`.
 is a floor, not a default**: it forces the `safe` speed profile, 100/50 pps
 across a batch, one host at a time, 25 pps at any single host (which is what
 the batch rate becomes when the batch is one device), no service-probe stage —
-nmap NSE, pulse and nuclei — and an avoid-list
+pulse and nuclei — and an avoid-list
 of fieldbus and building-automation ports (modbus 502, DNP3 20000, BACnet
 47808, S7 102, IEC-104 2404, EtherNet/IP 44818 and the rest — see
 `api/services/scan_policy.py`). A stored value is taken only when it is

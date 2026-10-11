@@ -5,7 +5,6 @@ from scanner.pipeline.config_schema import (
     AppConfig,
     BatchingConfig,
     DiscoveryConfig,
-    NseProfileConfig,
     ProfileConfig,
     RuntimeConfig,
 )
@@ -19,19 +18,16 @@ def _minimal_config(**runtime_overrides) -> AppConfig:
             discover_rate=1000,
             port_rate=1000,
             top_ports=100,
-            nse_profile="default",
         ),
         "balanced": ProfileConfig(
             discover_rate=2000,
             port_rate=2000,
             top_ports=100,
-            nse_profile="default",
         ),
         "fast": ProfileConfig(
             discover_rate=4000,
             port_rate=4000,
             top_ports=100,
-            nse_profile="default",
         ),
     }
     return AppConfig(
@@ -43,7 +39,6 @@ def _minimal_config(**runtime_overrides) -> AppConfig:
             skip_known_alive=True,
             adaptive=AdaptiveDiscoveryConfig(enabled=True),
         ),
-        nse_profiles={"default": NseProfileConfig(scripts="default")},
     )
 
 

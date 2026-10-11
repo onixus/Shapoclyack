@@ -3,7 +3,6 @@ from __future__ import annotations
 import ipaddress
 import logging
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -68,17 +67,102 @@ def normalize_resolver(value: str) -> str:
     return f"{address}:{port}"
 
 
+class RemovedNmapSettingError(ValueError):
+    """A setting that only the removed Nmap stage understood (#548).
+
+    Pydantic ignores unknown keys, so without these checks an old config would
+    load, run on Pulse, and look as if ``nmap_timing: T2`` or ``backend: nmap``
+    had been honoured. Each message names what to use instead.
+    """
+
+
+_MIGRATION_DOC = "docs/nmap-migration.md"
+
+
+def _removed(key: str, instead: str) -> RemovedNmapSettingError:
+    return RemovedNmapSettingError(
+        f"{key} is no longer supported: the Nmap stage was removed (#548). {instead} ({_MIGRATION_DOC})"
+    )
+
+
+def _reject_removed_top_level_keys(data: object) -> object:
+    if isinstance(data, dict) and "nse_profiles" in data:
+        raise _removed(
+            "nse_profiles",
+            "Delete the section: there are no NSE scripts to select any more. "
+            "Pulse plugins (service_probe.pulse.plugins) and Nuclei network templates "
+            "cover what was kept",
+        )
+    return data
+
+
+def _reject_removed_runtime_keys(data: object) -> object:
+    if not isinstance(data, dict):
+        return data
+    for key, instead in (
+        ("nse_concurrency", "Use profiles.<mode>.pulse.concurrency / host_parallel"),
+        ("nse_max_rate", "Use profiles.<mode>.pulse.rate"),
+        ("nse_hosts_per_scan", "Use service_probe.pulse.chunk_hosts"),
+    ):
+        if key in data:
+            raise _removed(f"runtime.{key}", instead)
+    return data
+
+
+def _reject_removed_profile_keys(data: object) -> object:
+    if not isinstance(data, dict):
+        return data
+    for key, instead in (
+        (
+            "nmap_timing",
+            "Set profiles.<mode>.pulse.rate and pulse.concurrency instead (the shipped "
+            "safe/balanced/fast profiles use 500/300, 2000/800 and 5000/1200; docs/nmap-migration.md)",
+        ),
+        ("nse_profile", "Delete the key: profiles no longer select an NSE script set"),
+        ("nse_concurrency", "Use profiles.<mode>.pulse.concurrency / host_parallel"),
+        ("nse_max_rate", "Use profiles.<mode>.pulse.rate"),
+    ):
+        if key in data:
+            raise _removed(f"profiles.<mode>.{key}", instead)
+    backend = data.get("service_backend")
+    if backend is not None and backend != "pulse":
+        raise _removed(
+            f"profiles.<mode>.service_backend: {backend}",
+            "Delete the key or set it to 'pulse'",
+        )
+    return data
+
+
+def _reject_removed_service_probe_keys(data: object) -> object:
+    if not isinstance(data, dict):
+        return data
+    backend = data.get("backend")
+    if backend is not None and backend != "pulse":
+        raise _removed(
+            f"service_probe.backend: {backend}",
+            "Use 'pulse' (the default) or delete the key",
+        )
+    if "shadow" in data:
+        raise _removed(
+            "service_probe.shadow",
+            "Delete the key: with no Nmap run there is nothing to compare Pulse against",
+        )
+    return data
+
+
 class RuntimeConfig(BaseModel):
+    _reject_removed = model_validator(mode="before")(_reject_removed_runtime_keys)
+
     mode: Literal["safe", "balanced", "fast"] = "balanced"
     output_dir: str = "scanner/output"
     state_dir: str = "scanner/state"
     logs_dir: str = ""
     retries: int = Field(default=2, ge=0, le=10)
     timeout_seconds: int = Field(default=1800, ge=30, le=86400)
+    # Wall-clock cap for one Pulse service-probe invocation. The ``nse_`` name is
+    # historical (it bounded the Nmap NSE stage); renaming it would break every
+    # config and console override that sets it.
     nse_timeout_seconds: int = Field(default=600, ge=30, le=600)
-    nse_concurrency: int = Field(default=4, ge=1, le=64)
-    nse_max_rate: int = Field(default=0, ge=0)
-    nse_hosts_per_scan: int = Field(default=1, ge=1, le=256)
     discover_concurrency: int = Field(default=1, ge=1, le=32)
     ports_concurrency: int = Field(default=1, ge=1, le=32)
     # Packets per second aimed at any *single* host, as opposed to the
@@ -88,7 +172,9 @@ class RuntimeConfig(BaseModel):
     # a batch that is one device hands that entire budget to that device, and
     # the discovery and port stages hold it to this instead.
     per_host_rate: int | None = Field(default=None, ge=1, le=100_000)
-    # Skip NSE stage (L1 scan: discover + ports + reports only). Re-run with --resume to enrich.
+    # Skip the service-probe stage (L1 scan: discover + ports + reports only).
+    # Re-run with --resume to enrich. The name predates Pulse and is kept: the
+    # API, schedules and agents all carry it.
     skip_nse: bool = False
     keep_intermediate: bool = True
     per_run_output: bool = True
@@ -217,15 +303,14 @@ NaabuTopPorts = Literal[100, 1000]
 
 
 class ProfileConfig(BaseModel):
+    _reject_removed = model_validator(mode="before")(_reject_removed_profile_keys)
+
     discover_rate: int = Field(ge=1, le=100_000)
     port_rate: int = Field(ge=1, le=100_000)
     top_ports: NaabuTopPorts
-    nmap_timing: Literal["T0", "T1", "T2", "T3", "T4", "T5"] = "T4"
-    nse_profile: str
-    nse_concurrency: int | None = Field(default=None, ge=1, le=64)
-    nse_max_rate: int | None = Field(default=None, ge=0)
-    # Phase 4.1: optional per-profile backend (overrides service_probe.backend).
-    service_backend: Literal["nmap", "pulse", "hybrid"] | None = None
+    # Optional per-profile backend (overrides service_probe.backend). Pulse is
+    # the only one; ``nmap``/``hybrid`` are refused with the replacement named.
+    service_backend: Literal["pulse"] | None = None
     # Phase 4.1: optional Pulse rate/OS knobs for this speed profile.
     pulse: ProfilePulseConfig = Field(default_factory=ProfilePulseConfig)
     # Optional nuclei knobs for this speed profile (see ProfileNucleiConfig).
@@ -549,12 +634,6 @@ class PortsConfig(BaseModel):
     scan_type: NaabuScanType = "auto"
 
 
-class NseProfileConfig(BaseModel):
-    scripts: str = Field(min_length=1)
-    version_detection: bool = True
-    os_detection: bool = False
-
-
 class PulseProbeConfig(BaseModel):
     """Pulse CLI settings (https://github.com/onixus/GenDec)."""
 
@@ -585,30 +664,24 @@ class PulseProbeConfig(BaseModel):
     # services that cannot start TLS. They open their own connections to the
     # open ports, outside --rate, so the scan policy turns them off under a
     # per-host rate ceiling (scan_policy.apply_policy). Only used when Pulse is
-    # the report backend (pulse/hybrid): a nmap-backend shadow run discards its
-    # findings, so it does not make the connections.
+    # the report backend (always, now).
     plugins: bool = True
 
 
 class ServiceProbeConfig(BaseModel):
     """Service/OS enrichment after open ports are known.
 
-    * ``pulse`` — Pulse OS/banner/CVE only (Phase 4.1 **default**; no NSE).
-    * ``nmap`` — classic NSE stage (full scripts + nmap XML).
-    * ``hybrid`` — Pulse first, then nmap NSE.
+    ``pulse`` is the only backend. The Nmap stage was removed (#548,
+    docs/nmap-migration.md): ``backend: nmap|hybrid``, ``shadow`` and the env
+    ``OCTO_SERVICE_BACKEND=nmap|hybrid`` / ``OCTO_PULSE_SHADOW`` are refused at
+    load time, not ignored.
 
-    Per-speed-profile overrides: ``profiles.<mode>.service_backend`` and
-    ``profiles.<mode>.pulse.*``. Env ``OCTO_SERVICE_BACKEND`` wins over YAML.
-
-    When ``shadow`` is true (or env ``OCTO_PULSE_SHADOW=1``), **both** Pulse and
-    Nmap run even if backend is only one of them, and ``diff_pulse_nmap.json``
-    is written for coverage comparison. Report prefers Pulse when backend is
-    pulse/hybrid (``pulse/REPORT_PRIMARY`` marker).
+    Per-speed-profile overrides: ``profiles.<mode>.pulse.*``.
     """
 
-    backend: Literal["nmap", "pulse", "hybrid"] = "pulse"
-    # Force dual-run + diff artifact (does not change default report backend preference).
-    shadow: bool = False
+    _reject_removed = model_validator(mode="before")(_reject_removed_service_probe_keys)
+
+    backend: Literal["pulse"] = "pulse"
     pulse: PulseProbeConfig = Field(default_factory=PulseProbeConfig)
 
 
@@ -686,49 +759,49 @@ def merge_nuclei_config(
 class ServiceProbeResolution:
     """Resolved service_probe decision for one pipeline run (see resolve_service_probe_backend)."""
 
-    backend: Literal["nmap", "pulse", "hybrid"]
-    shadow: bool
+    backend: Literal["pulse"]
     run_pulse: bool
-    run_nmap_nse: bool
     report_primary_pulse: bool
+
+
+def check_service_probe_env(env_backend: str, env_shadow: str = "") -> None:
+    """Refuse the environment overrides of the removed Nmap backend.
+
+    The environment is the one input the schema never sees:
+    ``OCTO_SERVICE_BACKEND`` other than ``pulse`` (``nmap``, ``hybrid``,
+    anything unknown) and a truthy ``OCTO_PULSE_SHADOW`` raise
+    :class:`RemovedNmapSettingError` instead of quietly running Pulse.
+    """
+    backend = env_backend.strip().lower()
+    if backend and backend != "pulse":
+        raise RemovedNmapSettingError(
+            f"OCTO_SERVICE_BACKEND={env_backend.strip()!r} is not supported: the Nmap backend "
+            "was removed (#548); Pulse is the only service-probe backend. Unset the variable "
+            "or set it to 'pulse' (docs/nmap-migration.md)"
+        )
+    if env_shadow.strip().lower() in ("1", "true", "yes", "on"):
+        raise RemovedNmapSettingError(
+            "OCTO_PULSE_SHADOW is not supported: the Pulse-vs-Nmap shadow run was removed "
+            "(#548) together with Nmap. Unset the variable (docs/nmap-migration.md)"
+        )
 
 
 def resolve_service_probe_backend(
     *,
     env_backend: str,
-    profile_backend: str | None,
-    yaml_backend: str,
-    yaml_shadow: bool,
-    env_shadow: str,
+    env_shadow: str = "",
     skip_nse: bool,
-    warn: Callable[[str], None] | None = None,
 ) -> ServiceProbeResolution:
-    """Resolve service_probe.backend/shadow and the derived per-stage flags.
+    """Resolve the service-probe stage flags for one run.
 
-    Precedence: ``env_backend`` (OCTO_SERVICE_BACKEND) > ``profile_backend``
-    (profiles.<mode>.service_backend) > ``yaml_backend`` (service_probe.backend).
-    Pulled out of scanner/main.py's ``_run_pipeline`` as a pure function so this
-    precedence chain and the shadow/skip_nse derivation are unit-testable in
-    isolation, without exercising the full pipeline.
+    Pulse is the only backend (see :func:`check_service_probe_env` for the
+    environment). ``skip_nse`` is the ports-only L1 switch.
     """
-    backend = env_backend.strip().lower()
-    if not backend and profile_backend:
-        backend = profile_backend
-    if not backend:
-        backend = yaml_backend
-    if backend not in ("nmap", "pulse", "hybrid"):
-        if warn is not None:
-            warn(f"unknown service_probe.backend {backend!r}; using pulse")
-        backend = "pulse"
-
-    shadow = yaml_shadow or env_shadow.strip().lower() in ("1", "true", "yes", "on")
-
+    check_service_probe_env(env_backend, env_shadow)
     return ServiceProbeResolution(
-        backend=backend,
-        shadow=shadow,
-        run_pulse=(backend in ("pulse", "hybrid") or shadow) and not skip_nse,
-        run_nmap_nse=(backend in ("nmap", "hybrid") or shadow) and not skip_nse,
-        report_primary_pulse=backend in ("pulse", "hybrid"),
+        backend="pulse",
+        run_pulse=not skip_nse,
+        report_primary_pulse=True,
     )
 
 
@@ -1013,17 +1086,18 @@ class NucleiConfig(BaseModel):
 class TlsPostureConfig(BaseModel):
     """TLS / certificate posture (Phase 9.2 + Pulse Phase 4). Opt-in.
 
-    Primary path: parse free-text ``ssl-cert`` / ``ssl-enum-ciphers`` NSE
-    output already written to ``nmap/tcp/*.xml`` by the ``nse`` stage (see
-    ``tls_posture.py`` for the honesty note on free-text parsing).
+    Old runs: ``ssl-cert`` / ``ssl-enum-ciphers`` output in ``nmap/tcp/*.xml``
+    of a run recorded before the Nmap stage was removed is still read (see
+    ``legacy_nmap.py``); nothing writes it any more.
 
-    Fallback paths (Phase 4): when nmap XML has no SSL script output:
+    Sources for a new run, in order:
 
     1. Pulse ``pulse/tls.json`` (from service_probe Pulse run with ``--cve``)
     2. If missing and ``probe_fallback`` is true, stdlib ``ssl`` handshake
        against ``open_ports`` on ``probe_tls_ports`` (see ``tls_probe.py``).
 
-    Does **not** grade full cipher suites like nmap ``ssl-enum-ciphers``;
+    Does **not** grade full cipher suites (the former ``ssl-enum-ciphers``
+    grade has no replacement until Pulse enumerates ciphers, GenDec#34);
     covers cert expiry, self-signed heuristic, and weak protocol acceptance.
 
     ``max_targets`` caps endpoints per run (truncated flag past the cap).
@@ -1051,7 +1125,7 @@ class TlsPostureConfig(BaseModel):
     max_targets: int = Field(default=2000, ge=1, le=50_000)
     expiring_soon_days: int = Field(default=30, ge=1, le=365)
     hostname_mismatch: bool = True
-    # Phase 4: stdlib TLS probe when nmap SSL scripts are absent.
+    # Stdlib TLS probe when Pulse produced no TLS rows.
     probe_fallback: bool = True
     probe_timeout_seconds: float = Field(default=5.0, ge=0.5, le=60.0)
     probe_concurrency: int = Field(default=20, ge=1, le=500)
@@ -1327,14 +1401,15 @@ class SchedulerConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
+    _reject_removed = model_validator(mode="before")(_reject_removed_top_level_keys)
+
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     profiles: dict[str, ProfileConfig]
     batching: BatchingConfig = Field(default_factory=BatchingConfig)
     dns: DnsConfig = Field(default_factory=DnsConfig)
     discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
     ports: PortsConfig = Field(default_factory=PortsConfig)
-    nse_profiles: dict[str, NseProfileConfig]
-    # Optional; defaults to ServiceProbeConfig.backend ("pulse", Phase 4.1) when key omitted.
+    # Optional; defaults to ServiceProbeConfig.backend ("pulse") when key omitted.
     service_probe: ServiceProbeConfig = Field(default_factory=ServiceProbeConfig)
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
     enrichment: EnrichmentConfig = Field(default_factory=EnrichmentConfig)
@@ -1357,12 +1432,7 @@ class AppConfig(BaseModel):
         return profiles
 
     @model_validator(mode="after")
-    def profile_nse_refs_exist(self) -> AppConfig:
-        for name, profile in self.profiles.items():
-            if profile.nse_profile not in self.nse_profiles:
-                raise ValueError(
-                    f"profile '{name}' references unknown nse_profile '{profile.nse_profile}'"
-                )
+    def runtime_mode_defined(self) -> AppConfig:
         if self.runtime.mode not in self.profiles:
             raise ValueError(f"runtime.mode '{self.runtime.mode}' is not defined in profiles")
         return self
