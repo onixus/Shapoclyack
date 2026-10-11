@@ -112,7 +112,8 @@ NVD online: set `NVD_API_KEY` in the sensor's environment. Pulse's own
 
 `plugins: true` (the default; also settable per speed profile) hands the plugins in
 `scanner/pipeline/pulse_data/plugins/` to Pulse with `--script-dir`: weak SSH
-algorithms, anonymous FTP, services that cannot start TLS, SMB/RDP/VNC reachability.
+algorithms, anonymous FTP, services that cannot start TLS, SMB/RDP/VNC reachability,
+HTTP TRACE over plain HTTP.
 They replace the part of NSE `default,safe` that Pulse's sandbox can express.
 Pulse then runs in an empty working directory (the same one as its `HOME`), the
 plugin files and their sha256 are recorded in `adapter.plugins` of `pulse/raw.json`,
@@ -742,11 +743,21 @@ path need the `cryptography` package (both images; see the limits above).
 
 Default path (no nmap required):
 
-| Layer | Config | Output |
-|-------|--------|--------|
-| Pulse `--cve` | `service_probe.pulse.cve: true` | `pulse_cves.json` → vulns `source: pulse` |
-| Nuclei (web) | `nuclei.enabled: true` (default) | `nuclei.json` + vulns `source: nuclei` |
-| CVSS4 enrich | `enrichment.cvss4.enabled` | scores on `vulnerabilities.json` |
+| Layer | Where | Config | Output |
+|-------|-------|--------|--------|
+| `retro_match` (**primary** for CVE-by-version) | API, after the run, from the stored fingerprints; offline NVD ranges + Debian/Ubuntu backports; re-runs when the dataset changes | `OCTO_RETRO_MATCH_ENABLED` (on); the NVD dataset is opt-in, see below | tracked findings `source: retro_match` |
+| Pulse `--cve` (secondary) | scanner, during the scan, its compiled-in rules | `service_probe.pulse.cve: true` | `pulse_cves.json` → vulns `source: pulse` |
+| Nuclei (web) | scanner | `nuclei.enabled: true` (default) | `nuclei.json` + vulns `source: nuclei` |
+| Nuclei (network, SMB) | scanner, after the web sweep | `nuclei.network_templates: true` (default) | `nuclei.json` `coverage.network` + findings with `"pass": "network"` |
+| CVSS4 enrich | scanner/API | `enrichment.cvss4.enabled` | scores on `vulnerabilities.json` |
+
+`retro_match` is primary by design, not by size: the shipped
+`scanner/data/nvd-cpe/nvd-cpe-ranges.json` is a seed of 8 products and 23 CVEs, and the real
+dataset is opt-in (`scripts/fetch-nvd-cpe.py --full`,
+[Retro CVE matching](retro-cve-matching.md#the-dataset--apiservicescpe_rangespy)). On the
+reference corpus the seed yields 5 range hits on 3 endpoints where Nmap's `vulners` named 428
+(host, port, CVE) triples and `pulse --cve` 3. Where each Nmap `vuln` script goes, and the
+Nuclei network pass: [NSE vuln coverage](nse-vuln-coverage.md).
 
 nmap-**vulners** / **vulscan** only run when `service_probe.backend` is
 `nmap` or `hybrid` and the profile uses `vuln_legacy` / `vuln-offline`.
@@ -952,7 +963,7 @@ was 14 agree / 3 missing / 1 differs):
 | TLS protocol sets (3 shared) | enumerated | 2 equal | nginx 1.27: Nmap `TLSv1.2, TLSv1.3`, Pulse only the negotiated `TLSv1.3` |
 | TLS cipher suites enumerated | 122 | 0 | `tls[]` holds the negotiated protocol and the weak protocols accepted, not suites or grades |
 | Weak-protocol verdict (3 shared) | 1 endpoint | 1 endpoint, 3 of 3 agree | none on this stand; the unfavourable cases (SSLv3, weak suites on TLS 1.2) are not in it |
-| Script outputs | 157 on ports, 40 distinct scripts | 13 findings (6 exposure, 4 tls, 3 version_cve) | plugins add 5 more in the `--script-dir` run (below) |
+| Script outputs | 157 on ports, 40 distinct scripts | 13 findings (6 exposure, 4 tls, 3 version_cve) | plugins add 6 more in the `--script-dir` run (below) |
 | CVE ids named | 428 (`vulners`) | 3 | the 3 are all among Nmap's; 425 are Nmap-only. Not a quality score: `vulners` names every CVE ever filed against a version |
 
 **Plugins against NSE** (#544; `plugins` section of the report, run
@@ -965,11 +976,12 @@ agree per endpoint.
 | `ssh2-enum-algos` | 4 | `shapo_ssh_algorithms` | verdict (a weak algorithm is offered) agrees on 4 of 4: none offers one. Weakness only, not the lists |
 | `ftp-anon` | 1 | `shapo_ftp_anonymous` | agrees 1 of 1: login accepted. No directory listing (needs a data connection) |
 | `ssh-hostkey` | 4 | none | key exchange needed (binary packets) |
-| `smb2-security-mode`, `smb-protocols` | 1 host | none (`shapo_smb_exposure` reports exposure only) | SMB negotiate starts with 0xFE/0xFF; the sandbox cannot send a byte above 0x7F |
+| `smb2-security-mode`, `smb-protocols` | 1 host | none (`shapo_smb_exposure` reports exposure only) | SMB negotiate starts with 0xFE/0xFF; the sandbox cannot send a byte above 0x7F. `smb2-security-mode` is answered by the Nuclei network pass (`smb-signing-not-required`, [NSE vuln coverage](nse-vuln-coverage.md)) |
 | `rdp-enum-encryption` | 1 | none (`shapo_remote_admin_exposure` reports exposure only) | X.224 request carries 0xE0 |
 | `ftp-syst` | 1 | none | informational, not a finding |
+| `http-trace` | 2 | `shapo_http_trace` (#547) | agrees on 1 of 2: Apache `:80`; the plugin has no TLS, so `:443` is not reported |
 
-Plugin findings on the stand: 5 (SMB 2, RDP 1, anonymous FTP 1, FTP without TLS 1);
+Plugin findings on the stand: 6 (SMB 2, RDP 1, anonymous FTP 1, FTP without TLS 1, HTTP TRACE 1);
 no plugin errors. `shapo_cleartext_services` has no NSE counterpart in
 `default,safe`. Not in the table because the stand has no such server: SNMP (UDP),
 Telnet, POP3, IMAP, SMTP; those plugins are exercised against stub servers in
@@ -992,6 +1004,14 @@ Reading it:
   and RDP rows measure the stubs only.
 - Cipher-suite enumeration is the largest single gap and the one with no
   workaround short of #545.
+
+**NSE `vuln` scripts against their destinations** (#547; `nse_vuln` section of the report,
+[NSE vuln coverage](nse-vuln-coverage.md)): 16 `vuln`-category scripts are mapped, 15 of them
+printed 46 outputs on the stand (Nmap itself marked 16 VULNERABLE). By destination: 9 refused with
+a reason (DoS, DAST, exploit probes, a header-only test that flagged nginx), 2 gaps behind GenDec#38
+(`smb-vuln-ms10-061`, `smb-vuln-ms17-010`), 2 version matching (`vulners`, `samba-vuln-cve-2012-1182`),
+1 Nuclei template in the default sweep (`http-majordomo2-dir-traversal` is `CVE-2011-0049`), 1 Rhai
+plugin (`http-trace`), 1 TLS (#545, `ssl-ccs-injection`).
 
 Re-recording only the Pulse side (after a plugin change; the Nmap fixtures stay as
 they are): `RECORD_PARTS=pulse PULSE_BIN=<linux pulse> tests/fixtures/nmap_pulse_corpus/record.sh`.
@@ -1033,7 +1053,8 @@ exactly as it reads a run directory.
 
 - Does not run NSE scripts (`ssl-enum-ciphers`, vulners, …) on the default path.
   The plugins ([Pulse plugins](pulse-plugins.md)) cover weak SSH algorithms,
-  anonymous FTP and cleartext services; SMB signing, RDP NTLM information, SSH host
+  anonymous FTP, cleartext services and HTTP TRACE; SMB signing is answered by a Nuclei
+  network template ([NSE vuln coverage](nse-vuln-coverage.md)); RDP NTLM information, SSH host
   keys and SNMP are not reachable from Pulse's sandbox.
 - TLS probe fallback ≠ full `ssl-enum-ciphers` grade table.
 - UDP enrichment still relies on naabu (and optional nmap) paths.

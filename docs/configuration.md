@@ -158,6 +158,15 @@ authorized targets and a suitable maintenance window.
 Nuclei is an optional stage. Template version, severity filters, concurrency,
 and rate limits should be pinned in production.
 
+`nuclei.network_templates` (default `true`) adds a second pass for services that are
+not web: a short table of templates that stand in for Nmap's SMB checks (today
+`smb-signing-not-required`, for `smb2-security-mode`), run against `host:port` of the
+endpoints Pulse named as that service, on whatever port. It follows `nuclei.severities`
+and `nuclei.exclude_tags`, is skipped in a pinned (`template_ids`) verification run, never
+uses OAST, and records what it did under `coverage.network` in `nuclei.json`. `false`
+turns it off. The table, the live checks and the limits:
+[NSE vuln coverage](nse-vuln-coverage.md).
+
 Out-of-band (OAST) templates are off by default: nuclei runs with
 `-no-interactsh` and skips every template that needs an interactsh callback
 URL. `nuclei.interactsh_server` turns them on against an interactsh server you

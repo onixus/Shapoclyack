@@ -31,6 +31,18 @@ runs. Off means ``-no-interactsh``, and nuclei then skips every template that
 needs an interactsh URL. See ``NucleiConfig`` and
 ``docs/network-requirements.md`` for why the default is not nuclei's own.
 
+NETWORK PASS (#547): the sweep above only ever sees ``http(s)://`` URLs, so a
+``javascript:``/``tcp:`` template could never run. ``nuclei_network.NETWORK_RULES``
+names, per service, the few such templates that answer an Nmap ``vuln``/``safe``
+script; :func:`_run_network_pass` runs each rule's ids, pinned with ``-id``,
+against ``host:port`` of the endpoints Pulse named as that service, one nuclei
+process per rule so an id never meets an endpoint of another service. It
+obeys the sweep's two safety dials -- ``severities`` and ``exclude_tags`` --
+checked here against the template files rather than handed to nuclei, because
+``-id`` plus ``-severity`` drops an id without a word. It is skipped in a
+pinned (``template_ids``) run, never uses OAST, and is off with
+``nuclei.network_templates: false``. Its evidence is ``coverage["network"]``.
+
 COVERAGE: ``nuclei.json`` carries a ``coverage`` block -- whether nuclei was
 actually run and exited cleanly, the URLs it was given, and, for a run pinned
 to ``nuclei.template_ids`` (a verification re-scan), which of those ids were
@@ -47,8 +59,10 @@ import json
 import logging
 import os
 import re
+import hashlib
 import shutil
 import tempfile
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -57,6 +71,7 @@ import yaml
 
 from .config_schema import NucleiConfig
 from .dns_resolvers import host_port, scan_resolvers
+from .nuclei_network import NETWORK_RULES, NetworkRule, load_service_names, plan_network_targets, target_string
 from .protocol import is_ipv6, parse_endpoint
 from .utils import run_command, save_json, write_lines
 
@@ -98,29 +113,38 @@ _PERMANENT_ERROR = "network-permanent-error"
 _TEMPLATE_ID_LINE = re.compile(r"^id:[ \t]*['\"]?([A-Za-z0-9_.-]+)", re.MULTILINE)
 
 
-def _template_tags(path: Path) -> set[str]:
-    """The ``info.tags`` of one template, as nuclei matches ``-exclude-tags``.
+def _template_facts(path: Path) -> tuple[set[str], str]:
+    """``(info.tags, info.severity)`` of one template, as nuclei reads them.
 
     Parsed properly, and only for the handful of templates a pinned run asked
     for: tags sit below a free-text description, and nuclei accepts both the
-    comma string and a YAML list. An unreadable file has no tags here, which
-    the run itself then settles -- nuclei refuses to load it either way.
+    comma string and a YAML list. An unreadable file has no tags and no
+    severity here, which the run itself then settles -- nuclei refuses to load
+    it either way.
     """
     try:
         document = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace"))
     except (OSError, yaml.YAMLError):
-        return set()
+        return set(), ""
     info = document.get("info") if isinstance(document, dict) else None
-    raw = info.get("tags") if isinstance(info, dict) else None
+    if not isinstance(info, dict):
+        return set(), ""
+    raw = info.get("tags")
+    tags: set[str] = set()
     if isinstance(raw, str):
-        return {tag.strip().lower() for tag in raw.split(",") if tag.strip()}
-    if isinstance(raw, list):
-        return {str(tag).strip().lower() for tag in raw if str(tag).strip()}
-    return set()
+        tags = {tag.strip().lower() for tag in raw.split(",") if tag.strip()}
+    elif isinstance(raw, list):
+        tags = {str(tag).strip().lower() for tag in raw if str(tag).strip()}
+    return tags, str(info.get("severity") or "").strip().lower()
 
 
-def index_template_ids(wanted: Sequence[str], dirs: Sequence[Path]) -> dict[str, list[set[str]]]:
-    """``{template id: [tags of each file with that id]}`` for ``wanted`` under ``dirs``.
+def _template_tags(path: Path) -> set[str]:
+    """The ``info.tags`` of one template, as nuclei matches ``-exclude-tags``."""
+    return _template_facts(path)[0]
+
+
+def _index_templates(wanted: Sequence[str], dirs: Sequence[Path], read: Any) -> dict[str, list[Any]]:
+    """``{template id: [read(path) of each file with that id]}`` for ``wanted`` under ``dirs``.
 
     A pinned run has to know which of its ids nuclei can load before it runs:
     nuclei filters the templates it loaded by ``-id`` and says nothing about an
@@ -134,7 +158,7 @@ def index_template_ids(wanted: Sequence[str], dirs: Sequence[Path]) -> dict[str,
     8936 baked templates, measured in the aio image.
     """
     remaining = set(wanted)
-    found: dict[str, list[set[str]]] = {}
+    found: dict[str, list[Any]] = {}
     for root in dirs:
         if not root.is_dir():
             continue
@@ -151,8 +175,28 @@ def index_template_ids(wanted: Sequence[str], dirs: Sequence[Path]) -> dict[str,
                 match = _TEMPLATE_ID_LINE.search(head)
                 if match is None or match.group(1) not in remaining:
                     continue
-                found.setdefault(match.group(1), []).append(_template_tags(path))
+                found.setdefault(match.group(1), []).append(read(path))
     return found
+
+
+def index_template_ids(wanted: Sequence[str], dirs: Sequence[Path]) -> dict[str, list[set[str]]]:
+    """``{template id: [tags of each file with that id]}`` for ``wanted`` under ``dirs``."""
+    return _index_templates(wanted, dirs, _template_tags)
+
+
+def _template_facts_sha(path: Path) -> tuple[set[str], str, str]:
+    """``(tags, severity, sha256 of the file)``: the facts the network pass records."""
+    tags, severity = _template_facts(path)
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        digest = ""
+    return tags, severity, digest
+
+
+def index_template_facts(wanted: Sequence[str], dirs: Sequence[Path]) -> dict[str, list[tuple[set[str], str, str]]]:
+    """``{template id: [(tags, severity, sha256) of each file with that id]}`` for ``wanted`` under ``dirs``."""
+    return _index_templates(wanted, dirs, _template_facts_sha)
 
 
 def _candidate_endpoints(
@@ -327,18 +371,13 @@ def _interactsh_args(server: str) -> tuple[list[str], Path | None]:
     return [*args, "-config", str(config_file)], private_dir
 
 
-def run_nuclei_scan(
+def _run_web_sweep(
     open_ports: list[str],
     config: NucleiConfig,
     output_dir: Path,
     resolvers: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """Run nuclei against already-open web ports. Never raises.
-
-    ``resolvers`` is ``dns.resolvers`` from the scanner config. Empty means
-    the system's resolvers, never nuclei's built-in public ones (see
-    ``dns_resolvers.py``).
-    """
+    """The web sweep (or, with ``template_ids``, the pinned re-check). Never raises."""
     result: dict[str, Any] = {
         "targets_considered": 0,
         "checked_count": 0,
@@ -586,3 +625,363 @@ def run_nuclei_scan(
         " [truncated]" if truncated else "",
     )
     return result
+
+
+# ---------------------------------------------------------------------------
+# The network pass (#547)
+# ---------------------------------------------------------------------------
+
+def _finding_key(finding: dict[str, Any]) -> tuple[str, str, str]:
+    """``(template id, host, port)`` as one identity, whichever way nuclei wrote the host.
+
+    nuclei v3.11.1 writes ``host`` and ``port`` as separate fields for a URL
+    input and for a ``host:port`` input alike (checked live); the normalising is
+    for a bracketed IPv6 host or a ``host:port`` that ever lands in ``host``.
+    """
+    host = str(finding.get("host") or "").strip().lower()
+    port = str(finding.get("port") or "").strip()
+    if host.startswith("["):
+        host, _, rest = host[1:].partition("]")
+        port = port or rest.lstrip(":")
+    elif host.count(":") == 1:
+        host, _, tail = host.partition(":")
+        port = port or tail
+    return str(finding.get("template_id") or ""), host, port
+
+
+def _network_row(finding: dict[str, Any]) -> dict[str, Any]:
+    """The ``vulnerabilities.json`` row of a network-pass finding that names no CVE."""
+    return {
+        "host": finding["host"],
+        "port": finding["port"],
+        "script_id": f"nuclei:{finding['template_id']}",
+        "source": "nuclei",
+        "protocol": "tcp",
+        "cve": "",
+        "cvss": None,
+        "severity": finding["severity"],
+        "title": finding["name"] or finding["template_id"],
+        "detail": finding["matched_at"],
+        "cwe": finding.get("cwe") or [],
+        "epss": None,
+        "in_kev": False,
+    }
+
+
+#: The network pass may run this long past the sweep's own ``overall_timeout_seconds``
+#: (the stage deadline is that plus this), so a sweep that used its whole budget
+#: does not starve it, and the stage as a whole stays bounded.
+NETWORK_GRACE_SECONDS = 120
+
+#: A process started with less than this left would be killed before it loaded templates.
+_MIN_PROCESS_SECONDS = 10
+
+#: Why the pass is not even attempted, when the sweep's own preconditions fail.
+_UNAVAILABLE = ("nuclei.disabled", "nuclei_binary_missing", "templates_dir_missing")
+
+
+def _network_pass_block(config: NucleiConfig) -> dict[str, Any]:
+    """The evidence record of the pass, empty: what was configured, nothing run."""
+    return {
+        "enabled": config.network_templates,
+        "ran": False,
+        "skipped_reason": None,
+        "targets_considered": 0,
+        "truncated": False,
+        "severities": list(config.severities),
+        "duplicates_of_sweep": 0,
+        "passes": [],
+    }
+
+
+def _resolve_network_templates(
+    rule: NetworkRule, config: NucleiConfig, dirs: Sequence[Path]
+) -> tuple[list[str], int, dict[str, list[str]], dict[str, str]]:
+    """``(ids to run, templates nuclei must load, {why not: ids}, {id: sha256})`` for one rule.
+
+    Four reasons an id of the table is not run, each recorded by name so the
+    absence of a finding is not read as a look: not on this host (``missing``),
+    every file of it carries a tag the host excludes (``excluded``), every
+    file is below the configured severity floor (``below_floor``), or the id
+    names more than one file (``ambiguous``: a copy in ``custom_templates_dir``
+    shadowing the baked one). The table's choice of an id is a judgement about
+    one reviewed file; a second file under the same id is a template nobody
+    reviewed, and it would run against every SMB host. An empty ``severities``
+    list is no floor, as in the sweep.
+
+    The sha256 of the file that will run is recorded, not enforced: pinning it
+    would silently switch the pass off with every nuclei-templates bump.
+    """
+    index = index_template_facts(rule.template_ids, dirs)
+    excluded_tags = {tag.lower() for tag in config.exclude_tags}
+    floor = {severity.lower() for severity in config.severities}
+    run: list[str] = []
+    expected = 0
+    skipped: dict[str, list[str]] = {"missing": [], "excluded": [], "below_floor": [], "ambiguous": []}
+    digests: dict[str, str] = {}
+    for template_id in rule.template_ids:
+        files = index.get(template_id, [])
+        loadable = [facts for facts in files if not facts[0] & excluded_tags]
+        if not files:
+            skipped["missing"].append(template_id)
+        elif len(files) > 1:
+            skipped["ambiguous"].append(template_id)
+        elif not loadable:
+            skipped["excluded"].append(template_id)
+        elif floor and not any(severity in floor for _tags, severity, _sha in loadable):
+            skipped["below_floor"].append(template_id)
+        else:
+            run.append(template_id)
+            expected += len(loadable)
+            digests[template_id] = loadable[0][2]
+    return run, expected, skipped, digests
+
+
+def _run_network_pass(
+    open_ports: list[str],
+    config: NucleiConfig,
+    output_dir: Path,
+    resolvers: Sequence[str],
+    unavailable: str | None,
+    deadline: float,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """``(coverage["network"], findings)``. Never raises.
+
+    One nuclei process per rule that has targets: its ids against its
+    endpoints only. ``unavailable`` is the sweep's own reason for not having
+    a usable nuclei (disabled, binary or templates missing), passed on as the
+    pass's reason so the two blocks agree. ``deadline`` is a ``time.monotonic()``
+    instant: each process gets at most what is left of it, and a rule reached
+    after it is recorded as ``stage_deadline_exhausted``, not run.
+    """
+    block = _network_pass_block(config)
+    findings: list[dict[str, Any]] = []
+    if not config.network_templates:
+        block["skipped_reason"] = "network_templates_disabled"
+        return block, findings
+    if unavailable in _UNAVAILABLE:
+        block["skipped_reason"] = unavailable
+        return block, findings
+
+    plan = plan_network_targets(open_ports, load_service_names(output_dir), NETWORK_RULES)
+    block["targets_considered"] = sum(len(endpoints) for endpoints in plan.values())
+    if not plan:
+        block["skipped_reason"] = "no_network_targets"
+        return block, findings
+
+    templates_dir = Path(config.templates_dir)
+    custom_dir = Path(config.custom_templates_dir) if config.custom_templates_dir else None
+    dirs = [templates_dir, *([custom_dir] if custom_dir and custom_dir.exists() else [])]
+    resolvers_file = output_dir / "nuclei_resolvers.txt"
+    resolver_lines = [host_port(resolver) for resolver in scan_resolvers(resolvers)]
+    resolvers_file.write_text("\n".join(resolver_lines) + "\n", encoding="utf-8")
+
+    for rule_name, endpoints in plan.items():
+        rule = next(candidate for candidate in NETWORK_RULES if candidate.name == rule_name)
+        truncated = len(endpoints) > config.max_targets
+        endpoints = endpoints[: config.max_targets]
+        block["truncated"] = block["truncated"] or truncated
+        targets = [target_string(host, port) for host, port in endpoints]
+        run, expected, skipped, digests = _resolve_network_templates(rule, config, dirs)
+        entry: dict[str, Any] = {
+            "rule": rule.name,
+            "nse": list(rule.nse),
+            "ran": False,
+            "returncode": None,
+            "skipped_reason": None,
+            "targets": sorted(targets),
+            "truncated": truncated,
+            "template_ids_requested": list(rule.template_ids),
+            "template_ids_missing": skipped["missing"],
+            "template_ids_excluded": skipped["excluded"],
+            "template_ids_below_floor": skipped["below_floor"],
+            "template_ids_ambiguous": skipped["ambiguous"],
+            "template_sha256": digests,
+            "templates_loaded": None,
+            "templates_expected": expected,
+            "skipped_targets": [],
+            "errors_log_truncated": False,
+        }
+        block["passes"].append(entry)
+        if any(skipped.values()):
+            LOG.warning(
+                "nuclei network pass %s: not run -- missing: %s; excluded by nuclei.exclude_tags: %s; "
+                "below nuclei.severities: %s; more than one file under the id: %s",
+                rule.name,
+                ", ".join(skipped["missing"]) or "none",
+                ", ".join(skipped["excluded"]) or "none",
+                ", ".join(skipped["below_floor"]) or "none",
+                ", ".join(skipped["ambiguous"]) or "none",
+            )
+        if not run:
+            entry["skipped_reason"] = "no_template_available"
+            continue
+
+        targets_file = output_dir / f"nuclei_network_{rule.name}_targets.txt"
+        jsonl_file = output_dir / f"nuclei_network_{rule.name}_raw.jsonl"
+        errors_file = output_dir / f"nuclei_network_{rule.name}_errors.jsonl"
+        write_lines(targets_file, targets)
+        jsonl_file.unlink(missing_ok=True)
+        errors_file.unlink(missing_ok=True)
+        command = [
+            "nuclei",
+            "-disable-update-check",
+            "-list", str(targets_file),
+            "-templates", str(templates_dir),
+        ]  # fmt: skip
+        if custom_dir is not None and custom_dir.exists():
+            command.extend(["-templates", str(custom_dir)])
+        command.extend(["-resolvers", str(resolvers_file), "-id", ",".join(run)])
+        if config.exclude_tags:
+            command.extend(["-exclude-tags", ",".join(config.exclude_tags)])
+        # No -silent: "Templates loaded for current scan" is INFO and is the
+        # only proof the ids were loaded. No OAST: nothing in the table needs it.
+        command.extend([
+            "-jsonl-export", str(jsonl_file),
+            "-rate-limit", str(config.rate_limit),
+            "-concurrency", str(config.concurrency),
+            "-timeout", str(config.timeout_seconds),
+            "-retries", str(config.retries),
+            "-max-host-error", str(config.max_host_error),
+            "-elog", str(errors_file),
+            "-no-color",
+            "-no-interactsh",
+        ])  # fmt: skip
+        remaining = deadline - time.monotonic()
+        if remaining < _MIN_PROCESS_SECONDS:
+            entry["skipped_reason"] = "stage_deadline_exhausted"
+            continue
+        completed = None
+        try:
+            completed = run_command(
+                command, timeout=min(config.overall_timeout_seconds, int(remaining)), retries=0, check=False
+            )
+        except Exception as exc:  # noqa: BLE001
+            # A timeout or a crash is not a look (``ran`` stays false), but what
+            # nuclei had already written to its JSONL is real observation and is
+            # kept, as the sweep keeps the findings of a run that exited non-zero.
+            LOG.warning("nuclei network pass %s failed for %d endpoint(s): %s", rule.name, len(targets), exc)
+            entry["skipped_reason"] = "nuclei_run_failed"
+
+        if completed is not None:
+            returncode = getattr(completed, "returncode", None)
+            entry["returncode"] = returncode if isinstance(returncode, int) else None
+            entry["ran"] = entry["returncode"] == 0
+            if entry["returncode"] not in (0, None):
+                LOG.warning("nuclei network pass %s exited %s; not counted as coverage", rule.name, returncode)
+            stderr_text = getattr(completed, "stderr", None)
+            stderr_text = stderr_text if isinstance(stderr_text, str) else ""
+            loaded = _TEMPLATES_LOADED.findall(stderr_text)
+            entry["templates_loaded"] = int(loaded[-1]) if loaded else None
+            entry["skipped_targets"] = sorted(
+                set(_TARGET_SKIPPED.findall(stderr_text)) | _permanent_error_addresses(errors_file)
+            )
+            entry["errors_log_truncated"] = _cap_errors_log(errors_file)
+        if jsonl_file.is_file():
+            for line in jsonl_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                raw = _parse_result_line(line)
+                if raw is not None:
+                    findings.append({**_to_finding(raw), "pass": "network", "rule": rule.name})
+
+    block["ran"] = bool(block["passes"]) and all(entry["ran"] for entry in block["passes"])
+    if not block["ran"]:
+        # Every pass has its own reason; the block says in one word that the
+        # network side as a whole did not complete.
+        block["skipped_reason"] = "not_all_passes_ran"
+    return block, findings
+
+
+def run_nuclei_scan(
+    open_ports: list[str],
+    config: NucleiConfig,
+    output_dir: Path,
+    resolvers: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Run nuclei against already-open web ports, then the network pass. Never raises.
+
+    ``resolvers`` is ``dns.resolvers`` from the scanner config. Empty means
+    the system's resolvers, never nuclei's built-in public ones (see
+    ``dns_resolvers.py``).
+
+    The web sweep is what it was; the network pass (module docstring) adds its
+    findings to ``findings``/``cve_findings`` marked ``"pass": "network"`` and
+    its evidence to ``coverage["network"]``. A pinned run (``template_ids``)
+    makes no network pass and its ``coverage`` is exactly what it was before the
+    pass existed: a verification loads the ids it was sent and nothing else, and
+    the closure rules (``api/services/verification_coverage.py``) read only
+    that. So ``network`` is absent there and in a ``nuclei.json`` written
+    earlier, and present, with a ``skipped_reason`` when nothing ran, in every
+    sweep.
+    """
+    started = time.monotonic()
+    result = _run_web_sweep(open_ports, config, output_dir, resolvers)
+    # Files of an earlier attempt in this run directory (a --resume after the
+    # pass was switched off, or found nothing to do) must not outlive it: the
+    # evidence projection reads every nuclei_network_*_raw.jsonl it finds, and
+    # nuclei.json is what says whether the pass ran.
+    try:
+        for stale in output_dir.glob("nuclei_network_*"):
+            stale.unlink(missing_ok=True)
+    except OSError:
+        # Fail-soft like the rest of the stage: a stale file we cannot remove is
+        # logged, and nuclei.json still says whether the pass ran.
+        LOG.warning("could not remove stale nuclei_network_* files in %s", output_dir, exc_info=True)
+    if config.template_ids:
+        return result
+    deadline = started + config.overall_timeout_seconds + NETWORK_GRACE_SECONDS
+    try:
+        block, network_findings = _run_network_pass(
+            open_ports, config, output_dir, resolvers, result.get("skipped_reason"), deadline
+        )
+    except Exception:  # noqa: BLE001
+        # Fail-soft like the sweep: a planning bug must not fail the scan, and
+        # the block says the pass did not run, which a reader can act on.
+        LOG.exception("nuclei network pass failed")
+        block, network_findings = _network_pass_block(config), []
+        block["skipped_reason"] = "network_pass_error"
+    # A host with a web port and SMB gets the SMB template twice: the sweep
+    # hands nuclei a URL, and for a javascript template nuclei then uses the
+    # template's own port (445), not the URL's (checked live, v3.11.1: host and
+    # port fields are the same for both inputs). One finding per
+    # (template, host, port), the sweep's first.
+    seen = {_finding_key(f) for f in result["findings"]}
+    fresh = [f for f in network_findings if _finding_key(f) not in seen]
+    block["duplicates_of_sweep"] = len(network_findings) - len(fresh)
+    result["coverage"]["network"] = block
+    for finding in fresh:
+        result["cve_findings"].extend(_to_vulnerability_rows(finding))
+    result["findings"].extend(fresh)
+    # Rows for vulnerabilities.json. A CVE-tagged finding is a CVE row like any
+    # nuclei one. A match of a template of the network table that names no CVE
+    # gets a row keyed by ``nuclei:<template id>`` and port, the shape a plugin
+    # finding has (``cve: ""``), which the report dedupe and the API tracker
+    # (``vulnerabilities._detector_of``) already understand. That holds for a
+    # match the web sweep made too -- it reaches the SMB port of any host with a
+    # web port -- so the rows come from every finding, deduplicated by the same
+    # key, not from the pass alone. The web sweep's other CVE-less matches stay
+    # out, as before.
+    table_ids = {template for rule in NETWORK_RULES for template in rule.template_ids}
+    rows: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for finding in result["findings"]:
+        if (
+            config.network_templates
+            and finding["template_id"] in table_ids
+            and finding["host"]
+            and not _to_vulnerability_rows(finding)
+        ):
+            rows.setdefault(_finding_key(finding), _network_row(finding))
+    result["network_vulnerabilities"] = list(rows.values())
+    _persist(output_dir, result)
+    if fresh:
+        LOG.info("nuclei network pass: %d finding(s)", len(fresh))
+    return result
+
+
+def nuclei_vulnerability_rows(nuclei_result: dict[str, Any]) -> list[dict[str, Any]]:
+    """What the report merges from a nuclei result: its CVE rows, then the network pass's CVE-less ones.
+
+    Also the answer for a ``--resume`` that reloads ``nuclei.json`` (a file from
+    before the pass has no ``network_vulnerabilities``, and a skipped stage has
+    only the fallback ``{"cve_findings": []}``).
+    """
+    return list(nuclei_result.get("cve_findings") or []) + list(nuclei_result.get("network_vulnerabilities") or [])

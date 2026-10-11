@@ -176,8 +176,8 @@ data and measurement live in Shapoclyack.**
 | L2: ARP, NetBIOS and mDNS names | discovery (ARP exists; MAC, names and a packet-rate cap in structured output: GenDec#35) | scope, `max_hosts`, rate cap, the artifact shape `l2_discovery` writes today | — |
 | TLS suites, versions, SSLv2/SSLv3 | enumeration with its own ClientHellos | grading and thresholds in `tls_posture` | — |
 | NSE `default,safe` identification (SSH algorithms, SMB signing, RDP NTLM info, FTP anonymous, SNMP…) | the Rhai sandbox | the plugins (`scanner/pipeline/pulse_data/plugins/`, passed with `--script-dir`) and the parser for their findings | — |
-| NSE `vuln` checks | TLS-level ones (Heartbleed and the like) with the enumeration above | the list of checks and where each lands | network templates first; Rhai only for what has none |
-| CVE by version (`vulners`, Vulscan) | `--cve` stays a secondary source | `retro_match` is authoritative | — |
+| NSE `vuln` checks | TLS-level ones (Heartbleed and the like) with the enumeration above | the list of checks and where each lands, [script by script](../nse-vuln-coverage.md) | network templates first (a curated table run by a network pass; v9.9.4 has one for SMB signing and none for MS17-010); Rhai only for what has none and the sandbox can send (HTTP TRACE) |
+| CVE by version (`vulners`, Vulscan) | `--cve` stays a secondary source | `retro_match` is authoritative (API side, offline NVD ranges; only as complete as its dataset, [measured](../nse-vuln-coverage.md#cve-by-version-vulners-vulscan)) | — |
 | Quality reference (`pulse_shadow`) | — | a golden corpus recorded **before** Nmap goes, replayed in CI and on a kind stand | — |
 | `nmap_timing` | — | mapped onto Pulse `rate` / `concurrency` in profiles | — |
 | Past data | — | `nmap/` XML and `nmap-nse` rows stay readable; `backend: nmap\|hybrid` is rejected with a message naming the replacement | — |
@@ -323,6 +323,7 @@ the reference has to be recorded while Nmap still runs.
 6. [#546](https://github.com/onixus/Shapoclyack/issues/546) — Probe DB in Shapoclyack: clean-room rules, distribution revision, CPE
    mapping.
 7. [#547](https://github.com/onixus/Shapoclyack/issues/547) — NSE `vuln` coverage mapped onto Nuclei network templates; gaps to Rhai.
+   **Implemented** — table, network pass and live checks in [NSE `vuln` coverage](../nse-vuln-coverage.md).
 8. [#548](https://github.com/onixus/Shapoclyack/issues/548) — Remove the Nmap code paths; keep readers for past data; config migration.
 
 ## Not decided here

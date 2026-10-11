@@ -51,7 +51,7 @@ def _id(path: Path) -> str:
 
 
 def test_the_directory_is_not_empty():
-    assert len(PLUGINS) >= 6
+    assert len(PLUGINS) >= 7
 
 
 @pytest.mark.parametrize("path", PLUGINS, ids=_id)
@@ -604,3 +604,79 @@ def test_anonymous_ftp_evidence_is_the_reply_to_pass_not_the_first_230_line(stub
     greeting = b"220-Banner mentions\r\n230 as text\r\n220 FTP ready\r\n"
     server = stub(greeting, lambda _: b"331 Password required\r\n230-Welcome\r\n230 Login successful, guest.\r\n221 Bye\r\n")
     assert finding(run_plugin("shapo_ftp_anonymous", server.port)[0])[2] == "230 Login successful, guest."
+
+
+# --------------------------------------------------------------------------
+# shapo_http_trace (#547)
+# --------------------------------------------------------------------------
+
+#: What `pulse plugin run` learns the banner from: the first, bare connection.
+HTTP_BANNER = b"HTTP/1.1 400 Bad Request\r\nServer: stub\r\n\r\n"
+
+
+def _trace_echo(request: bytes) -> bytes:
+    body = request
+    return b"HTTP/1.1 200 OK\r\nContent-Type: message/http\r\nContent-Length: %d\r\n\r\n" % len(body) + body
+
+
+@needs_pulse
+def test_http_trace_that_echoes_the_request_is_a_finding_and_one_connection_is_made(stub):
+    server = stub([HTTP_BANNER, b""], _trace_echo)
+    severity, title, evidence = finding(run_plugin("shapo_http_trace", server.port)[0])
+    assert (severity, title) == ("LOW", "HTTP TRACE method enabled")
+    assert evidence == "HTTP/1.1 200 OK (request echoed)"
+    assert server.received[-1].startswith(b"TRACE / HTTP/1.1\r\n")
+    assert b"X-Shapo-Trace: shapo-trace-547" in server.received[-1]
+
+
+@needs_pulse
+def test_http_trace_refused_is_clean(stub):
+    server = stub([HTTP_BANNER, b""], lambda _: b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n")
+    assert finding(run_plugin("shapo_http_trace", server.port)[0]) is None
+
+
+@needs_pulse
+def test_http_trace_200_without_the_echo_is_not_a_finding(stub):
+    """A catch-all (the corpus's IIS stub) answers 200 to any method and echoes nothing."""
+    server = stub([HTTP_BANNER, b""], lambda _: b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n<html>")
+    assert finding(run_plugin("shapo_http_trace", server.port)[0]) is None
+
+
+@needs_pulse
+def test_http_trace_header_echo_outside_the_body_is_not_a_finding(stub):
+    """The marker must come back in the body, not merely appear in a header the server set."""
+    reply = b"HTTP/1.1 200 OK\r\nX-Shapo-Trace: shapo-trace-547\r\nContent-Length: 0\r\n\r\n"
+    server = stub([HTTP_BANNER, b""], lambda _: reply)
+    assert finding(run_plugin("shapo_http_trace", server.port)[0]) is None
+
+
+@needs_pulse
+def test_http_trace_ignores_services_that_are_not_http(stub):
+    server = stub(b"220 (vsFTPd 3.0.3)\r\n", _trace_echo)
+    lines, stderr = run_plugin("shapo_http_trace", server.port)
+    assert finding(lines) is None and not server.received and "error" not in stderr
+
+
+@needs_pulse
+def test_http_trace_raises_when_the_reply_is_not_http(stub):
+    server = stub([HTTP_BANNER, b""], lambda _: b"garbage\r\n")
+    lines, stderr = run_plugin("shapo_http_trace", server.port)
+    assert finding(lines) is None
+    assert "no HTTP status line" in stderr
+
+
+@needs_pulse
+def test_http_trace_needs_a_200_even_when_an_error_page_quotes_the_request(stub):
+    def quoting_404(request: bytes) -> bytes:
+        return b"HTTP/1.1 404 Not Found\r\n\r\nNo handler for:\r\n" + request
+
+    server = stub([HTTP_BANNER, b""], quoting_404)
+    assert finding(run_plugin("shapo_http_trace", server.port)[0]) is None
+
+
+@needs_pulse
+def test_http_trace_a_server_that_hangs_up_on_trace_refused_it_and_is_clean(stub):
+    server = stub([HTTP_BANNER, b""], lambda _: b"")
+    lines, stderr = run_plugin("shapo_http_trace", server.port)
+    assert finding(lines) is None
+    assert "error" not in stderr.lower()

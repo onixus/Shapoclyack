@@ -407,6 +407,11 @@ screenshots:
 # scripts/fetch-nuclei-templates.sh).
 nuclei:
   enabled: true
+  # A second pass for non-web services: the curated templates of
+  # scanner/pipeline/nuclei_network.py (SMB signing today) against host:port of the
+  # endpoints Pulse named as that service. Follows severities and exclude_tags below,
+  # not run in a pinned verification re-scan, no OAST. docs/nse-vuln-coverage.md.
+  network_templates: true
   templates_dir: /usr/share/nuclei-templates
   severities: [critical, high, medium]
   exclude_tags: [intrusive, fuzz, dos]

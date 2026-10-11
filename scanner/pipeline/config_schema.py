@@ -909,9 +909,21 @@ class NucleiConfig(BaseModel):
     ``exclude_tags`` still does -- it is the host's own safety floor, and a
     platform-sent id must not be a way around it. Empty, the default, is the
     ordinary sweep. Each id is checked against ``NUCLEI_TEMPLATE_ID_RE``.
+
+    ``network_templates`` adds a second, separate pass for services that are not
+    web (SMB today): the curated ids of ``nuclei_network.NETWORK_RULES``, run
+    against ``host:port`` of the endpoints Pulse named as that service. They are
+    answers to Nmap's ``vuln``/``safe`` scripts, so they never were in the web
+    sweep, which feeds nuclei ``http(s)://`` URLs only. The pass obeys
+    ``severities`` and ``exclude_tags`` like the sweep, but through its own
+    accounting rather than nuclei's ``-severity``, so an id left out is named in
+    ``nuclei.json`` (``coverage.network``). ``tags`` does not apply; a pinned
+    (``template_ids``) run does not make the pass. Off: ``false``.
+    ``docs/nse-vuln-coverage.md`` has the table.
     """
 
     enabled: bool = True
+    network_templates: bool = True
     templates_dir: str = "/usr/share/nuclei-templates"
     custom_templates_dir: str = ""
     template_ids: list[str] = Field(default_factory=list, max_length=MAX_NUCLEI_TEMPLATE_IDS)
@@ -931,6 +943,8 @@ class NucleiConfig(BaseModel):
     # Hard cap on the whole nuclei subprocess invocation, independent of
     # per-request timeout_seconds -- mirrors runtime.nse_timeout_seconds'
     # role of bounding one external-tool call regardless of target count.
+    # The sweep gets all of it; the network pass (network_templates) shares one
+    # stage deadline of this plus 120 s, so the whole stage is bounded by it.
     overall_timeout_seconds: int = Field(default=1800, ge=60, le=7200)
     http_ports: list[int] = Field(default_factory=lambda: [80, 8080, 8000, 8008, 8888])
     https_ports: list[int] = Field(default_factory=lambda: [443, 8443])
