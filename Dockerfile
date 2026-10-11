@@ -21,7 +21,7 @@
 # Every stage is pinned by index digest, not only the final one (#313): a
 # build stage's toolchain ends up in the binaries just as surely as the base
 # ends up in the image. Renovate proposes the refresh as a reviewed PR.
-FROM golang:1.26-bookworm@sha256:a688600ca24f8a4d3ca77f95b0dd40704a9fc787c826660eb7ba0b641b8b175d AS go-tools
+FROM golang:1.26-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS go-tools
 
 # v3.11.1 is the first release that pins kin-openapi >= 0.144.0
 # (GHSA-r277-6w6q-xmqw); do not downgrade below it.
@@ -33,14 +33,18 @@ ARG NAABU_VERSION=v2.6.1
 # each closes a vulnerability none of them has picked up yet. Only ever raise
 # these, and drop one only once every tool requires that version by itself:
 #
-#   x/crypto v0.56.0   CVE-2026-56854 (ssh source-address not enforced,
-#                      CRITICAL) plus the 0.46-0.52 batch; all three tools
+#   x/crypto v0.57.0   CVE-2026-56854 (ssh source-address not enforced,
+#                      CRITICAL) plus the 0.46-0.52 batch; all three tools;
+#                      0.57.0 because x/net v0.60.0 requires it
 #   go-git   v5.19.2   CVE-2026-71556 (arbitrary file read/write via symlink
 #                      resolution); nuclei
-#   x/mod    v0.40.0   CVE-2026-56864, CVE-2026-56865 (GOSUMDB / tlog
+#   x/mod    v0.41.0   CVE-2026-56864, CVE-2026-56865 (GOSUMDB / tlog
 #                      verification bypass); nuclei
 #   grpc     v1.83.2   CVE-2026-84304, CVE-2026-84445 (DoS); nuclei
 #   utls     v1.8.2    CVE-2026-27017; dnsx
+#   x/net    v0.60.0   CVE-2026-78669 (HTTP/2 SETTINGS flood DoS); all three
+#                      tools. The stdlib half of it and CVE-2026-78667 need
+#                      Go >= 1.26.9, which the go-tools digest above carries
 #
 # A pin must be >= what every tool already requires: `go get` refuses to
 # downgrade a module a tool pins higher (naabu 2.6.1 requires utls v1.8.2)
@@ -50,7 +54,7 @@ ARG NAABU_VERSION=v2.6.1
 # finding: a pin the binary does not link in costs nothing, and a tool that
 # grows the dependency later inherits the fixed version rather than a fresh
 # advisory.
-ARG GO_SECURITY_PINS="golang.org/x/crypto@v0.56.0 github.com/go-git/go-git/v5@v5.19.2 golang.org/x/mod@v0.40.0 google.golang.org/grpc@v1.83.2 github.com/refraction-networking/utls@v1.8.2"
+ARG GO_SECURITY_PINS="golang.org/x/crypto@v0.57.0 github.com/go-git/go-git/v5@v5.19.2 golang.org/x/mod@v0.41.0 google.golang.org/grpc@v1.83.2 github.com/refraction-networking/utls@v1.8.2 golang.org/x/net@v0.60.0"
 
 # One throwaway module per tool, not one shared module: a shared module would
 # resolve a single dependency graph across all three and silently upgrade one
