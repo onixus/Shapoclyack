@@ -6,6 +6,15 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- TLS posture on the Pulse path
+  ([#545](https://github.com/onixus/Shapoclyack/issues/545), [Pulse backend](docs/pulse-backend.md)):
+  an A-F grade per cipher suite computed by Shapoclyack (`scanner/pipeline/tls_grading.py`,
+  after the public SSL Labs rating guide), a reader for the suite enumeration expected from
+  [GenDec#34](https://github.com/onixus/GenDec/issues/34) (no Pulse release emits it yet; an
+  incomplete list marks its findings `requires_confirmation`), the IANA cipher-suite table in
+  `scanner/pipeline/pulse_data/`, and a top-up: with `probe_fallback` the stdlib probe now checks
+  the open `probe_tls_ports` Pulse has no `tls[]` row for (`source: pulse-tls-probe`, counted
+  against `max_targets`).
 - Rhai plugins for Pulse, passed with `--script-dir`
   ([#544](https://github.com/onixus/Shapoclyack/issues/544), [Pulse plugins](docs/pulse-plugins.md)):
   weak SSH key-exchange/host-key/cipher/MAC algorithms and legacy SSH banners,

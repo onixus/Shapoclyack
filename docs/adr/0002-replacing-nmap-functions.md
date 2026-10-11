@@ -245,6 +245,68 @@ Decisions taken while implementing it:
   `$HOME/.pulse/scripts`. The process runs in an empty directory that is also its
   `HOME`, which is what makes the first the only one.
 
+## TLS (#545)
+
+Measured 2026-10-10 on the corpus stand (`tests/fixtures/nmap_pulse_corpus/`,
+Pulse v1.3.0 linux-arm64 with the adapter's flags, run again live, plus
+`openssl s_server` listeners inside the scanner container):
+
+- **What Pulse reports.** One `tls[]` row per endpoint it probed: certificate
+  fields, `self_signed`, `expired`, `jarm`, `negotiated_protocol`
+  (`TLSv1_3`, `TLSv1_2`) and, when a legacy handshake succeeded,
+  `accepts_weak_protocols` (`["TLSv1.0", "TLSv1.1"]` on nginx-legacy — the
+  same set Nmap found). No cipher suites, no server preference, no key
+  exchange, no SSLv2/SSLv3 attempt; the CLI has no enumeration switch.
+- **Where it looks.** Only ports 443 and 8443. Six TLS listeners on 443,
+  8443, 465, 636, 993 and 9443 gave two `tls[]` rows; the MySQL TLS that Nmap
+  enumerated on 3306 gave none. Until this change `tls_posture` stopped at
+  the first non-empty Pulse artifact, so a `probe_tls_ports` port Pulse
+  skipped (9443, 4443, 10443, 6443) was not checked at all; now the stdlib
+  probe tops those up (rows tagged `pulse-tls-probe`). 465, 636, 993 and
+  STARTTLS ports stay unchecked on the Pulse path: they are not in
+  `probe_tls_ports`.
+- **The reference.** Nmap 7.93 `ssl-enum-ciphers` enumerated 4 endpoints,
+  122 suite entries, graded A except the 4 `TLS_ECDH_anon_*` entries ×3
+  versions on nginx-legacy (F, "Anonymous key exchange").
+
+Decided:
+
+- **Grading is ours** (`scanner/pipeline/tls_grading.py`), written from the
+  public SSL Labs Server Rating Guide, not from the NSE script. On the 122
+  corpus entries it gives Nmap's letter every time. The corpus only exercises A
+  and F, so the C caps (RC4, 64-bit blocks, MD5) and the key-size steps are
+  covered by unit tests against the guide, not by a recorded reference.
+  Finding kinds and the C–F threshold are the same as on the `nmap-nse` path.
+- **The enumeration format is our proposal, not a Pulse output yet**
+  (`tls[].enumeration`, read by `scanner/pipeline/tls_enumeration.py`; shape in
+  [pulse-backend.md](../pulse-backend.md#cipher-suites-and-a-f-grades-on-the-pulse-path)).
+  Expected from onixus/GenDec#34. A contract test builds that shape from the
+  recorded Nmap output and checks that the Pulse path yields the same findings
+  as the Nmap path on the same endpoints. An enumeration not marked complete
+  makes its findings `requires_confirmation`; a suite missing from it is not
+  read as refused. Code points without names resolve through the IANA
+  registry copied into `scanner/pipeline/pulse_data/tls_cipher_suites.tsv`.
+- **NSE `vuln` scripts at the TLS level** — split with #547:
+
+  | NSE script | Where |
+  |---|---|
+  | `ssl-poodle` (SSLv3 with CBC) | here: `weak_protocol` SSLv3 from the enumeration |
+  | `sslv2-drown` (SSLv2 offered) | here: `weak_protocol` SSLv2; the cross-protocol part is not checked |
+  | `ssl-dh-params` (weak/common DH groups) | here, by key size in the grade, once GenDec#34 reports `kex_bits`; named common primes are not checked |
+  | RC4, SWEET32 (64-bit blocks) | here: grade C → `weak_cipher_grade`, and `weak_cipher_name` |
+  | `ssl-heartbleed`, `ssl-ccs-injection`, `tls-ticketbleed` | #547: they need malformed records, not an enumeration — a Nuclei network template where one exists, otherwise the "nice to have" in GenDec#34 |
+  | `ssl-known-key` | #547 (a fingerprint list, not a TLS mechanism) |
+
+  In the corpus only `ssl-ccs-injection` produced output, on the RDP stub
+  (`No reply from server (TIMEOUT)`); no TLS-level `vuln` script reported a
+  vulnerability.
+
+What GenDec#34 still has to say, beyond its current text: run the TLS probe on
+every port where a handshake succeeds (and STARTTLS for SMTP, IMAP, POP3, FTP,
+LDAP, PostgreSQL, MySQL), not on 443/8443 only; a `complete` flag when the
+connection budget cut the enumeration short; SSLv2 with its own CLIENT-HELLO;
+the JSON shape above.
+
 ## Work items
 
 Tracked under [#549](https://github.com/onixus/Shapoclyack/issues/549). Order matters for 1:
