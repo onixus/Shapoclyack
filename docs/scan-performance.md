@@ -88,7 +88,7 @@ Same sensors, same packet budget, far less average wall-clock per day.
 
 ## What *not* to do first
 
-- Raising `nse_concurrency` / nuclei `rate_limit` on a saturated NIC or target
+- Raising `pulse.concurrency` / nuclei `rate_limit` on a saturated NIC or target
   ACL usually **hurts** completeness for little wall-clock gain.
 - Widening Prometheus HTTP buckets to hide p95 > 10 s (API) — that is a
   product/query problem, not a scan problem ([scale-profile.md](scale-profile.md)).

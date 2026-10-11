@@ -171,9 +171,16 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
                           <SelectValue placeholder="unset" />
                         </SelectTrigger>
                         <SelectContent className="bg-card border-border text-foreground font-mono text-xs">
-                          {SERVICE_BACKENDS.map((b) => (
+                          {/* A saved nmap/hybrid (migration 0085 leaves it) is shown, flagged,
+                              rather than as an empty box: scans are refused until it is replaced. */}
+                          {[
+                            ...(values[path] && !SERVICE_BACKENDS.includes(String(values[path]))
+                              ? [String(values[path])]
+                              : []),
+                            ...SERVICE_BACKENDS,
+                          ].map((b) => (
                             <SelectItem key={b} value={b}>
-                              {b}
+                              {SERVICE_BACKENDS.includes(b) ? b : `${b} (removed — choose pulse)`}
                             </SelectItem>
                           ))}
                         </SelectContent>

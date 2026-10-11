@@ -78,3 +78,23 @@ describe("ConfigEditor secret fields", () => {
     expect(screen.getByDisplayValue(SECRET_MASK)).toBeDisabled();
   });
 });
+
+describe("ConfigEditor stored Nmap backend (#548)", () => {
+  it("shows a saved nmap backend flagged as removed instead of an empty select", () => {
+    const saved = {
+      paths: CONFIG.editable_paths,
+      effective: CONFIG.effective,
+    };
+    CONFIG.editable_paths = ["service_probe.backend"];
+    CONFIG.effective = { "service_probe.backend": "nmap" } as unknown as typeof CONFIG.effective;
+    try {
+      renderEditor();
+      const select = screen.getByRole("combobox");
+      expect(select).toHaveTextContent("nmap (removed");
+      expect(select).toHaveTextContent("choose pulse");
+    } finally {
+      CONFIG.editable_paths = saved.paths;
+      CONFIG.effective = saved.effective;
+    }
+  });
+});

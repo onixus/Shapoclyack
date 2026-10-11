@@ -147,8 +147,11 @@ All notable changes to Shapoclyack are documented in this file.
   console overrides that can no longer be set (`profiles.*.nmap_timing`,
   `service_probe.shadow`) and leaves a saved `service_probe.backend` for the
   operator to change. A verification re-scan no longer asks the sensor for
-  `service_probe.backend: hybrid`; a finding only an NSE script detected stays
-  inconclusive after a re-scan. **Kept:** the `nmap/` XML of past runs is read as
+  `service_probe.backend: hybrid`; a finding only an NSE script detected is refused
+  a verification at once (`VerificationDispatchError`, close it by hand). A saved
+  `service_probe.backend: nmap|hybrid` is refused when a scan, schedule tick or
+  verification is queued (422 from `POST /api/jobs`), not by the sensor; the
+  console shows it flagged as removed. **Kept:** the `nmap/` XML of past runs is read as
   before (`scanner/pipeline/legacy_nmap.py`, the report, TLS posture, evidence
   and verification coverage), and the strings `nmap-nse` and `prober: nmap` stay
   valid in the database, API and console; `--skip-nse`, `runtime.skip_nse` and

@@ -923,7 +923,18 @@ def _run_pipeline_body(
         env_shadow=os.environ.get("OCTO_PULSE_SHADOW", ""),
         skip_nse=skip_nse,
     )
-    report_primary_pulse = resolution.report_primary_pulse
+    # A run directory recorded before the Nmap stage was removed (Nmap XML, no
+    # pulse/REPORT_PRIMARY) is a run whose report was built from that XML.
+    # Resuming it must not flip its services/OS to Pulse's, so no marker is
+    # written and Pulse's output stays beside it, as in a pre-#548 shadow run.
+    legacy_nmap_run = (
+        nmap_dir.is_dir()
+        and any(nmap_dir.rglob("*.xml"))
+        and not (paths.output_dir / "pulse" / "REPORT_PRIMARY").exists()
+    )
+    if legacy_nmap_run:
+        logging.info("resuming a run recorded before the Nmap stage was removed: reports keep reading its Nmap XML")
+    report_primary_pulse = resolution.report_primary_pulse and not legacy_nmap_run
 
     # Keep pulse/REPORT_PRIMARY in sync with the resolved backend on every
     # invocation, not just when the pulse stage itself runs -- otherwise a
@@ -1210,6 +1221,14 @@ def _validate_config_only(config_path: Path) -> int:
         load_config(raw)
     except ValidationError as exc:
         print(format_validation_error(exc), file=sys.stderr)
+        return exit_codes.CONFIG_ERROR
+    # The environment is part of the configuration a run would use (#548).
+    try:
+        check_service_probe_env(
+            os.environ.get("OCTO_SERVICE_BACKEND", ""), os.environ.get("OCTO_PULSE_SHADOW", "")
+        )
+    except RemovedNmapSettingError as exc:
+        print(str(exc), file=sys.stderr)
         return exit_codes.CONFIG_ERROR
     print(f"configuration OK: {config_path}")
     return exit_codes.SUCCESS

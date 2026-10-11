@@ -21,7 +21,7 @@ Two sides throughout:
 2. [Feeds: a mirror, or a bundle](#2-feeds-a-mirror-or-a-bundle)
 3. [Pointing every feed at a mirror](#3-pointing-every-feed-at-a-mirror)
 4. [The offline bundle](#4-the-offline-bundle) — build, transfer, load, verify
-5. [nuclei templates and vulscan](#5-nuclei-templates-and-vulscan)
+5. [nuclei templates](#5-nuclei-templates)
 6. [Update cadence](#6-update-cadence)
 7. [What stays unavailable offline](#7-what-stays-unavailable-offline)
 
@@ -439,10 +439,11 @@ reports `origin: bundle` with the feed's own `updated` date. On the volume,
 full record, and `enrichment-bundle-history.jsonl` beside it has one line per
 install (bundle, built/installed times, host, user).
 
-## 5. nuclei templates and vulscan
+## 5. nuclei templates
 
-Both are tool data baked into the image at build time, not enrichment
-datasets, so they are not in the bundle. **In Kubernetes the scanner uses the
+The templates are tool data baked into the image at build time, not
+enrichment datasets, so they are not in the bundle (the Vulscan databases that
+used to sit beside them went with the NSE stage, #548). **In Kubernetes the scanner uses the
 copies in the image it runs** — nothing in the manifests mounts templates from
 elsewhere — so there they are refreshed by mirroring a newer release image, or
 by building one inside the perimeter with the script below pointed at a mirror.

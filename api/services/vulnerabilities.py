@@ -2357,11 +2357,26 @@ def _verification_plan(session: Any, row: models.Vulnerability) -> VerificationP
             f"Vulnerability '{row.vuln_id}' was found by nuclei templates a sensor "
             f"cannot be asked to load by id: {', '.join(refused) or len(refs)}"
         )
+    nse = any(entry.get("detector") == verification_coverage.NMAP_NSE for entry in detectors)
+    can_be_covered = any(
+        entry.get("detector") in verification_coverage.KNOWN_DETECTORS
+        and entry.get("detector") != verification_coverage.NMAP_NSE
+        for entry in detectors
+    )
+    if nse and not can_be_covered:
+        # Only an NSE script saw it, and nothing runs NSE any more (#548): the
+        # re-scan could not demonstrate the script looked, so every one would
+        # end inconclusive. Refused now, with the way out, not after a scan.
+        raise VerificationDispatchError(
+            f"Vulnerability '{row.vuln_id}' was found only by an Nmap NSE script, and the "
+            "Nmap stage was removed, so no re-scan can re-check it. Close the finding by "
+            "hand with a reason (docs/nmap-migration.md)."
+        )
     return VerificationPlan(
         ips=ips,
         names=names,
         template_ids=tuple(refs),
-        nse=any(entry.get("detector") == verification_coverage.NMAP_NSE for entry in detectors),
+        nse=nse,
         from_detectors=bool(detectors) and all(entry.get("host") for entry in detectors),
         agent_group=next((str(e["agent_group"]) for e in detectors if e.get("agent_group")), None),
     )

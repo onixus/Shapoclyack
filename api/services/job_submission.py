@@ -276,6 +276,9 @@ def start_scan(
         # Before anything is admitted or written: a setting a sensor would
         # refuse is refused where the job is created, as the overlay is.
         config_overlay.check_config(config_extra)
+    # The saved console overrides, too (#548): a leftover Nmap setting is
+    # refused here, for every way a scan starts, not by the sensor afterwards.
+    config_override_service.assert_runnable(settings, config_extra)
 
     job_id = uuid.uuid4().hex[:12]
     execution = (

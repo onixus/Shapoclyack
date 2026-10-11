@@ -4496,7 +4496,9 @@ Replace `nmap_timing` with `pulse.rate` / `pulse.concurrency` per profile (the
 table is in [Migrating off Nmap](nmap-migration.md#nmap_timing)); delete the
 rest. Order on a fleet: upgrade the API first (migration `0085` removes the two
 console overrides that cannot be set any more; a saved
-`service_probe.backend: nmap|hybrid` is left for you to change in the console),
+`service_probe.backend: nmap|hybrid` is left for you to change in the console:
+until you do, starting a scan, a schedule tick or a verification is refused by
+the API with the setting named, so no job reaches a sensor to fail there),
 fix the mounted configs, then the sensors. An older sensor keeps working against
 the new API, because the API no longer sends `nmap_timing` or `shadow` in a
 config overlay; a new sensor given an overlay from an old API refuses the run

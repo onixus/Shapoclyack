@@ -1514,7 +1514,7 @@ def fit_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
     # needs while it scans (the request), and the busiest run (the limit).
     cores = [cpu(r) / float(r["pipeline_wall_sec"]) for r in measured if r.get("pipeline_wall_sec")]
     # The scan process at its peak plus its largest tool: a floor for the pod,
-    # since tools that ran side by side (nse_concurrency) add up.
+    # since tools that ran side by side (pulse.host_parallel, nuclei concurrency) add up.
     peaks = [
         (float(r["resources"]["max_rss_mb"]) + float(r["resources"]["children_max_rss_mb"])) * 2**20
         for r in measured

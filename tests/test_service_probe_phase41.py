@@ -137,3 +137,29 @@ def test_env_pulse_shadow_is_refused(value):
 @pytest.mark.parametrize("value", ["", "0", "false", "off"])
 def test_env_pulse_shadow_off_is_fine(value):
     check_service_probe_env("", value)
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [("OCTO_SERVICE_BACKEND", "nmap"), ("OCTO_SERVICE_BACKEND", "hybrid"), ("OCTO_PULSE_SHADOW", "1")],
+)
+def test_validate_config_flag_refuses_the_removed_nmap_environment(monkeypatch, capsys, variable, value):
+    """#548: ``--validate-config`` used to print "configuration OK" for a file
+    plus an environment the real run refuses."""
+    from scanner import exit_codes
+    from scanner.main import _validate_config_only
+
+    monkeypatch.setenv(variable, value)
+    assert _validate_config_only(Path("scanner/config/default.yaml")) == exit_codes.CONFIG_ERROR
+    err = capsys.readouterr().err
+    assert variable in err and "docs/nmap-migration.md" in err
+
+
+def test_validate_config_flag_is_fine_with_a_clean_environment(monkeypatch, capsys):
+    from scanner import exit_codes
+    from scanner.main import _validate_config_only
+
+    monkeypatch.delenv("OCTO_SERVICE_BACKEND", raising=False)
+    monkeypatch.delenv("OCTO_PULSE_SHADOW", raising=False)
+    assert _validate_config_only(Path("scanner/config/default.yaml")) == exit_codes.SUCCESS
+    assert "configuration OK" in capsys.readouterr().out

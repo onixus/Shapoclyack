@@ -19,7 +19,13 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from scanner.pipeline.config_schema import AppConfig, format_validation_error, load_config
+from scanner.pipeline.config_schema import (
+    AppConfig,
+    RemovedNmapSettingError,
+    check_service_probe_env,
+    format_validation_error,
+    load_config,
+)
 from scanner.pipeline.utils import load_yaml, setup_logging
 
 
@@ -199,6 +205,14 @@ def main() -> int:
         config = load_config(raw)
     except ValidationError as exc:
         print(format_validation_error(exc), file=sys.stderr)
+        return 2
+    # Every child run would exit 2 on this; fail once, at start (#548).
+    try:
+        check_service_probe_env(
+            os.environ.get("OCTO_SERVICE_BACKEND", ""), os.environ.get("OCTO_PULSE_SHADOW", "")
+        )
+    except RemovedNmapSettingError as exc:
+        print(str(exc), file=sys.stderr)
         return 2
 
     log_dir = Path(config.runtime.output_dir) / "logs"

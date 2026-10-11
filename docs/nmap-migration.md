@@ -80,9 +80,16 @@ and the system page no longer lists NSE profiles or probes for `nmap`.
 Migration `0085_drop_nmap_config_overrides` deletes `profiles.*.nmap_timing` and
 `service_probe.shadow` from the saved overrides document, and nothing else in
 it. Without that the next scan would fail on a setting the console no longer
-shows. A saved `service_probe.backend: nmap|hybrid` is **not** touched: scans
-fail on it, naming it, and the console offers only `pulse` to replace it with.
-The downgrade does nothing; the deleted values meant nothing without the stage.
+shows. A saved `service_probe.backend: nmap|hybrid` is **not** touched (nothing
+is quietly swapped for `pulse`). Instead every way of queueing a scan refuses it
+up front (`config_override.assert_runnable`, called from
+`job_submission.start_scan`, so console and API scans, schedules and
+verification re-scans share it): `POST /api/jobs` answers 422 with the setting
+and a pointer to this page, a verification re-scan is refused as
+`VerificationDispatchError`, and a schedule logs the refusal each tick; no job
+is created for a sensor to fail on. The console's configurator shows the saved
+value flagged "removed — choose pulse"; saving `pulse` clears it. The downgrade
+does nothing; the deleted values meant nothing without the stage.
 
 ## Old data is still read
 
@@ -107,10 +114,12 @@ contract that consumers read, and it now counts Pulse's open services.
 directory (`tests/fixtures/legacy_nmap_run/`).
 
 One consequence to know: a vulnerability that **only** an NSE script detected
-cannot be closed by a verification re-scan any more, because nothing re-runs
-that script. The re-scan still happens and ends *inconclusive* with the NSE
-detector as the gap. If another detector (Pulse, Nuclei, a plugin) covers the
-same host, the NSE detector is waived and the closure follows that one.
+cannot be verified by a re-scan any more, because nothing re-runs that script.
+Starting the verification is refused at once (`VerificationDispatchError`: close
+the finding by hand with a reason), instead of sending a scan that could only
+end inconclusive. If another detector (Pulse, Nuclei, a plugin) also saw the
+finding, the re-scan runs as before and the NSE detector is waived when that
+detector covers the same host.
 
 `tests/fixtures/nmap_pulse_corpus/` (the recorded Nmap and Pulse output of the
 comparison stand, [#541](https://github.com/onixus/Shapoclyack/issues/541)) and

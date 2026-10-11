@@ -1520,21 +1520,59 @@ def test_a_name_out_of_scope_is_refused_not_swapped_for_the_address(tmp_path):
         assert session.query(models.Job).filter(models.Job.tenant_id == tenant_id).count() == 0
 
 
-def test_an_nse_finding_is_re_scanned_without_asking_for_a_nmap_backend(tmp_path):
+def test_an_nse_only_finding_is_refused_a_re_scan_before_one_is_sent(tmp_path):
+    """#548: nothing runs NSE, so a re-scan of a finding only an NSE script saw
+    ends inconclusive every time. Refused at dispatch, the finding stays put."""
     settings, tenant_id = _seed(tmp_path, findings=[NSE])
     approve_scan_scope(settings)
     vuln = _tracked(settings, tenant_id, [NSE])
+    _agent_mode(settings, tenant_id)
+    _advance_to_fixing(settings, tenant_id, vuln["vuln_id"])
+
+    with pytest.raises(vulns.VerificationDispatchError, match="only by an Nmap NSE script") as refused:
+        vulns.trigger_verification(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"], actor="alice")
+
+    assert "docs/nmap-migration.md" in str(refused.value)
+    after = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"])
+    assert after["state"] == vuln_states.FIXING
+    assert after["verification_job_id"] is None
+    with get_session(settings.postgres_url) as session:
+        assert session.query(models.Job).filter(models.Job.tenant_id == tenant_id).count() == 0
+
+
+def test_an_nse_finding_another_detector_also_saw_is_re_scanned_as_before(tmp_path):
+    both = _row("pulse", "pulse:local", also_detected_by=[{"source": "nmap-nse", "script_id": "vulners"}])
+    settings, tenant_id = _seed(tmp_path, findings=[both])
+    approve_scan_scope(settings)
+    vuln = _tracked(settings, tenant_id, [both])
 
     job = _dispatch(settings, tenant_id, vuln["vuln_id"])
 
     assert _inputs(settings, job.job_id, "ranges.txt") == [HOST]
-    # The Nmap stage is gone (#548): an NSE detector no longer asks the sensor for a backend.
+    # The Nmap stage is gone (#548): no backend is asked of the sensor for the NSE detector.
     assert "service_probe" not in job.scan_options["config_overlay"]
     assert job.scan_options["config_overlay"]["reachability"] == {"enabled": True}
-    # Nothing to pin, and still a verification: asked for v2 explicitly.
-    assert "template_ids" not in job.scan_options["config_overlay"]["nuclei"]
     assert job.scan_options["config_overlay_capability"] == "config_overlay.v2"
     assert job.scan_options["verification_of"] == vuln["vuln_id"]
+
+
+def test_assess_never_closes_an_nse_only_detector_without_a_stand_in(tmp_path, monkeypatch):
+    """Whatever the run holds (a finished XML naming only a category, or
+    nothing at all), an NSE detector with no other detector to stand in for it
+    is a gap; with Pulse covering the same address it is waived instead."""
+    from api.services import verification_coverage as coverage
+
+    entry = {"detector": coverage.NMAP_NSE, "ref": "vulners", "host": HOST, "port": "443", "protocol": "tcp"}
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _nmap(run_dir)  # exit=success, --script default,safe: a category, not the script
+    gaps, waived = coverage.RunCoverage(run_dir).assess([entry], port="443", asset_hosts={HOST})
+    assert [g["reason"] for g in gaps] == ["script_not_run"] and waived == []
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    gaps, waived = coverage.RunCoverage(empty).assess([entry], port="443", asset_hosts={HOST})
+    assert [g["reason"] for g in gaps] == ["nse_not_run"] and waived == []
 
 
 def test_a_verification_no_live_sensor_can_run_is_refused_not_parked(tmp_path):

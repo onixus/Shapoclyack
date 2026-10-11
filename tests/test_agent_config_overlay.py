@@ -734,3 +734,86 @@ def test_a_group_whose_sensors_cannot_take_the_job_says_so(tmp_path, monkeypatch
 
     assert start().agent_group_unavailable is False
     assert start(min_overlay_version=2, verification_of="vln_1").agent_group_unavailable is True
+
+
+# ---------------------------------------------------------------------------
+# A saved Nmap setting is refused where the scan is queued (#548)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=False)
+def _clean_override_row():
+    """``config_overrides`` has no FK to tenants, so nothing else clears it and a
+    leaked row would make every later scan in the session refuse (shared test DB)."""
+    yield
+    from api.auth import get_settings
+    from api.db import models
+    from api.db.engine import get_session
+
+    with get_session(get_settings().postgres_url) as session:
+        row = session.get(models.ConfigOverride, "global")
+        if row is not None:
+            session.delete(row)
+
+
+def _store_override(settings, data: dict) -> None:
+    """Straight into the row: ``PUT /api/config`` would refuse it, which is the point."""
+    from datetime import UTC, datetime
+
+    from api.db import models
+    from api.db.engine import get_session
+
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.ConfigOverride, "global")
+        if row is None:
+            session.add(models.ConfigOverride(scope="global", data=data, updated_at=datetime.now(UTC)))
+        else:
+            row.data = data
+
+
+@requires_postgres
+@pytest.mark.parametrize(
+    "stored",
+    [
+        {"service_probe": {"backend": "nmap"}},
+        {"service_probe": {"backend": "hybrid"}},
+        {"service_probe": {"shadow": True}},
+        {"profiles": {"balanced": {"nmap_timing": "T3"}}},
+    ],
+)
+def test_a_saved_nmap_override_is_refused_at_queue_time_not_by_the_sensor(_clean_override_row, tmp_path, monkeypatch, stored):
+    from api.auth import get_settings
+
+    client = _client(tmp_path, monkeypatch)
+    _store_override(get_settings(), stored)
+
+    response = client.post(
+        "/api/jobs",
+        headers=auth_headers(client, "operator"),
+        json={"mode": "balanced", "ranges": "127.0.0.1\n", "domains": "\n"},
+    )
+    assert response.status_code == 422, response.text
+    assert "docs/nmap-migration.md" in response.text
+    assert "exit code 2" in response.text
+    # Nothing was queued for a sensor to fail on.
+    assert _claim(client, _register(client, "exec", CURRENT_AGENT)).status_code != 200
+
+
+@requires_postgres
+def test_a_pulse_override_still_queues(_clean_override_row, tmp_path, monkeypatch):
+    from api.auth import get_settings
+
+    client = _client(tmp_path, monkeypatch)
+    _store_override(get_settings(), {"service_probe": {"backend": "pulse"}})
+    assert _start(client)["job_id"]
+
+
+@requires_postgres
+def test_the_same_gate_covers_a_verification_extra(_clean_override_row, tmp_path, monkeypatch):
+    """Every start goes through ``start_scan``, so a per-job extra that names the
+    removed stage is refused by the same call (here directly)."""
+    from api.auth import get_settings
+
+    _client(tmp_path, monkeypatch)
+    with pytest.raises(config_override.RemovedNmapOverride):
+        config_override.assert_runnable(get_settings(), {"service_probe": {"backend": "hybrid"}})

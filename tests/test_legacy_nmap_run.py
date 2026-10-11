@@ -134,3 +134,85 @@ def test_verification_coverage_still_counts_a_named_nse_script_as_a_look(run_dir
     # A script the run did not name is not a look, and neither is a closed port.
     assert [g["reason"] for g in gaps("http-vuln-cve2017-5638", "443")] != []
     assert [g["reason"] for g in gaps("vulners", "8080")] != []
+
+
+# ---------------------------------------------------------------------------
+# Odd-but-real shapes of old output. The expected values below were produced by
+# running origin/main's ``_parse_nmap_xml`` (extracted from ``git show
+# origin/main:scanner/pipeline/report.py``) over ``tests/fixtures/legacy_nmap_edge``
+# and compared with ``legacy_nmap.parse_nmap_xml`` (equal), not written from memory.
+# ---------------------------------------------------------------------------
+
+EDGE = Path(__file__).parent / "fixtures" / "legacy_nmap_edge"
+
+
+def _service(host, port, protocol, service="unknown", product="", version=""):
+    return {
+        "host": host, "port": port, "protocol": protocol, "service": service,
+        "product": product, "version": version, "extrainfo": "", "cpe": [],
+    }
+
+
+def _script(host, port, protocol, script_id, output, vulnerable):
+    return {
+        "host": host, "port": port, "protocol": protocol, "script_id": script_id,
+        "output": output, "vulnerable": vulnerable,
+    }
+
+
+def test_the_parser_reads_odd_old_output_exactly_as_main_did():
+    services, os_matches, scripts = parse_nmap_xml(EDGE / "nmap")
+
+    # IPv6 host; a UDP port; a service element with no name; a host known only by
+    # MAC; the down host and the truncated file contribute nothing.
+    assert services == [
+        _service("2001:db8::5", "22", "tcp", "ssh", "OpenSSH", "9.2p1"),
+        _service("2001:db8::5", "161", "udp"),
+        _service("10.0.0.9", "445", "tcp"),
+        _service("00:aa:bb:cc:dd:ee", "80", "tcp", "http"),
+    ]
+    assert os_matches == []
+    assert scripts == [
+        _script("2001:db8::5", "22", "tcp", "vulners", "", False),  # no output attribute
+        _script("2001:db8::5", "161", "udp", "snmp-info", "VULNERABLE: community string public", True),
+        # host scripts: no port, and no protocol (None, not "")
+        _script("10.0.0.9", "", None, "smb-vuln-ms17-010", "VULNERABLE:\n  CVE-2017-0143 9.3", True),
+        _script("10.0.0.9", "", None, "smb-os-discovery", "OS: Windows Server 2008 R2", False),
+    ]
+
+
+def test_every_reader_survives_the_odd_old_output(tmp_path):
+    run = tmp_path / "run"
+    shutil.copytree(EDGE, run)
+    out = run / "reports"
+    out.mkdir()
+
+    build_reports(
+        output_dir=out, total_targets=4, alive_hosts=["10.0.0.9"], open_ports=[],
+        nmap_dir=run / "nmap", markdown_summary=True, html_summary=False, csv_export=True,
+        json_export=True, cvss4_enabled=False, geoip_enabled=False, asn_enabled=False,
+        report_primary=False,
+    )
+    vulns = json.loads((out / "vulnerabilities.json").read_text(encoding="utf-8"))
+    assert {(v["host"], v["port"], v["cve"], v["protocol"]) for v in vulns} == {
+        ("2001:db8::5", "161", None, "udp"),
+        ("10.0.0.9", "", "CVE-2017-0143", None),
+    }
+
+    result = ea.write_evidence_artifact(run, tenant_id="tenant", run_id="run")
+    codes = {(d["artifact"], d["code"]) for d in result["diagnostics"] if d["artifact"].startswith("nmap/")}
+    assert ("nmap/tcp/tcp_truncated.xml", "invalid_xml") in codes
+    assert ("nmap/tcp/tcp_edge.xml", "read") in codes
+    assert {o["source"] for f in result["findings"] for o in f["observations"]} == {"nmap-nse"}
+
+    posture = check_tls_posture(run / "nmap", TlsPostureConfig(enabled=True, probe_fallback=False), run)
+    assert posture["checked_count"] == 0
+
+    runs = coverage.RunCoverage(run)
+    entry = {"detector": coverage.NMAP_NSE, "ref": "snmp-info", "host": "2001:db8::5", "port": "161", "protocol": "udp"}
+    # nmap finished, but the args name vulners and smb-os-discovery, not snmp-info.
+    assert [g["reason"] for g in runs.gaps([entry], port="161", asset_hosts={"2001:db8::5"})] == ["script_not_run"]
+    entry["ref"] = "vulners"
+    entry["protocol"] = "tcp"
+    entry["port"] = "22"
+    assert runs.gaps([entry], port="22", asset_hosts={"2001:db8::5"}) == []

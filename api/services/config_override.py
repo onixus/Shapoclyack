@@ -413,6 +413,47 @@ class AgentOverlayUnsupported(PermissionError):
     """
 
 
+class RemovedNmapOverride(ValueError):
+    """A stored console override (or per-job extra) names the removed Nmap stage.
+
+    Raised where a scan is queued so the operator reads it from the API or the
+    console, instead of from jobs that start and exit with code 2 on a sensor
+    (#548). Subclasses ``ValueError``: the jobs route answers 422, a
+    verification re-scan is refused as ``VerificationDispatchError``.
+    """
+
+
+def assert_runnable(settings: Settings, extra: dict[str, Any] | None = None) -> None:
+    """Refuse to queue a scan whose merged overrides the scanner would refuse.
+
+    The one gate every way of starting a scan goes through
+    (``job_submission.start_scan``: console, API, schedules, verification
+    re-scans). Migration 0085 deliberately leaves a saved
+    ``service_probe.backend: nmap|hybrid`` alone rather than swapping it for
+    ``pulse``, so it can still be here; so could any removed key a hand-written
+    row carries.
+    """
+    merged = _deep_merge(get_overrides(settings), extra) if extra else get_overrides(settings)
+    problems: list[str] = []
+    for path, value in _flatten(merged).items():
+        if path == "service_probe.backend" and value != "pulse":
+            problems.append(
+                f"service_probe.backend is {value!r}: the Nmap backend was removed; "
+                "set it to 'pulse' in the console's configurator or delete the override"
+            )
+        else:
+            hint = _removed_hint(path)
+            if hint:
+                problems.append(f"{path}: {hint}")
+    if problems:
+        raise RemovedNmapOverride(
+            "The saved scanner configuration names the removed Nmap stage, so a scan "
+            "started now would fail on the sensor with exit code 2: "
+            + "; ".join(problems)
+            + ". See docs/nmap-migration.md."
+        )
+
+
 def agent_overlay(settings: Settings, extra: dict[str, Any] | None) -> dict[str, Any] | None:
     """The overrides and per-job ``extra`` a remote executor has to be sent.
 

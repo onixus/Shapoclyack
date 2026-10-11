@@ -161,6 +161,53 @@ def test_resume_validation_does_not_enable_a_disabled_pulse_stage(cli, monkeypat
     assert not (cli.output / "pulse/raw.json").exists()
 
 
+def _capture_report(cli, monkeypatch):
+    seen: dict = {}
+    monkeypatch.setattr(cli.sm, "build_reports", lambda **kwargs: seen.update(kwargs))
+    return seen
+
+
+def _legacy_nmap_xml(output):
+    xml = output / "nmap" / "tcp" / "tcp_192.0.2.1.xml"
+    xml.parent.mkdir(parents=True)
+    xml.write_text('<nmaprun><runstats><finished exit="success"/></runstats></nmaprun>', encoding="utf-8")
+
+
+def test_resuming_a_pre_548_run_keeps_its_report_on_the_nmap_xml(cli, monkeypatch):
+    """A shadow run of the old release: nmap/*.xml and pulse artifacts, no
+    REPORT_PRIMARY. The resume used to write the marker unconditionally and flip
+    the report's services/OS to Pulse's -- not "read as before"."""
+    seen = _capture_report(cli, monkeypatch)
+    _legacy_nmap_xml(cli.output)
+
+    assert cli.main() == 0
+
+    assert not (cli.output / "pulse" / "REPORT_PRIMARY").exists()
+    assert seen["report_primary"] is False
+    assert seen["nmap_dir"] == cli.output / "nmap"
+
+
+def test_resuming_a_pre_548_run_that_was_already_pulse_primary_stays_so(cli, monkeypatch):
+    seen = _capture_report(cli, monkeypatch)
+    _legacy_nmap_xml(cli.output)
+    (cli.output / "pulse").mkdir(exist_ok=True)
+    (cli.output / "pulse" / "REPORT_PRIMARY").write_text("pulse\n", encoding="utf-8")
+
+    assert cli.main() == 0
+
+    assert (cli.output / "pulse" / "REPORT_PRIMARY").exists()
+    assert seen["report_primary"] is True
+
+
+def test_a_run_with_no_nmap_xml_is_pulse_primary(cli, monkeypatch):
+    seen = _capture_report(cli, monkeypatch)
+
+    assert cli.main() == 0
+
+    assert (cli.output / "pulse" / "REPORT_PRIMARY").exists()
+    assert seen["report_primary"] is True
+
+
 # ---------------------------------------------------------------------------
 # The verification run's connect probe, as scanner.main wires it (#451)
 # ---------------------------------------------------------------------------
