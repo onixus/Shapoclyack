@@ -300,6 +300,7 @@ _INSTALLERS = [
     ".github/workflows/load-test.yml",
     ".github/actions/synthetic-load-test/action.yml",
     "scripts/ci-lint.sh",
+    "scripts/ci-jenkins-tests.sh",
 ]
 
 # Installs that deliberately do not go through a lock, and why. Matched as a
