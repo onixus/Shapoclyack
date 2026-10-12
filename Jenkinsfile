@@ -303,54 +303,12 @@ pipeline {
                               // репозитория, который смонтирован тем же путём.
                               'OCTO_K8S_RENDER_DIR=.k8s-render',
                             ]) {
-                              sh '''
-                                set -eu
-                                # Без apt намеренно: psycopg[binary] везёт libpq в
-                                # колесе, компилятор не нужен, а ожидание сервисов
-                                # сделано на stdlib. Раньше тут стоял apt-get, и
-                                # матрица падала, когда deb.debian.org не ответил.
-                                pip install --quiet --require-hashes --only-binary=:all: -r requirements-dev.lock
-
-                                # Сам набор — не под root. pip ставит в системный site-packages
-                                # образа и поэтому идёт под root, а тесты — от владельца
-                                # воркспейса, то есть агента, как на раннере GitHub. Под root
-                                # test_sensor_bundle падал на собственной предпосылке (дерево
-                                # установки чужого аккаунта не создать) — и на маке тоже.
-                                CI_UID=$(stat -c %u .)
-                                CI_GID=$(stat -c %g .)
-                                if [ "$CI_UID" = 0 ]; then
-                                  echo "[ci] the workspace is owned by root; refusing to run the suite as root" >&2
-                                  exit 1
-                                fi
-                                mkdir -p /tmp/ci-home
-                                chown "$CI_UID:$CI_GID" /tmp/ci-home
-                                as_agent() {
-                                  HOME=/tmp/ci-home setpriv --reuid="$CI_UID" --regid="$CI_GID" --clear-groups "$@"
-                                }
-
-                                as_agent python -m compileall -q scanner api tests agent
-
-                                echo "[ci] waiting for postgres and jetstream"
-                                for i in $(seq 1 60); do
-                                  python -c "import socket;socket.create_connection(('pg',5432),1)" 2>/dev/null && break
-                                  sleep 1
-                                done
-                                for i in $(seq 1 60); do
-                                  python -c "import urllib.request;urllib.request.urlopen('http://nats:8222/healthz',timeout=1)" 2>/dev/null && break
-                                  sleep 1
-                                done
-
-                                alembic -c api/db/alembic.ini upgrade head
-
-                                # Прогон и гейт покрытия — в scripts/ci-pytest.sh,
-                                # общем с ci.yml. Там же выставляется
-                                # OCTO_REQUIRE_INTEGRATION=1: без него exit 0 не
-                                # отличает прогнанные Postgres-наборы от пропущенных
-                                # целиком, а это большая часть всех тестов.
-                                JUNIT_XML=junit-''' + PY + '''.xml \
-                                COVERAGE_XML=coverage-''' + PY + '''.xml \
-                                  as_agent scripts/ci-pytest.sh
-                              '''
+                              withEnv([
+                                "JUNIT_XML=junit-${PY}.xml",
+                                "COVERAGE_XML=coverage-${PY}.xml",
+                              ]) {
+                                sh 'scripts/ci-jenkins-tests.sh'
+                              }
                             }
                           }
                         }

@@ -510,7 +510,7 @@ def _no_ambient_egress(_stop_local_scans, monkeypatch):
 #
 # The hooks live in tests/integration_gate.py so a test can drive them through a
 # real pytest session; importing them here is what registers them for this
-# repository's own runs, and tests/test_ci_checks.py asserts that this import is
+# repository's own runs, and tests/test_integration_gate.py asserts that this import is
 # still the same objects. See that module for what the gate refuses and why.
 # ---------------------------------------------------------------------------
 

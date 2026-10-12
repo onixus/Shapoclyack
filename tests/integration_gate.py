@@ -11,7 +11,7 @@ declares the infrastructure available, and then:
   anything unexecuted fails the run.
 
 The hooks live here rather than in tests/conftest.py so a test can drive them
-through a real pytest session (tests/test_ci_checks.py writes a throwaway suite
+through a real pytest session (tests/test_integration_gate.py writes a throwaway suite
 whose conftest imports this module). tests/conftest.py re-exports them, which is
 what registers them for the repository's own runs.
 
@@ -35,7 +35,7 @@ import pytest
 # recognised by that variable appearing in the skipif reason rather than by a
 # marker of their own: the reasons are already written for humans, and tagging
 # 307 call sites a second time would be a worse thing to keep correct than this.
-# The wording is therefore API — tests/test_ci_checks.py asserts it against the
+# The wording is therefore API — tests/test_integration_gate.py asserts it against the
 # marks themselves.
 INTEGRATION_SUITES: dict[str, str] = {
     "postgres": "OCTO_POSTGRES_URL",
@@ -77,7 +77,7 @@ def integration_gate_problems(counts: dict[str, tuple[int, int, int]]) -> list[s
 
     ``counts`` maps a suite name to ``(collected, executed, skipped)``. Kept
     separate from the hooks so the arithmetic is readable on its own; the hooks
-    themselves are covered by real sessions in tests/test_ci_checks.py.
+    themselves are covered by real sessions in tests/test_integration_gate.py.
 
     There is deliberately no numeric floor. An earlier version required 1000
     Postgres tests against a current count of 1232: a number nobody would keep
@@ -119,7 +119,7 @@ def integration_counts() -> dict[str, tuple[int, int, int]]:
 
 
 def reset_for_tests() -> None:
-    """Drop the recorded session state (tests/test_ci_checks.py)."""
+    """Drop the recorded session state (tests/test_integration_gate.py)."""
     for state in (_collected, _executed, _skipped):
         for nodes in state.values():
             nodes.clear()
