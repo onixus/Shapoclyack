@@ -26,12 +26,17 @@ wait_for() {
   local service=$1
   shift
   local attempt
-  for ((attempt=1; attempt<=60; attempt++)); do
-    if "$@"; then
+  for ((attempt=1; attempt<60; attempt++)); do
+    # A refused connection is expected while the service starts: keep the
+    # log readable and show the probe's own error only on the last attempt.
+    if "$@" 2>/dev/null; then
       return 0
     fi
-    if ((attempt < 60)); then sleep 1; fi
+    sleep 1
   done
+  if "$@"; then
+    return 0
+  fi
   echo "[ci] $service did not become ready after 60 attempts" >&2
   return 1
 }

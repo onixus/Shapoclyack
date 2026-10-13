@@ -37,6 +37,8 @@ if mode == 'retry' and step == 'postgres':
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     attempts = sum(c[0] == 'python' and c[1][0] == '-c' and 'socket' in c[1][1] for c in calls)
     sys.exit(1 if attempts < 3 else 0)
+if mode == step and step in {'postgres', 'jetstream'}:
+    print(f'probe-error:{step}', file=sys.stderr)
 sys.exit(7 if mode == step else 0)
 '''
 
@@ -73,6 +75,7 @@ def test_cell_stops_at_failed_step_and_preserves_test_status(tmp_path, failure, 
     if failure in {'postgres', 'jetstream'}:
         assert f'{failure} did not become ready after 60 attempts' in result.stderr
         assert sum(c[0] == 'sleep' for c in calls) == 59
+        assert result.stderr.count(f'probe-error:{failure}') == 1
         assert not any(c[0] in {'alembic', 'ci-pytest.sh'} for c in calls)
     if last_step == 'ci-pytest.sh':
         assert calls[-1][1:] == [['-k', 'a test'], '/tmp/ci-home',
