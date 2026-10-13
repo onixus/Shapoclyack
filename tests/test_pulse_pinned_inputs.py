@@ -47,6 +47,11 @@ def _flag_value(cmd: list[str], flag: str) -> str:
     return cmd[cmd.index(flag) + 1]
 
 
+def test_command_forbids_host_nmap_data_even_without_os_detection():
+    assert "--no-nmap-data" in _command()
+    assert "--no-nmap-data" in _command(os_detect=False)
+
+
 def test_command_passes_our_services_table():
     cmd = _command()
     assert Path(_flag_value(cmd, "--services-db")) == pp.SERVICES_DB
@@ -93,6 +98,7 @@ def test_pulse_process_gets_private_empty_home(tmp_path, monkeypatch):
         assert env["HOME"] != "/Users/operator"
         assert home_entries == []
         assert "PULSE_SERVICES_DB" not in env
+        assert "--no-nmap-data" in command
         assert Path(_flag_value(command, "--services-db")) == pp.SERVICES_DB
         assert _flag_value(command, "--os-mode") == "sinfp"
         # The private HOME is removed once the process is done.

@@ -93,6 +93,9 @@ Left alone, Pulse reads `~/.pulse/` and the NPSL-licensed `nmap-services` and
 config could name services differently. The adapter therefore pins the inputs
 ([ADR 0002](adr/0002-replacing-nmap-functions.md), #543):
 
+- `--no-nmap-data` on every invocation disables ambient Nmap databases, including
+  standard system paths, even if the explicit table is empty. This requires
+  the Pulse release containing GenDec#32.
 - `--services-db scanner/pipeline/pulse_data/services.tsv` on every invocation: a
   port-to-name table built from the IANA registry (source and terms in
   [third-party.md](third-party.md)). If the file is missing the adapter passes
@@ -136,9 +139,11 @@ only decides the names of the remaining ports (3389 is `rdp` from the engine,
 5985 is `wsman` from the table). Both limits go away when the engine derives
 the name from the matched probe (onixus/GenDec#31).
 
-The service name is still taken from the port table, not from the probe that
-matched (GenDec#31): port 2222 is named `ethernet-ip-1` even when the banner
-says OpenSSH, until the engine reports the probe's name.
+GenDec#31 makes a matched probe's service name authoritative: an OpenSSH
+banner on port 2222 becomes `ssh`, while unmatched endpoints retain the port
+name as a fallback. GenDec#32 makes explicitly empty tables authoritative and
+adds the ambient-data restriction above. The sensor release pin must contain
+both changes before #543 can be accepted.
 
 ### Probe database
 

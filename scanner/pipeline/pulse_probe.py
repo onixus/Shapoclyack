@@ -383,6 +383,7 @@ def build_pulse_command(
         "-f",
         "json",
         "-q",
+        "--no-nmap-data",
         "--services-db",
         os.path.abspath(services_db or resolve_services_db()),
     ]
