@@ -409,6 +409,26 @@ run as root; the stage refuses to run when the workspace is owned by root.
 Root-owned leftovers (pip's, the `find` cleanup's) are removed by the same
 image as root at the start of the next build, not by `deleteDir()`.
 
+The container-side sequence lives in `scripts/ci-jenkins-tests.sh`: validate
+workspace ownership, install locked dependencies, compile, wait for PostgreSQL
+and JetStream, migrate, then invoke `scripts/ci-pytest.sh`. An exhausted service
+wait fails the cell before migrations or tests. Jenkins owns the isolated
+workspaces, containers, networks and per-version reports; the shared pytest
+script owns coverage and integration gates. Both Python versions still run
+the complete suite with the existing coverage threshold.
+
+CI regression tests are grouped by responsibility:
+
+- `tests/test_ci_checks.py`: shared scripts and pipeline wiring.
+- `tests/test_integration_gate.py`: actual pytest sessions proving that missing,
+  skipped or deselected integration suites cannot pass the gate.
+- `tests/test_ci_k8s.py`: rendered manifests and required Kubernetes contracts.
+- `tests/test_ci_jenkins_runner.py`: cell setup, readiness exhaustion, privilege
+  drop, report variables and failure propagation, without Docker or root.
+
+Run these four modules together for a focused orchestration check. This does
+not replace the full Jenkins matrix or exercise Docker/Groovy orchestration.
+
 **A Jenkins step starts with SIGHUP and SIGINT ignored** (durable-task runs it
 under `nohup`, in the background), and processes inherit that. A shell cannot
 trap a signal that was ignored when it started, so a test that sends `^C` or a
