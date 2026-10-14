@@ -109,6 +109,18 @@ separate. Sorting and duplicates do not change the union.
 Subjects retain transport, optional HTTP scheme/authority, explicit SNI and an
 object digest. Literal IP spelling, host case and numeric ports normalize.
 HTTP default ports normalize, but conflicting explicit ports are rejected.
+Directed Nuclei invocations may carry an adapter-owned `shapoclyack_input`
+(`octo.nuclei_input.v1`) note because the pinned engine's IP-URL JSONL does not
+record per-process Host/SNI flags. The reader requires its literal IP and port to
+match the raw observed endpoint; canonical HTTP authority and explicit SNI are
+retained separately from transport IP. Authority changes also change the HTTP
+object digest, so two virtual hosts on one IP/path remain distinct. Credentials,
+URLs/control characters, mismatched endpoints/ports/SNI, and unknown note fields
+make the projection incomplete instead of silently falling back to one IP object.
+The per-process original raw file remains unchanged; enriched merged JSONL records
+contain the adapter assertion. Neither the note nor its hash authenticates an
+upload: the existing authenticated publication boundary still owns tenant/run
+scope, and archive authenticity validation remains a separate gate.
 DNS names are never mapped to IPs from an unverified `ip` field or reverse lookup.
 Unknown transport/authority/object is **not** a wildcard: a service-level Pulse
 finding cannot automatically absorb a path-specific Nuclei match. Both may be

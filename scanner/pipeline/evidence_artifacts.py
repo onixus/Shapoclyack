@@ -6,6 +6,7 @@ or inference of negative evidence from absent/partial scanner output.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -17,7 +18,7 @@ from typing import Any
 from defusedxml.ElementTree import ParseError, fromstring
 from defusedxml.common import DefusedXmlException
 
-from .finding_evidence import aggregate, observation
+from .finding_evidence import aggregate, observation, subject, http_authority
 
 MAX_FILE_BYTES = 16 * 1024 * 1024
 MAX_TOTAL_BYTES = 64 * 1024 * 1024
@@ -173,10 +174,37 @@ class EvidenceReader:
                     raise ValueError
                 event_type = str(raw.get("type") or "").lower()
                 transport = raw.get("protocol") or ({"http": "tcp", "ssl": "tcp", "tcp": "tcp"}.get(event_type))
+                binding = raw.get("shapoclyack_input")
+                authority, sni = None, raw.get("sni")
+                if binding is not None:
+                    if (not isinstance(binding, dict) or set(binding) != {"schema", "ip", "port", "authority", "sni"}
+                            or binding.get("schema") != "octo.nuclei_input.v1"):
+                        raise ValueError("invalid invocation context")
+                    if not isinstance(binding["ip"], str):
+                        raise ValueError("invalid invocation IP")
+                    ipaddress.ip_address(binding["ip"])
+                    actual = subject({"host": raw.get("host"), "port": raw.get("port"),
+                                      "matched_at": raw.get("matched-at"), "protocol": transport})
+                    declared = subject({"host": binding["ip"], "port": binding["port"],
+                                        "protocol": "tcp", "sni": binding["sni"]})
+                    if (actual["host"], actual["port"], actual["protocol"]) != (declared["host"], declared["port"], declared["protocol"]):
+                        raise ValueError("invocation endpoint mismatch")
+                    if actual["scheme"] is None or declared["port"] is None:
+                        raise ValueError("invocation context without HTTP")
+                    authority = http_authority(binding["authority"], declared["port"])
+                    if binding["sni"] is not None and (not isinstance(binding["sni"], str) or declared["sni"] != binding["sni"]):
+                        raise ValueError("invalid invocation SNI")
+                    if sni is not None and sni != binding["sni"]:
+                        raise ValueError("conflicting invocation SNI")
+                    if binding["sni"] is not None:
+                        from urllib.parse import urlsplit
+                        if actual["scheme"] != "https" or urlsplit("//" + authority).hostname != binding["sni"]:
+                            raise ValueError("invocation SNI/authority mismatch")
+                    sni = binding["sni"]
                 for cve in cves:
                     self.add({"host": raw.get("host"), "port": raw.get("port"),
                               "matched_at": raw.get("matched-at"), "protocol": transport,
-                              "sni": raw.get("sni"), "rule_id": raw.get("template-id"),
+                              "sni": sni, "http_authority": authority, "rule_id": raw.get("template-id"),
                               "matcher": raw.get("matcher-name"), "title": info.get("name"),
                               "severity": info.get("severity"), "cve": cve,
                               "observed_at": raw.get("timestamp"), "evidence_kind": "template_match",

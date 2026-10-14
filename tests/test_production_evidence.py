@@ -213,3 +213,62 @@ def test_raw_representation_deduplication_preserves_conflicting_subjects_and_tim
         task = combine([{**baseline, **conflict}])
         attach_raw(task, projection)
         assert task[0]['finding_evidence']['observation_count'] == 2
+
+
+def _vhost_raw(name):
+    return {'host': '10.0.0.5', 'port': '443', 'template-id': 'test', 'type': 'http',
+            'matched-at': 'https://10.0.0.5/a', 'timestamp': '2026-10-03T00:00:00Z',
+            'info': {'classification': {'cve-id': ['CVE-2024-0001']}},
+            'shapoclyack_input': {'schema': 'octo.nuclei_input.v1', 'ip': '10.0.0.5',
+                'port': 443, 'authority': name, 'sni': name}}
+
+
+def test_invocation_owned_vhosts_same_ip_path_preserve_groups_and_counts(tmp_path):
+    from scanner.pipeline.evidence_artifacts import EvidenceReader
+    records = [_vhost_raw(name) for name in ('a.example', 'b.example')]
+    (tmp_path / 'nuclei_raw.jsonl').write_text('\n'.join(json.dumps(r) for r in records) + '\n')
+    projection = EvidenceReader(tmp_path, 'unpublished', 'unpublished').build()
+    assert projection['finding_count'] == projection['observation_count'] == 2
+    subjects = [g['identity']['subject'] for g in projection['findings']]
+    assert {s['host'] for s in subjects} == {'10.0.0.5'}
+    assert {s['authority'] for s in subjects} == {'a.example:443', 'b.example:443'}
+    assert {s['sni'] for s in subjects} == {'a.example', 'b.example'}
+    assert len({s['object_id'] for s in subjects}) == 2
+    task = combine([{**BASE, 'source': 'nuclei', 'script_id': 'nuclei:test'}])
+    attach_raw(task, projection)
+    assert len(task) == 1
+    assert task[0]['finding_evidence']['observation_count'] == 2
+    assert task[0]['finding_evidence']['finding_count'] == 2
+    rebound = scoped(task[0]['finding_evidence'], tenant_id='authenticated', run_id='published')
+    assert not rebound['projection_incomplete']
+    assert rebound['finding_count'] == 2
+    assert closure_gaps(rebound)
+
+
+@pytest.mark.parametrize('binding_change', [
+    {'ip': '10.0.0.6'}, {'ip': 'other.example'}, {'port': 8443}, {'port': True},
+    {'authority': 'user:password@a.example'}, {'authority': 'https://a.example/a'},
+    {'authority': 'a.example:8443'}, {'authority': 'a.example\nAuthorization: secret'},
+    {'authority': 10}, {'sni': 'b.example'}, {'sni': 'password: exposed'},
+    {'schema': 'unknown'}, {'unexpected': 'secret'},
+])
+def test_unbound_or_malformed_vhost_context_never_falls_back_to_collapsed_subject(tmp_path, binding_change):
+    from scanner.pipeline.evidence_artifacts import EvidenceReader
+    raw = _vhost_raw('a.example')
+    raw['shapoclyack_input'].update(binding_change)
+    (tmp_path / 'nuclei_raw.jsonl').write_text(json.dumps(raw) + '\n')
+    projection = EvidenceReader(tmp_path, 't', 'r').build()
+    assert projection['projection_incomplete']
+    assert not projection['findings']
+
+
+def test_explicit_http_authority_keeps_original_transport_subject_hashes():
+    from scanner.pipeline.finding_evidence import subject
+    row = {'host': 'https://10.0.0.5/a'}
+    old = subject(row)
+    same = subject({**row, 'http_authority': '10.0.0.5:443'})
+    assert old == same
+    vhost = subject({**row, 'http_authority': 'a.example', 'sni': 'a.example'})
+    assert vhost['host'] == old['host']
+    assert vhost['authority'] == 'a.example:443'
+    assert vhost['object_id'] != old['object_id']

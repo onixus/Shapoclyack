@@ -83,7 +83,7 @@ def validate_observation(item: dict) -> None:
     """Hashes prove content, never authenticity or that content is safe."""
     import math
     import re
-    from .finding_evidence import OBSERVATION_SCHEMA, MAX_ARTIFACT_REFS, safe_text
+    from .finding_evidence import OBSERVATION_SCHEMA, MAX_ARTIFACT_REFS, safe_text, http_authority
     required = {'schema', 'tenant_id', 'run_id', 'source', 'engine_version', 'ruleset_version',
                 'rule_id', 'rule_digest', 'matcher', 'observed_at', 'subject', 'cve', 'title',
                 'evidence_kind', 'confidence', 'severity', 'requires_confirmation', 'preview',
@@ -127,9 +127,8 @@ def validate_observation(item: dict) -> None:
         raise ValueError('noncanonical subject')
     if target['scheme'] not in (None, 'http', 'https'):
         raise ValueError('invalid scheme')
-    authority = (f"[{target['host']}]:{target['port']}" if ':' in target['host'] else f"{target['host']}:{target['port']}")
     if target['scheme'] is not None:
-        if target['protocol'] != 'tcp' or target['port'] is None or target['authority'] != authority:
+        if target['protocol'] != 'tcp' or target['port'] is None or http_authority(target['authority'], target['port']) != target['authority']:
             raise ValueError('conflicting HTTP subject')
     elif target['authority'] is not None:
         raise ValueError('authority without scheme')
