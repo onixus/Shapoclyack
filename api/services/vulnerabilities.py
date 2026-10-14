@@ -622,7 +622,17 @@ def weigh_fp_verdict(
     # not a regression. It stays CLOSED, the SLA clock stays stopped and
     # ``reopen_count`` stays put — otherwise marking noise honestly would be
     # punished by every metric.
-    assessment_changed = any(getattr(row, field) != value for field, value in latest.items())
+    def semantic_value(field: str, value: Any) -> Any:
+        if field == "risk_assessment" and isinstance(value, dict):
+            # A new observation has a new receipt clock/execution identity;
+            # provenance alone does not change the false-positive verdict.
+            return {key: item for key, item in value.items() if key != "risk_assessment"}
+        return value
+
+    assessment_changed = any(
+        semantic_value(field, getattr(row, field)) != semantic_value(field, value)
+        for field, value in latest.items()
+    )
     row.fp_observations += 1
     # One event per verdict, not one per observation: ``observed`` rows are
     # already the high-volume kind and have no retention sweep behind them (see
