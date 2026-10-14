@@ -270,3 +270,13 @@ are not established. Other key-exchange/host-key algorithms are UNKNOWN errors,
 not negative evidence. The adapter retains the INFO observation as an informational plugin record
 (the report maps INFO to unknown), not a vulnerability assertion. Its exchange encoding follows RFC 8731 section 3.1:
 X25519's returned bytes are interpreted in network byte order for SSH mpint.
+
+Transport provenance: native Pulse scan/standalone plugin results carry the
+observed `tcp`/`udp` transport through parsing and report rows. Historical plugin
+records lacking transport retain their TCP default; explicitly unknown
+transport stays unknown. The production Shapoclyack adapter currently scans
+TCP endpoints only. SNMP acceptance is therefore a standalone/native UDP scan
+path, not newly enabled production UDP enrichment. Its UDP observations cannot
+be closed by a TCP completion receipt on the same host, port and plugin hash:
+verification remains inconclusive until an actual UDP completion contract is
+implemented.

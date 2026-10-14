@@ -1994,3 +1994,15 @@ def test_with_a_second_detector_the_plugin_alone_can_hold_the_closure(tmp_path, 
     _fold(settings, tenant_id)
 
     _assert_inconclusive(settings, tenant_id, vuln["vuln_id"], "plugin_changed")
+
+
+def test_tcp_plugin_receipt_does_not_close_udp_finding_same_endpoint_hash(tmp_path, monkeypatch):
+    row = {**_plugin_report_row(monkeypatch, tmp_path), "protocol": "udp"}
+    settings, tenant_id = _seed(tmp_path, findings=[row])
+    vuln = _tracked(settings, tenant_id, [row])
+    assert _plugin_entry(vuln)["protocol"] == "udp"
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _plugin_stage(monkeypatch, run_dir, tmp_path)
+    stats = _fold(settings, tenant_id)
+    assert stats.verification_passed == 0
+    _assert_inconclusive(settings, tenant_id, vuln["vuln_id"], "plugin_transport_not_probed")

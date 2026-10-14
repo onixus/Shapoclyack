@@ -604,6 +604,7 @@ def parse_pulse_json(
         cves.append(
             CveRecord(
                 cve_id=cve_id,
+                protocol=str(row.get("protocol")).lower() if str(row.get("protocol")).lower() in {"tcp", "udp"} else ("unknown" if row.get("protocol") else None),
                 ip=str(row.get("ip") or ""),
                 port=port,
                 service=str(row.get("service") or ""),

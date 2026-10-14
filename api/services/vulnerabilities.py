@@ -357,6 +357,8 @@ def _observed_detectors(
         if protocol in ("tcp", "udp"):
             # Recorded so a UDP finding is never judged by a TCP re-check.
             candidate["protocol"] = protocol
+        elif protocol and name == verification_coverage.PULSE_PLUGIN:
+            candidate["protocol"] = "unknown"
         # 80, not 64: a plugin's version is ``sha256:`` + 64 hex digits.
         ruleset = str(row.get("ruleset_version") or "").strip()[:80]
         if name in (verification_coverage.PULSE, verification_coverage.PULSE_PLUGIN) and ruleset:
@@ -376,6 +378,7 @@ def _detector_key(entry: dict[str, Any]) -> tuple[Any, ...]:
         entry.get("ref") or None,
         verification_coverage.normalize_host(host) if host else None,
         str(entry.get("port") or ""),
+        verification_coverage.detector_protocol(entry) if entry.get("detector") == verification_coverage.PULSE_PLUGIN else None,
     )
 
 
@@ -414,7 +417,8 @@ def _handed_on(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
 
 
 def _loose_detector_key(entry: dict[str, Any]) -> tuple[Any, ...]:
-    return (entry.get("detector"), entry.get("ref") or None, str(entry.get("port") or ""))
+    return (entry.get("detector"), entry.get("ref") or None, str(entry.get("port") or ""),
+            verification_coverage.detector_protocol(entry) if entry.get("detector") == verification_coverage.PULSE_PLUGIN else None)
 
 
 def merge_detectors(
