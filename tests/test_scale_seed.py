@@ -141,7 +141,7 @@ def test_vulnerability_rows_match_the_column_contract():
     rows = list(iter_vulnerability_rows(spec(assets=100)))
     assert rows and all(len(row) == len(VULN_COLUMNS) for row in rows)
     for row in rows:
-        (_tenant, ip, cve, base, epss, crit, exploit, decision, ctx, model, ts) = row
+        (_tenant, ip, cve, base, epss, crit, exploit, decision, ctx, model, ts, receipt) = row
         assert ipaddress.ip_address(ip).version == 4
         assert cve.startswith("CVE-")
         assert 0.0 <= base <= 10.0
@@ -153,6 +153,7 @@ def test_vulnerability_rows_match_the_column_contract():
         assert 0.0 <= ctx <= 10.0
         assert model == "mvp-2"
         assert ts.tzinfo is None
+        assert receipt == ""  # synthetic sizing data has no accepted execution receipt
 
 
 def test_vulnerability_keys_are_unique_per_asset():

@@ -260,6 +260,8 @@ def iter_vulnerability_rows(spec: SeedSpec) -> Iterator[list[Any]]:
                 round(min(base_cvss * (1.0 + epss), 10.0), 2),
                 SCORING_MODEL_VERSION,
                 ts,
+                # Synthetic sizing rows have no accepted execution receipt.
+                "",
             ]
 
 
