@@ -669,3 +669,33 @@ def test_ensure_controls_table_reports_a_refused_ddl():
 
     client.command.side_effect = RuntimeError("read only")
     assert clickhouse_client.ensure_controls_table(client) is False
+
+
+def test_risk_column_probe_runs_once_per_client_and_only_after_success():
+    queries: list[str] = []
+    inserts: list[int] = []
+
+    class Client:
+        missing = True
+
+        def query(self, sql):
+            queries.append(sql)
+            if self.missing:
+                raise RuntimeError("Code: 47. UNKNOWN_IDENTIFIER risk_assessment")
+
+        def insert(self, table, rows, column_names):
+            inserts.append(len(rows))
+
+    client = Client()
+    row = [[None] * len(clickhouse_client.VULN_COLUMNS)]
+    with pytest.raises(clickhouse_client.ClickHouseError, match="migrate-clickhouse"):
+        clickhouse_client.insert_rows(
+            client, clickhouse_client.VULN_TABLE, clickhouse_client.VULN_COLUMNS, row
+        )
+    client.missing = False  # the administrator applied the expand step
+    for _ in range(3):
+        clickhouse_client.insert_rows(
+            client, clickhouse_client.VULN_TABLE, clickhouse_client.VULN_COLUMNS, row
+        )
+    assert len(queries) == 2  # the failed probe, then one successful one
+    assert inserts == [1, 1, 1]

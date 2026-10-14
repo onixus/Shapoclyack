@@ -132,6 +132,24 @@ def test_tenant_multi_address_batch_and_three_consumers_share_captured_score(est
 
 
 @requires_postgres
+def test_events_reference_the_receipt_instead_of_copying_it(estate):
+    settings, a, *_ = estate
+    _register(settings, a)
+    with get_session(POSTGRES_URL) as session:
+        receipt = session.scalars(select(models.RunRiskAssessment).where(
+            models.RunRiskAssessment.tenant_id == a)).one()
+        events = session.scalars(select(models.VulnerabilityEvent).where(
+            models.VulnerabilityEvent.tenant_id == a)).all()
+    referenced = [e.detail["risk_assessment"] for e in events if "risk_assessment" in (e.detail or {})]
+    assert referenced
+    for ref in referenced:
+        assert ref["assessment_id"] == receipt.assessment_id
+        assert ref["execution_id"] == receipt.execution_id
+        assert "inputs" not in ref and "risk_explanation" not in ref
+        assert set(ref) <= set(risk_context._REFERENCE_KEYS)  # noqa: SLF001
+
+
+@requires_postgres
 def test_current_is_read_only_and_historical_receipt_remains_immutable(estate):
     settings, a, _, asset, _, entries, fp, scorer, _ = estate
     _register(settings, a)
@@ -324,6 +342,25 @@ def test_legacy_job_and_untrusted_contract_flags_do_not_create_capture_obligatio
     rows = ch_transform.vulnerabilities_to_rows(payload, members, settings=settings)
     assert all(json.loads(row[11])["risk_assessment"]["mode"] == "legacy-current" for row in rows)
     assert all(row[5] == 0 for row in rows)
+
+
+@requires_postgres
+def test_receipt_obligation_is_scoped_to_the_named_execution(estate):
+    settings, a, *_ = estate
+    with get_session(POSTGRES_URL) as session:
+        session.add(models.RunPublication(publication_id="other-risk-" + a, tenant_id=a,
+            job_id="other-job", run_id="risk-run", job_status="succeeded",
+            risk_assessment_contract=risk_context.CONTEXT_VERSION, created_at=NOW, updated_at=NOW))
+    _register(settings, a)  # captures the receipt of risk-pub-<a>
+    with get_session(POSTGRES_URL) as session:
+        # Each execution's obligation comes from its own rows: an execution
+        # with none owes no receipt, though its siblings on the run do.
+        assert risk_context.receipt_required(session, tenant_id=a, run_id="risk-run",
+            execution_id="publication:risk-pub-" + a)
+        assert risk_context.receipt_required(session, tenant_id=a, run_id="risk-run",
+            execution_id="publication:other-risk-" + a)
+        assert not risk_context.receipt_required(session, tenant_id=a, run_id="risk-run",
+            execution_id="publication:never-published-" + a)
 
 
 @requires_postgres

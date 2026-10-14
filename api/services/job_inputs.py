@@ -13,7 +13,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from agent.runtime.invocation import INPUT_FLAGS, input_arguments
+from agent.runtime.invocation import INPUT_FLAGS
 
 from api.services import artifact_store
 from api.services import scan_scopes
@@ -57,10 +57,11 @@ def prepare_target_inputs(
     promoted: list[str] | None = None,
     scope: scan_scopes.ScanScope | None = None,
     policy: dict[str, Any] | None = None,
-) -> tuple[Path | None, dict[str, int] | None, list[str]]:
+) -> tuple[Path | None, dict[str, int] | None, dict[str, str]]:
     """Write target, scope and policy files for one already-admitted job.
 
-    Returns (inputs_dir, target_counts, extra_cli_args).
+    Returns (inputs_dir, target_counts, input_paths), the last keyed by
+    input file name as :class:`agent.runtime.invocation.ScanInvocation` takes it.
 
     Takes the parsed targets rather than the request: deciding whether a
     target is well-formed and in scope is admission's job (scan_admission,
@@ -102,7 +103,7 @@ def prepare_target_inputs(
         counts["promoted_domains"] = len(promoted)
 
     if parsed is None:
-        return inputs_dir, counts or None, input_arguments(paths)
+        return inputs_dir, counts or None, paths
 
     if parsed.ranges is not None and parsed.domains is not None:
         ranges_path = inputs_dir / "ranges.txt"
@@ -125,7 +126,7 @@ def prepare_target_inputs(
         paths["ports_udp.txt"] = str(ports_udp_path)
         counts["ports_udp"] = len(parsed.ports_udp)
 
-    return inputs_dir, counts or None, input_arguments(paths)
+    return inputs_dir, counts or None, paths
 
 
 def write_policy_input(inputs_dir: Path, policy: dict[str, Any]) -> Path:
@@ -140,8 +141,8 @@ def write_policy_input(inputs_dir: Path, policy: dict[str, Any]) -> Path:
 
 def write_config_overlay_input(
     settings: Settings, job_id: str, overlay: dict[str, Any]
-) -> list[str]:
-    """Write the agent job's config overlay; return the scanner arguments.
+) -> str:
+    """Write the agent job's config overlay; return its path.
 
     ``to_document`` checks every path against the scanner's own allow-list, so
     a setting an executor would refuse fails this request rather than the
@@ -155,7 +156,7 @@ def write_config_overlay_input(
         json.dumps(document, indent=2, ensure_ascii=True, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    return input_arguments({CONFIG_OVERLAY_INPUT: str(path)})
+    return str(path)
 
 
 def publish(settings: Settings, job_id: str) -> None:

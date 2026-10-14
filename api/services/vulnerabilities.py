@@ -1493,7 +1493,7 @@ def register_findings_from_run(
                         detail={
                             "run_id": run_id,
                             "first_seen": True,
-                            "risk_assessment": scored,
+                            "risk_assessment": risk_context.receipt_reference(scored),
                             "severity": severity,
                             "due_at": _iso(row.due_at),
                             "sla_days": days,
@@ -1591,7 +1591,7 @@ def register_findings_from_run(
                 detail: dict[str, Any] = {
                     "run_id": run_id,
                     "reopen_count": row.reopen_count,
-                    "risk_assessment": scored,
+                    "risk_assessment": risk_context.receipt_reference(scored),
                 }
                 if continue_clock:
                     detail["sla_continued"] = True
@@ -1625,7 +1625,7 @@ def register_findings_from_run(
                     detail={
                         "run_id": run_id,
                         "severity": severity,
-                        "risk_assessment": scored,
+                        "risk_assessment": risk_context.receipt_reference(scored),
                     },
                 )
 

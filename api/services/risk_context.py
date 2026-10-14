@@ -202,6 +202,29 @@ def score_batch(
     return out
 
 
+#: What a workflow event keeps of an assessment: enough to find the immutable
+#: receipt and tell which evaluation it was, not a copy of the scores and
+#: explanation -- ``observed`` events are high-volume and never swept.
+_REFERENCE_KEYS = (
+    "assessment_id",
+    "execution_id",
+    "publication_id",
+    "mode",
+    "evaluated_at",
+    "context_version",
+    "model_version",
+    "data_version",
+    "observation_digest",
+    "context_digest",
+    "complete",
+)
+
+
+def receipt_reference(scored: dict[str, Any]) -> dict[str, Any]:
+    assessment = scored.get("risk_assessment") or {}
+    return {key: assessment[key] for key in _REFERENCE_KEYS if key in assessment}
+
+
 def read_snapshot(session: Any, *, tenant_id: str, run_id: str,
                   input_digest: str | None = None, execution_id: str | None = None,
                   job_id: str | None = None) -> list[dict[str, Any]] | None:
@@ -265,6 +288,15 @@ def receipt_required(session: Any, *, tenant_id: str, run_id: str,
         publication = publication.where(models.RunPublication.job_id == job_id)
         job = job.where(models.Job.job_id == job_id)
         receipt = receipt.where(models.RunRiskAssessment.job_id == job_id)
+    if execution_id:
+        # One accepted execution owes its own receipt; another publication of
+        # the same run or job does not make this one pending.
+        publication = publication.where(
+            models.RunPublication.publication_id
+            == execution_id.removeprefix("publication:")
+        )
+        job = job.where(models.Job.risk_assessment_execution_id == execution_id)
+        receipt = receipt.where(models.RunRiskAssessment.execution_id == execution_id)
     return session.scalars(union_all(publication, job, receipt).limit(1)).first() is not None
 
 

@@ -38,9 +38,6 @@ import re
 import socket
 import ssl
 import subprocess
-
-from agent.runtime.invocation import INPUT_FLAGS, ScanInvocation, input_arguments, paths_from_arguments
-from agent.runtime.process import run_process, terminate_process
 import sys
 import tarfile
 import tempfile
@@ -55,6 +52,8 @@ from typing import Any
 
 from agent import __version__, egress, mtls
 from agent import logging_setup, run_retention
+from agent.runtime.invocation import INPUT_FLAGS, ScanInvocation, input_arguments
+from agent.runtime.process import run_process, terminate_process
 
 LOG = logging.getLogger("octo-agent")
 
@@ -1037,6 +1036,13 @@ def _scan_env() -> dict[str, str]:
 
 
 def _write_inputs(workdir: Path, inputs: dict[str, str]) -> list[str]:
+    return input_arguments(_write_input_paths(workdir, inputs))
+
+
+def _write_input_paths(workdir: Path, inputs: dict[str, str]) -> dict[str, str]:
+    # Refused, not skipped: an input this build cannot hand on may be what
+    # narrows the scan, and ignoring it would run wider than was admitted.
+    # New inputs reach a sensor only behind a capability it declares.
     unknown = set(inputs) - INPUT_FLAGS.keys()
     if unknown:
         raise ValueError(f"unsupported scanner inputs: {sorted(unknown)}")
@@ -1055,7 +1061,7 @@ def _write_inputs(workdir: Path, inputs: dict[str, str]) -> list[str]:
             path = workdir / name
             path.write_text(inputs[name], encoding="utf-8")
             paths[name] = str(path)
-    return input_arguments(paths)
+    return paths
 
 
 def _tar_directory(source: Path, archive_path: Path) -> None:
@@ -1120,7 +1126,7 @@ def _run_scan(
     cancel_event: threading.Event | None = None,
 ) -> tuple[int, str | None, Path | None]:
     try:
-        target_args = _write_inputs(workdir, dict(job.get("inputs") or {}))
+        input_paths = _write_input_paths(workdir, dict(job.get("inputs") or {}))
         run_id = str(job["run_id"])
         command = ScanInvocation(
             config=str(config),
@@ -1130,7 +1136,7 @@ def _run_scan(
             skip_nse=bool(job.get("skip_nse")),
             notify=bool(job.get("notify")),
             export_defectdojo=bool(job.get("export_defectdojo")),
-            inputs=paths_from_arguments(target_args),
+            inputs=input_paths,
         ).argv(sys.executable)
     except (ValueError, TypeError, KeyError) as exc:
         return 1, f"invalid scan invocation: {exc}", None

@@ -571,10 +571,18 @@ def get_vulnerabilities(
     from api.services import risk_context
 
     raw = [entry for entry in raw if isinstance(entry, dict)]
-    ref = resolve_run(settings, run_id, tenant_id=tenant_id)
-    owner = (
-        run_tenant_of(settings, ref) if ref is not None else read_run_tenant(run_dir)
-    )
+    marker = _load_json(run_dir / RUN_TENANT_FILE)
+    # A tenant-scoped read already had ownership checked by get_run_dir; only
+    # the platform-wide view has to ask whose run it is (path over marker).
+    if tenant_id is not None:
+        owner = tenant_id
+    else:
+        ref = resolve_run(settings, run_id)
+        owner = (
+            run_tenant_of(settings, ref)
+            if ref is not None
+            else _tenant_from_marker(marker)
+        )
     scores = risk_context.assess_operation(
         settings,
         tenant_id=owner,
@@ -583,7 +591,7 @@ def get_vulnerabilities(
         fingerprint=_load_json(run_dir / "fingerprint.json"),
         scorer=get_scorer(),
         mode=assessment_mode,
-        generation=_load_json(run_dir / RUN_TENANT_FILE),
+        generation=marker,
     )
     items: list[VulnerabilityItem] = []
     for entry, scored in zip(raw, scores, strict=True):

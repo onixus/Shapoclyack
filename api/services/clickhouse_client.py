@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import Any, Sequence
 
@@ -194,6 +195,9 @@ def ensure_controls_table(client: Any) -> bool:
         return False
 
 
+_RISK_COLUMN_CHECKED = "_shapoclyack_risk_column_checked"
+
+
 def insert_rows(
     client: Any,
     table: str,
@@ -202,9 +206,15 @@ def insert_rows(
 ) -> int:
     if not rows:
         return 0
-    if table == VULN_TABLE and "risk_assessment" in columns:
+    if (
+        table == VULN_TABLE
+        and "risk_assessment" in columns
+        and not getattr(client, _RISK_COLUMN_CHECKED, False)
+    ):
         # Runtime users need only SELECT+INSERT, never ALTER. Old deployments
         # require the explicit administrator expand migration before ingest.
+        # Checked once per client: a column is not dropped under a running
+        # worker, and the probe would otherwise cost every message a round trip.
         try:
             client.query("SELECT risk_assessment FROM " + VULN_TABLE + " LIMIT 0")
         except Exception as exc:
@@ -213,5 +223,7 @@ def insert_rows(
                     "risk_assessment column is missing; apply scripts/migrate-clickhouse-risk-context.sql as the ClickHouse administrator"
                 ) from exc
             raise
+        with contextlib.suppress(AttributeError, TypeError):
+            setattr(client, _RISK_COLUMN_CHECKED, True)
     client.insert(table, rows, column_names=list(columns))
     return len(rows)

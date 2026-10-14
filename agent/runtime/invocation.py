@@ -33,7 +33,7 @@ def input_arguments(paths: Mapping[str, str]) -> list[str]:
 
 
 def paths_from_arguments(arguments: Sequence[str]) -> dict[str, str]:
-    """Strict compatibility boundary for existing API target_args callers."""
+    """Strictly parse scanner input argv back into input paths (the inverse of :func:`input_arguments`)."""
     reverse = {flag: name for name, flag in INPUT_FLAGS.items()}
     if len(arguments) % 2:
         raise ValueError("scanner input arguments must be flag/path pairs")

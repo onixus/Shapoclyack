@@ -14,14 +14,14 @@ import sys
 import threading
 import uuid
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from agent.runtime.invocation import ScanInvocation, paths_from_arguments
+from agent.runtime.invocation import ScanInvocation
 
 from api.db import models
 from api.db.engine import get_session
@@ -165,7 +165,7 @@ def build_command(
     notify: bool,
     export_defectdojo: bool,
     run_id: str | None,
-    target_args: list[str],
+    input_paths: Mapping[str, str],
     config_path: str,
 ) -> list[str]:
     return ScanInvocation(
@@ -176,7 +176,7 @@ def build_command(
         notify=notify,
         export_defectdojo=export_defectdojo,
         run_id=run_id,
-        inputs=paths_from_arguments(target_args),
+        inputs=input_paths,
     ).argv(sys.executable)
 
 
@@ -341,7 +341,7 @@ def start_scan(
     # left here is file writing. Anything that escapes it is a half-written
     # scratch directory no job will ever own.
     try:
-        _, target_counts, target_args = (
+        _, target_counts, input_paths = (
             job_inputs.prepare_target_inputs(
                 settings,
                 job_id,
@@ -353,10 +353,9 @@ def start_scan(
             )
         )
         if overlay:
-            target_args = [
-                *target_args,
-                *job_inputs.write_config_overlay_input(settings, job_id, overlay),
-            ]
+            input_paths[job_inputs.CONFIG_OVERLAY_INPUT] = (
+                job_inputs.write_config_overlay_input(settings, job_id, overlay)
+            )
         job_inputs.publish(settings, job_id)
     except Exception:
         job_inputs.discard(settings, job_id)
@@ -407,7 +406,7 @@ def start_scan(
         notify=request.notify,
         export_defectdojo=request.export_defectdojo,
         run_id=run_id,
-        target_args=target_args,
+        input_paths=input_paths,
         config_path=config_path,
     )
 

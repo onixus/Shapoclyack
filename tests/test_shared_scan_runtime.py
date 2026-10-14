@@ -73,7 +73,7 @@ def test_local_and_sensor_share_invocation_and_preserve_empty_files(tmp_path):
         notify=True,
         export_defectdojo=True,
         config_path="config",
-        target_args=sensor_args,
+        input_paths=paths_from_arguments(sensor_args),
     )
     assert local == invocation.argv(sys.executable)
     assert (tmp_path / "ranges.txt").read_text() == "2001:db8::/64\n"
