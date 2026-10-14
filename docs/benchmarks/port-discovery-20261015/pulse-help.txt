@@ -1,0 +1,323 @@
+Fast async TCP/UDP port scanner with live TUI, service hints, banners, and HTML reports.
+
+Usage: pulse [OPTIONS] [TARGET] [COMMAND]
+
+Commands:
+  plugin   Rhai audit plugin management (list, check, run)
+  kev      CISA KEV catalog cache
+  epss     EPSS (Exploit Prediction Scoring System) cache
+  diff     Compare two scan reports and exit non-zero on drift (CI gate)
+  monitor  Continuous perimeter monitoring daemon (periodic scans, drift detection, multi-channel alerts)
+  help     Print this message or the help of the given subcommand(s)
+
+Arguments:
+  [TARGET]
+          Target(s): IP, host, CIDR, netmask, range, or comma/list Examples: 10.0.0.0/24 · 10.0.0.0/255.255.255.0 · a.com,b.com · 10.0.0.1-50
+
+Options:
+  -T, --targets-file <FILE>
+          File with targets (one per line): domains, IPs, CIDR, masks, ranges) Lines starting with # are comments
+
+      --inventory <FILE>
+          Cloud/Asset inventory file (AWS EC2 JSON, K8s JSON, or Generic JSON)
+
+      --inventory-type <INVENTORY_TYPE>
+          Inventory format: auto, aws, k8s, json
+
+          [default: auto]
+          [possible values: auto, aws, k8s, json]
+
+      --max-hosts <MAX_HOSTS>
+          Max hosts after expansion (CIDR / lists / ranges)
+
+          [default: 4096]
+
+  -x, --exclude <SPEC>
+          Exclude hosts/CIDR/ranges (comma-separated or repeat flag)
+
+      --exclude-file <FILE>
+          File of hosts/CIDR to exclude (one per line)
+
+      --scope-file <FILE>
+          Allowlist scope file (CIDR/IP/hostname per line). When set, only matching hosts are scanned
+
+      --server
+          Launch built-in REST API server & Webhook listener
+
+      --server-addr <SERVER_ADDR>
+          REST API server bind address
+
+          [default: 127.0.0.1:8080]
+
+      --server-token <TOKEN>
+          Bearer token required on /api/* (also $PULSE_API_TOKEN)
+
+          [env: PULSE_API_TOKEN=]
+
+      --server-rate-limit <N>
+          Requests per minute per client IP (0 = unlimited)
+
+          [default: 120]
+
+      --server-audit-log <FILE>
+          Append server audit lines to this file
+
+      --server-tls-cert <FILE>
+          PEM certificate chain for HTTPS
+
+      --server-tls-key <FILE>
+          PEM private key for HTTPS
+
+      --server-allow-insecure
+          Allow binding a non-loopback address without a token
+
+      --kev-file <FILE>
+          Extra KEV CVE list (one CVE-ID per line). Merged with embedded subset + ~/.pulse/kev.txt
+
+      --epss-file <FILE>
+          EPSS scores CSV (cve,epss,percentile). Default: ~/.pulse/epss.csv
+
+      --shodan-key <KEY>
+          Shodan API Key for threat intelligence lookup
+
+          [env: SHODAN_API_KEY=]
+
+      --censys-key <ID:SECRET>
+          Censys API Credentials formatted as ID:SECRET
+
+          [env: CENSYS_API_KEY=]
+
+      --diff-against <FILE>
+          Compare scan results against baseline JSON report to highlight network drift
+
+  -D, --discover
+          Host discovery before port scan (skip dark hosts)
+
+      --discover-method <DISCOVER_METHOD>
+          Discovery method: tcp, icmp, arp, both, auto (arp LAN + icmp/tcp)
+
+          Possible values:
+          - tcp
+          - icmp
+          - arp:  On-link IPv4 via ARP / neighbor table (LAN)
+          - both: ICMP then TCP
+          - auto: ARP for LAN, then ICMP+TCP for dark / remote (recommended)
+
+          [default: auto]
+
+      --discover-ports <DISCOVER_PORTS>
+          TCP ports for discovery probes
+
+          [default: 80,443,22,445,3389]
+
+      --discover-timeout <DISCOVER_TIMEOUT>
+          Discovery probe timeout (ms)
+
+          [default: 500]
+
+      --discover-strict
+          Fail if discovery finds zero live hosts
+
+      --rate <PPS>
+          Max probes per second (connect + SYN). 0 = unlimited
+
+      --stream <FILE>
+          Append open-port events as NDJSON while scanning
+
+      --host-batch <HOST_BATCH>
+          Hosts per scheduling chunk (large nets)
+
+          [default: 256]
+
+      --checkpoint <FILE>
+          Checkpoint file for resume (auto-loads if file exists)
+
+      --resume <FILE>
+          Resume from checkpoint file (alias of --checkpoint when file exists)
+
+  -p, --ports <PORTS>
+          Ports: single, range, or list (e.g. 80, 1-1024, 22,80,443)
+
+          [default: 1-1024]
+
+  -c, --concurrency <CONCURRENCY>
+          Max concurrent connections (ceiling when --adaptive)
+
+          [default: 500]
+
+      --adaptive
+          Adapt concurrency up to -c based on timeout ratio (large nets)
+
+      --host-first
+          Scan host-by-host (finish all ports before next host)
+
+      --host-parallel <N>
+          Concurrent hosts in host-ordered mode (implies host-first; default 1 with --host-first)
+
+      --syn-retries <SYN_RETRIES>
+          SYN retransmits on silence (0–3 recommended)
+
+          [default: 0]
+
+      --max-retries <N>
+          Re-probe silent ports N times before calling them filtered (connect/UDP)
+
+          [default: 0]
+
+      --host-timeout <MS>
+          Give up on a host after this many ms (0 = no limit)
+
+          [default: 0]
+
+      --scan-delay <MS>
+          Minimum gap between probes to the same host, ms (0 = none)
+
+          [default: 0]
+
+      --icmp-states
+          Read ICMP unreachable messages to separate closed from filtered (needs root / CAP_NET_RAW)
+
+  -t, --timeout <TIMEOUT>
+          Connect timeout in milliseconds
+
+          [default: 800]
+
+  -b, --banner
+          Grab service banners from open ports
+
+  -f, --format <FORMAT>
+          Output format (ignored when --tui is set)
+
+          Possible values:
+          - pretty
+          - json
+          - csv
+          - xml:      Nmap-compatible XML (imports into Metasploit, Faraday, DefectDojo, …)
+          - grepable: Classic one-line-per-host grepable text
+
+          [default: pretty]
+
+  -q, --quiet
+          Quiet mode — results only, no banner/progress
+
+      --top <N>
+          Top N most common ports (overrides --ports)
+
+      --top-udp <N>
+          Top N UDP ports when scanning TCP+UDP (defaults to --top)
+
+      --services-db <PATH>
+          nmap-services-format file for port frequencies and names (default: $PULSE_SERVICES_DB, ~/.pulse/nmap-services, system nmap)
+
+      --no-nmap-data
+          Disable automatic Nmap data lookup (including DB path environment variables)
+
+          [env: PULSE_NO_NMAP_DATA=]
+
+      --all
+          Include closed ports in JSON/CSV output
+
+      --tui
+          Interactive live TUI dashboard
+
+      --html <FILE>
+          Write a cyberpunk HTML report to this path
+
+      --pdf <FILE>
+          Write a branded executive PDF report to this path
+
+      --sarif <FILE>
+          Write SARIF 2.1.0 findings (GitHub Code Scanning) to this path
+
+      --junit <FILE>
+          Write a JUnit report (one test case per endpoint) to this path
+
+      --fail-on <SEVERITY>
+          Exit 4 when a finding at or above this severity is present
+
+          [possible values: low, medium, high, critical]
+
+      --udp
+          Also probe UDP (or use --protocol udp)
+
+      --protocol <PROTOCOL>
+          Protocol(s) to scan
+
+          [default: tcp]
+          [possible values: tcp, udp, both]
+
+      --syn
+          Half-open TCP SYN scan (IPv4/IPv6, requires root / CAP_NET_RAW)
+
+      --ack
+          TCP ACK scan (map firewall rule sets, requires root / CAP_NET_RAW)
+
+      --window
+          TCP Window scan (analyze TCP window size, requires root / CAP_NET_RAW)
+
+      --fin
+          TCP FIN scan (stealth RFC 793, requires root / CAP_NET_RAW)
+
+      --null
+          TCP NULL scan (no flags set, requires root / CAP_NET_RAW)
+
+      --xmas
+          TCP Xmas scan (FIN, PSH, URG flags, requires root / CAP_NET_RAW)
+
+      --os
+          TCP/IP OS fingerprinting (IPv4, requires root / CAP_NET_RAW)
+
+      --os-mode <OS_MODE>
+          OS engine: sinfp (fast, 1 probe), nmap (deep), auto (sinfp→nmap)
+
+          Possible values:
+          - sinfp: Single-probe SinFP (fast)
+          - nmap:  Full nmap-os-db suite (slow, precise)
+          - auto:  SinFP first, nmap if confidence low
+
+          [default: sinfp]
+
+      --os-db <PATH>
+          Path to nmap-os-db (NPSL; not bundled — see --os-db-fetch)
+
+      --os-db-fetch
+          Download nmap-os-db into ~/.pulse/nmap-os-db
+
+      --os-limit <OS_LIMIT>
+          Max OS DB matches to keep per host
+
+          [default: 3]
+
+      --os-min-accuracy <OS_MIN_ACCURACY>
+          Min accuracy (0.0–1.0) to treat as solid match (nmap uses ~0.85)
+
+          [default: 0.85]
+
+      --scripts
+          Run Rhai audit plugins against open ports during the scan
+
+      --script-dir <DIR>
+          Extra directory to load .rhai plugins from (implies --scripts)
+
+      --probe-db <PATH>
+          Service-probe database JSON (default: embedded set)
+
+      --version-intensity <N>
+          How hard to work at version detection, 0–9 (higher = rarer probes)
+
+          [default: 7]
+
+      --cve
+          Correlate open ports/banners with CVE + CVSS (offline rules)
+
+      --tls-enum
+          Enumerate TLS cipher selection with raw ClientHello probes (additional connections)
+
+      --cve-online
+          Also query NVD online for banner keywords (rate-limited; optional NVD_API_KEY)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version

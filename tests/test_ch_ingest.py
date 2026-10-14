@@ -62,7 +62,7 @@ def test_transform_vulnerabilities_and_ports(monkeypatch):
         "archive_b64": base64.b64encode(archive).decode(),
     }
     vuln_rows, port_rows, control_rows = ch_transform.transform_ingest_payload(payload)
-    assert len(vuln_rows) == 2  # invalid host skipped
+    assert len(vuln_rows) == 1  # invalid host and non-CVE rows excluded from CVE-only analytics
     assert vuln_rows[0][2] == "CVE-2020-1"
     assert vuln_rows[0][3] == 7.5
     assert vuln_rows[0][4] == 0.4  # epss
@@ -71,7 +71,7 @@ def test_transform_vulnerabilities_and_ports(monkeypatch):
     assert vuln_rows[0][8] > 0  # contextual_score
     assert vuln_rows[0][9] == "nist-1"
     assert isinstance(vuln_rows[0][10], datetime)
-    assert vuln_rows[1][2] == "ssl-enum"
+    assert all(row[2].startswith("CVE-") for row in vuln_rows)
     # ports from findings + open_ports.txt
     assert len(port_rows) == 2
     ports = {(r[1], r[2], r[3]) for r in port_rows}

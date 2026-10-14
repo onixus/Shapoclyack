@@ -607,7 +607,14 @@ export type FindingEvidence = {
   }[] }[];
 };
 
+export type FindingType = "cve" | "misconfiguration" | "exposure";
+
 export type Vulnerability = {
+  finding_type?: FindingType;
+  detector_source?: string | null;
+  template_id?: string | null;
+  remediation?: string | null;
+
   finding_evidence?: FindingEvidence | null;
   host: string | null;
   port: string | null;
@@ -2906,6 +2913,11 @@ export type VulnerabilityDetector = {
 };
 
 export type TrackedVulnerability = {
+  finding_type?: FindingType;
+  detector_source?: string | null;
+  template_id?: string | null;
+  remediation?: string | null;
+
   finding_evidence?: FindingEvidence | null;
   vuln_id: string;
   tenant_id: string;
@@ -3036,6 +3048,8 @@ export type VulnerabilityEventInfo = {
 export type NistRiskLevel = "very_low" | "low" | "moderate" | "high" | "very_high";
 
 export type VulnerabilitySummary = {
+  cve_findings?: number;
+  non_cve_findings?: number;
   total: number;
   open_total: number;
   untriaged: number;
@@ -3067,6 +3081,8 @@ export type AssetInventorySummary = {
 };
 
 export type VulnerabilityListFilters = {
+  finding_type?: FindingType | "";
+  detector_source?: string;
   state?: VulnLifecycleState | "";
   open_only?: boolean;
   severity?: string;
@@ -3293,6 +3309,8 @@ export async function fetchTrackedVulnerabilities(
     if (filters?.severity) params.set("severity", filters.severity);
     if (filters?.asset_id) params.set("asset_id", filters.asset_id);
     if (filters?.source) params.set("source", filters.source);
+    if (filters?.finding_type) params.set("finding_type", filters.finding_type);
+    if (filters?.detector_source) params.set("detector_source", filters.detector_source);
     if (filters?.assignee) params.set("assignee", filters.assignee);
     if (filters?.unassigned) params.set("unassigned", "true");
     if (filters?.sla) params.set("sla", filters.sla);
@@ -4579,6 +4597,7 @@ export const WEBHOOK_EVENT_KINDS = [
   "new_asset",
   "new_open_port",
   "new_cve",
+  "new_finding",
   "cert_expiring",
   "decommissioned_host",
   "sla_due_soon",

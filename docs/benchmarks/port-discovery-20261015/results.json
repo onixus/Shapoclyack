@@ -1,0 +1,1642 @@
+[
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 0,
+    "variant": "naabu",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 1.0747143339831382,
+    "cpu_seconds": 0.08350099999999999,
+    "peak_rss_kib": 54980,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 3,
+    "packets": 74,
+    "wire_bytes": 5202,
+    "returncode": 0
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 0,
+    "variant": "pulse",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 0.028936540998984128,
+    "cpu_seconds": 0.029037999999999998,
+    "peak_rss_kib": 30380,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 9,
+    "packets": 184,
+    "wire_bytes": 14444,
+    "returncode": 0
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 1,
+    "variant": "pulse",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 0.023040416999720037,
+    "cpu_seconds": 0.021963999999999997,
+    "peak_rss_kib": 30436,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 9,
+    "packets": 186,
+    "wire_bytes": 14600,
+    "returncode": 0
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 1,
+    "variant": "naabu",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 1.0734631670056842,
+    "cpu_seconds": 0.07886599999999999,
+    "peak_rss_kib": 55240,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 3,
+    "packets": 78,
+    "wire_bytes": 5466,
+    "returncode": 0
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 2,
+    "variant": "naabu",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 1.0717553329886869,
+    "cpu_seconds": 0.08713099999999999,
+    "peak_rss_kib": 54948,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 3,
+    "packets": 76,
+    "wire_bytes": 5334,
+    "returncode": 0
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 2,
+    "variant": "pulse",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 0.030010457965545356,
+    "cpu_seconds": 0.028391,
+    "peak_rss_kib": 30448,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 9,
+    "packets": 188,
+    "wire_bytes": 14708,
+    "returncode": 0
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 3,
+    "variant": "pulse",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 0.02592516696313396,
+    "cpu_seconds": 0.025814999999999998,
+    "peak_rss_kib": 30448,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 9,
+    "packets": 180,
+    "wire_bytes": 14180,
+    "returncode": 0
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 3,
+    "variant": "naabu",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 1.0746474170009606,
+    "cpu_seconds": 0.082965,
+    "peak_rss_kib": 55008,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 3,
+    "packets": 78,
+    "wire_bytes": 5466,
+    "returncode": 0
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 4,
+    "variant": "naabu",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 1.0683243760140613,
+    "cpu_seconds": 0.082815,
+    "peak_rss_kib": 54816,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 3,
+    "packets": 76,
+    "wire_bytes": 5334,
+    "returncode": 0
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 4,
+    "variant": "pulse",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 0.024232166004367173,
+    "cpu_seconds": 0.023606,
+    "peak_rss_kib": 30448,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 9,
+    "packets": 182,
+    "wire_bytes": 14312,
+    "returncode": 0
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 0,
+    "variant": "naabu",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 1.0735616259626113,
+    "cpu_seconds": 0.078785,
+    "peak_rss_kib": 55644,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 3,
+    "packets": 74,
+    "wire_bytes": 5202,
+    "returncode": 0
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 0,
+    "variant": "pulse",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 0.026061999960802495,
+    "cpu_seconds": 0.026205,
+    "peak_rss_kib": 30448,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 9,
+    "packets": 180,
+    "wire_bytes": 14180,
+    "returncode": 0
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 1,
+    "variant": "pulse",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 0.025168499967548996,
+    "cpu_seconds": 0.023808999999999997,
+    "peak_rss_kib": 30448,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 9,
+    "packets": 180,
+    "wire_bytes": 14180,
+    "returncode": 0
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 1,
+    "variant": "naabu",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 1.0787865840247832,
+    "cpu_seconds": 0.094622,
+    "peak_rss_kib": 55144,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 3,
+    "packets": 78,
+    "wire_bytes": 5466,
+    "returncode": 0
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 2,
+    "variant": "naabu",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 1.0785232089692727,
+    "cpu_seconds": 0.103338,
+    "peak_rss_kib": 55076,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 3,
+    "packets": 76,
+    "wire_bytes": 5334,
+    "returncode": 0
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 2,
+    "variant": "pulse",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 0.029430458031129092,
+    "cpu_seconds": 0.028547,
+    "peak_rss_kib": 30448,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 9,
+    "packets": 184,
+    "wire_bytes": 14444,
+    "returncode": 0
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 3,
+    "variant": "pulse",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 0.02748716698260978,
+    "cpu_seconds": 0.028135,
+    "peak_rss_kib": 30448,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 9,
+    "packets": 180,
+    "wire_bytes": 14180,
+    "returncode": 0
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 3,
+    "variant": "naabu",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 1.076184750010725,
+    "cpu_seconds": 0.08674599999999999,
+    "peak_rss_kib": 55320,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 3,
+    "packets": 72,
+    "wire_bytes": 5070,
+    "returncode": 0
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 4,
+    "variant": "naabu",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 1.0776521670049988,
+    "cpu_seconds": 0.088929,
+    "peak_rss_kib": 55376,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 3,
+    "packets": 78,
+    "wire_bytes": 5466,
+    "returncode": 0
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 4,
+    "variant": "pulse",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 0.025493833993095905,
+    "cpu_seconds": 0.025042000000000002,
+    "peak_rss_kib": 30456,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 9,
+    "packets": 186,
+    "wire_bytes": 14576,
+    "returncode": 0
+  },
+  {
+    "profile": "root_syn",
+    "cache": "cold",
+    "repeat": 0,
+    "variant": "naabu",
+    "endpoints": [],
+    "matches_truth": false,
+    "seconds": 1.0724935840116814,
+    "cpu_seconds": 0.085625,
+    "peak_rss_kib": 68892,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 54,
+    "wire_bytes": 3036,
+    "returncode": 0
+  },
+  {
+    "profile": "root_syn",
+    "cache": "cold",
+    "repeat": 0,
+    "variant": "pulse",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 0.00781775003997609,
+    "cpu_seconds": 0.007194,
+    "peak_rss_kib": 68892,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 60,
+    "wire_bytes": 3264,
+    "returncode": 0
+  },
+  {
+    "profile": "root_syn",
+    "cache": "cold",
+    "repeat": 1,
+    "variant": "pulse",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 0.00935516698518768,
+    "cpu_seconds": 0.008544,
+    "peak_rss_kib": 68892,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 60,
+    "wire_bytes": 3264,
+    "returncode": 0
+  },
+  {
+    "profile": "root_syn",
+    "cache": "cold",
+    "repeat": 1,
+    "variant": "naabu",
+    "endpoints": [],
+    "matches_truth": false,
+    "seconds": 1.0925241259974428,
+    "cpu_seconds": 0.09459100000000001,
+    "peak_rss_kib": 68892,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 54,
+    "wire_bytes": 3036,
+    "returncode": 0
+  },
+  {
+    "profile": "root_syn",
+    "cache": "cold",
+    "repeat": 2,
+    "variant": "naabu",
+    "endpoints": [],
+    "matches_truth": false,
+    "seconds": 1.072672792011872,
+    "cpu_seconds": 0.084254,
+    "peak_rss_kib": 68892,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 54,
+    "wire_bytes": 3036,
+    "returncode": 0
+  },
+  {
+    "profile": "root_syn",
+    "cache": "cold",
+    "repeat": 2,
+    "variant": "pulse",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 0.006132417009212077,
+    "cpu_seconds": 0.005716,
+    "peak_rss_kib": 68892,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 60,
+    "wire_bytes": 3264,
+    "returncode": 0
+  },
+  {
+    "profile": "root_syn",
+    "cache": "cold",
+    "repeat": 3,
+    "variant": "pulse",
+    "endpoints": [
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": false,
+    "seconds": 0.15943087497726083,
+    "cpu_seconds": 0.008104,
+    "peak_rss_kib": 68892,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 56,
+    "wire_bytes": 3048,
+    "returncode": 0
+  },
+  {
+    "profile": "root_syn",
+    "cache": "cold",
+    "repeat": 3,
+    "variant": "naabu",
+    "endpoints": [],
+    "matches_truth": false,
+    "seconds": 1.0716779180220328,
+    "cpu_seconds": 0.084984,
+    "peak_rss_kib": 68892,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 54,
+    "wire_bytes": 3036,
+    "returncode": 0
+  },
+  {
+    "profile": "root_syn",
+    "cache": "cold",
+    "repeat": 4,
+    "variant": "naabu",
+    "endpoints": [],
+    "matches_truth": false,
+    "seconds": 1.081879334000405,
+    "cpu_seconds": 0.08701,
+    "peak_rss_kib": 68892,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 54,
+    "wire_bytes": 3036,
+    "returncode": 0
+  },
+  {
+    "profile": "root_syn",
+    "cache": "cold",
+    "repeat": 4,
+    "variant": "pulse",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 0.00855904200579971,
+    "cpu_seconds": 0.008314,
+    "peak_rss_kib": 68892,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 60,
+    "wire_bytes": 3264,
+    "returncode": 0
+  },
+  {
+    "profile": "root_syn",
+    "cache": "warm",
+    "repeat": 0,
+    "variant": "naabu",
+    "endpoints": [],
+    "matches_truth": false,
+    "seconds": 1.0670882089762017,
+    "cpu_seconds": 0.08194599999999999,
+    "peak_rss_kib": 68892,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 54,
+    "wire_bytes": 3036,
+    "returncode": 0
+  },
+  {
+    "profile": "root_syn",
+    "cache": "warm",
+    "repeat": 0,
+    "variant": "pulse",
+    "endpoints": [
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": false,
+    "seconds": 0.15990633302135393,
+    "cpu_seconds": 0.009177,
+    "peak_rss_kib": 68892,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 56,
+    "wire_bytes": 3048,
+    "returncode": 0
+  },
+  {
+    "profile": "root_syn",
+    "cache": "warm",
+    "repeat": 1,
+    "variant": "pulse",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 0.00760054198326543,
+    "cpu_seconds": 0.007783,
+    "peak_rss_kib": 68892,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 60,
+    "wire_bytes": 3264,
+    "returncode": 0
+  },
+  {
+    "profile": "root_syn",
+    "cache": "warm",
+    "repeat": 1,
+    "variant": "naabu",
+    "endpoints": [],
+    "matches_truth": false,
+    "seconds": 1.062713376013562,
+    "cpu_seconds": 0.078691,
+    "peak_rss_kib": 68892,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 54,
+    "wire_bytes": 3036,
+    "returncode": 0
+  },
+  {
+    "profile": "root_syn",
+    "cache": "warm",
+    "repeat": 2,
+    "variant": "naabu",
+    "endpoints": [],
+    "matches_truth": false,
+    "seconds": 1.075896541995462,
+    "cpu_seconds": 0.080733,
+    "peak_rss_kib": 68892,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 54,
+    "wire_bytes": 3036,
+    "returncode": 0
+  },
+  {
+    "profile": "root_syn",
+    "cache": "warm",
+    "repeat": 2,
+    "variant": "pulse",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 0.00863212498370558,
+    "cpu_seconds": 0.00867,
+    "peak_rss_kib": 68892,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 60,
+    "wire_bytes": 3264,
+    "returncode": 0
+  },
+  {
+    "profile": "root_syn",
+    "cache": "warm",
+    "repeat": 3,
+    "variant": "pulse",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 0.007324542035348713,
+    "cpu_seconds": 0.005872,
+    "peak_rss_kib": 68892,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 60,
+    "wire_bytes": 3264,
+    "returncode": 0
+  },
+  {
+    "profile": "root_syn",
+    "cache": "warm",
+    "repeat": 3,
+    "variant": "naabu",
+    "endpoints": [],
+    "matches_truth": false,
+    "seconds": 1.0746604169835337,
+    "cpu_seconds": 0.098609,
+    "peak_rss_kib": 68892,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 54,
+    "wire_bytes": 3036,
+    "returncode": 0
+  },
+  {
+    "profile": "root_syn",
+    "cache": "warm",
+    "repeat": 4,
+    "variant": "naabu",
+    "endpoints": [],
+    "matches_truth": false,
+    "seconds": 1.073484082997311,
+    "cpu_seconds": 0.07876,
+    "peak_rss_kib": 68892,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 54,
+    "wire_bytes": 3036,
+    "returncode": 0
+  },
+  {
+    "profile": "root_syn",
+    "cache": "warm",
+    "repeat": 4,
+    "variant": "pulse",
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "matches_truth": true,
+    "seconds": 0.007788666000124067,
+    "cpu_seconds": 0.007292999999999999,
+    "peak_rss_kib": 68892,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 60,
+    "wire_bytes": 3264,
+    "returncode": 0
+  },
+  {
+    "profile": "approved_64_closed",
+    "cache": "warm",
+    "repeat": 0,
+    "variant": "naabu",
+    "seconds": 1.0742622499819845,
+    "cpu_seconds": 0.093527,
+    "peak_rss_kib": 55460,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 256,
+    "wire_bytes": 16384,
+    "matches_truth": true,
+    "endpoints": [],
+    "returncode": 0
+  },
+  {
+    "profile": "approved_64_closed",
+    "cache": "warm",
+    "repeat": 0,
+    "variant": "pulse",
+    "seconds": 0.02320979197975248,
+    "cpu_seconds": 0.023467,
+    "peak_rss_kib": 31052,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 256,
+    "wire_bytes": 16384,
+    "matches_truth": true,
+    "endpoints": [],
+    "returncode": 0
+  },
+  {
+    "profile": "approved_64_closed",
+    "cache": "warm",
+    "repeat": 1,
+    "variant": "pulse",
+    "seconds": 0.022833541966974735,
+    "cpu_seconds": 0.022463999999999998,
+    "peak_rss_kib": 31052,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 256,
+    "wire_bytes": 16384,
+    "matches_truth": true,
+    "endpoints": [],
+    "returncode": 0
+  },
+  {
+    "profile": "approved_64_closed",
+    "cache": "warm",
+    "repeat": 1,
+    "variant": "naabu",
+    "seconds": 1.0696331670042127,
+    "cpu_seconds": 0.08714,
+    "peak_rss_kib": 55204,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 256,
+    "wire_bytes": 16384,
+    "matches_truth": true,
+    "endpoints": [],
+    "returncode": 0
+  },
+  {
+    "profile": "approved_64_closed",
+    "cache": "warm",
+    "repeat": 2,
+    "variant": "naabu",
+    "seconds": 1.0692756260395981,
+    "cpu_seconds": 0.084258,
+    "peak_rss_kib": 55052,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 256,
+    "wire_bytes": 16384,
+    "matches_truth": true,
+    "endpoints": [],
+    "returncode": 0
+  },
+  {
+    "profile": "approved_64_closed",
+    "cache": "warm",
+    "repeat": 2,
+    "variant": "pulse",
+    "seconds": 0.023837250017095357,
+    "cpu_seconds": 0.024193,
+    "peak_rss_kib": 31052,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 256,
+    "wire_bytes": 16384,
+    "matches_truth": true,
+    "endpoints": [],
+    "returncode": 0
+  },
+  {
+    "profile": "approved_64_closed",
+    "cache": "warm",
+    "repeat": 3,
+    "variant": "pulse",
+    "seconds": 0.025418334000278264,
+    "cpu_seconds": 0.026451000000000002,
+    "peak_rss_kib": 31052,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 256,
+    "wire_bytes": 16384,
+    "matches_truth": true,
+    "endpoints": [],
+    "returncode": 0
+  },
+  {
+    "profile": "approved_64_closed",
+    "cache": "warm",
+    "repeat": 3,
+    "variant": "naabu",
+    "seconds": 1.063882917049341,
+    "cpu_seconds": 0.086654,
+    "peak_rss_kib": 56616,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 256,
+    "wire_bytes": 16384,
+    "matches_truth": true,
+    "endpoints": [],
+    "returncode": 0
+  },
+  {
+    "profile": "approved_64_closed",
+    "cache": "warm",
+    "repeat": 4,
+    "variant": "naabu",
+    "seconds": 1.0642502499977127,
+    "cpu_seconds": 0.077563,
+    "peak_rss_kib": 55080,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 256,
+    "wire_bytes": 16384,
+    "matches_truth": true,
+    "endpoints": [],
+    "returncode": 0
+  },
+  {
+    "profile": "approved_64_closed",
+    "cache": "warm",
+    "repeat": 4,
+    "variant": "pulse",
+    "seconds": 0.023619749990757555,
+    "cpu_seconds": 0.024501999999999996,
+    "peak_rss_kib": 31052,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 0,
+    "packets": 256,
+    "wire_bytes": 16384,
+    "matches_truth": true,
+    "endpoints": [],
+    "returncode": 0
+  },
+  {
+    "profile": "delay10ms_loss5pct",
+    "cache": "warm",
+    "repeat": 0,
+    "variant": "naabu",
+    "seconds": 2.1129422090016305,
+    "cpu_seconds": 0.094816,
+    "peak_rss_kib": 55264,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 3,
+    "packets": 82,
+    "wire_bytes": 5698,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "returncode": 0
+  },
+  {
+    "profile": "delay10ms_loss5pct",
+    "cache": "warm",
+    "repeat": 0,
+    "variant": "pulse",
+    "seconds": 0.4641156259458512,
+    "cpu_seconds": 0.031756,
+    "peak_rss_kib": 31052,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 9,
+    "packets": 192,
+    "wire_bytes": 14908,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "returncode": 0
+  },
+  {
+    "profile": "delay10ms_loss5pct",
+    "cache": "warm",
+    "repeat": 1,
+    "variant": "pulse",
+    "seconds": 0.4840797919896431,
+    "cpu_seconds": 0.03349,
+    "peak_rss_kib": 31052,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 9,
+    "packets": 191,
+    "wire_bytes": 14825,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "returncode": 0
+  },
+  {
+    "profile": "delay10ms_loss5pct",
+    "cache": "warm",
+    "repeat": 1,
+    "variant": "naabu",
+    "seconds": 2.108152543019969,
+    "cpu_seconds": 0.09139800000000001,
+    "peak_rss_kib": 54780,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 3,
+    "packets": 84,
+    "wire_bytes": 5790,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "returncode": 0
+  },
+  {
+    "profile": "delay10ms_loss5pct",
+    "cache": "warm",
+    "repeat": 2,
+    "variant": "naabu",
+    "seconds": 1.0968966250075027,
+    "cpu_seconds": 0.08774199999999999,
+    "peak_rss_kib": 55108,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 3,
+    "packets": 86,
+    "wire_bytes": 5922,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "returncode": 0
+  },
+  {
+    "profile": "delay10ms_loss5pct",
+    "cache": "warm",
+    "repeat": 2,
+    "variant": "pulse",
+    "seconds": 1.0379531679791398,
+    "cpu_seconds": 0.02874,
+    "peak_rss_kib": 31052,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 8,
+    "packets": 178,
+    "wire_bytes": 13958,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "returncode": 0
+  },
+  {
+    "profile": "delay10ms_loss5pct",
+    "cache": "warm",
+    "repeat": 3,
+    "variant": "pulse",
+    "seconds": 0.7866682079620659,
+    "cpu_seconds": 0.032644,
+    "peak_rss_kib": 31052,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 9,
+    "packets": 194,
+    "wire_bytes": 14926,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "returncode": 0
+  },
+  {
+    "profile": "delay10ms_loss5pct",
+    "cache": "warm",
+    "repeat": 3,
+    "variant": "naabu",
+    "seconds": 1.0936485839774832,
+    "cpu_seconds": 0.089369,
+    "peak_rss_kib": 55592,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 3,
+    "packets": 90,
+    "wire_bytes": 6186,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "returncode": 0
+  },
+  {
+    "profile": "delay10ms_loss5pct",
+    "cache": "warm",
+    "repeat": 4,
+    "variant": "naabu",
+    "seconds": 2.1172558340476826,
+    "cpu_seconds": 0.08696999999999999,
+    "peak_rss_kib": 55052,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 3,
+    "packets": 84,
+    "wire_bytes": 5806,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "returncode": 0
+  },
+  {
+    "profile": "delay10ms_loss5pct",
+    "cache": "warm",
+    "repeat": 4,
+    "variant": "pulse",
+    "seconds": 0.38436316698789597,
+    "cpu_seconds": 0.028691,
+    "peak_rss_kib": 31052,
+    "processes": 1,
+    "capture_complete": true,
+    "accepted_connections": 9,
+    "packets": 188,
+    "wire_bytes": 14636,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "returncode": 0
+  }
+]

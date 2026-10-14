@@ -52,7 +52,7 @@ _settings: Settings | None = None
 # The #349 workflow kinds that are about a finding join it for exactly that
 # reason; the three that are not (a failed scan, a generated report, an offline
 # agent) deliberately do not.
-_SEVERITY_BEARING_KINDS = ("new_cve", *workflow_events.SEVERITY_BEARING_KINDS)
+_SEVERITY_BEARING_KINDS = ("new_cve", "new_finding", *workflow_events.SEVERITY_BEARING_KINDS)
 
 DELIVERY_STATUSES = ("pending", "delivered", "dead")
 

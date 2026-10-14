@@ -27,6 +27,7 @@ import { useTrackedVulnerabilities, useVulnerabilitySummary } from "@/hooks/use-
 import { MAX_BULK_IDS } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import type {
+  FindingType,
   SlaState,
   TrackedVulnerability,
   VulnerabilitySource,
@@ -63,6 +64,8 @@ function VulnerabilitiesInner() {
   const initialSeverity = (searchParams.get("severity") || "").trim();
   const initialUnassigned = searchParams.get("unassigned") === "1";
   const initialSource = (searchParams.get("source") || "") as VulnerabilitySource | "";
+  const initialFindingType = (searchParams.get("finding_type") || "") as FindingType | "";
+  const initialDetector = (searchParams.get("detector_source") || "").trim();
   const initialExposure = (searchParams.get("exposure") || "") as NetworkExposure | "";
 
   const [scope, setScope] = useState<"open" | "all">(initialState ? "all" : OPEN_WORKING_SET);
@@ -72,6 +75,8 @@ function VulnerabilitiesInner() {
   const [staleDays, setStaleDays] = useState("");
   const [unassigned, setUnassigned] = useState(initialUnassigned);
   const [source, setSource] = useState<VulnerabilitySource | "">(initialSource);
+  const [findingType, setFindingType] = useState<FindingType | "">(initialFindingType);
+  const [detector, setDetector] = useState(initialDetector);
   const [exposure, setExposure] = useState<NetworkExposure | "">(initialExposure);
   // Selected finding ids (#346). Held here rather than in the table so paging,
   // the poll and a filter change do not drop a selection somebody is still
@@ -91,6 +96,8 @@ function VulnerabilitiesInner() {
     severity,
     asset_id: assetId || undefined,
     source,
+    finding_type: findingType,
+    detector_source: detector,
     network_exposure: exposure,
     unassigned: unassigned || undefined,
     sla,
@@ -126,6 +133,8 @@ function VulnerabilitiesInner() {
                   ? t("vulns.port", { port: row.original.port })
                   : "no port"}
               {row.original.script_id && row.original.cve ? ` · ${row.original.script_id}` : ""}
+              {row.original.finding_type && row.original.finding_type !== "cve"
+                ? ` · ${row.original.finding_type}` : ""}
             </span>
           </Link>
         ),
@@ -296,6 +305,12 @@ function VulnerabilitiesInner() {
         />
       </div>
 
+      {summary?.cve_findings != null && summary?.non_cve_findings != null ? (
+        <p className="text-xs text-muted-foreground">
+          All tracked findings: {summary.cve_findings.toLocaleString()} CVE · {summary.non_cve_findings.toLocaleString()} non-CVE
+        </p>
+      ) : null}
+
       <RetroMatchCard canOperate={canOperate} />
 
       <DataTable
@@ -360,6 +375,38 @@ function VulnerabilitiesInner() {
                   {t("vuln.source.endpointSoftware")}
                 </SelectItem>
                 <SelectItem value="retro_match">{t("vuln.source.retroMatch")}</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select
+              value={findingType || FILTER_ALL}
+              onValueChange={(value) => {
+                setFindingType(value === FILTER_ALL ? "" : (value as FindingType));
+                pagination.reset();
+              }}
+            >
+              <SelectTrigger className="w-auto min-w-[11rem]" aria-label="Finding type">
+                <SelectValue placeholder="Finding type" />
+              </SelectTrigger>
+              <SelectContent className="bg-card border-border text-foreground">
+                <SelectItem value={FILTER_ALL}>Any finding type</SelectItem>
+                <SelectItem value="cve">CVE</SelectItem>
+                <SelectItem value="misconfiguration">Misconfiguration</SelectItem>
+                <SelectItem value="exposure">Exposure</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select
+              value={detector || FILTER_ALL}
+              onValueChange={(value) => {
+                setDetector(value === FILTER_ALL ? "" : value);
+                pagination.reset();
+              }}
+            >
+              <SelectTrigger className="w-auto min-w-[11rem]" aria-label="Detector">
+                <SelectValue placeholder="Detector" />
+              </SelectTrigger>
+              <SelectContent className="bg-card border-border text-foreground">
+                <SelectItem value={FILTER_ALL}>Any detector</SelectItem>
+                <SelectItem value="nuclei">Nuclei</SelectItem>
               </SelectContent>
             </Select>
             <Select

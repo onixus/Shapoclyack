@@ -515,6 +515,8 @@ def list_vulnerabilities(
     ] = False,
     severity: Annotated[str | None, Query(description="critical | high | medium | low | unknown")] = None,
     asset_id: str | None = None,
+    finding_type: Literal["cve", "misconfiguration", "exposure"] | None = None,
+    detector_source: Literal["nuclei", "pulse", "pulse-plugin", "nmap-nse"] | None = None,
     source: Annotated[
         str | None,
         Query(
@@ -570,6 +572,8 @@ def list_vulnerabilities(
             severity=severity,
             asset_id=asset_id,
             source=source,
+            finding_type=finding_type,
+            detector_source=detector_source,
             network_exposure=network_exposure,
             assignee=assignee,
             unassigned=unassigned,

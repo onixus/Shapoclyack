@@ -112,6 +112,26 @@ function renderPage() {
 }
 
 describe("Vulnerability Center", () => {
+  it("separates non-CVE issues and sends type/detector deep-link filters", async () => {
+    searchParams = new URLSearchParams({ finding_type: "misconfiguration", detector_source: "nuclei" });
+    const fetchSpy = vi.spyOn(apiModule, "fetchTrackedVulnerabilities").mockResolvedValue({
+      items: [vuln({ cve: null, script_id: "public-backup", finding_type: "misconfiguration", detector_source: "nuclei" })],
+      total: 1, offset: 0, limit: 25, has_more: false,
+    });
+    vi.spyOn(apiModule, "fetchVulnerabilitySummary").mockResolvedValue({
+      total: 2, open_total: 2, untriaged: 2, unassigned: 2, estate_risk: "high",
+      by_state: { OPEN: 2 }, by_severity_open: { high: 2 }, by_risk_level_open: { high: 2 },
+      by_sla: {}, breached: 0, worst_breached_severity: null, generated_at: null,
+      cve_findings: 1, non_cve_findings: 1,
+    });
+    renderPage();
+    expect(await screen.findByText("public-backup")).toBeInTheDocument();
+    expect(screen.getByText("All tracked findings: 1 CVE · 1 non-CVE")).toBeInTheDocument();
+    expect(fetchSpy.mock.calls[0][0]).toMatchObject({ finding_type: "misconfiguration", detector_source: "nuclei" });
+    expect(screen.getByRole("combobox", { name: "Finding type" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Detector" })).toBeInTheDocument();
+  });
+
   beforeEach(() => {
     vi.restoreAllMocks();
     searchParams = new URLSearchParams();

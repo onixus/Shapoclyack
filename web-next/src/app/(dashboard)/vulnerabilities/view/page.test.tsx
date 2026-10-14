@@ -120,6 +120,20 @@ const PENDING = vuln({
 });
 
 describe("Accepted risk panel", () => {
+  it("shows a non-CVE issue's template and remediation without inventing a CVE", async () => {
+    renderPage(vuln({
+      cve: null, finding_type: "misconfiguration", detector_source: "nuclei",
+      template_id: "backup-exposure", remediation: "Remove the public backup file.",
+      script_id: "backup-exposure", title: "Public backup file",
+    }));
+    expect(await screen.findByText("Public backup file")).toBeInTheDocument();
+    expect(screen.getByText("misconfiguration")).toBeInTheDocument();
+    expect(screen.getByText("nuclei")).toBeInTheDocument();
+    expect(screen.getByText("Remediation")).toBeInTheDocument();
+    expect(screen.getByText("Remove the public backup file.")).toBeInTheDocument();
+    expect(screen.queryByText("CVE-2024-0001")).not.toBeInTheDocument();
+  });
+
   beforeEach(() => {
     vi.restoreAllMocks();
     useAuthStore.setState({ user: null, canOperate: false, hydrated: true, loading: false });

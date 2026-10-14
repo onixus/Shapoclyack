@@ -413,6 +413,7 @@ def test_a_sensor_declaring_the_unversioned_capability_is_refused(tmp_path, monk
 OVERLAY_PATHS_DIGEST = {
     1: "e32112da7d251a59295b425ed27fd5851cb0d679746ae4b1ba40e9aeb004a1fe",
     2: "342e983c49846574883fdb39090ddc28efc22aebd1d6565b97665e8ccccd3145",
+    3: "8aa537d77f2d6d4ca92ee7adaa7127d85d413640b8908792b674165d43afc625",
 }
 
 

@@ -103,7 +103,7 @@ UPLOAD_RATE_LIMIT_WAIT_SECONDS = 600.0
 # overlay: ``config_overlay.v2`` is ``nuclei.template_ids``, which only a
 # verification re-scan sends. Kept equal to
 # scanner/pipeline/config_overlay.CAPABILITIES.
-CAPABILITIES: tuple[str, ...] = ("scan_policy", "config_overlay.v1", "config_overlay.v2")
+CAPABILITIES: tuple[str, ...] = ("scan_policy", "config_overlay.v1", "config_overlay.v2", "config_overlay.v3")
 
 SUBJECT_JOBS_SCAN_PREFIX = "jobs.scan"
 STREAM_JOBS = "JOBS"

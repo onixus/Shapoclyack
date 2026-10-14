@@ -1,5 +1,7 @@
 """Precise observations inside stable legacy remediation containers."""
 from __future__ import annotations
+
+from scanner.pipeline.non_cve_policy import actionable
 from typing import Any
 from .finding_evidence import EVIDENCE_SCHEMA, aggregate, canonical_json, digest, observation, subject, timestamp
 
@@ -9,6 +11,10 @@ def combine(rows: list[dict], *, artifact_sha: str | None = None) -> list[dict]:
     for index, row in enumerate(rows):
         issue = str(row.get('cve') or '').upper() or 'script:' + str(row.get('script_id') or '')
         key = str(row.get('host') or '').lower(), str(row.get('port') or ''), issue
+        if actionable(row):
+            # New actionable observations use precise subjects. CVE and legacy
+            # remediation containers retain their historic grouping unchanged.
+            key = ('non-cve-v1', str(row.get('rule_id') or row.get('script_id') or ''), canonical_json(subject(row)))
         groups.setdefault(key, []).append((index, row))
     result = []
     for key, members in sorted(groups.items()):
@@ -195,6 +201,8 @@ def attach_raw(rows: list[dict], projection: dict) -> None:
             target = identity['subject']
             if (target['host'], target['port']) != (endpoint['host'], endpoint['port']):
                 continue
+            if actionable(row) and target != endpoint:
+                continue
             for item in group['observations']:
                 if row.get('cve'):
                     match = str(row['cve']).upper() == item.get('cve')
@@ -232,7 +240,7 @@ def attach_raw(rows: list[dict], projection: dict) -> None:
             row['finding_evidence'] = evidence
 
 
-def closure_gaps(evidence: Any) -> list[dict]:
+def closure_gaps(evidence: Any, *, covered_subjects: list[dict] | None = None) -> list[dict]:
     """Legacy endpoint coverage cannot attest HTTP object/SNI checks.
 
     Preserve positives from partial data but fail closed for negative decisions.
@@ -245,6 +253,8 @@ def closure_gaps(evidence: Any) -> list[dict]:
         reason = 'evidence_incomplete'
     else:
         subjects = [g['identity']['subject'] for g in evidence.get('findings', [])]
+        if subjects and covered_subjects and all(s in covered_subjects for s in subjects):
+            return []
         if any(s.get('authority') or s.get('sni') or s.get('object_id') for s in subjects):
             reason = 'precise_subject_coverage_unproven'
         elif len({canonical_json(s) for s in subjects}) > 1:
