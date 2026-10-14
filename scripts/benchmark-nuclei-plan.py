@@ -4,6 +4,9 @@ The expected match is synthetic, not a real vulnerable application/CVE.
 """
 
 import json
+import hashlib
+import platform
+import signal
 import os
 import subprocess
 import threading
@@ -15,6 +18,13 @@ import scanner.pipeline.nuclei_scan as adapter
 from scanner.pipeline.config_schema import NucleiConfig
 from scanner.pipeline.nuclei_scan import run_nuclei_scan
 
+interfaces = {
+    line.split(":", 1)[0].strip()
+    for line in Path("/proc/net/dev").read_text().splitlines()[2:]
+    if ":" in line
+}
+if interfaces != {"lo"}:
+    raise RuntimeError(f"fixture requires network isolation; interfaces={interfaces}")
 ROOT = Path("/evidence")
 ROOT.mkdir(exist_ok=True)
 TEMPLATES = ROOT / "templates"
@@ -69,9 +79,27 @@ def command(argv, **kwargs):
     out = ROOT / f"process-{len(measurements)}.stdout"
     err = ROOT / f"process-{len(measurements)}.stderr"
     with out.open("w") as stdout, err.open("w") as stderr:
-        process = subprocess.Popen(argv, stdout=stdout, stderr=stderr)
-        _, status, usage = os.wait4(process.pid, 0)
-        process.returncode = os.waitstatus_to_exitcode(status)
+        process = subprocess.Popen(
+            argv, stdout=stdout, stderr=stderr, start_new_session=True
+        )
+        deadline = started + kwargs["timeout"]
+        timed_out = False
+        try:
+            while True:
+                pid, status, usage = os.wait4(process.pid, os.WNOHANG)
+                if pid:
+                    break
+                if time.monotonic() >= deadline:
+                    timed_out = True
+                    os.killpg(process.pid, signal.SIGKILL)
+                    _, status, usage = os.wait4(process.pid, 0)
+                    break
+                time.sleep(0.01)
+            process.returncode = os.waitstatus_to_exitcode(status)
+        except BaseException:
+            os.killpg(process.pid, signal.SIGKILL)
+            os.wait4(process.pid, 0)
+            raise
     measurements.append(
         {
             "cpu_seconds": usage.ru_utime + usage.ru_stime,
@@ -79,15 +107,34 @@ def command(argv, **kwargs):
             "duration_seconds": time.monotonic() - started,
         }
     )
+    if timed_out:
+        raise subprocess.TimeoutExpired(
+            argv, kwargs["timeout"], output=out.read_text(), stderr=err.read_text()
+        )
     return subprocess.CompletedProcess(
         argv, process.returncode, out.read_text(), err.read_text()
     )
 
 
 adapter.run_command = command
+binary_digest = hashlib.sha256()
+with Path("/fixture-bin/nuclei").open("rb") as binary:
+    while chunk := binary.read(1024 * 1024):
+        binary_digest.update(chunk)
+source_digest = hashlib.sha256()
+for source in (
+    "scanner/pipeline/nuclei_plan.py",
+    "scanner/pipeline/nuclei_scan.py",
+    "scanner/pipeline/config_schema.py",
+):
+    source_digest.update(source.encode() + (Path("/work") / source).read_bytes())
 report = {
     "fixture": "synthetic HTTP response; no real CVE acceptance",
     "network": "container --network none, loopback only",
+    "interfaces_observed": sorted(interfaces),
+    "engine_binary_sha256": binary_digest.hexdigest(),
+    "architecture": platform.machine(),
+    "source_snapshot_sha256": source_digest.hexdigest(),
     "engine": subprocess.run(
         ["nuclei", "-version"], capture_output=True, text=True
     ).stderr.strip(),

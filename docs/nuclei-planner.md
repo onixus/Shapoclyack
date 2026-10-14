@@ -19,15 +19,19 @@ Directed planning intersects observations with the supplied open TCP endpoints.
 It does not add a host or port. A finite numeric confidence between the configured
 threshold and 100 plus an explicit HTTP/HTTPS service selects one scheme.
 Conflicting or absent confidence retains HTTP and HTTPS, including custom ports.
-The current canonical service artifact does not carry confidence; ordinary runs
-therefore retain that fallback until an evidence-producing upstream contract is
-available. A bare product/version or a Pulse CVE hypothesis never removes a CVE
+The current canonical service artifact does not carry confidence. Production
+planning instead joins canonical Pulse endpoints to bounded `pulse/raw.json`
+observations: an actively probed HTTP status response establishes HTTP; an
+actively probed HTTPS service plus `pulse-tls` negotiated TLS and an HTTP Server
+response establishes HTTPS. The plan retains raw SHA-256 and JSON pointer receipts.
+Port labels, product/version, OS confidence and JARM alone cannot establish a
+scheme. Missing, stale/mismatched or unsupported raw evidence retains both. A bare product/version or a Pulse CVE hypothesis never removes a CVE
 check. Explicit technology mappings annotate nginx/apache/wordpress/tomcat/jenkins;
 this first policy keeps **all eligible HTTP templates** as the safe fallback, so
 it makes no claim of validated technology-based template reduction.
 
 The directed catalog admits root-relative `{{BaseURL}}/` or `{{RootURL}}/` HTTP
-paths only. Raw requests, literal external URLs, Host overrides, mixed engines
+paths only. Raw requests, literal external URLs, constants/variables/payloads/internal extractors, self-contained templates, Host overrides, mixed engines
 and flow templates are scope-unproven or unsupported and explicitly excluded in
 the plan. This conservative restriction can exclude otherwise useful CVE checks;
 compare `excluded_templates` before enabling it. Redirect following is disabled.
@@ -66,7 +70,10 @@ JSONL matches survive timeout, including in legacy mode.
 `tests/fixtures/nuclei_plan/benchmark.json` records an actual isolated loopback
 execution with Nuclei v3.11.1 from local image `shapo-go-tools-check:latest`
 (image ID 9c84d15ed039), using Python runtime `shapo-issue448-benchmark:local`
-with `--network none`. The archived JSONL is an actual engine record. The template
+with `--network none`. The archived JSONL is an actual engine record. The additional
+`pulse-production-protocol.json` fixture is extracted from issue #448's immutable
+`raw-outputs.tar.gz`, member `heterogeneous-0-after/pulse/raw.json`; a regression
+runs it through the actual canonical producer and planner. The template
 and CVE-2099-9999 are explicitly synthetic, not proof of a real vulnerability.
 
 | Metric | Full legacy | Directed |
@@ -90,5 +97,11 @@ read-only as `/work` and `PYTHONPATH=/work`.
 
 Default enablement requires broader expected-real-finding acceptance, actual
 HTTP/HTTPS IPv6 and Host/SNI capture, representative full-catalog benchmarks,
-confidence provenance from Pulse, and measured process-startup overhead. These
+broader protocol-provenance variants from Pulse, and measured process-startup overhead. These
 remain unverified by this synthetic HTTP fixture. The mode stays opt-in.
+
+The per-process raw JSONL retains exact engine bytes. The combined
+`nuclei_raw.jsonl` adds a bounded adapter-owned `shapoclyack_input` envelope
+(`octo.nuclei_input.v1`) containing dial IP/port and actual Host authority/SNI.
+It is invocation metadata rather than a field emitted by Nuclei, and prevents
+multiple virtual hosts on the same IP/path from losing their distinct subjects.

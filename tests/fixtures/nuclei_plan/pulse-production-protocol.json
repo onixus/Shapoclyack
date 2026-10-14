@@ -1,0 +1,539 @@
+{
+  "open": [
+    {
+      "banner": "HTTP/1.1 200 OK | Server: nginx/1.24.0 | Content-Length: 2 | Connection: close | OK",
+      "detection_method": "probe-db",
+      "host": "127.20.0.1",
+      "ip": "127.20.0.1",
+      "latency_ms": 0,
+      "open": true,
+      "port": 8080,
+      "product": "nginx",
+      "protocol": "tcp",
+      "service": "http",
+      "state": "open",
+      "version": "1.24.0"
+    },
+    {
+      "banner": "Server: nginx/1.24.0",
+      "detection_method": "probe",
+      "host": "127.20.0.2",
+      "ip": "127.20.0.2",
+      "jarm": "0000000000000000002ad2ad2ad2ad26854ddd8b352e5770cfee0f6e635380",
+      "latency_ms": 0,
+      "open": true,
+      "port": 8443,
+      "product": "nginx",
+      "protocol": "tcp",
+      "service": "https-alt",
+      "state": "open",
+      "version": "1.24.0"
+    },
+    {
+      "banner": "SSH-2.0-OpenSSH_9.2",
+      "detection_method": "probe-db",
+      "host": "127.20.0.3",
+      "ip": "127.20.0.3",
+      "latency_ms": 0,
+      "open": true,
+      "port": 2222,
+      "product": "OpenSSH",
+      "protocol": "tcp",
+      "service": "ssh",
+      "state": "open",
+      "version": "9.2"
+    }
+  ],
+  "os": [
+    {
+      "closed_port": null,
+      "confidence": 100,
+      "db_path": null,
+      "detail": "Linux (modern, TS+SACK+WS)",
+      "df": true,
+      "family": "Linux",
+      "host": "127.20.0.1",
+      "initial_ttl": 64,
+      "ip": "127.20.0.1",
+      "matches": [
+        {
+          "accuracy": 1.0,
+          "accuracy_pct": 100,
+          "cpe": [],
+          "db_line": 0,
+          "device_type": "",
+          "family": "Linux",
+          "generation": "",
+          "name": "Linux (modern, TS+SACK+WS)",
+          "vendor": ""
+        },
+        {
+          "accuracy": 0.8076923076923077,
+          "accuracy_pct": 81,
+          "cpe": [],
+          "db_line": 0,
+          "device_type": "",
+          "family": "Linux",
+          "generation": "",
+          "name": "Linux 2.6.x|3.x|4.x|5.x|6.x",
+          "vendor": ""
+        },
+        {
+          "accuracy": 0.5769230769230769,
+          "accuracy_pct": 58,
+          "cpe": [],
+          "db_line": 0,
+          "device_type": "",
+          "family": "macOS/BSD",
+          "generation": "",
+          "name": "Apple macOS / Darwin",
+          "vendor": ""
+        },
+        {
+          "accuracy": 0.5416666666666666,
+          "accuracy_pct": 54,
+          "cpe": [],
+          "db_line": 0,
+          "device_type": "",
+          "family": "macOS/BSD",
+          "generation": "",
+          "name": "FreeBSD 10+|OpenBSD|NetBSD",
+          "vendor": ""
+        },
+        {
+          "accuracy": 0.47058823529411764,
+          "accuracy_pct": 47,
+          "cpe": [],
+          "db_line": 0,
+          "device_type": "",
+          "family": "Embedded",
+          "generation": "",
+          "name": "Embedded / IoT (TTL 64, small window)",
+          "vendor": ""
+        }
+      ],
+      "mss": 65495,
+      "open_port": 8080,
+      "option_layout": "MFFD7ST11NW7",
+      "probe_port": 8080,
+      "sack_ok": true,
+      "signals": [
+        "ttl=64",
+        "ittl=64",
+        "df=1",
+        "win=65483",
+        "opts=MFFD7ST11NW7",
+        "flags=AS",
+        "port=8080",
+        "sack",
+        "ts"
+      ],
+      "source": "sinfp",
+      "timestamp": true,
+      "ttl": 64,
+      "window": 65483,
+      "wscale": 7
+    },
+    {
+      "closed_port": null,
+      "confidence": 100,
+      "db_path": null,
+      "detail": "Linux (modern, TS+SACK+WS)",
+      "df": true,
+      "family": "Linux",
+      "host": "127.20.0.2",
+      "initial_ttl": 64,
+      "ip": "127.20.0.2",
+      "matches": [
+        {
+          "accuracy": 1.0,
+          "accuracy_pct": 100,
+          "cpe": [],
+          "db_line": 0,
+          "device_type": "",
+          "family": "Linux",
+          "generation": "",
+          "name": "Linux (modern, TS+SACK+WS)",
+          "vendor": ""
+        },
+        {
+          "accuracy": 0.8076923076923077,
+          "accuracy_pct": 81,
+          "cpe": [],
+          "db_line": 0,
+          "device_type": "",
+          "family": "Linux",
+          "generation": "",
+          "name": "Linux 2.6.x|3.x|4.x|5.x|6.x",
+          "vendor": ""
+        },
+        {
+          "accuracy": 0.5769230769230769,
+          "accuracy_pct": 58,
+          "cpe": [],
+          "db_line": 0,
+          "device_type": "",
+          "family": "macOS/BSD",
+          "generation": "",
+          "name": "Apple macOS / Darwin",
+          "vendor": ""
+        },
+        {
+          "accuracy": 0.5416666666666666,
+          "accuracy_pct": 54,
+          "cpe": [],
+          "db_line": 0,
+          "device_type": "",
+          "family": "macOS/BSD",
+          "generation": "",
+          "name": "FreeBSD 10+|OpenBSD|NetBSD",
+          "vendor": ""
+        },
+        {
+          "accuracy": 0.47058823529411764,
+          "accuracy_pct": 47,
+          "cpe": [],
+          "db_line": 0,
+          "device_type": "",
+          "family": "Embedded",
+          "generation": "",
+          "name": "Embedded / IoT (TTL 64, small window)",
+          "vendor": ""
+        }
+      ],
+      "mss": 65495,
+      "open_port": 8443,
+      "option_layout": "MFFD7ST11NW7",
+      "probe_port": 8443,
+      "sack_ok": true,
+      "signals": [
+        "ttl=64",
+        "ittl=64",
+        "df=1",
+        "win=65483",
+        "opts=MFFD7ST11NW7",
+        "flags=AS",
+        "port=8443",
+        "sack",
+        "ts"
+      ],
+      "source": "sinfp",
+      "timestamp": true,
+      "ttl": 64,
+      "window": 65483,
+      "wscale": 7
+    },
+    {
+      "closed_port": null,
+      "confidence": 100,
+      "db_path": null,
+      "detail": "Linux (modern, TS+SACK+WS)",
+      "df": true,
+      "family": "Linux",
+      "host": "127.20.0.3",
+      "initial_ttl": 64,
+      "ip": "127.20.0.3",
+      "matches": [
+        {
+          "accuracy": 1.0,
+          "accuracy_pct": 100,
+          "cpe": [],
+          "db_line": 0,
+          "device_type": "",
+          "family": "Linux",
+          "generation": "",
+          "name": "Linux (modern, TS+SACK+WS)",
+          "vendor": ""
+        },
+        {
+          "accuracy": 0.8076923076923077,
+          "accuracy_pct": 81,
+          "cpe": [],
+          "db_line": 0,
+          "device_type": "",
+          "family": "Linux",
+          "generation": "",
+          "name": "Linux 2.6.x|3.x|4.x|5.x|6.x",
+          "vendor": ""
+        },
+        {
+          "accuracy": 0.5769230769230769,
+          "accuracy_pct": 58,
+          "cpe": [],
+          "db_line": 0,
+          "device_type": "",
+          "family": "macOS/BSD",
+          "generation": "",
+          "name": "Apple macOS / Darwin",
+          "vendor": ""
+        },
+        {
+          "accuracy": 0.5416666666666666,
+          "accuracy_pct": 54,
+          "cpe": [],
+          "db_line": 0,
+          "device_type": "",
+          "family": "macOS/BSD",
+          "generation": "",
+          "name": "FreeBSD 10+|OpenBSD|NetBSD",
+          "vendor": ""
+        },
+        {
+          "accuracy": 0.47058823529411764,
+          "accuracy_pct": 47,
+          "cpe": [],
+          "db_line": 0,
+          "device_type": "",
+          "family": "Embedded",
+          "generation": "",
+          "name": "Embedded / IoT (TTL 64, small window)",
+          "vendor": ""
+        }
+      ],
+      "mss": 65495,
+      "open_port": 2222,
+      "option_layout": "MFFD7ST11NW7",
+      "probe_port": 2222,
+      "sack_ok": true,
+      "signals": [
+        "ttl=64",
+        "ittl=64",
+        "df=1",
+        "win=65483",
+        "opts=MFFD7ST11NW7",
+        "flags=AS",
+        "port=2222",
+        "sack",
+        "ts"
+      ],
+      "source": "sinfp",
+      "timestamp": true,
+      "ttl": 64,
+      "window": 65483,
+      "wscale": 7
+    }
+  ],
+  "cves": [
+    {
+      "confidence": 80,
+      "cve_id": "",
+      "cvss": null,
+      "epss": null,
+      "evidence": "expires_in_days=0; not_after=2026-10-15 22:16:49.0 +00:00:00",
+      "finding_class": "tls",
+      "in_kev": false,
+      "ip": "127.20.0.2",
+      "match_reason": "tls handshake",
+      "port": 8443,
+      "refs": [],
+      "requires_confirmation": false,
+      "ruleset_version": "2026.07.29-h1",
+      "service": "https-alt",
+      "severity": "medium",
+      "source": "pulse-tls",
+      "summary": "expires_in_days=0; not_after=2026-10-15 22:16:49.0 +00:00:00",
+      "title": "TLS certificate expiring soon"
+    },
+    {
+      "confidence": 70,
+      "cve_id": "",
+      "cvss": null,
+      "epss": null,
+      "evidence": "subject_cn=Some(\"pulse-loopback-fixture\") issuer_cn=Some(\"pulse-loopback-fixture\")",
+      "finding_class": "tls",
+      "in_kev": false,
+      "ip": "127.20.0.2",
+      "match_reason": "tls handshake",
+      "port": 8443,
+      "refs": [],
+      "requires_confirmation": false,
+      "ruleset_version": "2026.07.29-h1",
+      "service": "https-alt",
+      "severity": "medium",
+      "source": "pulse-tls",
+      "summary": "subject_cn=Some(\"pulse-loopback-fixture\") issuer_cn=Some(\"pulse-loopback-fixture\")",
+      "title": "TLS certificate self-signed (heuristic)"
+    }
+  ],
+  "findings": [
+    {
+      "confidence": 80,
+      "cve_id": "",
+      "cvss": null,
+      "epss": null,
+      "evidence": "expires_in_days=0; not_after=2026-10-15 22:16:49.0 +00:00:00",
+      "finding_class": "tls",
+      "in_kev": false,
+      "ip": "127.20.0.2",
+      "match_reason": "tls handshake",
+      "port": 8443,
+      "refs": [],
+      "requires_confirmation": false,
+      "ruleset_version": "2026.07.29-h1",
+      "service": "https-alt",
+      "severity": "medium",
+      "source": "pulse-tls",
+      "summary": "expires_in_days=0; not_after=2026-10-15 22:16:49.0 +00:00:00",
+      "title": "TLS certificate expiring soon"
+    },
+    {
+      "confidence": 70,
+      "cve_id": "",
+      "cvss": null,
+      "epss": null,
+      "evidence": "subject_cn=Some(\"pulse-loopback-fixture\") issuer_cn=Some(\"pulse-loopback-fixture\")",
+      "finding_class": "tls",
+      "in_kev": false,
+      "ip": "127.20.0.2",
+      "match_reason": "tls handshake",
+      "port": 8443,
+      "refs": [],
+      "requires_confirmation": false,
+      "ruleset_version": "2026.07.29-h1",
+      "service": "https-alt",
+      "severity": "medium",
+      "source": "pulse-tls",
+      "summary": "subject_cn=Some(\"pulse-loopback-fixture\") issuer_cn=Some(\"pulse-loopback-fixture\")",
+      "title": "TLS certificate self-signed (heuristic)"
+    }
+  ],
+  "tls": [
+    {
+      "expired": false,
+      "expires_in_days": 0,
+      "host": "127.20.0.2",
+      "http_product": "nginx",
+      "http_server": "nginx/1.24.0",
+      "http_version": "1.24.0",
+      "ip": "127.20.0.2",
+      "issuer_cn": "pulse-loopback-fixture",
+      "jarm": "0000000000000000002ad2ad2ad2ad26854ddd8b352e5770cfee0f6e635380",
+      "negotiated_protocol": "TLSv1_3",
+      "not_after": "2026-10-15 22:16:49.0 +00:00:00",
+      "not_before": "2026-10-14 22:16:49.0 +00:00:00",
+      "port": 8443,
+      "san": [],
+      "self_signed": true,
+      "source": "pulse-tls",
+      "subject_cn": "pulse-loopback-fixture"
+    }
+  ],
+  "stats": {
+    "closed": 0,
+    "elapsed_ms": 4748,
+    "filtered": 0,
+    "open": 3,
+    "skipped": 0,
+    "total": 3,
+    "rate_pps": 0.6
+  },
+  "chunks": [
+    {
+      "index": 0,
+      "key": "c45250f8f388b03c",
+      "hosts": [
+        "127.20.0.1"
+      ],
+      "ports": [
+        8080
+      ],
+      "returncode": 0,
+      "timed_out": false,
+      "resolved": true,
+      "unresolved_hosts": [],
+      "probe_calls": 1
+    },
+    {
+      "index": 1,
+      "key": "b061d5c1800c5ad8",
+      "hosts": [
+        "127.20.0.2"
+      ],
+      "ports": [
+        8443
+      ],
+      "returncode": 0,
+      "timed_out": false,
+      "resolved": true,
+      "unresolved_hosts": [],
+      "probe_calls": 1
+    },
+    {
+      "index": 2,
+      "key": "476fe900d68469bc",
+      "hosts": [
+        "127.20.0.3"
+      ],
+      "ports": [
+        2222
+      ],
+      "returncode": 0,
+      "timed_out": false,
+      "resolved": true,
+      "unresolved_hosts": [],
+      "probe_calls": 1
+    }
+  ],
+  "completion": {
+    "schema": "octo.pulse_completion.v1",
+    "hosts": {
+      "127.20.0.1": {
+        "ports": [
+          8080
+        ],
+        "returncode": 0
+      },
+      "127.20.0.2": {
+        "ports": [
+          8443
+        ],
+        "returncode": 0
+      },
+      "127.20.0.3": {
+        "ports": [
+          2222
+        ],
+        "returncode": 0
+      }
+    }
+  },
+  "adapter": {
+    "pulse_bin": "/usr/local/bin/pulse",
+    "os_detect": true,
+    "os_detect_degraded": null,
+    "cve": false,
+    "cve_online": false,
+    "tls_enum": false,
+    "tls_enumeration_contract": null,
+    "ruleset": "2026.07.29-h1",
+    "pulse_version": "1.4.0",
+    "chunk_hosts": 64,
+    "plugins": {
+      "requested": false,
+      "active": false,
+      "dir": null,
+      "digest": "",
+      "offered_digest": "",
+      "unavailable": null,
+      "loaded": [],
+      "rejected": [],
+      "errors": []
+    },
+    "services_db": "/source/scanner/pipeline/pulse_data/services.tsv",
+    "probe_db": "/source/scanner/pipeline/pulse_data/probes.json",
+    "probe_db_version": "2026.08.21+shapo.1",
+    "probe_db_sha256": "998a339441d8658dccccef650e93d22534c3f67b3072e211b15a09bc31e9357d",
+    "probe_db_skipped": null,
+    "probe_db_fallback": [],
+    "input_unique_tcp_endpoints": 3,
+    "pending_unique_tcp_endpoints": 3,
+    "planned_tcp_combinations": 3,
+    "planned_chunks": 3,
+    "chunk_probe_calls": 3,
+    "adapter_retry_calls": 0,
+    "adapter_retry_tcp_combinations": 0,
+    "command_retries": 0,
+    "resumed_hosts": 0,
+    "replayed_checkpoint_hosts": 0
+  }
+}

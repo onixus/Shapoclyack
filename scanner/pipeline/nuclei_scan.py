@@ -771,8 +771,34 @@ def _run_web_sweep(
                         raw = raw[: min(1024 * 1024, raw_bytes_left)]
                         raw = raw[: raw.rfind(b"\n") + 1]
                         part.write_bytes(raw)
-                    raw_bytes_left -= len(raw)
-                    raw_parts.append(raw.decode("utf-8", errors="replace"))
+                    # Per-process originals remain byte-exact engine artifacts.
+                    # The combined adapter projection binds actual Host/SNI
+                    # invocation context which nuclei omits from IP URL output.
+                    projected = []
+                    for line in raw.decode("utf-8", errors="replace").split("\n"):
+                        if not line.strip():
+                            continue
+                        record = _parse_result_line(line)
+                        if record is None:
+                            plan["malformed_result"] = True
+                            projected.append(line)
+                            continue
+                        record["shapoclyack_input"] = {
+                            "schema": "octo.nuclei_input.v1",
+                            "ip": target["ip"],
+                            "port": target["port"],
+                            "authority": target["authority"],
+                            "sni": target["sni"],
+                        }
+                        encoded = json.dumps(record, separators=(",", ":")).encode(
+                            "utf-8"
+                        )
+                        if len(encoded) + 1 > raw_bytes_left:
+                            plan["artifact_truncated"] = True
+                            break
+                        raw_bytes_left -= len(encoded) + 1
+                        projected.append(encoded.decode("utf-8"))
+                    raw_parts.append("\n".join(projected))
                 # One deadline, no automatic retry of a timed out invocation.
                 if codes[-1] is None:
                     break

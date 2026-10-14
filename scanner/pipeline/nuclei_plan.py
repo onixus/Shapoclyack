@@ -132,6 +132,15 @@ def catalog(
         # or raw Host override in a template. Admit only root-relative HTTP
         # requests to this input, and report the rest as scope unproven.
         scope_safe = isinstance(requests, list) and bool(requests)
+        # Engine constants/variables/payloads and internal extractors can
+        # override BaseURL/RootURL after Nuclei computes input variables.
+        # Until a richer template sandbox is proven, reject variable-bearing
+        # templates rather than trusting a textual path prefix as a scope fence.
+        if any(
+            key in document
+            for key in ("constants", "variables", "self-contained", "global-matchers")
+        ):
+            scope_safe = False
         for request in requests if isinstance(requests, list) else []:
             paths = request.get("path") if isinstance(request, dict) else None
             scope_safe = (
@@ -145,6 +154,10 @@ def catalog(
                 and (path.startswith("{{BaseURL}}/") or path.startswith("{{RootURL}}/"))
                 for path in paths or []
             )
+            if isinstance(request, dict) and any(
+                key in request for key in ("payloads", "extractors", "self-contained")
+            ):
+                scope_safe = False
             if isinstance(request, dict) and any(
                 str(h).lower() == "host" for h in (request.get("headers") or {})
             ):
@@ -230,6 +243,12 @@ def build_plan(
         rows = observations.get((host, port), [])
         reliable = []
         for row in rows:
+            measured = row.get("protocol_observation")
+            if isinstance(measured, dict) and measured.get("scheme") in {
+                "http",
+                "https",
+            }:
+                reliable.append(measured["scheme"])
             confidence = row.get("confidence", 0)
             if (
                 type(confidence) in (int, float)
@@ -266,9 +285,7 @@ def build_plan(
                 }
             )
             for name in [None, *names]:
-                authority = (name or hostpart) + (
-                    f":{port}" if port not in {80, 443} else ""
-                )
+                authority = (name or hostpart) + f":{port}"
                 targets.append(
                     {
                         "url": f"{scheme}://{hostpart}:{port}/",
@@ -279,6 +296,11 @@ def build_plan(
                         "host_header": authority if name else None,
                         "reason": reason,
                         "technologies": technologies,
+                        "protocol_observations": [
+                            r["protocol_observation"]
+                            for r in rows
+                            if r.get("protocol_observation")
+                        ],
                         "template_set": "safe_http_fallback",
                     }
                 )
@@ -354,9 +376,104 @@ def snapshot_catalog(
         (destination / (row["id"] + ".yaml")).write_bytes(content)
 
 
-def read_services(output_dir: Path) -> list[dict[str, Any]]:
+def bounded_document(
+    path: Path, limit: int = 16 * 1024 * 1024
+) -> tuple[Any, str | None]:
     try:
-        rows = json.loads((output_dir / "services.json").read_text())
-        return rows if isinstance(rows, list) else []
-    except (OSError, ValueError):
+        if path.is_symlink():
+            return None, None
+        with path.open("rb") as handle:
+            content = handle.read(limit + 1)
+        if len(content) > limit:
+            return None, None
+        return json.loads(content), hashlib.sha256(content).hexdigest()
+    except (OSError, ValueError, RecursionError):
+        return None, None
+
+
+def read_services(output_dir: Path) -> list[dict[str, Any]]:
+    """Enrich canonical endpoints with actual Pulse response receipts.
+
+    No confidence is invented from a banner. An active HTTP response or
+    negotiated TLS with an HTTP Server response is an observed protocol fact,
+    bound to the exact raw artifact content and canonical TCP endpoint.
+    Product/version, port labels, JARM alone and OS confidence are insufficient.
+    """
+    rows, _ = bounded_document(output_dir / "services.json")
+    if not isinstance(rows, list):
         return []
+    raw, sha = bounded_document(output_dir / "pulse" / "raw.json")
+    if not isinstance(raw, dict) or not sha or not isinstance(raw.get("open"), list):
+        return rows
+    tls = {}
+    for index, item in enumerate(raw.get("tls") or []):
+        if not isinstance(item, dict) or item.get("source") != "pulse-tls":
+            continue
+        if item.get("negotiated_protocol") not in {
+            "TLSv1",
+            "TLSv1_0",
+            "TLSv1_1",
+            "TLSv1_2",
+            "TLSv1_3",
+        }:
+            continue
+        if (
+            not isinstance(item.get("http_server"), str)
+            or not item["http_server"].strip()
+        ):
+            continue
+        try:
+            key = str(item.get("ip") or item.get("host") or ""), int(item["port"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        tls[key] = index
+    observed = {}
+    for index, item in enumerate(raw["open"]):
+        if not isinstance(item, dict) or item.get("protocol", "tcp") != "tcp":
+            continue
+        if item.get("state", "open") != "open" or item.get("open") is not True:
+            continue
+        if item.get("detection_method") not in {"probe", "probe-db"}:
+            continue
+        try:
+            key = str(item.get("ip") or item.get("host") or ""), int(item["port"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        service = str(item.get("service") or "").lower()
+        banner = item.get("banner")
+        receipt = {"path": "pulse/raw.json", "sha256": sha, "locator": f"/open/{index}"}
+        if service in {"https", "https-alt", "ssl/http"} and key in tls:
+            receipt.update(
+                scheme="https",
+                reason="observed_tls_http_response",
+                tls_locator=f"/tls/{tls[key]}",
+            )
+        elif (
+            service in {"http", "http-alt"}
+            and isinstance(banner, str)
+            and re.match(r"^HTTP/[12](?:\.[01])? [1-5][0-9]{2}(?: |$)", banner)
+        ):
+            receipt.update(scheme="http", reason="observed_http_response")
+        else:
+            continue
+        observed.setdefault(key, []).append((service, receipt))
+    enriched = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row = dict(row)
+        if row.get("source") == "pulse" and row.get("protocol", "tcp") == "tcp":
+            try:
+                key = str(row.get("ip") or row.get("host") or ""), int(row["port"])
+            except (KeyError, TypeError, ValueError):
+                enriched.append(row)
+                continue
+            matches = [
+                receipt
+                for service, receipt in observed.get(key, [])
+                if service == str(row.get("service") or "").lower()
+            ]
+            if len(matches) == 1:
+                row["protocol_observation"] = matches[0]
+        enriched.append(row)
+    return enriched

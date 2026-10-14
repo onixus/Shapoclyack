@@ -247,3 +247,150 @@ def test_each_directed_invocation_requires_its_own_loaded_receipt(
         assert not result["coverage"]["plan"]["complete"]
         assert result["checked_count"] == 0
         assert len(result["coverage"]["plan"]["process_results"]) == 2
+
+
+def test_current_pulse_emitted_schema_enriches_canonical_services(tmp_path):
+    from scanner.pipeline.nuclei_plan import read_services
+    from scanner.pipeline.pulse_probe import parse_pulse_json
+
+    raw = json.loads(
+        Path("tests/fixtures/nuclei_plan/pulse-production-protocol.json").read_text()
+    )
+    # Recreate the real producer path, not manually invented confidence fields.
+    records, _, _ = parse_pulse_json(raw)
+    (tmp_path / "services.json").write_text(
+        json.dumps([r.model_dump(mode="json") for r in records])
+    )
+    (tmp_path / "pulse").mkdir()
+    (tmp_path / "pulse" / "raw.json").write_text(json.dumps(raw))
+    enriched = read_services(tmp_path)
+    template(tmp_path / "templates")
+    digest, rows, _ = catalog([tmp_path / "templates"], 10)
+    ports = [f"{r.ip}:{r.port}/tcp" for r in records]
+    plan = build_plan(ports, enriched, NucleiConfig(), digest, rows)
+    assert {t["url"] for t in plan["targets"] if t["port"] == 8080} == {
+        "http://127.20.0.1:8080/"
+    }
+    assert {t["url"] for t in plan["targets"] if t["port"] == 8443} == {
+        "https://127.20.0.2:8443/"
+    }
+    assert len([t for t in plan["targets"] if t["port"] == 2222]) == 2
+    assert all(
+        t["protocol_observations"] for t in plan["targets"] if t["port"] in {8080, 8443}
+    )
+    raw["tls"] = []
+    (tmp_path / "pulse" / "raw.json").write_text(json.dumps(raw))
+    fallback = build_plan(ports, read_services(tmp_path), NucleiConfig(), digest, rows)
+    assert len([t for t in fallback["targets"] if t["port"] == 8443]) == 2
+
+
+def test_url_variable_override_templates_are_scope_unproven(tmp_path):
+    for index, injected in enumerate(
+        (
+            "constants:\n  BaseURL: http://outside.example\n",
+            "variables:\n  RootURL: http://outside.example\n",
+            "self-contained: true\n",
+        )
+    ):
+        directory = tmp_path / str(index)
+        template(directory)
+        path = directory / "fixture-cve.yaml"
+        path.write_text(path.read_text() + injected)
+        digest, rows, error = catalog([directory], 10)
+        assert error is None
+        plan = build_plan(["10.0.0.1:80/tcp"], [], NucleiConfig(), digest, rows)
+        assert plan["template_sets"]["safe_http_fallback"] == []
+        assert plan["excluded_templates"][0]["reason"] == "scope_unproven"
+    directory = tmp_path / "payloads"
+    template(directory)
+    path = directory / "fixture-cve.yaml"
+    path.write_text(
+        path.read_text().replace(
+            "  - method: GET",
+            "  - payloads:\n      BaseURL: [http://outside.example]\n    method: GET",
+        )
+    )
+    _, rows, _ = catalog([directory], 10)
+    assert not rows[0]["scope_safe"]
+
+
+def test_authority_keeps_port_for_both_unknown_schemes(tmp_path):
+    template(tmp_path)
+    digest, rows, _ = catalog([tmp_path], 10)
+    plan = build_plan(
+        ["10.0.0.1:80/tcp", "10.0.0.1:443/tcp"],
+        [],
+        NucleiConfig(),
+        digest,
+        rows,
+        {"10.0.0.1": ["a.example"]},
+    )
+    for target in plan["targets"]:
+        assert target["authority"].endswith(":" + str(target["port"]))
+
+
+def test_combined_raw_preserves_adapter_authority_while_original_is_exact(
+    tmp_path, monkeypatch
+):
+    template(tmp_path / "templates")
+    (tmp_path / "services.json").write_text(
+        json.dumps(
+            [{"ip": "10.0.0.1", "port": 1234, "service": "https", "confidence": 100}]
+        )
+    )
+    (tmp_path / "dns_resolution.json").write_text(
+        json.dumps(
+            {
+                "records": [
+                    {"host": "a.example", "a": ["10.0.0.1"]},
+                    {"host": "b.example", "a": ["10.0.0.1"]},
+                ]
+            }
+        )
+    )
+    raw = {
+        "template-id": "fixture-cve",
+        "host": "10.0.0.1",
+        "port": "1234",
+        "type": "http",
+        "matched-at": "https://10.0.0.1:1234/same",
+        "info": {"severity": "high"},
+    }
+    original = json.dumps(raw) + "\n"
+
+    def run(cmd, **kwargs):
+        Path(cmd[cmd.index("-jsonl-export") + 1]).write_text(original)
+        return subprocess.CompletedProcess(
+            cmd, 0, "", "[INF] Templates loaded for current scan: 1"
+        )
+
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", lambda _: "nuclei")
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", run)
+    run_nuclei_scan(
+        ["10.0.0.1:1234/tcp"],
+        NucleiConfig(
+            planner_mode="directed",
+            templates_dir=str(tmp_path / "templates"),
+            network_templates=False,
+        ),
+        tmp_path,
+    )
+    projected = [
+        json.loads(line)
+        for line in (tmp_path / "nuclei_raw.jsonl").read_text().splitlines()
+    ]
+    assert {row["shapoclyack_input"]["authority"] for row in projected} == {
+        "10.0.0.1:1234",
+        "a.example:1234",
+        "b.example:1234",
+    }
+    assert {row["shapoclyack_input"]["sni"] for row in projected} == {
+        None,
+        "a.example",
+        "b.example",
+    }
+    assert all(row["host"] == "10.0.0.1" for row in projected)
+    assert all(
+        part.read_text() == original
+        for part in tmp_path.glob("nuclei_plan_*_raw.jsonl")
+    )
