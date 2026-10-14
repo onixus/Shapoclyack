@@ -260,3 +260,13 @@ raw output; it is not a vulnerability and the adapter does not convert INFO
 into vulnerability findings. Asset-name enrichment is not implemented by this
 plugin. Standalone acceptance uses `pulse plugin run ... --protocol udp`;
 the default is TCP, and an invalid or combined transport is rejected.
+
+`shapo_ssh_hostkey` observes an Ed25519 host-key SHA256 fingerprint through
+one scoped, bounded connection: SSH2 identification, curve25519-sha256 key
+exchange, then verification of the server's Ed25519 exchange signature. No
+password, authentication request or session channel is sent. The signature
+proves possession on this connection; known-host trust and endpoint identity
+are not established. Other key-exchange/host-key algorithms are UNKNOWN errors,
+not negative evidence. The INFO observation stays in raw Pulse output, not in
+vulnerability findings. Its exchange encoding follows RFC 8731 section 3.1:
+X25519's returned bytes are interpreted in network byte order for SSH mpint.

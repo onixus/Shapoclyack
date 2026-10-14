@@ -816,3 +816,106 @@ def test_snmp_read_only_information_uses_scoped_udp_and_bounded_ber(case, tmp_pa
         assert seen == [bytes.fromhex("303502010104067075626c6963a028020453484150020100020100301a300b06072b0601020101000500300b06072b0601020105000500")]
     finally:
         sock.close()
+
+
+@needs_pulse
+@pytest.mark.parametrize("case", ["ok", "bad-signature", "zero-curve", "oversized-packet", "unsupported-kex"])
+def test_ssh_hostkey_verifies_real_exchange_signature_and_rejects_bad_peers(case, tmp_path):
+    import base64
+    import hashlib
+    from cryptography.hazmat.primitives.asymmetric import ed25519, x25519
+    from cryptography.hazmat.primitives import serialization
+    key = ed25519.Ed25519PrivateKey.generate()
+    def string(value):
+        return struct.pack(">I", len(value)) + value
+    hostkey = string(b"ssh-ed25519") + string(key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw))
+    expected = "SHA256:" + base64.b64encode(hashlib.sha256(hostkey).digest()).decode().rstrip("=")
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(4)
+    port = listener.getsockname()[1]
+    listener.settimeout(5)
+    server_errors = []
+    def exact(conn, n):
+        result = b""
+        while len(result) < n:
+            data = conn.recv(n - len(result))
+            if not data:
+                raise EOFError
+            result += data
+        return result
+    def packet(payload):
+        pad = 8 - (len(payload) + 5) % 8
+        if pad < 4:
+            pad += 8
+        return struct.pack(">IB", len(payload) + pad + 1, pad) + payload + bytes(pad)
+    def read_packet(conn):
+        n = struct.unpack(">I", exact(conn, 4))[0]
+        payload = exact(conn, n)
+        return payload[1:-payload[0]]
+    def field(data, pos):
+        n = struct.unpack(">I", data[pos:pos + 4])[0]
+        return data[pos + 4:pos + 4 + n], pos + 4 + n
+    def server():
+        try:
+            # Standalone banner observation opens one connection before the native helper.
+            for _ in range(2):
+                conn, _ = listener.accept()
+                with conn:
+                    conn.settimeout(3)
+                    ident = b"SSH-2.0-independent-fixture"
+                    conn.sendall(ident + b"\r\n")
+                    line = b""
+                    try:
+                        while not line.endswith(b"\n"):
+                            line += exact(conn, 1)
+                    except (EOFError, TimeoutError):
+                        continue
+                    vc = line.rstrip(b"\r\n")
+                    ic = read_packet(conn)
+                    names = [b"curve25519-sha256", b"ssh-ed25519", b"aes128-ctr", b"aes128-ctr", b"hmac-sha2-256", b"hmac-sha2-256", b"none", b"none", b"", b""]
+                    if case == "unsupported-kex":
+                        names[0] = b"diffie-hellman-group14-sha256"
+                    server_init = bytes([20]) + bytes(16) + b"".join(string(n) for n in names) + bytes(5)
+                    if case == "oversized-packet":
+                        conn.sendall(struct.pack(">I", 0xffffffff))
+                        return
+                    conn.sendall(packet(server_init))
+                    if case == "unsupported-kex":
+                        return
+                    qc, _ = field(read_packet(conn), 1)
+                    private = x25519.X25519PrivateKey.generate()
+                    qs = private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+                    shared = private.exchange(x25519.X25519PublicKey.from_public_bytes(qc))
+                    k = shared.lstrip(b"\0")
+                    if k and k[0] & 128:
+                        k = b"\0" + k
+                    digest = hashlib.sha256(b"".join(string(v) for v in [vc, ident, ic, server_init, hostkey, qc, qs, k])).digest()
+                    sig = key.sign(digest)
+                    if case == "bad-signature":
+                        sig = bytes([sig[0] ^ 1]) + sig[1:]
+                    if case == "zero-curve":
+                        qs = bytes(32)
+                    conn.sendall(packet(bytes([31]) + string(hostkey) + string(qs) + string(string(b"ssh-ed25519") + string(sig))))
+                    return
+        except Exception as exc:
+            server_errors.append(repr(exc))
+    worker = threading.Thread(target=server, daemon=True)
+    worker.start()
+    source = (pulse_plugins.PLUGINS_DIR / "shapo_ssh_hostkey.rhai").read_text().replace('fn run() {', 'fn run() { let service = "ssh";', 1)
+    script = tmp_path / "hostkey.rhai"
+    script.write_text(source)
+    try:
+        result = subprocess.run([PULSE, "plugin", "run", str(script), f"127.0.0.1:{port}"], capture_output=True, text=True, timeout=10)
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+        observed = finding([line.strip() for line in clean.splitlines()])
+        if case == "ok":
+            assert observed and observed[0] == "INFO" and expected in observed[2], result.stderr
+            assert not result.stderr.strip()
+        else:
+            assert observed is None and "script error" in result.stderr
+            assert "Function not found" not in result.stderr
+        worker.join(3)
+        assert not server_errors, server_errors
+    finally:
+        listener.close()
