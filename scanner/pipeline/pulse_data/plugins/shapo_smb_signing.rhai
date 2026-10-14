@@ -22,8 +22,9 @@ fn run() {
     if reply.sub_string(8, 8) != "fe534d42" || reply.sub_string(16, 4) != "4000" || reply.sub_string(24, 8) != "00000000" || reply.sub_string(32, 4) != "0000" || (byte_at(reply, 20) & 1) != 1 || reply.sub_string(56, 16) != "0000000000000000" || reply.sub_string(136, 4) != "4100" { throw "not a successful SMB2 negotiate response"; }
     let dialect = reply.sub_string(144, 4);
     if dialect != "0202" && dialect != "1002" { throw "server selected an unrequested SMB dialect"; }
+    // MS-SMB2 3.3.5.4: a server must enable signing; REQUIRED adds the second bit.
     let mode = byte_at(reply, 70) + byte_at(reply, 71) * 256;
-    if mode > 3 { throw "invalid SMB2 signing mode"; }
+    if mode != 1 && mode != 3 { throw "invalid SMB2 signing mode"; }
     if (mode & 2) == 2 { return; }
     return #{ title: "SMB2 message signing is not required", severity: "MEDIUM", summary: "The SMB2 NEGOTIATE response does not require message signing. Session authentication and relay exploitability were not tested.", evidence: "SMB2 SecurityMode=" + mode + "; selected dialect bytes=" + dialect };
 }

@@ -703,7 +703,7 @@ def _smb2_response(mode):
 
 
 @needs_pulse
-@pytest.mark.parametrize("mode, expected", [(0, True), (1, True), (3, False)])
+@pytest.mark.parametrize("mode, expected", [(1, True), (3, False)])
 def test_smb2_signing_is_observed_from_binary_negotiation(mode, expected, stub, tmp_path):
     server = stub(b"", lambda _: _smb2_response(mode))
     lines, errors = _run_binary_plugin("shapo_smb_signing", "smb", server, tmp_path)
@@ -714,7 +714,7 @@ def test_smb2_signing_is_observed_from_binary_negotiation(mode, expected, stub, 
 
 
 @needs_pulse
-@pytest.mark.parametrize("reply", [b"", b"\x00\x00\x00\xff", _smb2_response(0)[:40], _smb2_response(8), _smb2_response(0) + b"junk"])
+@pytest.mark.parametrize("reply", [b"", b"\x00\x00\x00\xff", _smb2_response(1)[:40], _smb2_response(0), _smb2_response(2), _smb2_response(8), _smb2_response(1) + b"junk"])
 def test_smb_malformed_reply_is_an_error_not_a_clean_result(reply, stub, tmp_path):
     server = stub(b"", lambda _: reply)
     lines, errors = _run_binary_plugin("shapo_smb_signing", "smb", server, tmp_path)
