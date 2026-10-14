@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "product_id": "shapoclyack",
+  "deployment_mode": "docker",
+  "required_environment": [
+    "SHAPOCLYACK_IMAGE",
+    "POSTGRES_IMAGE",
+    "POSTGRES_PASSWORD",
+    "OCTO_JWT_SECRET",
+    "OCTO_MASTER_KEY",
+    "OCTO_API_USERS",
+    "OCTO_API_CORS"
+  ],
+  "gateway_url_variable": "APEX_GATEWAY_URL",
+  "service_url_variable": "APEX_SERVICE_URL",
+  "installation_guide": "docs/APEX_DEPLOYMENT.md",
+  "compose_file": "compose.apex.yml",
+  "health_service": "api"
+}

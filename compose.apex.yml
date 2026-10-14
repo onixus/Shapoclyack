@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:?verified PostgreSQL image required}
+    environment:
+      POSTGRES_USER: shapoclyack
+      POSTGRES_DB: shapoclyack
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U shapoclyack -d shapoclyack"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  api:
+    image: ${SHAPOCLYACK_IMAGE:?verified all-in-one image required}
+    environment:
+      OCTO_ENV: prod
+      OCTO_POSTGRES_URL: postgresql+psycopg://shapoclyack:${POSTGRES_PASSWORD:?required}@postgres:5432/shapoclyack
+      OCTO_JWT_SECRET: ${OCTO_JWT_SECRET:?required}
+      OCTO_MASTER_KEY: ${OCTO_MASTER_KEY:?required}
+      OCTO_API_USERS: ${OCTO_API_USERS:?real operator credentials required}
+      OCTO_API_CORS: ${OCTO_API_CORS:?required}
+      OCTO_PUBLIC_BASE_URL: ${APEX_SERVICE_URL:?required}
+      APEX_GATEWAY_URL: ${APEX_GATEWAY_URL:?required}
+      APEX_SERVICE_URL: ${APEX_SERVICE_URL:?required}
+    ports: ["127.0.0.1:8080:8080"]
+    volumes:
+      - scanner-state:/app/scanner/state
+      - scanner-output:/app/scanner/output
+      - scanner-inputs:/app/scanner/inputs
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+volumes:
+  postgres-data:
+  scanner-state:
+  scanner-output:
+  scanner-inputs:
