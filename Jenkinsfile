@@ -38,6 +38,7 @@ def PYTHON_IMAGES = [
 ]
 def POSTGRES_IMAGE = 'postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea'
 def NATS_IMAGE = 'nats:2.10.24-alpine@sha256:fd981e2ab99000964bd15286054e61fcc445732fd907db039f260fc0b824b314'
+def CLICKHOUSE_IMAGE = 'clickhouse/clickhouse-server:24.8@sha256:b002e56ed5c16e224c312527f6fcba7e77216fec5d7a88a7828f59efc614feb5'
 // Статический kubectl для рендера оверлеев на Linux-узле (стадия Tests);
 // версия та же, что в образе контроллера (jenkins-local/Dockerfile).
 def KUBECTL_IMAGE = 'registry.k8s.io/kubectl:v1.31.4@sha256:a519329b1bf8f7889e4c902f7147e6933d6a6e1dde25e8171973642396e31f0d'
@@ -280,34 +281,42 @@ pipeline {
                           "--network ${net} --network-alias nats",
                           "--jetstream --store_dir=/data --http_port=8222"
                         ) { nats ->
-                          // --init: docker.inside держит контейнер на `cat` как
-                          // PID 1, а cat не подбирает осиротевших детей. Тесты
-                          // update-agent.sh убивают группу верификатора, отцепленного
-                          // setsid'ом, и ждут, пока она исчезнет (`kill -0 -- -PGID`):
-                          // зомби на это отвечают «жив», и скрипт висел до таймаута
-                          // теста. На Fedor: без --init 4 failed за 85 с, с ним 4 passed
-                          // за 9.5 с. На хосте сенсора их подбирает systemd.
-                          docker.image(PYTHON_IMAGES[PY]).inside("--init -u 0:0 --network ${net} ${PIP_CACHE}") {
-                            withEnv([
-                              'OCTO_POSTGRES_URL=postgresql+psycopg://octo:octo-ci-secret@pg:5432/shapoclyack',
-                              'OCTO_NATS_URL=nats://nats:4222',
-                              // Стримы этого брокера живут минуты и на слое
-                              // контейнера, без тома. Продовые дефолты (10 ГБ для
-                              // INGEST, 1 ГБ для EVENTS) JetStream резервирует
-                              // заранее и отвечает 'insufficient storage resources
-                              // available', когда на хосте столько не осталось, —
-                              // отчего падал не тот тест, который что-то проверяет.
-                              'OCTO_NATS_INGEST_MAX_BYTES=268435456',
-                              'OCTO_NATS_EVENTS_MAX_BYTES=134217728',
-                              // Отрендерено выше, до контейнера; путь — от корня
-                              // репозитория, который смонтирован тем же путём.
-                              'OCTO_K8S_RENDER_DIR=.k8s-render',
-                            ]) {
+                          docker.image(CLICKHOUSE_IMAGE).withRun(
+                            "--memory 1g --network ${net} --network-alias ch " +
+                            "--tmpfs /var/lib/clickhouse:size=512m --tmpfs /var/log/clickhouse-server:size=64m " +
+                            "-e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 -e CLICKHOUSE_USER=octo " +
+                            "-e CLICKHOUSE_PASSWORD=octo-ch-ci-secret -e CLICKHOUSE_DB=shapoclyack"
+                          ) { ch ->
+                            // --init: docker.inside держит контейнер на `cat` как
+                            // PID 1, а cat не подбирает осиротевших детей. Тесты
+                            // update-agent.sh убивают группу верификатора, отцепленного
+                            // setsid'ом, и ждут, пока она исчезнет (`kill -0 -- -PGID`):
+                            // зомби на это отвечают «жив», и скрипт висел до таймаута
+                            // теста. На Fedor: без --init 4 failed за 85 с, с ним 4 passed
+                            // за 9.5 с. На хосте сенсора их подбирает systemd.
+                            docker.image(PYTHON_IMAGES[PY]).inside("--init -u 0:0 --network ${net} ${PIP_CACHE}") {
                               withEnv([
-                                "JUNIT_XML=junit-${PY}.xml",
-                                "COVERAGE_XML=coverage-${PY}.xml",
+                                'OCTO_POSTGRES_URL=postgresql+psycopg://octo:octo-ci-secret@pg:5432/shapoclyack',
+                                'OCTO_NATS_URL=nats://nats:4222',
+                                'OCTO_CLICKHOUSE_URL=http://octo:octo-ch-ci-secret@ch:8123/shapoclyack',
+                                // Стримы этого брокера живут минуты и на слое
+                                // контейнера, без тома. Продовые дефолты (10 ГБ для
+                                // INGEST, 1 ГБ для EVENTS) JetStream резервирует
+                                // заранее и отвечает 'insufficient storage resources
+                                // available', когда на хосте столько не осталось, —
+                                // отчего падал не тот тест, который что-то проверяет.
+                                'OCTO_NATS_INGEST_MAX_BYTES=268435456',
+                                'OCTO_NATS_EVENTS_MAX_BYTES=134217728',
+                                // Отрендерено выше, до контейнера; путь — от корня
+                                // репозитория, который смонтирован тем же путём.
+                                'OCTO_K8S_RENDER_DIR=.k8s-render',
                               ]) {
-                                sh 'scripts/ci-jenkins-tests.sh'
+                                withEnv([
+                                  "JUNIT_XML=junit-${PY}.xml",
+                                  "COVERAGE_XML=coverage-${PY}.xml",
+                                ]) {
+                                  sh 'scripts/ci-jenkins-tests.sh'
+                                }
                               }
                             }
                           }

@@ -77,6 +77,23 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      clickhouse:
+        image: clickhouse/clickhouse-server:24.8@sha256:b002e56ed5c16e224c312527f6fcba7e77216fec5d7a88a7828f59efc614feb5
+        env:
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+          CLICKHOUSE_USER: octo
+          CLICKHOUSE_PASSWORD: octo-ch-ci-secret
+          CLICKHOUSE_DB: shapoclyack
+        ports:
+          - 8123:8123
+        options: >-
+          --memory 1g
+          --tmpfs /var/lib/clickhouse:size=512m
+          --tmpfs /var/log/clickhouse-server:size=64m
+          --health-cmd "clickhouse-client --user octo --password octo-ch-ci-secret --database shapoclyack --query 'SELECT 1'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -118,6 +135,7 @@ jobs:
       - name: Run tests
         env:
           OCTO_NATS_URL: nats://127.0.0.1:4222
+          OCTO_CLICKHOUSE_URL: http://octo:octo-ch-ci-secret@127.0.0.1:8123/shapoclyack
           OCTO_POSTGRES_URL: postgresql+psycopg://octo:octo-ci-secret@127.0.0.1:5432/shapoclyack
         run: ./scripts/ci-pytest.sh
       - name: Upload coverage report

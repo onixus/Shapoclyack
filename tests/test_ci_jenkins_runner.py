@@ -32,12 +32,12 @@ if name == 'setpriv':
     os.execvp(args[3], args[3:])
 step = name
 if name == 'python':
-    step = 'compile' if args[0] == '-m' else ('postgres' if 'socket' in args[1] else 'jetstream')
+    step = 'compile' if args[0] == '-m' else ('postgres' if 'socket' in args[1] else ('clickhouse' if 'clickhouse_connect' in args[1] else 'jetstream'))
 if mode == 'retry' and step == 'postgres':
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     attempts = sum(c[0] == 'python' and c[1][0] == '-c' and 'socket' in c[1][1] for c in calls)
     sys.exit(1 if attempts < 3 else 0)
-if mode == step and step in {'postgres', 'jetstream'}:
+if mode == step and step in {'postgres', 'jetstream', 'clickhouse'}:
     print(f'probe-error:{step}', file=sys.stderr)
 sys.exit(7 if mode == step else 0)
 '''
@@ -48,7 +48,7 @@ sys.exit(7 if mode == step else 0)
     [('none', 'ci-pytest.sh', 0), ('retry', 'ci-pytest.sh', 0),
      ('root', 'stat', 1), ('pip', 'pip', 7), ('compile', 'python', 7),
      ('postgres', 'python', 1), ('jetstream', 'python', 1),
-     ('alembic', 'alembic', 7), ('ci-pytest.sh', 'ci-pytest.sh', 7)],
+     ('clickhouse', 'python', 1), ('alembic', 'alembic', 7), ('ci-pytest.sh', 'ci-pytest.sh', 7)],
 )
 def test_cell_stops_at_failed_step_and_preserves_test_status(tmp_path, failure, last_step, returncode):
     scripts = tmp_path / 'scripts'
@@ -72,7 +72,7 @@ def test_cell_stops_at_failed_step_and_preserves_test_status(tmp_path, failure, 
     assert result.returncode == returncode, result.stdout + result.stderr
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     assert calls[-1][0] == last_step
-    if failure in {'postgres', 'jetstream'}:
+    if failure in {'postgres', 'jetstream', 'clickhouse'}:
         assert f'{failure} did not become ready after 60 attempts' in result.stderr
         assert sum(c[0] == 'sleep' for c in calls) == 59
         assert result.stderr.count(f'probe-error:{failure}') == 1
@@ -100,3 +100,7 @@ def test_jenkins_delegates_cell_setup_and_keeps_per_version_reports():
     assert "sh 'scripts/ci-jenkins-tests.sh'" in pipeline
     assert '"JUNIT_XML=junit-${PY}.xml"' in pipeline
     assert '"COVERAGE_XML=coverage-${PY}.xml"' in pipeline
+    assert 'docker.image(CLICKHOUSE_IMAGE).withRun(' in pipeline
+    assert '--tmpfs /var/lib/clickhouse:size=512m' in pipeline
+    assert '--tmpfs /var/log/clickhouse-server:size=64m' in pipeline
+    assert 'OCTO_CLICKHOUSE_URL=http://octo:octo-ch-ci-secret@ch:8123/shapoclyack' in pipeline
