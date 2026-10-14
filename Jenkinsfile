@@ -315,6 +315,9 @@ pipeline {
                                   "JUNIT_XML=junit-${PY}.xml",
                                   "COVERAGE_XML=coverage-${PY}.xml",
                                 ]) {
+                                  // Native packaging fixtures verify tracked sources with real git.
+                                  // The pinned python:slim cells do not include that executable.
+                                  sh 'apt-get update -qq && apt-get install -y -qq --no-install-recommends git && rm -rf /var/lib/apt/lists/*'
                                   sh 'scripts/ci-jenkins-tests.sh'
                                 }
                               }
