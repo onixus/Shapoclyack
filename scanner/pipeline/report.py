@@ -95,43 +95,9 @@ def _build_vulnerabilities(script_findings: list[dict]) -> list[dict]:
 
 
 def _dedupe_vulnerabilities(vulnerabilities: list[dict]) -> list[dict]:
-    """Drop duplicate host:port:CVE rows; keep first occurrence (higher-priority sources first).
-
-    Rows without a CVE id are keyed by host:port:script_id so non-CVE
-    VULNERABLE scripts still appear once.
-
-    The detectors of a dropped row are not dropped with it: the kept row
-    lists them under ``also_detected_by`` (``source`` and ``script_id`` each,
-    and Pulse's ``ruleset_version``; only when there were any). One CVE seen
-    by Pulse and by a nuclei template is one finding, but the API has to know
-    both looked -- a verification re-scan is only allowed to close it once
-    both have looked again (docs/vulnerability-lifecycle.md).
-    """
-    kept: dict[tuple[str, str, str], dict] = {}
-    out: list[dict] = []
-    for item in vulnerabilities:
-        cve = item.get("cve")
-        cve_key = str(cve).upper() if cve else f"script:{(item.get('script_id') or '')}"
-        key = (str(item.get("host") or ""), str(item.get("port") or ""), cve_key)
-        first = kept.get(key)
-        if first is not None:
-            ident = {"source": item.get("source"), "script_id": item.get("script_id")}
-            first_ident = {"source": first.get("source"), "script_id": first.get("script_id")}
-            others = first.get("also_detected_by") or []
-            if ident != first_ident and not any(
-                {"source": o.get("source"), "script_id": o.get("script_id")} == ident for o in others
-            ):
-                detector = dict(ident)
-                # The protocol it was seen on and the CVE ruleset a Pulse match
-                # was made with travel too: a verification is judged on both.
-                for extra in ("protocol", "ruleset_version"):
-                    if item.get(extra):
-                        detector[extra] = item[extra]
-                first["also_detected_by"] = [*others, detector]
-            continue
-        kept[key] = item
-        out.append(item)
-    return out
+    """Stable task counts with precise observations instead of first-wins."""
+    from .production_evidence import combine
+    return combine(vulnerabilities)
 
 
 def _lookup_hostname(hostnames_map: dict, host: str) -> str:
@@ -229,7 +195,15 @@ def build_reports(
         vulnerabilities.extend(pulse_extra_vulns)
     if extra_vulnerabilities:
         vulnerabilities.extend(extra_vulnerabilities)
-    vulnerabilities = _dedupe_vulnerabilities(vulnerabilities)
+    import hashlib
+    from .production_evidence import combine
+    save_json(output_dir / "report_sources.json", vulnerabilities)
+    source_sha = hashlib.sha256((output_dir / "report_sources.json").read_bytes()).hexdigest()
+    vulnerabilities = combine(vulnerabilities, artifact_sha=source_sha)
+    from .evidence_artifacts import EvidenceReader
+    from .production_evidence import attach_raw
+    projection = EvidenceReader(output_dir, "unpublished", "unpublished").build()
+    attach_raw(vulnerabilities, projection)
     vulnerabilities.sort(
         key=lambda item: (SEVERITY_ORDER.get(item["severity"], 0), item["cvss"] or 0.0),
         reverse=True,

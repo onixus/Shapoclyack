@@ -130,6 +130,7 @@ class RunDetail(BaseModel):
 
 
 class VulnerabilityItem(BaseModel):
+    finding_evidence: dict[str, Any] | None = None
     host: str | None = None
     port: str | None = None
     cve: str | None = None
@@ -2431,6 +2432,7 @@ class VulnerabilityInfo(BaseModel):
     # Every detector that has observed it, newest first (#451). ``script_id``
     # above is only the first one's.
     detectors: list[VulnerabilityDetectorInfo] = Field(default_factory=list)
+    finding_evidence: dict[str, Any] | None = None
     title: str = ""
     severity: str = "unknown"
     risk_level: str | None = None

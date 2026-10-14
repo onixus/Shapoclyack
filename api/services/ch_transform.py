@@ -116,6 +116,7 @@ def vulnerabilities_to_rows(
         require_captured=require_captured,
         job_id=str(payload.get("job_id") or "") or None,
     )
+    from scanner.pipeline.production_evidence import scoped
     rows: list[list[Any]] = []
     for item, scored in zip(vulns, scores, strict=True):
         host = str(item.get("host") or "").strip()
@@ -135,7 +136,9 @@ def vulnerabilities_to_rows(
                 float(scored["contextual_score"]),
                 str(scored["scoring_model_version"]),
                 ts,
-                json.dumps(scored, sort_keys=True, separators=(",", ":")),
+                json.dumps({**scored, "finding_evidence": scoped(item.get("finding_evidence"),
+                    tenant_id=tenant_id, run_id=str(payload.get("run_id") or ""))},
+                    sort_keys=True, separators=(",", ":")),
             ]
         )
     return rows

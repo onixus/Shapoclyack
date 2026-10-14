@@ -1420,6 +1420,8 @@ def register_findings_from_run(
                 )
             ).scalar_one_or_none()
 
+            from scanner.pipeline.production_evidence import scoped, merge
+            evidence = scoped(entry.get("finding_evidence"), tenant_id=tenant_id, run_id=run_id)
             latest = {
                 "risk_assessment": scored,
                 "severity": severity,
@@ -1450,6 +1452,7 @@ def register_findings_from_run(
                     script_id=script_id,
                     port=port,
                     detectors=merge_detectors([], observed),
+                    finding_evidence=evidence,
                     state=vuln_states.OPEN,
                     state_changed_at=now,
                     # Remediation ownership starts at whoever owns the asset, so
@@ -1527,6 +1530,7 @@ def register_findings_from_run(
             # A new list, not an in-place edit: the JSON column is not a
             # mutable type, so only an assignment is written back.
             row.detectors = merge_detectors(row.detectors, observed)
+            row.finding_evidence = merge(row.finding_evidence, evidence)
             row.observation_count += 1
             row.updated_at = now
             reobserved += 1
@@ -1685,13 +1689,16 @@ def register_findings_from_run(
                     port=v_row.port,
                     asset_hosts=addresses,
                 )
+                from scanner.pipeline.production_evidence import closure_gaps
+                evidence_gaps = closure_gaps(v_row.finding_evidence)
+                gaps = [*gaps, *evidence_gaps]
                 unreachable = (
                     coverage.endpoint_unreachable(
                         _finding_hosts(v_row, addresses),
                         verification_coverage.port_of(v_row.port),
                         protocol=verification_coverage.finding_protocol(list(v_row.detectors or [])),
                     )
-                    if gaps
+                    if gaps and not evidence_gaps
                     else None
                 )
                 if unreachable is not None and not _same_vantage(v_row, vantage):
@@ -1929,6 +1936,7 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
         "tenant_id": row.tenant_id,
         "asset_id": row.asset_id,
         "finding_key": row.finding_key,
+        "finding_evidence": row.finding_evidence,
         "source": row.source,
         "device_id": row.device_id,
         "cve": row.cve,

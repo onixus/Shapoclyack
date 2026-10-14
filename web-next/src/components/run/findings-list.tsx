@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { FindingEvidencePanel } from "@/components/finding-evidence";
 import { useT } from "@/lib/i18n";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -84,6 +85,7 @@ export function FindingsList({
                         {item.host || "unknown host"}
                         {formatLocation(item) ? ` · ${formatLocation(item)}` : ""}
                       </p>
+                      {item.finding_evidence ? <FindingEvidencePanel evidence={item.finding_evidence} /> : null}
                       {item.risk_explanation ? (
                         <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
                           {item.risk_explanation}

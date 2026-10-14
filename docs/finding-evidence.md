@@ -1,11 +1,52 @@
 # Finding evidence: shadow contract (#449, stage 1)
 
-This is an **offline, explicitly invoked projection**, not a change to the
-production tracker. `build_reports()` and the existing first-wins
-`vulnerabilities.json` path are unchanged. Do not mark #449 complete on the
-strength of this stage: API/tracker/UI integration and identity compatibility
-are still required. This implementation can be reviewed and exercised without
-merging #491 or waiting for a live-engine benchmark.
+Production reports now retain observations in additive `finding_evidence` fields
+inside each legacy remediation container. `finding_key` remains unchanged:
+asset/CVE-or-script/port. A container may contain multiple **distinct** precise
+subjects; they are not a claim that TCP/UDP, vhosts/SNI or HTTP objects are the
+same confirmed object. Counts in reports, run API, tracker and ClickHouse remain
+container counts. Evidence counts and subject counts are separate.
+
+The offline sidecar command below remains available for historical artifacts.
+
+## Production compatibility, enablement and rollback
+
+Deploy migration `0087_finding_evidence` before the new API. New reports enable
+the additive contract by default; there is no bulk identity migration/backfill
+and old `vulnerabilities.json` files remain readable. Existing keys, owners,
+SLA deadlines, exceptions and events are preserved. Observations are rebound to
+authenticated tenant/run ownership at run API, tracker and analytics boundaries;
+uploader group IDs and context cannot assert ownership.
+
+`report_sources.json` preserves the exact input rows and its actual file SHA-256
+and JSON pointers are referenced by fallback observations. Available bounded raw
+readers add original Pulse/NSE/Nuclei artifact references, matcher, object and
+engine evidence. New source snapshots and sidecars require operator permissions;
+raw downloads use the existing run-scoped artifact endpoint and its access rules.
+The UI shows observations in run findings and tracker detectors. ClickHouse keeps
+one row per container, adding evidence to the existing JSON assessment envelope;
+all captured risk receipt fields remain unchanged.
+
+The report chooses a deterministic representative from the latest dated cohort
+(or a deterministic undated representative), without source ranking or a
+strongest-forever rule. All conflicting/undated observations remain available.
+The tracker unions evidence across runs, idempotently by observation ID, up to
+10,000 observations. Invalid supplied evidence and exhausted history bounds set
+an explicit incomplete marker; they do not fall back to legacy absence.
+
+Precise HTTP object/SNI/authority, multiple distinct endpoints, or incomplete
+evidence blocks negative closure through legacy endpoint coverage. These
+containers require operator triage until verification can prove every precise
+subject was checked. A new positive observation remains positive even when
+another source is partial. Nuclei never implies machine verification.
+
+Rollback: deploy the older report/API code; existing workflow keys and history
+are unchanged. Leaving the additive nullable column is safe. Downgrading 0087
+drops only evidence history; export it first if required. Historical artifacts
+are not automatically regenerated. The real local Nuclei v3.11.1 capture under
+`tests/fixtures/finding_evidence` exercises output shape with a fabricated local
+CVE template, not real-world detection acceptance. Full release/device/runtime
+acceptance and precise-subject negative verification remain separate gates.
 
 ## Run against existing artifacts
 
@@ -147,7 +188,7 @@ keys. The schema is still the unreleased stage-1 v1 contract, not a migration of
 production findings. Re-aggregation alone cannot recover already discarded
 objects, records or references.
 
-## Remaining stages of #449
+## Historical stage-1 scope (superseded by production integration above)
 
 Before switching the default result, agree on a compatibility/migration policy
 for protocol/vhost/object distinctions currently absent from `finding_key`.

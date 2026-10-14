@@ -6,7 +6,7 @@ from scanner.pipeline.report import _dedupe_vulnerabilities
 from scanner.pipeline.service_schema import CveRecord, cves_to_extra_vulnerabilities
 
 
-def test_dedupe_keeps_first_host_port_cve():
+def test_dedupe_preserves_sources_without_first_wins():
     rows = [
         {"host": "10.0.0.1", "port": "22", "cve": "CVE-2023-0001", "source": "pulse", "cvss": 7.5, "severity": "high"},
         {"host": "10.0.0.1", "port": "22", "cve": "cve-2023-0001", "source": "nuclei", "cvss": 9.0, "severity": "critical"},
@@ -14,7 +14,8 @@ def test_dedupe_keeps_first_host_port_cve():
     ]
     out = _dedupe_vulnerabilities(rows)
     assert len(out) == 2
-    assert out[0]["source"] == "pulse"
+    assert out[0]["finding_evidence"]["findings"][0]["sources"] == ["nuclei", "pulse"]
+    assert out[0]["finding_evidence"]["observation_count"] == 2
     assert out[1]["port"] == "443"
 
 

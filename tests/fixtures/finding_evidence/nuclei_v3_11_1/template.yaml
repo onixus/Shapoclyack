@@ -1,0 +1,16 @@
+id: local-fixture-cve
+info:
+  name: Synthetic loopback fixture (not a vulnerability)
+  author: issue450
+  severity: high
+  tags: cve,fixture
+  classification:
+    cve-id: CVE-2099-9999
+http:
+  - method: GET
+    path:
+      - '{{BaseURL}}/expected'
+    matchers:
+      - type: word
+        words:
+          - 'issue450_expected_match'

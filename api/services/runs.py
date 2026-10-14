@@ -593,6 +593,8 @@ def get_vulnerabilities(
         mode=assessment_mode,
         generation=marker,
     )
+    from scanner.pipeline.production_evidence import scoped
+
     items: list[VulnerabilityItem] = []
     for entry, scored in zip(raw, scores, strict=True):
         entry_host = entry.get("host")
@@ -606,6 +608,8 @@ def get_vulnerabilities(
         confidence = entry.get("confidence")
         items.append(
             VulnerabilityItem(
+                finding_evidence=scoped(
+                    entry.get("finding_evidence"), tenant_id=owner, run_id=run_id) if owner else None,
                 host=entry_host,
                 port=entry_port,
                 cve=entry.get("cve"),
@@ -849,6 +853,8 @@ def is_screenshot_path(relative: str) -> bool:
 # deliberately; org_profile M5 adds credential_leaks.* here.
 _RESTRICTED_ARTIFACTS = frozenset(
     {
+        "report_sources.json",
+        "finding_evidence.json",
         "ownership.json",
         "ownership_findings.txt",
         # org_profile.json embeds ownership.json verbatim (registrant org,
