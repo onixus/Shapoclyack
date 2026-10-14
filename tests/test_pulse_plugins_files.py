@@ -756,3 +756,63 @@ def test_smb1_only_reports_an_explicit_selected_dialect(accepted, stub, tmp_path
     assert (finding(lines) is not None) is accepted, errors
     assert not errors.strip(), errors
     assert any(request[4:9] == b"\xffSMB\x72" for request in server.received)
+
+
+def _ber(tag, payload):
+    length = bytes([len(payload)]) if len(payload) < 128 else b"\x82" + len(payload).to_bytes(2, "big")
+    return bytes([tag]) + length + payload
+
+
+def _snmp_reply(request_id=b"SHAP", extra=b"", exception=False):
+    values = []
+    for oid, value in [(bytes.fromhex("2b060102010100"), b"test OS"), (bytes.fromhex("2b060102010500"), b"test-host")]:
+        values.append(_ber(48, _ber(6, oid) + _ber(129 if exception else 4, value)))
+    pdu = _ber(162, _ber(2, request_id) + _ber(2, b"\0") + _ber(2, b"\0") + _ber(48, b"".join(values)))
+    return _ber(48, _ber(2, b"\1") + _ber(4, b"public") + pdu) + extra
+
+
+@needs_pulse
+@pytest.mark.parametrize("case", ["ok", "wrong-id", "truncated", "trailing", "exception", "oversized-value"])
+def test_snmp_read_only_information_uses_scoped_udp_and_bounded_ber(case, tmp_path):
+    response = _snmp_reply()
+    if case == "wrong-id":
+        response = _snmp_reply(request_id=b"NOPE")
+    elif case == "truncated":
+        response = response[:-1]
+    elif case == "trailing":
+        response = _snmp_reply(extra=b"junk")
+    elif case == "exception":
+        response = _snmp_reply(exception=True)
+    elif case == "oversized-value":
+        response = b"\x30\x82\xff\xff"
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.settimeout(5)
+    seen = []
+    def peer():
+        try:
+            data, addr = sock.recvfrom(4096)
+            seen.append(data)
+            sock.sendto(response, addr)
+        except OSError:
+            pass
+    worker = threading.Thread(target=peer, daemon=True)
+    worker.start()
+    source = (pulse_plugins.PLUGINS_DIR / "shapo_snmp_info.rhai").read_text().replace('fn run() {', 'fn run() { let service = "snmp";', 1)
+    script = tmp_path / "snmp.rhai"
+    script.write_text(source)
+    try:
+        result = subprocess.run([PULSE, "plugin", "run", str(script), f"127.0.0.1:{sock.getsockname()[1]}", "--protocol", "udp"], capture_output=True, text=True, timeout=10)
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+        observed = finding([line.strip() for line in clean.splitlines()])
+        if case == "ok":
+            assert observed and observed[0] == "INFO", result.stderr
+            assert "74657374204f53" in observed[2] and "746573742d686f7374" in observed[2]
+            assert not result.stderr.strip()
+        else:
+            assert observed is None and "script error" in result.stderr
+            assert "Function not found" not in result.stderr
+        worker.join(2)
+        assert seen == [bytes.fromhex("303502010104067075626c6963a028020453484150020100020100301a300b06072b0601020101000500300b06072b0601020105000500")]
+    finally:
+        sock.close()

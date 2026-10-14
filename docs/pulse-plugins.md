@@ -249,3 +249,14 @@ VNC authentication-method negotiation remain gaps; SSH algorithm advertisement
 is not a host-key fingerprint. Loopback binary fixtures verify observed signing
 bits, SMB1 acceptance/refusal, standard RDP acceptance/refusal and malformed
 responses, independently of service discovery.
+
+`shapo_snmp_info` performs one SNMPv2c GET with community `public`, requesting
+only `sysDescr.0` and `sysName.0`. No community guessing or SET is performed.
+It runs only when the endpoint transport is UDP. BER lengths, request ID,
+community, response type, exact OIDs and container boundaries are checked;
+exception values and malformed replies are errors, not empty clean results.
+Its INFO observation retains raw values as bounded hex evidence in Pulse's
+raw output; it is not a vulnerability and the adapter does not convert INFO
+into vulnerability findings. Asset-name enrichment is not implemented by this
+plugin. Standalone acceptance uses `pulse plugin run ... --protocol udp`;
+the default is TCP, and an invalid or combined transport is rejected.
