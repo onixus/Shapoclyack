@@ -364,6 +364,7 @@ def build_pulse_command(
     services_db: str | None = None,
     script_dir: str | None = None,
     probe_db: ProbeDbInfo | None | object = _RESOLVE,
+    tls_enum: bool = False,
 ) -> list[str]:
     # Pulse runs in a private temporary directory (``_probe_chunk``), so every
     # path it is given must mean the same from there: an output_dir that is
@@ -412,6 +413,8 @@ def build_pulse_command(
         cmd += ["--os", "--os-mode", OS_MODE]
     if cve:
         cmd.append("--cve")
+    if tls_enum:
+        cmd.append("--tls-enum")
     if cve_online:
         cmd.append("--cve-online")
     if syn:
@@ -859,6 +862,7 @@ def _run_pulse_probe(
     os_detect: bool = True,
     cve: bool = True,
     cve_online: bool = False,
+    tls_enum: bool = False,
     syn: bool = False,
     max_hosts: int = 65536,
     timeout_seconds: int = 600,
@@ -941,7 +945,11 @@ def _run_pulse_probe(
             previous = json.loads((output_dir / "pulse" / "raw.json").read_text(encoding="utf-8"))
             if not isinstance(previous, dict):
                 raise ValueError("expected an object")
-            done, cached = retain_completed_payload(grouped, requested_done, previous)
+            previous_adapter = previous.get("adapter") or {}
+            if bool(previous_adapter.get("tls_enum")) == tls_enum:
+                done, cached = retain_completed_payload(grouped, requested_done, previous)
+            else:
+                logging.warning("pulse: TLS enumeration setting changed; re-probing completed hosts")
             prior = ((previous.get("adapter") or {}).get("plugins") or {}) if done else {}
             if verified:
                 same = str(prior.get("digest") or "") == plugin_receipt["digest"]
@@ -1019,6 +1027,7 @@ def _run_pulse_probe(
             "chunk_hosts": size,
             "cve": cve,
             "cve_online": cve_online,
+            "tls_enum": tls_enum,
             "ruleset": None,
             "pulse_version": None,
             "plugins": plugin_receipt,
@@ -1061,6 +1070,8 @@ def _run_pulse_probe(
     consecutive_crashes = 0
     consecutive_timeouts = 0
     scan_mode = "syn" if syn else "connect"
+    if tls_enum:
+        scan_mode += "/tls-enum"
 
     logging.info(
         "pulse_probe plan: %s unique input TCP endpoints, %s pending, "
@@ -1127,6 +1138,7 @@ def _run_pulse_probe(
                 probe_db=probe_db,
                 cve=cve,
                 cve_online=cve_online,
+                tls_enum=tls_enum,
                 syn=syn,
                 checkpoint=None,
                 max_hosts=max(max_hosts, len(host_chunk) + 1),
@@ -1326,6 +1338,7 @@ def _run_pulse_probe(
         # was matched against anything.
         "cve": cve,
         "cve_online": cve_online,
+        "tls_enum": tls_enum,
         # The oldest ruleset any chunk matched with: one binary has one, and
         # if two ever answered, the claim made for the run is the weaker one.
         "ruleset": min(rulesets, key=ruleset_order) if rulesets else None,

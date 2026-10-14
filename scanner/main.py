@@ -970,6 +970,7 @@ def _run_pipeline_body(
                     os_detect=pulse_cfg.os_detect,
                     cve=pulse_cfg.cve,
                     cve_online=pulse_cfg.cve_online,
+                    tls_enum=config.tls_posture.enabled and config.tls_posture.enumerate_ciphers,
                     syn=pulse_cfg.syn,
                     max_hosts=pulse_cfg.max_hosts,
                     timeout_seconds=runtime.nse_timeout_seconds,

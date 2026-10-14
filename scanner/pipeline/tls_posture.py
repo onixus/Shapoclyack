@@ -581,7 +581,7 @@ def findings_from_pulse_tls(
         if enumeration is not None:
             enum_issues = _classify_ciphers(enumeration.versions)
             for issue in enum_issues:
-                if not enumeration.complete:
+                if not enumeration.complete or enumeration.evidence == "server_hello_selection":
                     issue["requires_confirmation"] = True
                 if issue["kind"] == "weak_protocol":
                     enum_weak_versions.add(issue["version"])
@@ -639,6 +639,7 @@ def findings_from_pulse_tls(
             "source": "pulse-tls",
             "negotiated_protocol": neg_label,
             **({"enumeration_complete": enumeration.complete} if enumeration is not None else {}),
+            **({"enumeration_evidence": enumeration.evidence} if enumeration is not None and enumeration.evidence else {}),
             "accepts_weak_protocols": [
                 _normalize_proto_label(str(p)) for p in (weak_accepted or [])
             ]

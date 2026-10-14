@@ -515,3 +515,26 @@ def test_a_suite_that_raises_while_being_read_is_skipped_alone():
         row = _from_pulse(_suite_row({"name": "TLS_RSA_WITH_RC4_128_SHA"},
                                      {"name": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "kex_bits": 256}))
     assert [c["name"] for c in row["cipher_versions"][0]["ciphers"]] == ["TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"]
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_raw_selection_evidence_is_preserved_without_claiming_completed_handshake(complete):
+    row = _from_pulse(_row({"complete": complete, "evidence": "server_hello_selection", "versions": [
+        {"version": "SSLv3", "accepted": True, "ciphers": [{"code": "0x0005", "name": "TLS_RSA_WITH_RC4_128_SHA"}]}]}))
+    assert row["enumeration_evidence"] == "server_hello_selection"
+    assert row["enumeration_complete"] is complete
+    assert all(issue.get("requires_confirmation") for issue in row["issues"] if issue["kind"] in CIPHER_KINDS)
+    assert {issue["kind"] for issue in row["issues"]} >= {"weak_protocol", "weak_cipher_name"}
+    assert row["cipher_versions"][0]["ciphers"][0]["grade_upper_bound"] is True
+
+
+def test_recorded_raw_engine_tls13_result_grades_observed_suites():
+    # Recorded from GenDec raw enumerator against a local OpenSSL TLS1.3 server.
+    payload = json.loads((Path(__file__).parent / "fixtures/pulse_tls/raw_tls13.json").read_text())
+    row = _from_pulse(payload["tls"][0])
+    assert row["enumeration_evidence"] == "server_hello_selection"
+    version = next(v for v in row["cipher_versions"] if v["version"] == "TLSv1.3")
+    assert {s["name"] for s in version["ciphers"]} == {
+        "TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256"}
+    assert version["server_preference"] is True
+    assert {s["grade"] for s in version["ciphers"]} == {"A"}

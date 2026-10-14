@@ -194,6 +194,7 @@ def _collapse(suites: list[dict[str, Any]]) -> list[dict[str, Any]]:
 @dataclass
 class Enumeration:
     complete: bool
+    evidence: str | None = None
     versions: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -227,4 +228,6 @@ def parse_enumeration(row: dict[str, Any]) -> Enumeration | None:
         slot["least_strength"] = worst_grade([c["grade"] for c in slot["ciphers"]])
     if not versions:
         return None
-    return Enumeration(complete=block.get("complete") is True, versions=list(versions.values()))
+    return Enumeration(complete=block.get("complete") is True,
+                       evidence="server_hello_selection" if block.get("evidence") == "server_hello_selection" else None,
+                       versions=list(versions.values()))

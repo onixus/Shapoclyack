@@ -1,0 +1,84 @@
+{
+  "tls": [
+    {
+      "enumeration": {
+        "complete": false,
+        "coverage": "bundled_iana_registry_excluding_gost_and_scsv",
+        "evidence": "server_hello_selection",
+        "versions": [
+          {
+            "accepted": null,
+            "ciphers": [],
+            "server_preference": null,
+            "status": "inconclusive",
+            "version": "SSLv2"
+          },
+          {
+            "accepted": null,
+            "ciphers": [],
+            "server_preference": null,
+            "status": "partial",
+            "version": "SSLv3"
+          },
+          {
+            "accepted": false,
+            "ciphers": [],
+            "server_preference": null,
+            "status": "rejected",
+            "version": "TLSv1.0"
+          },
+          {
+            "accepted": false,
+            "ciphers": [],
+            "server_preference": null,
+            "status": "rejected",
+            "version": "TLSv1.1"
+          },
+          {
+            "accepted": false,
+            "ciphers": [],
+            "server_preference": null,
+            "status": "rejected",
+            "version": "TLSv1.2"
+          },
+          {
+            "accepted": true,
+            "ciphers": [
+              {
+                "code": "0x1302",
+                "name": "TLS_AES_256_GCM_SHA384"
+              },
+              {
+                "code": "0x1303",
+                "name": "TLS_CHACHA20_POLY1305_SHA256"
+              },
+              {
+                "code": "0x1301",
+                "name": "TLS_AES_128_GCM_SHA256"
+              }
+            ],
+            "server_preference": true,
+            "status": "partial",
+            "version": "TLSv1.3"
+          }
+        ]
+      },
+      "expired": false,
+      "expires_in_days": 0,
+      "host": "127.0.0.1",
+      "http_product": "TLS-regression",
+      "http_server": "TLS-regression",
+      "http_version": "",
+      "ip": "127.0.0.1",
+      "issuer_cn": "localhost",
+      "negotiated_protocol": "TLSv1_3",
+      "not_after": "2026-10-15 4:21:14.0 +00:00:00",
+      "not_before": "2026-10-14 4:21:14.0 +00:00:00",
+      "port": 8443,
+      "san": [],
+      "self_signed": true,
+      "source": "pulse-tls",
+      "subject_cn": "localhost"
+    }
+  ]
+}

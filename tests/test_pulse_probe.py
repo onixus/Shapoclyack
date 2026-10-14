@@ -705,3 +705,19 @@ def test_failed_chunks_are_on_the_record(tmp_path, monkeypatch):
     )
     raw = json.loads((tmp_path / "pulse" / "raw.json").read_text(encoding="utf-8"))
     assert [(c["returncode"], c["resolved"]) for c in raw["chunks"]] == [(101, False), (0, True)]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_tls_enumeration_is_opt_in_and_recorded(tmp_path, monkeypatch, enabled):
+    calls, _ = _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE], tls_enum=enabled)
+    assert ("--tls-enum" in calls[0]) is enabled
+    raw = json.loads((tmp_path / "pulse" / "raw.json").read_text())
+    assert raw["adapter"]["tls_enum"] is enabled
+
+
+def test_enabling_enumeration_invalidates_certificate_only_resume(tmp_path, monkeypatch):
+    _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE])
+    calls, _ = _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE], done_hosts={"10.0.0.1"}, tls_enum=True)
+    assert len(calls) == 1 and "--tls-enum" in calls[0]
+    calls, _ = _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE], done_hosts={"10.0.0.1"}, tls_enum=True)
+    assert calls == []

@@ -161,3 +161,17 @@ in #452. No backend replacement or profile-default change is included.
 Rollback is a reviewed revert of the code change. It restores the previous
 overscan/resume limitations; there is deliberately no runtime switch that
 silently expands the exact endpoint set.
+
+## Optional TLS suite enumeration
+
+Set `tls_posture.enabled: true` and `tls_posture.enumerate_ciphers: true` to
+request Pulse `--tls-enum`. The selected binary must support this flag; Pulse
+v1.3.0 does not. Raw SSLv2/SSLv3…TLS1.3 ServerHello evidence is fed to the
+existing A-F grader with `source: pulse-tls`. `enumeration_evidence` records
+`server_hello_selection`, which establishes negotiation selection rather than
+a completed or trusted handshake. Missing exchange size retains
+`grade_upper_bound`; partial enumeration retains `enumeration_complete: false`.
+Enumeration uses a 30-second endpoint budget, with 16 KiB record limits.
+Enabling it invalidates certificate-only resume receipts. Certificate probe
+fallback remains available independently. GOST and exploit-specific TLS
+vulnerability checks are outside this enumeration.

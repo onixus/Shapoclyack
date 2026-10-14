@@ -1096,9 +1096,11 @@ class TlsPostureConfig(BaseModel):
     2. If missing and ``probe_fallback`` is true, stdlib ``ssl`` handshake
        against ``open_ports`` on ``probe_tls_ports`` (see ``tls_probe.py``).
 
-    Does **not** grade full cipher suites (the former ``ssl-enum-ciphers``
-    grade has no replacement until Pulse enumerates ciphers, GenDec#34);
-    covers cert expiry, self-signed heuristic, and weak protocol acceptance.
+    ``enumerate_ciphers`` requests Pulse raw ClientHello enumeration (GenDec#34).
+    Observed suites are graded A-F; unknown key exchanges retain an upper-bound
+    grade. Enumeration is bounded to 30 seconds per endpoint and remains partial
+    on inconclusive responses. Default off; the Pulse binary must support
+    ``--tls-enum``. Certificate and legacy-version probing also remain available.
 
     ``max_targets`` caps endpoints per run (truncated flag past the cap).
     Findings are reported only (``tls_posture.json``) -- never merged into
@@ -1125,6 +1127,8 @@ class TlsPostureConfig(BaseModel):
     max_targets: int = Field(default=2000, ge=1, le=50_000)
     expiring_soon_days: int = Field(default=30, ge=1, le=365)
     hostname_mismatch: bool = True
+    # Opt-in raw ServerHello enumeration; requires Pulse supporting --tls-enum.
+    enumerate_ciphers: bool = False
     # Stdlib TLS probe when Pulse produced no TLS rows.
     probe_fallback: bool = True
     probe_timeout_seconds: float = Field(default=5.0, ge=0.5, le=60.0)
