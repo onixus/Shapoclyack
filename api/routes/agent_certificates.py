@@ -22,6 +22,7 @@ from api.auth import (
     TenantPrincipal,
     get_settings,
     require_agent_enrolment,
+    require_agent_certificate_recovery,
     require_tenant,
 )
 from api.routes._audit import AuditDep
@@ -111,6 +112,71 @@ def enrol_certificate(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
+    return AgentCertificateResponse(
+        certificate=issued.certificate_pem,
+        ca_certificate=issued.ca_certificate_pem,
+        fingerprint_sha256=issued.fingerprint_sha256,
+        serial=issued.serial_hex,
+        spiffe_id=issued.spiffe_id,
+        not_before=agent_certs.iso(issued.not_before),
+        not_after=agent_certs.iso(issued.not_after),
+        renew_after=agent_certs.iso(issued.renew_after),
+    )
+
+
+@router.post("/agent/certificate/recover", response_model=AgentCertificateResponse)
+def recover_certificate(
+    body: AgentCertificateRequest,
+    request: Request,
+    principal: Annotated[AgentPrincipal, Depends(require_agent_certificate_recovery)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> AgentCertificateResponse:
+    """Recover a lost enrollment response for the exact same durable CSR key.
+
+    JWT-only retrieval returns an existing public leaf; it cannot create a
+    certificate or rotate/revoke a key. Tenant, agent, source, validity and
+    enrollment-lock checks are authoritative under the enrollment row lock.
+    """
+    if not principal.agent_id or principal.auth_mode != "jwt":
+        raise HTTPException(
+            status_code=403, detail="Only a per-agent token can recover a certificate"
+        )
+    agent = agents_service.get_agent(principal.agent_id, tenant_id=principal.tenant_id)
+    try:
+        agents_service.require_active_info(agent)
+        issued = agent_certs.recover(
+            settings,
+            tenant_id=principal.tenant_id,
+            agent_id=principal.agent_id,
+            csr_pem=body.csr,
+        )
+    except agent_certs.ClientCertRefused as exc:
+        agent_certs.record_refusal(
+            settings,
+            audit_service.context_from_request(
+                request,
+                settings,
+                actor=principal.agent_id,
+                actor_type=audit_service.ACTOR_AGENT,
+            ),
+            tenant_id=principal.tenant_id,
+            agent_id=principal.agent_id,
+            refusal=exc,
+            presentation=Presentation(
+                cert=getattr(request.state, AGENT_CLIENT_CERT_ATTR, None)
+            ),
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=str(exc),
+            headers={agent_certs.REFUSAL_HEADER: exc.reason},
+        ) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return AgentCertificateResponse(
         certificate=issued.certificate_pem,
         ca_certificate=issued.ca_certificate_pem,

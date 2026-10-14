@@ -2543,7 +2543,13 @@ TLS rejection before ASGI and issuer/tenant/legacy/failure boundaries.
 before registration. Deploy these builds throughout the fleet before enabling
 installation-wide `required`. The private key and certificate are persisted as
 one atomically replaced, private `client-identity.json` bundle in the agent state
-directory; expiry is checked from the certificate before each request. An
+directory; expiry is checked from the certificate before each request. Pending
+key and CSR are durably saved before issuance. A lost response or restart
+recovers the existing public certificate with the same CSR via
+`POST /api/v1/agent/certificate/recover`; this read-only route checks token scope,
+CSR signature and key matching, and never issues a new certificate or undoes
+revocation. A signer outage during renewal retains the current valid identity
+while backing off; an absent or expired identity blocks protected calls. An
 installation without an issuer returns 404 and keeps token-only operation.
 The client follows this contract:
 
