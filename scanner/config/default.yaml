@@ -431,6 +431,8 @@ service_probe:
 # overlay does not carry them. See docs/pulse-backend.md.
 tls_posture:
   enabled: false
+  # Requires a Pulse build with --tls-enum; raw selections need confirmation.
+  enumerate_ciphers: false
   max_targets: 2000
   expiring_soon_days: 30
   hostname_mismatch: true
