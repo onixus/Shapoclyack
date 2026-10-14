@@ -1,0 +1,243 @@
+[
+  {
+    "scenario": "heterogeneous",
+    "variant": "before",
+    "samples": 5,
+    "duration_median_sec": 13.574970912974095,
+    "duration_min_sec": 13.57053071502014,
+    "duration_max_sec": 13.580174628994428,
+    "processes": [
+      1
+    ],
+    "command_pairs": [
+      9
+    ],
+    "packets_median": 271,
+    "packets_min": 269,
+    "packets_max": 275,
+    "pcap_bytes_median": 27023,
+    "accepted_connections_median": 17,
+    "pulse_cpu_median_sec": 0.03865299999999999,
+    "pulse_peak_rss_median_mib": 37.49609375,
+    "services": [
+      3
+    ],
+    "known_os": [
+      3
+    ],
+    "tls": [
+      1
+    ],
+    "done_hosts": [
+      [
+        "127.20.0.1",
+        "127.20.0.2",
+        "127.20.0.3"
+      ]
+    ],
+    "unresolved_hosts": [
+      []
+    ]
+  },
+  {
+    "scenario": "heterogeneous",
+    "variant": "after",
+    "samples": 5,
+    "duration_median_sec": 12.809057959995698,
+    "duration_min_sec": 12.802526245010085,
+    "duration_max_sec": 12.811350664007477,
+    "processes": [
+      3
+    ],
+    "command_pairs": [
+      3
+    ],
+    "packets_median": 253,
+    "packets_min": 253,
+    "packets_max": 255,
+    "pcap_bytes_median": 25879,
+    "accepted_connections_median": 17,
+    "pulse_cpu_median_sec": 0.070967,
+    "pulse_peak_rss_median_mib": 37.65234375,
+    "services": [
+      3
+    ],
+    "known_os": [
+      3
+    ],
+    "tls": [
+      1
+    ],
+    "done_hosts": [
+      [
+        "127.20.0.1",
+        "127.20.0.2",
+        "127.20.0.3"
+      ]
+    ],
+    "unresolved_hosts": [
+      []
+    ]
+  },
+  {
+    "scenario": "homogeneous",
+    "variant": "before",
+    "samples": 5,
+    "duration_median_sec": 13.268603567004902,
+    "duration_min_sec": 13.2642064790125,
+    "duration_max_sec": 13.278544172004331,
+    "processes": [
+      1
+    ],
+    "command_pairs": [
+      3
+    ],
+    "packets_median": 120,
+    "packets_min": 120,
+    "packets_max": 121,
+    "pcap_bytes_median": 8307,
+    "accepted_connections_median": 3,
+    "pulse_cpu_median_sec": 0.035184,
+    "pulse_peak_rss_median_mib": 37.74609375,
+    "services": [
+      3
+    ],
+    "known_os": [
+      3
+    ],
+    "tls": [
+      0
+    ],
+    "done_hosts": [
+      [
+        "127.20.0.1",
+        "127.20.0.2",
+        "127.20.0.3"
+      ]
+    ],
+    "unresolved_hosts": [
+      []
+    ]
+  },
+  {
+    "scenario": "homogeneous",
+    "variant": "after",
+    "samples": 5,
+    "duration_median_sec": 13.269827370997518,
+    "duration_min_sec": 13.269461106974632,
+    "duration_max_sec": 13.271067269990453,
+    "processes": [
+      1
+    ],
+    "command_pairs": [
+      3
+    ],
+    "packets_median": 120,
+    "packets_min": 120,
+    "packets_max": 121,
+    "pcap_bytes_median": 8307,
+    "accepted_connections_median": 3,
+    "pulse_cpu_median_sec": 0.037672,
+    "pulse_peak_rss_median_mib": 37.51171875,
+    "services": [
+      3
+    ],
+    "known_os": [
+      3
+    ],
+    "tls": [
+      0
+    ],
+    "done_hosts": [
+      [
+        "127.20.0.1",
+        "127.20.0.2",
+        "127.20.0.3"
+      ]
+    ],
+    "unresolved_hosts": [
+      []
+    ]
+  },
+  {
+    "scenario": "partial_closed",
+    "variant": "before",
+    "samples": 5,
+    "duration_median_sec": 9.57083685498219,
+    "duration_min_sec": 9.554770504997578,
+    "duration_max_sec": 9.576274668012047,
+    "processes": [
+      1
+    ],
+    "command_pairs": [
+      9
+    ],
+    "packets_median": 236,
+    "packets_min": 235,
+    "packets_max": 237,
+    "pcap_bytes_median": 24738,
+    "accepted_connections_median": 16,
+    "pulse_cpu_median_sec": 0.028689,
+    "pulse_peak_rss_median_mib": 37.6640625,
+    "services": [
+      2
+    ],
+    "known_os": [
+      2
+    ],
+    "tls": [
+      1
+    ],
+    "done_hosts": [
+      [
+        "127.20.0.1",
+        "127.20.0.2",
+        "127.20.0.3"
+      ]
+    ],
+    "unresolved_hosts": [
+      []
+    ]
+  },
+  {
+    "scenario": "partial_closed",
+    "variant": "after",
+    "samples": 5,
+    "duration_median_sec": 14.814575141994283,
+    "duration_min_sec": 14.800384066009428,
+    "duration_max_sec": 14.840907764999429,
+    "processes": [
+      3
+    ],
+    "command_pairs": [
+      3
+    ],
+    "packets_median": 249,
+    "packets_min": 249,
+    "packets_max": 252,
+    "pcap_bytes_median": 25568,
+    "accepted_connections_median": 16,
+    "pulse_cpu_median_sec": 0.068423,
+    "pulse_peak_rss_median_mib": 37.78125,
+    "services": [
+      2
+    ],
+    "known_os": [
+      2
+    ],
+    "tls": [
+      1
+    ],
+    "done_hosts": [
+      [
+        "127.20.0.1",
+        "127.20.0.2"
+      ]
+    ],
+    "unresolved_hosts": [
+      [
+        "127.20.0.3"
+      ]
+    ]
+  }
+]

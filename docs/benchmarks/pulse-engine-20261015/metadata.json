@@ -1,0 +1,11 @@
+{
+  "platform": "Linux-6.12.76-linuxkit-aarch64-with-glibc2.36",
+  "pulse_version": "pulse 1.4.0",
+  "binary_sha256": "9e825d76783e5bc35ae66d8c485eb083c0725a53ac2e0d05e94c89bbdc9af529",
+  "repeats": 5,
+  "capture_settle_seconds": 1.0,
+  "network": "none; numeric loopback only",
+  "uid": 1000,
+  "pulse_install_record": null,
+  "legacy_union_before": true
+}

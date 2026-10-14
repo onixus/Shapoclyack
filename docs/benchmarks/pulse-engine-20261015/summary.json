@@ -1,0 +1,198 @@
+[
+  {
+    "scenario": "heterogeneous",
+    "variant": "before",
+    "samples": 5,
+    "median_seconds": 13.641108714975417,
+    "min_seconds": 13.634307464002632,
+    "max_seconds": 13.651131047983654,
+    "processes": [
+      1
+    ],
+    "command_pairs": [
+      9
+    ],
+    "median_packets": 270,
+    "median_wire_bytes": 26926,
+    "median_accepted_connections": 17,
+    "median_child_cpu_seconds": 0.11113399999999998,
+    "median_child_peak_rss_mib": 31.87890625,
+    "services": [
+      3
+    ],
+    "known_os": [
+      3
+    ],
+    "tls": [
+      1
+    ],
+    "unresolved_hosts": [
+      [
+        "127.20.0.1",
+        "127.20.0.2",
+        "127.20.0.3"
+      ]
+    ]
+  },
+  {
+    "scenario": "heterogeneous",
+    "variant": "after",
+    "samples": 5,
+    "median_seconds": 12.89372138096951,
+    "min_seconds": 12.860279881046154,
+    "max_seconds": 12.939268381043803,
+    "processes": [
+      3
+    ],
+    "command_pairs": [
+      3
+    ],
+    "median_packets": 253,
+    "median_wire_bytes": 25836,
+    "median_accepted_connections": 17,
+    "median_child_cpu_seconds": 0.146896,
+    "median_child_peak_rss_mib": 31.90234375,
+    "services": [
+      3
+    ],
+    "known_os": [
+      3
+    ],
+    "tls": [
+      1
+    ],
+    "unresolved_hosts": [
+      []
+    ]
+  },
+  {
+    "scenario": "homogeneous",
+    "variant": "before",
+    "samples": 5,
+    "median_seconds": 13.333766214956995,
+    "min_seconds": 13.325825505016837,
+    "max_seconds": 13.342079214984551,
+    "processes": [
+      1
+    ],
+    "command_pairs": [
+      3
+    ],
+    "median_packets": 120,
+    "median_wire_bytes": 8307,
+    "median_accepted_connections": 3,
+    "median_child_cpu_seconds": 0.10274799999999999,
+    "median_child_peak_rss_mib": 31.9140625,
+    "services": [
+      3
+    ],
+    "known_os": [
+      3
+    ],
+    "tls": [
+      0
+    ],
+    "unresolved_hosts": [
+      []
+    ]
+  },
+  {
+    "scenario": "homogeneous",
+    "variant": "after",
+    "samples": 5,
+    "median_seconds": 13.33151867298875,
+    "min_seconds": 13.317799839016516,
+    "max_seconds": 13.352872505958658,
+    "processes": [
+      1
+    ],
+    "command_pairs": [
+      3
+    ],
+    "median_packets": 120,
+    "median_wire_bytes": 8307,
+    "median_accepted_connections": 3,
+    "median_child_cpu_seconds": 0.09793299999999999,
+    "median_child_peak_rss_mib": 31.81640625,
+    "services": [
+      3
+    ],
+    "known_os": [
+      3
+    ],
+    "tls": [
+      0
+    ],
+    "unresolved_hosts": [
+      []
+    ]
+  },
+  {
+    "scenario": "partial_closed",
+    "variant": "before",
+    "samples": 5,
+    "median_seconds": 9.620368754956871,
+    "min_seconds": 9.596442462992854,
+    "max_seconds": 9.660008420003578,
+    "processes": [
+      1
+    ],
+    "command_pairs": [
+      9
+    ],
+    "median_packets": 235,
+    "median_wire_bytes": 24629,
+    "median_accepted_connections": 16,
+    "median_child_cpu_seconds": 0.090569,
+    "median_child_peak_rss_mib": 31.765625,
+    "services": [
+      2
+    ],
+    "known_os": [
+      2
+    ],
+    "tls": [
+      1
+    ],
+    "unresolved_hosts": [
+      [
+        "127.20.0.1",
+        "127.20.0.2",
+        "127.20.0.3"
+      ]
+    ]
+  },
+  {
+    "scenario": "partial_closed",
+    "variant": "after",
+    "samples": 5,
+    "median_seconds": 14.899242924002465,
+    "min_seconds": 14.865906756022014,
+    "max_seconds": 14.908773923991248,
+    "processes": [
+      3
+    ],
+    "command_pairs": [
+      3
+    ],
+    "median_packets": 249,
+    "median_wire_bytes": 25525,
+    "median_accepted_connections": 16,
+    "median_child_cpu_seconds": 0.17063299999999998,
+    "median_child_peak_rss_mib": 31.92578125,
+    "services": [
+      2
+    ],
+    "known_os": [
+      2
+    ],
+    "tls": [
+      1
+    ],
+    "unresolved_hosts": [
+      [
+        "127.20.0.3"
+      ]
+    ]
+  }
+]
