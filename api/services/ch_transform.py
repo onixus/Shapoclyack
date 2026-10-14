@@ -90,8 +90,13 @@ def vulnerabilities_to_rows(
     members: dict[str, bytes],
     *,
     settings: Settings | None = None,
+    require_captured: bool = True,
 ) -> list[list[Any]]:
-    """Map vulnerabilities.json → shapoclyack_vulnerabilities rows."""
+    """Map vulnerabilities.json → shapoclyack_vulnerabilities rows.
+
+    ``require_captured=False`` is the last-delivery fallback: rows are scored
+    and labelled ``pending-current`` rather than lost with the message.
+    """
     tenant_id = str(payload.get("tenant_id") or "default")
     tenant_uuid = tenant_to_uuid(tenant_id)
     meta = _load_json_member(members, "run_meta.json") or {}
@@ -108,7 +113,7 @@ def vulnerabilities_to_rows(
         entries=vulns,
         fingerprint=_load_json_member(members, "fingerprint.json"),
         scorer=get_scorer(),
-        require_captured=True,
+        require_captured=require_captured,
         job_id=str(payload.get("job_id") or "") or None,
     )
     rows: list[list[Any]] = []
@@ -311,7 +316,10 @@ def controls_to_rows(
 
 
 def transform_ingest_payload(
-    payload: dict[str, Any], *, settings: Settings | None = None
+    payload: dict[str, Any],
+    *,
+    settings: Settings | None = None,
+    require_captured: bool = True,
 ) -> tuple[list[list[Any]], list[list[Any]], list[list[Any]]]:
     """Return (vuln_rows, port_rows, control_rows) from a NATS ingest body."""
     archive = archive_bytes_from_payload(payload)
@@ -329,7 +337,9 @@ def transform_ingest_payload(
         LOG.exception("Failed to extract ingest archive job=%s", payload.get("job_id"))
         return [], [], []
     return (
-        vulnerabilities_to_rows(payload, members, settings=settings),
+        vulnerabilities_to_rows(
+            payload, members, settings=settings, require_captured=require_captured
+        ),
         open_ports_to_rows(payload, members),
         controls_to_rows(payload, members),
     )

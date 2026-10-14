@@ -252,6 +252,8 @@ def claim_job(
         # ``->>`` is NULL for an absent key and for a NULL document alike, and
         # neither predicate above can itself be NULL (``coalesce``, a literal
         # IN list), so "runnable" and "blocked" partition the queue.
+        accepted_inputs: dict[str, dict[str, str]] = {}
+
         def next_admitted(query):
             while True:
                 candidate = (
@@ -262,8 +264,29 @@ def claim_job(
                 if candidate is None:
                     return None
                 if queued_maintenance.admitted(settings, session, candidate):
-                    return candidate
-                # A group's blackout must not starve unrelated jobs behind it,
+                    # Validate before assigning a lease: absent mandatory
+                    # scope/policy must never turn an admitted scan into
+                    # installation-default targets. Read per candidate so one
+                    # job whose stored inputs are gone is passed over rather
+                    # than answered 503 to every claim in the fleet; a claim
+                    # naming that job still gets the 503.
+                    try:
+                        accepted_inputs[candidate.job_id] = _read_job_inputs(
+                            settings,
+                            candidate.job_id,
+                            required=required_input_names(candidate.command or []),
+                        )
+                        return candidate
+                    except job_inputs.JobInputsUnavailable:
+                        if job_id:
+                            raise
+                        _log.warning(
+                            "Job %s is missing its admitted inputs; leaving it "
+                            "queued and offering the next job",
+                            candidate.job_id,
+                            exc_info=True,
+                        )
+                # Neither a group's blackout nor lost inputs may starve unrelated jobs behind it,
                 # regardless of priority. Named NATS claims use this same gate.
                 query = query.where(models.Job.job_id != candidate.job_id)
 
@@ -335,14 +358,6 @@ def claim_job(
                 f"(capability {needed}); upgrade the agent — {what}"
             )
 
-        # Validate before assigning a lease: absent mandatory scope/policy
-        # must never turn an admitted scan into installation-default targets.
-        accepted_inputs = _read_job_inputs(
-            settings,
-            row.job_id,
-            required=required_input_names(row.command or []),
-        )
-
         # ``claimed``, not ``running`` (P1.3): the agent owns the job but has
         # not reported working on it. Its first heartbeat naming this job
         # promotes it (see mark_running), which is also the signal the P1.4
@@ -375,7 +390,7 @@ def claim_job(
             skip_nse=bool(opts.get("skip_nse", False)),
             notify=bool(opts.get("notify", False)),
             export_defectdojo=bool(opts.get("export_defectdojo", False)),
-            inputs=accepted_inputs,
+            inputs=accepted_inputs[row.job_id],
             tenant_id=(row.tenant_id or tenants_service.DEFAULT_TENANT_ID),
             # The fencing token for this hand-out: a lease that expired and was
             # reissued bumps it, so a late upload from the previous attempt can

@@ -10,6 +10,8 @@ import tarfile
 from datetime import datetime
 from unittest import mock
 
+import pytest
+
 from api.services import ch_ingest_worker
 from api.services import ch_transform
 from api.services import metrics as metrics_service
@@ -436,8 +438,9 @@ class _FakeMsg:
     async def ack(self) -> None:
         self.acked = True
 
-    async def nak(self) -> None:
+    async def nak(self, delay: float | None = None) -> None:
         self.naked = True
+        self.nak_delay = delay
 
     async def term(self) -> None:
         self.termed = True
@@ -507,6 +510,85 @@ def test_endpoint_inventory_message_is_not_counted_as_an_ingest(monkeypatch):
     assert result.acked is True
     assert _counter("ok") == before_ok + 1
     assert worker.stats["messages"] == 1
+
+
+@pytest.mark.parametrize("delivered", [1, 3])
+def test_pending_risk_receipt_is_redelivered_with_a_delay(monkeypatch, delivered):
+    """A receipt not captured yet is waited for, not burned through max_deliver.
+
+    An immediate nak spent all five deliveries in milliseconds and then dropped
+    the run's rows from ClickHouse for good.
+    """
+    from types import SimpleNamespace
+
+    from api.services.risk_context import RiskAssessmentPending
+
+    worker = ch_ingest_worker.ClickHouseIngestWorker(
+        nats_url="nats://localhost:4222", clickhouse_url="http://localhost:8123"
+    )
+    inserted: list[str] = []
+    monkeypatch.setattr(
+        ch_ingest_worker.ch,
+        "insert_rows",
+        lambda client, table, columns, rows: inserted.append(table) or len(rows),
+    )
+
+    def pending(payload, settings=None, require_captured=True):
+        raise RiskAssessmentPending("not captured yet")
+
+    monkeypatch.setattr(ch_ingest_worker.ch_transform, "transform_ingest_payload", pending)
+    before_err = _counter("error")
+    msg = _FakeMsg(
+        nats_bus.ingest_results_subject("ten_acme"),
+        {"tenant_id": "ten_acme", "job_id": "job1", "run_id": "run1"},
+    )
+    msg.metadata = SimpleNamespace(num_delivered=delivered)
+    asyncio.run(worker._handle_msg(object(), msg))  # noqa: SLF001
+
+    assert msg.naked is True and msg.acked is False
+    assert msg.nak_delay == min(
+        ch_ingest_worker.PENDING_RECEIPT_DELAY_CAP_SECONDS,
+        ch_ingest_worker.PENDING_RECEIPT_DELAY_SECONDS * 2 ** (delivered - 1),
+    )
+    assert msg.nak_delay > 0
+    assert inserted == []
+    assert _counter("error") == before_err
+
+
+def test_pending_risk_receipt_on_last_delivery_keeps_the_rows(monkeypatch):
+    from types import SimpleNamespace
+
+    from api.services.risk_context import RiskAssessmentPending
+
+    worker = ch_ingest_worker.ClickHouseIngestWorker(
+        nats_url="nats://localhost:4222", clickhouse_url="http://localhost:8123"
+    )
+    worker._controls_enabled = True  # noqa: SLF001
+    inserted: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        ch_ingest_worker.ch,
+        "insert_rows",
+        lambda client, table, columns, rows: inserted.append((table, len(rows))) or len(rows),
+    )
+    calls: list[bool] = []
+
+    def transform(payload, settings=None, require_captured=True):
+        calls.append(require_captured)
+        if require_captured:
+            raise RiskAssessmentPending("never captured")
+        return [["row"]], [], []
+
+    monkeypatch.setattr(ch_ingest_worker.ch_transform, "transform_ingest_payload", transform)
+    msg = _FakeMsg(
+        nats_bus.ingest_results_subject("ten_acme"),
+        {"tenant_id": "ten_acme", "job_id": "job1", "run_id": "run1"},
+    )
+    msg.metadata = SimpleNamespace(num_delivered=ch_ingest_worker.MAX_DELIVER)
+    asyncio.run(worker._handle_msg(object(), msg))  # noqa: SLF001
+
+    assert calls == [True, False]
+    assert msg.acked is True and msg.naked is False
+    assert (ch_ingest_worker.ch.VULN_TABLE, 1) in inserted
 
 
 def test_controls_rows_are_skipped_when_the_table_cannot_be_created():

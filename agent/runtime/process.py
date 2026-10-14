@@ -56,6 +56,22 @@ def terminate_process(
             nonlocal gone
             if gone:
                 return
+            if proc.returncode is not None:
+                # The leader is reaped, so its PID is free again. While any
+                # member of our group lives the kernel keeps that number
+                # reserved as the PGID; once something else owns the PID, the
+                # group is empty and the number now names a stranger's group.
+                try:
+                    os.getpgid(proc.pid)
+                except ProcessLookupError:
+                    pass
+                except OSError as exc:
+                    if exc.errno != errno.ESRCH:
+                        gone = True
+                        return
+                else:
+                    gone = True
+                    return
             try:
                 # The initial session PGID is the original PID, even after
                 # leader exit. Once ESRCH is observed, ownership is terminal:

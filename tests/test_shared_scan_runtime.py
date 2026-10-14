@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import os
 import subprocess
 import sys
 import threading
@@ -327,13 +328,29 @@ def test_claim_missing_admitted_document_retains_queue_and_lease(
     path = directory / name
     content = path.read_text() if path.exists() else "{}"
     path.unlink(missing_ok=True)
+    # A claim naming the job is told why it cannot have it.
     refused = client.post(
-        f"/api/agent/jobs/claim?agent_id={agent.json()['agent_id']}",
+        f"/api/agent/jobs/claim?agent_id={agent.json()['agent_id']}&job_id={job_id}",
         headers={"Authorization": "Bearer test-agent-token"},
     )
     assert refused.status_code == 503, refused.text
     assert name in refused.json()["detail"] and "restore" in refused.json()["detail"]
     assert str(tmp_path) not in refused.text
+
+    # An unnamed claim passes over it (it is first in the queue) and gets the
+    # next job, instead of every agent in the fleet getting 503 behind it.
+    behind = client.post(
+        "/api/jobs",
+        headers=auth_headers(client, "operator"),
+        json={"mode": "balanced", "ranges": "127.0.0.2\n", "domains": "\n"},
+    )
+    assert behind.status_code == 202, behind.text
+    handed = client.post(
+        f"/api/agent/jobs/claim?agent_id={agent.json()['agent_id']}",
+        headers={"Authorization": "Bearer test-agent-token"},
+    )
+    assert handed.status_code == 200, handed.text
+    assert handed.json()["job_id"] == behind.json()["job_id"]
 
     with get_session(settings.postgres_url) as session:
         row = session.get(models.Job, job_id)
@@ -409,7 +426,7 @@ def test_both_adapters_running_cancel_and_timeout(
         event.clear()
 
 
-def test_shutdown_during_spawn_retains_barrier_until_late_child_stops(monkeypatch):
+def test_shutdown_during_spawn_cancels_late_child_and_lifts_barrier(monkeypatch):
     entered = threading.Event()
     release = threading.Event()
     real_popen = subprocess.Popen
@@ -435,13 +452,20 @@ def test_shutdown_during_spawn_retains_barrier_until_late_child_stops(monkeypatc
         start = time.monotonic()
         assert not local_scan_executor.stop_all(timeout=0.05)
         assert time.monotonic() - start < 0.3
-        assert local_scan_executor._draining.is_set()
+        # The barrier is lifted for new work, but not for the thread the
+        # failed stop gave up on.
+        assert not local_scan_executor._draining.is_set()
         release.set()
         thread.join(2)
         assert not thread.is_alive()
         assert results[0].returncode == 143
         assert local_scan_executor.stop_all(timeout=1)
         assert not local_scan_executor._draining.is_set()
+        later = local_scan_executor.run_scanner(
+            "after-failed-stop", [sys.executable, "-c", "print('ran')"]
+        )
+        assert later.returncode == 0
+        assert later.stdout.strip() == "ran"
     finally:
         release.set()
         thread.join(2)
@@ -572,7 +596,7 @@ def test_esrch_latches_group_gone_without_later_signals(monkeypatch, gone_at):
     import signal
     from unittest.mock import MagicMock
 
-    proc = MagicMock(pid=12345)
+    proc = MagicMock(pid=12345, returncode=None)
     calls = []
 
     def killpg(pid, sig):
@@ -588,11 +612,28 @@ def test_esrch_latches_group_gone_without_later_signals(monkeypatch, gone_at):
     assert calls == ([signal.SIGTERM] if gone_at == "term" else [signal.SIGTERM, 0])
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX groups")
+def test_reaped_leader_with_reused_pid_is_never_signalled(monkeypatch):
+    from unittest.mock import MagicMock
+
+    # The leader was reaped (returncode set) and its PID now belongs to a live
+    # process -- this test's own. Our group is therefore empty, and the number
+    # names somebody else's group: no signal may go to it.
+    proc = MagicMock(pid=os.getpid(), returncode=0)
+
+    def killpg(*args):
+        raise AssertionError("signalled a reused process group id")
+
+    monkeypatch.setattr("os.killpg", killpg)
+    terminate_process(proc, use_session=True, shutdown_budget=0.2, term_grace=0.1)
+    assert proc._scan_stopped is True
+
+
 def test_concurrent_termination_has_one_owner_and_lock_wait_counts_budget(monkeypatch):
     import signal
     from unittest.mock import MagicMock
 
-    proc = MagicMock(pid=12345)
+    proc = MagicMock(pid=12345, returncode=None)
     entered = threading.Event()
     release = threading.Event()
     calls = []
@@ -629,7 +670,7 @@ def test_short_waiter_tightens_existing_owner_grace_and_reap(monkeypatch):
     import signal
     from unittest.mock import MagicMock
 
-    proc = MagicMock(pid=12345)
+    proc = MagicMock(pid=12345, returncode=None)
     entered = threading.Event()
     calls = []
 
