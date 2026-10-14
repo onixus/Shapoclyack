@@ -38,25 +38,36 @@ def catalog(
     truncated catalog can masquerade as a full selection.
     """
     files = []
+    paths = []
+    inventory_entries = 0
     total_bytes = 0
     digest = hashlib.sha256()
     for index, directory in enumerate(directories):
         if directory.is_symlink() or not directory.is_dir():
             return "", [], "catalog_directory_missing_or_unsafe"
-        if any(p.is_symlink() for p in directory.rglob("*")):
-            return "", [], "catalog_unsafe_file"
-        for path in sorted(directory.rglob("*.y*ml")):
-            if path.is_symlink() or not path.is_file():
+        # Bound inventory before sorting: rglob + sorted on an unbounded
+        # tree can consume memory before the template count limit is applied.
+        for path in directory.rglob("*"):
+            inventory_entries += 1
+            if inventory_entries > limit * 4 + 1000:
+                return "", [], "catalog_inventory_limit"
+            if path.is_symlink():
                 return "", [], "catalog_unsafe_file"
-            if len(files) >= limit or path.stat().st_size > 1024 * 1024:
+            if path.suffix not in {".yaml", ".yml"} or not path.is_file():
+                continue
+            if len(paths) >= limit:
                 return "", [], "catalog_limit"
-            total_bytes += path.stat().st_size
-            if total_bytes > max_bytes:
-                return "", [], "catalog_bytes_limit"
-            content = path.read_bytes()
-            relative = str(path.relative_to(directory))
-            digest.update(f"{index}:{relative}\0".encode() + content)
-            files.append((index, relative, content))
+            paths.append((index, str(path.relative_to(directory)), path))
+    for index, relative, path in sorted(paths):
+        with path.open("rb") as handle:
+            content = handle.read(1024 * 1024 + 1)
+        if len(content) > 1024 * 1024:
+            return "", [], "catalog_limit"
+        total_bytes += len(content)
+        if total_bytes > max_bytes:
+            return "", [], "catalog_bytes_limit"
+        digest.update(f"{index}:{relative}\0".encode() + content)
+        files.append((index, relative, content))
     key = digest.hexdigest()
     if key in _CACHE:
         _CACHE.move_to_end(key)

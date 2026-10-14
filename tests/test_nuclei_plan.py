@@ -159,3 +159,38 @@ def test_runtime_directed_targets_headers_budget_and_loaded_count(
     assert all(u == "https://10.0.0.1:1234/\n" for _, _, u in seen)
     assert result["coverage"]["plan"]["complete"] and result["checked_count"] == 3
     assert result["coverage"]["plan"]["executed_checks"] is None
+
+
+def test_malformed_metadata_byte_bounds_scope_and_changed_snapshot(tmp_path):
+    import pytest
+    from scanner.pipeline.nuclei_plan import snapshot_catalog
+
+    template(tmp_path)
+    digest, rows, error = catalog([tmp_path], 10)
+    assert catalog([tmp_path], 10, max_bytes=1)[2] == "catalog_bytes_limit"
+    (tmp_path / "fixture-cve.yaml").write_text("id: fixture-cve\ninfo:\n  tags: 42\n")
+    assert catalog([tmp_path], 10)[2] == "catalog_invalid_metadata"
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    with pytest.raises(ValueError, match="catalog_changed"):
+        snapshot_catalog([tmp_path], rows, snapshot)
+    (tmp_path / "fixture-cve.yaml").write_text(
+        "id: fixture-cve\ninfo:\n  severity: high\nhttp:\n  - method: GET\n    path: ['http://outside.example/']\n"
+    )
+    digest, rows, error = catalog([tmp_path], 10)
+    plan = build_plan(["10.0.0.1:80/tcp"], [], NucleiConfig(), digest, rows)
+    assert plan["template_sets"]["safe_http_fallback"] == []
+    assert plan["excluded_templates"] == [
+        {"id": "fixture-cve", "reason": "scope_unproven"}
+    ]
+
+
+def test_untrusted_confidence_retains_both_schemes(tmp_path):
+    template(tmp_path)
+    digest, rows, _ = catalog([tmp_path], 10)
+    for confidence in (True, False, float("inf"), float("nan"), 101, -1, "100"):
+        services = [
+            {"ip": "10.0.0.1", "port": 80, "service": "http", "confidence": confidence}
+        ]
+        plan = build_plan(["10.0.0.1:80/tcp"], services, NucleiConfig(), digest, rows)
+        assert len(plan["targets"]) == 2
