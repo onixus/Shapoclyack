@@ -681,6 +681,16 @@ def test_http_trace_a_server_that_hangs_up_on_trace_refused_it_and_is_clean(stub
     assert finding(lines) is None
     assert "error" not in stderr.lower()
 
+def _assert_unknown_assessment(result: subprocess.CompletedProcess, plugin: str):
+    """The canonical CLI contract: a scoped plugin error cannot be a clean exit."""
+    stderr = re.sub(r"\x1b\[[0-9;]*m", "", result.stderr)
+    assert result.returncode != 0, (result.stdout, stderr)
+    assert re.search(rf"(?m)^\s*plugin error — {re.escape(plugin)}: .+", stderr), stderr
+    assert "Error: assessment incomplete; no clean verdict" in stderr, stderr
+    assert "No findings reported by script" not in result.stdout
+    assert "Function not found" not in stderr, stderr
+
+
 # Binary protocol fixtures force the already-tested applicability input; the
 # loopback listener uses an ephemeral port, never a real SMB/RDP endpoint.
 def _run_binary_plugin(name, service_name, server, tmp_path):
@@ -689,6 +699,8 @@ def _run_binary_plugin(name, service_name, server, tmp_path):
     script = tmp_path / f"{name}.rhai"
     script.write_text(source)
     result = subprocess.run([PULSE, "plugin", "run", str(script), f"127.0.0.1:{server.port}"], capture_output=True, text=True, timeout=30)
+    if result.stderr.strip():
+        _assert_unknown_assessment(result, name)
     clean = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
     return [line.strip() for line in clean.splitlines() if line.strip()], result.stderr
 
@@ -810,8 +822,8 @@ def test_snmp_read_only_information_uses_scoped_udp_and_bounded_ber(case, tmp_pa
             assert "74657374204f53" in observed[2] and "746573742d686f7374" in observed[2]
             assert not result.stderr.strip()
         else:
-            assert observed is None and "script error" in result.stderr
-            assert "Function not found" not in result.stderr
+            assert observed is None
+            _assert_unknown_assessment(result, "shapo_snmp_info")
         worker.join(2)
         assert seen == [bytes.fromhex("303502010104067075626c6963a028020453484150020100020100301a300b06072b0601020101000500300b06072b0601020105000500")]
     finally:
@@ -913,8 +925,8 @@ def test_ssh_hostkey_verifies_real_exchange_signature_and_rejects_bad_peers(case
             assert observed and observed[0] == "INFO" and expected in observed[2], result.stderr
             assert not result.stderr.strip()
         else:
-            assert observed is None and "script error" in result.stderr
-            assert "Function not found" not in result.stderr
+            assert observed is None
+            _assert_unknown_assessment(result, "shapo_ssh_hostkey")
         worker.join(3)
         assert not server_errors, server_errors
     finally:
@@ -939,7 +951,7 @@ def test_direct_smb_signing_rejects_uncorrelated_headers_and_bad_security_buffer
         struct.pack_into("<HH", reply, 124, 128, 1)
     server = stub(b"", lambda _: bytes(reply))
     lines, errors = _run_binary_plugin("shapo_smb_signing", "smb", server, tmp_path)
-    assert finding(lines) is None and "script error" in errors
+    assert finding(lines) is None and "plugin error — shapo_smb_signing:" in errors
     assert "Function not found" not in errors
 
 
@@ -948,5 +960,5 @@ def test_direct_smb_signing_rejects_uncorrelated_headers_and_bad_security_buffer
 def test_direct_smb_signing_short_headers_are_unknown_before_field_access(size, stub, tmp_path):
     server = stub(b"", lambda _: _smb2_response(3)[:size])
     lines, errors = _run_binary_plugin("shapo_smb_signing", "smb", server, tmp_path)
-    assert finding(lines) is None and "script error" in errors
+    assert finding(lines) is None and "plugin error — shapo_smb_signing:" in errors
     assert "Function not found" not in errors and "index out of bounds" not in errors.lower()
