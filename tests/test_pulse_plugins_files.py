@@ -251,20 +251,28 @@ class Stub:
         self.sock = socket.socket()
         self.sock.bind(("127.0.0.1", 0))
         self.sock.listen(16)
+        self.sock.settimeout(0.1)
+        self._stopped = threading.Event()
+        self._workers: list[threading.Thread] = []
         self.port = self.sock.getsockname()[1]
         self.received: list[bytes] = []
         self._greetings = [greeting] if isinstance(greeting, bytes) else list(greeting)
         self._connections = 0
         self._reply = reply
-        threading.Thread(target=self._accept, daemon=True).start()
+        self._accept_thread = threading.Thread(target=self._accept, daemon=True)
+        self._accept_thread.start()
 
     def _accept(self):
-        while True:
+        while not self._stopped.is_set():
             try:
                 conn, _ = self.sock.accept()
+            except TimeoutError:
+                continue
             except OSError:
                 return
-            threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
+            worker = threading.Thread(target=self._serve, args=(conn,), daemon=True)
+            self._workers.append(worker)
+            worker.start()
 
     def _serve(self, conn):
         try:
@@ -283,7 +291,29 @@ class Stub:
             conn.close()
 
     def close(self):
+        self._stopped.set()
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass  # No connected listener peer, or already closed.
         self.sock.close()
+        self._accept_thread.join(timeout=2)
+        assert not self._accept_thread.is_alive(), "stub listener did not stop"
+        for worker in self._workers:
+            worker.join(timeout=2)
+            assert not worker.is_alive(), "stub connection did not stop"
+
+
+def test_stub_close_joins_listener_and_idle_connection_repeatedly():
+    for _ in range(5):
+        server = Stub(b"hello", None)
+        with socket.create_connection(("127.0.0.1", server.port), timeout=2) as client:
+            assert client.recv(5) == b"hello"
+            server.close()
+            assert not server._accept_thread.is_alive()
+            assert server._workers
+            assert all(not worker.is_alive() for worker in server._workers)
+        server.close()  # Teardown is idempotent.
 
 
 @pytest.fixture
