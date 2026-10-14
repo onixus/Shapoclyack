@@ -162,8 +162,10 @@ def test_actual_pinned_nuclei_capture_projects_into_production(tmp_path):
     task = combine([{'host': observed['subject']['host'], 'port': observed['subject']['port'],
                      'cve': observed['cve'], 'source': 'nuclei', 'script_id': 'nuclei:local-fixture-cve'}])
     attach_raw(task, projection)
-    assert task[0]['finding_evidence']['observation_count'] == 2
-    assert task[0]['finding_evidence']['finding_count'] == 2
+    assert task[0]['finding_evidence']['observation_count'] == 1
+    assert task[0]['finding_evidence']['finding_count'] == 1
+    refs = task[0]['finding_evidence']['findings'][0]['observations'][0]['artifact_refs']
+    assert {ref['path'] for ref in refs} == {'report_sources.json', 'nuclei_raw.jsonl'}
     assert closure_gaps(task[0]['finding_evidence'])
 
 
@@ -171,3 +173,43 @@ def test_new_raw_source_artifacts_keep_operator_download_guard():
     from api.services.runs import is_restricted_artifact
     assert is_restricted_artifact('report_sources.json')
     assert is_restricted_artifact('finding_evidence.json')
+
+
+@pytest.mark.parametrize('mutation', [
+    {'source': 'x' * 10000}, {'preview': 'password: visible_secret'},
+    {'unexpected': {'request_body': 'RAW_SECRET'}}, {'confidence': {'malformed': 'dict'}},
+    {'requires_confirmation': 'no'}, {'observed_at': 'not-a-date'},
+    {'subject': {'host': '10.0.0.5', 'port': 80, 'protocol': 'unknown',
+        'scheme': 'https', 'authority': 'user:password@evil.example:443', 'sni': None, 'object_id': 'raw_secret_path'}},
+    {'artifact_refs': [{'path': 'raw.json', 'sha256': 'a' * 64, 'locator': str(i)} for i in range(10000)]},
+])
+def test_self_consistent_uploaded_hash_does_not_authorize_unsafe_fields(mutation):
+    from scanner.pipeline.finding_evidence import digest
+    original = combine([BASE])[0]['finding_evidence']
+    item = original['findings'][0]['observations'][0]
+    item.update(mutation)
+    item['observation_id'] = 'obs:' + digest({k: v for k, v in item.items() if k not in {'observation_id', 'artifact_refs', 'artifact_refs_truncated'}})
+    result = scoped(original, tenant_id='t', run_id='r')
+    assert result['projection_incomplete']
+    assert closure_gaps(result)
+    assert not result['findings']
+    assert 'visible_secret' not in json.dumps(result)
+    assert 'RAW_SECRET' not in json.dumps(result)
+
+
+def test_raw_representation_deduplication_preserves_conflicting_subjects_and_times(tmp_path):
+    from scanner.pipeline.evidence_artifacts import EvidenceReader
+    raw = {'host': '10.0.0.5', 'port': 443, 'template-id': 'test', 'type': 'http',
+           'matched-at': 'https://10.0.0.5/a', 'timestamp': '2026-10-03T00:00:00Z',
+           'info': {'classification': {'cve-id': ['CVE-2024-0001']}}}
+    (tmp_path / 'nuclei_raw.jsonl').write_text(json.dumps(raw) + '\n')
+    projection = EvidenceReader(tmp_path, 'unpublished', 'unpublished').build()
+    baseline = {**BASE, 'source': 'nuclei', 'script_id': 'nuclei:test'}
+    task = combine([baseline])
+    attach_raw(task, projection)
+    assert task[0]['finding_evidence']['observation_count'] == 1
+    for conflict in ({'protocol': 'udp'}, {'sni': 'other.example'},
+                     {'observed_at': '2026-10-01T00:00:00Z'}, {'script_id': 'nuclei:other'}):
+        task = combine([{**baseline, **conflict}])
+        attach_raw(task, projection)
+        assert task[0]['finding_evidence']['observation_count'] == 2

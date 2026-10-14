@@ -16,12 +16,20 @@ the additive contract by default; there is no bulk identity migration/backfill
 and old `vulnerabilities.json` files remain readable. Existing keys, owners,
 SLA deadlines, exceptions and events are preserved. Observations are rebound to
 authenticated tenant/run ownership at run API, tracker and analytics boundaries;
-uploader group IDs and context cannot assert ownership.
+uploader group IDs and context cannot assert ownership. A self-consistent hash
+is not an authorization or sanitization check: ingestion enforces the exact
+observation field allowlist, bounded/redacted text, scalar semantics, canonical
+time and subject fields, and at most eight incoming artifact references before
+aggregation. Unknown extra fields and unsafe supplied values make evidence
+incomplete rather than copying attacker-controlled bodies into API/analytics.
 
 `report_sources.json` preserves the exact input rows and its actual file SHA-256
 and JSON pointers are referenced by fallback observations. Available bounded raw
 readers add original Pulse/NSE/Nuclei artifact references, matcher, object and
-engine evidence. New source snapshots and sidecars require operator permissions;
+engine evidence. A matching coarse report representation is replaced by its
+authoritative raw observation, retaining both exact raw and report-source
+references without increasing observation counts. Unmatched rules and conflicting
+known transport/SNI/object/time observations remain separate. New source snapshots and sidecars require operator permissions;
 raw downloads use the existing run-scoped artifact endpoint and its access rules.
 The UI shows observations in run findings and tracker detectors. ClickHouse keeps
 one row per container, adding evidence to the existing JSON assessment envelope;
