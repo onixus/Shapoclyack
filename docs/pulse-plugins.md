@@ -36,12 +36,12 @@ reviewed signed publication and a verified pin update are required first.
 | `shapo_smb_signing` | Selected SMB2 NEGOTIATE response does not require signing; offers SMB 2.0.2 and 2.1 | MEDIUM | signing-policy portion of `smb2-security-mode` |
 | `shapo_smb1` | SMB1-only NEGOTIATE explicitly selects NT LM 0.12 | MEDIUM | SMB1-support portion of `smb-protocols` |
 | `shapo_rdp_negotiation` | X.224 negotiation accepts standard RDP security without mandatory NLA | MEDIUM | standard-security acceptance; not full `rdp-enum-encryption` |
-| `shapo_ssh_hostkey` | Verified curve25519-sha256 / Ed25519 exchange signature and SHA256 host-key fingerprint | INFO observation; no known-host trust  candidate native observation |
-| `shapo_snmp_info` | One UDP SNMPv2c `public` GET of sysDescr/sysName | INFO; standalone/native UDP, not production adapter enrichment  candidate native observation |
-| `shapo_smb_protocols` | SMB1 and SMB2 2.0.2/2.1/3.0/3.0.2/3.1.1 selections/signing, including RFC1002 on 139 | MEDIUM when signing is not required; otherwise INFO inventory  candidate native observation |
-| `shapo_ms17_010` | Anonymous IPC$/FID0 Peek status indication | Positive hypothesis only; every non-indicator/error UNKNOWN, never patch proof  candidate native observation |
-| `shapo_rdp_ntlm_info` | X.224→TLS→CredSSP NTLM type2 host/domain/DNS/build/time fields | INFO unauthenticated inventory; no type3/credentials/session  candidate native observation |
-| `shapo_vnc_security` | RFB3.3/3.7/3.8 security-type advertisements | MEDIUM hypothesis when None is advertised; no security selection or desktop session  candidate native observation |
+| `shapo_ssh_hostkey` | Verified curve25519-sha256 / Ed25519 exchange signature and SHA256 host-key fingerprint | INFO observation; no known-host trust | candidate native observation |
+| `shapo_snmp_info` | One UDP SNMPv2c `public` GET of sysDescr/sysName | INFO; standalone/native UDP, not production adapter enrichment | candidate native observation |
+| `shapo_smb_protocols` | SMB1 and SMB2 2.0.2/2.1/3.0/3.0.2/3.1.1 selections/signing, including RFC1002 on 139 | MEDIUM when signing is not required; otherwise INFO inventory | candidate native observation |
+| `shapo_ms17_010` | Anonymous IPC$/FID0 Peek status indication | Positive hypothesis only; every non-indicator/error UNKNOWN, never patch proof | candidate native observation |
+| `shapo_rdp_ntlm_info` | X.224→TLS→CredSSP NTLM type2 host/domain/DNS/build/time fields | INFO unauthenticated inventory; no type3/credentials/session | candidate native observation |
+| `shapo_vnc_security` | RFB3.3/3.7/3.8 security-type advertisements | MEDIUM hypothesis when None is advertised; no security selection or desktop session | candidate native observation |
 
 The two exposure plugins still claim reachability only. Negotiation and
 inventory observations do not establish relay/exploitability, trusted identity,
