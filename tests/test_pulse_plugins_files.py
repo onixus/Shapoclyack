@@ -70,7 +70,7 @@ def test_plugin_defines_the_loader_contract_and_is_named_like_its_file(path):
 def test_plugin_stays_inside_the_sandbox_limits(path):
     text = path.read_text(encoding="utf-8")
     assert "http_get(" not in text, "http_get has a fixed 2 s timeout the time budget does not count"
-    calls = re.findall(r"probe_(?:send_hex|udp_hex|send|recv)\(([^)]*)\)", text)
+    calls = re.findall(r"probe_(?:send_hex|udp_hex|send|recv|smb|ms17_010|rdp_ntlm|vnc_security)\(([^)]*)\)", text)
     for arguments in calls:
         timeout = int(arguments.rsplit(",", 1)[1])
         assert timeout <= pulse_plugins.PLUGIN_CALL_TIMEOUT_MS, f"{path.name}: {arguments}"

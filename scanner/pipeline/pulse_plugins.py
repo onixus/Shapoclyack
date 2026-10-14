@@ -66,11 +66,11 @@ PLUGINS_DIR = Path(__file__).resolve().parent / "pulse_data" / "plugins"
 
 #: Longest per-call timeout any shipped plugin may pass to ``probe_send`` /
 #: ``probe_recv``. The sandbox clamps to 50..5000 ms on its own.
-PLUGIN_CALL_TIMEOUT_MS = 1500
+PLUGIN_CALL_TIMEOUT_MS = 5000
 
 #: Extra wall-clock per scanned endpoint, and its ceiling per chunk. See the
 #: module docstring: an allowance, not a bound.
-PLUGIN_SECONDS_PER_ENDPOINT = 10
+PLUGIN_SECONDS_PER_ENDPOINT = 20
 PLUGIN_BUDGET_CAP_SECONDS = 1800
 
 #: ``pulse plugin check`` compiles and dry-runs one script; it opens no socket.
@@ -232,6 +232,10 @@ APPLICABILITY: dict[str, dict[str, Any]] = {
     },
     "shapo_ssh_hostkey": {"services": {"ssh"}, "banner": (), "ports": {22}},
     "shapo_snmp_info": {"services": {"snmp"}, "banner": (), "ports": {161}},
+    "shapo_ms17_010": {"services": {"smb", "microsoft-ds", "netbios-ssn"}, "banner": (), "ports": {445,139}},
+    "shapo_smb_protocols": {"services": {"smb", "microsoft-ds", "netbios-ssn"}, "banner": (), "ports": {445,139}},
+    "shapo_rdp_ntlm_info": {"services": {"rdp", "ms-wbt-server"}, "banner": (), "ports": {3389}},
+    "shapo_vnc_security": {"services": {"vnc"}, "banner": (("rfb ", ""),), "ports": set(range(5900,5910))},
     "shapo_smb1": {"services": {"smb", "microsoft-ds"}, "banner": (), "ports": {445}},
     "shapo_smb_signing": {"services": {"smb", "microsoft-ds"}, "banner": (), "ports": {445}},
     "shapo_rdp_negotiation": {"services": {"rdp", "ms-wbt-server"}, "banner": (), "ports": {3389}},
