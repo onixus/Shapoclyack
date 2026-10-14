@@ -705,3 +705,44 @@ def test_failed_chunks_are_on_the_record(tmp_path, monkeypatch):
     )
     raw = json.loads((tmp_path / "pulse" / "raw.json").read_text(encoding="utf-8"))
     assert [(c["returncode"], c["resolved"]) for c in raw["chunks"]] == [(101, False), (0, True)]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_tls_enumeration_is_opt_in_and_recorded(tmp_path, monkeypatch, enabled):
+    calls, _ = _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE], tls_enum=enabled)
+    assert ("--tls-enum" in calls[0]) is enabled
+    raw = json.loads((tmp_path / "pulse" / "raw.json").read_text())
+    assert raw["adapter"]["tls_enum"] is enabled
+
+
+def test_enabling_enumeration_invalidates_certificate_only_resume(tmp_path, monkeypatch):
+    _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE])
+    calls, _ = _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE], done_hosts={"10.0.0.1"}, tls_enum=True)
+    assert len(calls) == 1 and "--tls-enum" in calls[0]
+    calls, _ = _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE], done_hosts={"10.0.0.1"}, tls_enum=True)
+    assert calls == []
+
+
+def test_old_enum_receipt_without_starttls_request_contract_is_reprobed(tmp_path, monkeypatch):
+    _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE], tls_enum=True)
+    path = tmp_path / "pulse" / "raw.json"
+    raw = json.loads(path.read_text())
+    raw["adapter"].pop("tls_enumeration_contract")
+    old_hosts_file = path.parent / f"chunk_{chunk_key(['10.0.0.1'], [22], 'connect/tls-enum')}.hosts.txt"
+    old_hosts_file.write_text("10.0.0.1\n")
+    path.write_text(json.dumps(raw))
+    calls, _ = _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE], tls_enum=True, done_hosts={"10.0.0.1"})
+    assert len(calls) == 1
+    assert Path(calls[0][calls[0].index("--targets-file") + 1]) != old_hosts_file
+    assert json.loads(path.read_text())["adapter"]["tls_enumeration_contract"] == "raw-starttls-v2"
+
+
+def test_direct_only_keysize_unknown_candidate_receipt_cannot_skip_new_flight_measurements(tmp_path, monkeypatch):
+    _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE], tls_enum=True)
+    path = tmp_path / "pulse" / "raw.json"
+    raw = json.loads(path.read_text())
+    raw["adapter"]["tls_enumeration_contract"] = "raw-starttls-v1"
+    path.write_text(json.dumps(raw))
+    calls, _ = _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE], tls_enum=True, done_hosts={"10.0.0.1"})
+    assert len(calls) == 1
+    assert json.loads(path.read_text())["adapter"]["tls_enumeration_contract"] == "raw-starttls-v2"

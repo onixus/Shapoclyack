@@ -83,6 +83,7 @@ class CveRecord(BaseModel):
     cve_id: str = ""
     ip: str
     port: int = 0
+    protocol: Literal["tcp", "udp", "unknown"] | None = None
     service: str = ""
     cvss: float | None = None
     severity: str = "unknown"
@@ -186,7 +187,7 @@ def _plugin_vulnerability(c: CveRecord, severity: str) -> dict[str, Any]:
         "port": str(c.port) if c.port else "",
         "script_id": f"{PLUGIN_DETECTOR}:{name}",
         "source": PLUGIN_DETECTOR,
-        "protocol": "tcp",
+        "protocol": c.protocol or "tcp",
         "cve": "",
         "cvss": None,
         "severity": severity,

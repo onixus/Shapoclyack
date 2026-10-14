@@ -36,16 +36,16 @@ directories, which [`report.py`](../../scanner/pipeline/report.py),
 [`evidence_artifacts.py`](../../scanner/pipeline/evidence_artifacts.py) and
 [`verification_coverage.py`](../../api/services/verification_coverage.py) read.
 
-### What Pulse already does
+### Historical Pulse baseline (v1.3.0, 2026-10-10)
 
-From the Pulse v1.3.0 CLI and GenDec `ROADMAP.md`: host discovery over ARP,
+At the original measurement, from the Pulse v1.3.0 CLI and GenDec `ROADMAP.md`: host discovery over ARP,
 ICMP and TCP (`-D --discover-method arp|auto`); a declarative service-probe DB
 (17 probes, 203 rules) replaceable with `--probe-db`; SinFP OS detection;
 offline CVE rules with KEV/EPSS; a TLS handshake probe and JARM (it already
 builds its own ClientHellos); Rhai audit plugins run inside the scan
 (`--scripts`, `--script-dir`, 30 plugins upstream, a sandboxed network API
 limited to the audited host and its open ports). The Shapoclyack adapter
-([`pulse_probe.py`](../../scanner/pipeline/pulse_probe.py)) passes neither
+([`pulse_probe.py`](../../scanner/pipeline/pulse_probe.py)) then passed neither
 `--scripts` nor `--probe-db` nor `--services-db`.
 
 ### Measured, 2026-10-10
@@ -177,7 +177,7 @@ data and measurement live in Shapoclyack.**
 | L2: ARP, NetBIOS and mDNS names | discovery (ARP exists; MAC, names and a packet-rate cap in structured output: GenDec#35) | scope, `max_hosts`, rate cap, the artifact shape `l2_discovery` writes today | — |
 | TLS suites, versions, SSLv2/SSLv3 | enumeration with its own ClientHellos | grading and thresholds in `tls_posture` | — |
 | NSE `default,safe` identification (SSH algorithms, SMB signing, RDP NTLM info, FTP anonymous, SNMP…) | the Rhai sandbox | the plugins (`scanner/pipeline/pulse_data/plugins/`, passed with `--script-dir`) and the parser for their findings | — |
-| NSE `vuln` checks | TLS-level ones (Heartbleed and the like) with the enumeration above | the list of checks and where each lands, [script by script](../nse-vuln-coverage.md) | network templates first (a curated table run by a network pass; v9.9.4 has one for SMB signing and none for MS17-010); Rhai only for what has none and the sandbox can send (HTTP TRACE) |
+| NSE `vuln` checks | planned TLS-level probes; enumeration does not implement Heartbleed/CCS/Ticketbleed | the list of checks and where each lands, [script by script](../nse-vuln-coverage.md) | network templates first (a curated table run by a network pass; v9.9.4 has one for SMB signing and none for MS17-010); Rhai only for what has none and the sandbox can send (HTTP TRACE) |
 | CVE by version (`vulners`, Vulscan) | `--cve` stays a secondary source | `retro_match` is authoritative (API side, offline NVD ranges; only as complete as its dataset, [measured](../nse-vuln-coverage.md#cve-by-version-vulners-vulscan)) | — |
 | Quality reference (`pulse_shadow`) | — | a golden corpus recorded **before** Nmap goes, replayed in CI and on a kind stand | — |
 | `nmap_timing` | — | mapped onto Pulse `rate` / `concurrency` in profiles | — |
@@ -207,27 +207,29 @@ nothing.
 
 ## Plugins (#544)
 
-The plugins are in `scanner/pipeline/pulse_data/plugins/` and described in
-[Pulse plugins](../pulse-plugins.md). Measured against the real Pulse v1.3.0 sandbox
-(`pulse plugin run`, a stub server that records what arrives):
+The plugins are in `scanner/pipeline/pulse_data/plugins/` and
+described in [Pulse plugins](../pulse-plugins.md). Original v1.3.0 measurements
+showed that text-only UTF-8 requests could not send SMB/RDP binary negotiation,
+UDP was unavailable and per-read timeouts were not total call deadlines.
+[GenDec#39](https://github.com/onixus/GenDec/pull/39) supplies byte-preserving
+TCP/UDP APIs and one deadline per exchange. It is not yet a released/pinned
+engine dependency, so source and loopback validation do not establish shipped
+sensor acceptance.
 
-| NSE `default,safe` function | Reachable from the sandbox? | State |
+| Function | Candidate source status | Remaining boundary |
 |---|---|---|
-| `ssh2-enum-algos` (weak algorithms) | yes: the reply is ASCII name-lists after sanitising | `shapo_ssh_algorithms` |
-| `ssh-hostkey` | no: needs a key exchange | **blocked in GenDec** |
-| `ftp-anon` | the login, yes; the listing, no (data connection) | `shapo_ftp_anonymous`, partial |
-| cleartext services (not an NSE script) | yes | `shapo_cleartext_services` |
-| `smb2-security-mode`, `smb-security-mode`, `smb-protocols` | **no**: the SMB negotiate begins with `0xFE`/`0xFF` and a Rhai string is sent as UTF-8, so `"\xfe"` reaches the wire as `C3 BE` | `shapo_smb_exposure` says only that the service answers (LOW); **blocked in GenDec** |
-| `rdp-enum-encryption`, `rdp-ntlm-info` | **no**: the X.224 request carries `0xE0`, and CredSSP/NTLM follows | `shapo_remote_admin_exposure`, exposure only (LOW); **blocked in GenDec** |
-| `snmp-info` and any UDP probe | **no**: TCP only | not written; **blocked in GenDec** |
+| `ssh2-enum-algos` weaknesses | `shapo_ssh_algorithms` | advertisement, not a complete algorithm inventory |
+| `ssh-hostkey` | `shapo_ssh_hostkey`: curve25519-sha256 / Ed25519 exchange signature verified | possession on this connection; no known-host trust; other algorithms unknown |
+| `ftp-anon` | anonymous login checked | no PASV directory listing or second-port connection |
+| cleartext services / STARTTLS | capability plugin plus opt-in native TLS upgrade enumeration | plugin capability alone is not a completed TLS handshake |
+| SMB inventory/signing | `shapo_smb_protocols`: SMB1 and single offers for SMB2 2.0.2/2.1/3.0/3.0.2/3.1.1; direct 445 or RFC1002 on 139 | selected dialects/signing only; no relay exploit proof |
+| MS17-010 | separate `shapo_ms17_010` read-only anonymous IPC$/FID0 status hypothesis | non-indicator, denial and error stay UNKNOWN; no exploit or patch attestation |
+| RDP | standard-security negotiation plus `shapo_rdp_ntlm_info` X.224/TLS/CredSSP type2 inventory | no type3, credentials, desktop session, authenticated identity or full encryption enumeration |
+| SNMP | `shapo_snmp_info`: one UDP SNMPv2c GET with `public`, sysDescr/sysName | standalone/native UDP only; production adapter remains TCP-only; no guessing/SET |
+| VNC | `shapo_vnc_security`: RFB3.3/3.7/3.8 security advertisements | no client security selection, ClientInit or desktop/session acceptance |
 
-Filed as [onixus/GenDec#38](https://github.com/onixus/GenDec/issues/38). What GenDec has to add is binary-safe payloads (a hex or blob argument to
-`probe_send`, and a reply that keeps its bytes) , a UDP call with the same
-per-host, per-port, budget and time limits, and one deadline per call (the sandbox's
-timeout applies to every read, so a trickling server stretches a call without bound). Until then the gap is stated, per NSE
-script and with its reason, in the corpus report
-(`scripts/compare-nmap-pulse-corpus.py`), and the two exposure plugins say in the
-finding that signing, SMBv1, NLA and NTLM information were not checked.
+The LOW exposure plugins remain independent observations. New negotiation
+plugins do not turn their reachability evidence into vulnerability proof.
 
 Decisions taken while implementing it:
 
@@ -239,7 +241,7 @@ Decisions taken while implementing it:
   `vulnerabilities.detectors` is JSON.
 - **A probe that fails is an error, not an empty result**, so that "the plugin
   could not look" is not read as "the plugin looked and found nothing".
-- **Plugins are off under a `per_host_rate` policy** and in a shadow run, because
+- **Plugins are off under a `per_host_rate` policy** because
   their connections bypass `--rate`; they are serial, so a concurrency ceiling needs
   nothing.
 - **Pulse loads three directories**: `--script-dir`, `./scripts` and
@@ -278,13 +280,12 @@ Decided:
   and F, so the C caps (RC4, 64-bit blocks, MD5) and the key-size steps are
   covered by unit tests against the guide, not by a recorded reference.
   Finding kinds and the C–F threshold are the same as on the `nmap-nse` path.
-- **The enumeration format is our proposal, not a Pulse output yet**
+- **The enumeration format began as our proposal**
   (`tls[].enumeration`, read by `scanner/pipeline/tls_enumeration.py`; shape in
   [pulse-backend.md](../pulse-backend.md#cipher-suites-and-a-f-grades-on-the-pulse-path)).
-  Expected from onixus/GenDec#34. A contract test builds that shape from the
+  Signed/pinned Pulse v1.4.0 now emits it. A contract test builds that shape from the
   recorded Nmap output and checks that the Pulse path yields the same findings
-  as the Nmap path on the same endpoints. An enumeration not marked complete
-  makes its findings `requires_confirmation`; a suite missing from it is not
+  as the Nmap path on the same endpoints. Raw-selection findings always retain `requires_confirmation`; a suite missing from it is not
   read as refused. Code points without names resolve through the IANA
   registry copied into `scanner/pipeline/pulse_data/tls_cipher_suites.tsv`.
 - **NSE `vuln` scripts at the TLS level** — split with #547:
@@ -302,11 +303,20 @@ Decided:
   (`No reply from server (TIMEOUT)`); no TLS-level `vuln` script reported a
   vulnerability.
 
-What GenDec#34 still has to say, beyond its current text: run the TLS probe on
-every port where a handshake succeeds (and STARTTLS for SMTP, IMAP, POP3, FTP,
-LDAP, PostgreSQL, MySQL), not on 443/8443 only; a `complete` flag when the
-connection budget cut the enumeration short; SSLv2 with its own CLIENT-HELLO;
-the JSON shape above.
+Pulse 1.4.0 enumerates raw SSLv2/SSLv3…TLS1.3
+selection and server preference. Opt-in STARTTLS covers SMTP, IMAP, POP3,
+FTP, LDAP, PostgreSQL and MySQL. Visible Certificate/ServerKeyExchange facts
+supply RSA/DHE modulus sizes and supported ECDHE curves; normal TLS1.3 x25519
+shares supply curve size. HRR, static ECDH/PSK and unavailable parameters remain
+unmeasured. Raw selection and unverified signatures are not authenticated/full
+handshake acceptance; findings require confirmation and missing sizes keep
+upper-bound grades. GOST and vulnerability-specific malformed-record probes
+(Heartbleed, CCS injection, Ticketbleed) are not implemented.
+
+Local native OpenSSL fixtures record TLS1.2 ECDHE/DHE/RSA and a PostgreSQL
+SSLRequest→TLS1.3 shim. They do not establish an installed release or complete
+native-service fleet acceptance. See [TLS contracts and limits](../pulse-endpoints.md#optional-tls-suite-enumeration).
+The measured v1.3.0 results above remain the historical comparison baseline.
 
 ## Work items
 
@@ -319,7 +329,7 @@ the reference has to be recorded while Nmap still runs.
 3. [#543](https://github.com/onixus/Shapoclyack/issues/543) — Pin Pulse's inputs: `--services-db`, `--os-mode sinfp`, private `HOME`;
    service name from the probe (GenDec).
 4. [#544](https://github.com/onixus/Shapoclyack/issues/544) — Audit plugins in Shapoclyack, `--script-dir`, finding contract and parser.
-   **Implemented, with a blocker in GenDec for part of it** — see [Plugins (#544)](#plugins-544) below.
+   **Content and bounded native helpers are implemented with signed/pinned Pulse v1.4.0** — see [Plugins (#544)](#plugins-544) below.
 5. [#545](https://github.com/onixus/Shapoclyack/issues/545) — TLS suite and version enumeration (GenDec) and grading (`tls_posture`).
 6. [#546](https://github.com/onixus/Shapoclyack/issues/546) — Probe DB in Shapoclyack: clean-room rules, distribution revision, CPE
    mapping.
@@ -340,26 +350,26 @@ XML of past runs, `nmap-nse` findings and `prober: nmap` rows stay readable
 (`scanner/pipeline/legacy_nmap.py`); the golden corpus of #541 stays as the
 reference it was recorded to be.
 
-**Consequences that were accepted, not solved.** The decision above set Pulse
-and Shapoclyack up to replace each function; three of them are not replaced yet,
-and #548 went ahead without waiting for them (the owner's decision, 2026-10-11):
+**Release-backed implementation.** #548 removed runtime Nmap paths before
+all replacements were complete (owner decision, 2026-10-11). Input isolation,
+bounded raw TLS/STARTTLS and exchange-size facts, verified SSH host-key
+observations, native SMB/RDP/VNC helpers, and standalone/native UDP SNMP
+inventory are now implemented. GenDec#31/#32 and
+[GenDec#39](https://github.com/onixus/GenDec/pull/39) are merged upstream.
 
-1. **TLS suite enumeration and A-F grades (#545).** The grading and the contract
-   are in place; Pulse does not enumerate suites until GenDec#34. A real scan on
-   the Pulse path has no grade.
-2. **`smb-vuln-ms17-010`, `smb-vuln-ms10-061`, `smb-protocols`,
-   `rdp-enum-encryption`** have no destination: binary-safe payloads are
-   GenDec#38 ([NSE `vuln` coverage](../nse-vuln-coverage.md)).
-3. **Pinned inputs (#543)** are only partly pinned: service names still come from
-   the port table rather than the matched probe (GenDec#31, GenDec#32).
+Dockerfiles, publish workflows and all four archive pins select signed
+[Pulse v1.4.0](https://github.com/onixus/GenDec/releases/tag/v1.4.0), built from
+`cf5c4e82677ccb9b5edea84e775590d51068afff` (the tree matches the reviewed
+`6ca248b` source). Its Sigstore bundle was verified against the exact release
+workflow/tag identity and each downloaded archive matched the signed checksum.
+Combined CI is required before merge; source and released CLI fixtures do not
+establish installed sensor acceptance. Historical corpus evidence remains
+unchanged and distinct from the current capability map.
 
-A verification re-scan can no longer re-run an NSE script, so a finding that only
-an NSE script detected stays inconclusive after it and is closed by hand.
-
-## Not decided here
-
-- How Pulse itself is distributed — [ADR 0001](0001-pulse-distribution-model.md).
-- Whether Naabu or Pulse finds ports — [#452](https://github.com/onixus/Shapoclyack/issues/452).
-- How Nuclei templates are planned from Pulse services — [#450](https://github.com/onixus/Shapoclyack/issues/450).
-- GOST cipher suites in TLS posture: Nmap did not cover them either; a separate
-  question for the Russian compliance work.
+Remaining limits: production Pulse enrichment is TCP-only, so SNMP UDP cannot
+be verified by a TCP completion receipt. SSH trust/other algorithms, complete
+RDP encryption/authentication, VNC session authentication, FTP PASV, SMB
+print-spooler RPC and vulnerability-specific TLS checks remain unsupported.
+DoS, write/exploit, brute-force and credential-guessing checks described in
+[NSE coverage](../nse-vuln-coverage.md) remain deliberately excluded. Negotiation,
+version matches and status hypotheses never establish exploitability or a patch.

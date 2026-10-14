@@ -2539,11 +2539,19 @@ an empty CRL, updates the Secret with the exported revocation, and checks TLS
 a certificate `200`. `tests/test_agent_crl.py` also exercises direct-listener
 TLS rejection before ASGI and issuer/tenant/legacy/failure boundaries.
 
-**Lariska does not support client certificates yet.** Until it does,
-`required` — an installation-wide mode — refuses every Agent: stay at
-`optional` while Agents are deployed, or pin certificates an MDM puts on the
-endpoints. The contract it is to implement, in this order (the API side is in
-place and tested):
+**Lariska builds with client-certificate support** automatically enrol on HTTPS
+before registration. Deploy these builds throughout the fleet before enabling
+installation-wide `required`. The private key and certificate are persisted as
+one atomically replaced, private `client-identity.json` bundle in the agent state
+directory; expiry is checked from the certificate before each request. Pending
+key and CSR are durably saved before issuance. A lost response or restart
+recovers the existing public certificate with the same CSR via
+`POST /api/v1/agent/certificate/recover`; this read-only route checks token scope,
+CSR signature and key matching, and never issues a new certificate or undoes
+revocation. A signer outage during renewal retains the current valid identity
+while backing off; an absent or expired identity blocks protected calls. An
+installation without an issuer returns 404 and keeps token-only operation.
+The client follows this contract:
 
 1. Exchange the provisioning key for a token, as today.
 2. Enrol **before** registering — under `required`, register needs a
@@ -4950,7 +4958,7 @@ every row of scan data. As of
 
 Mutual TLS bound to a sensor's identity exists on one link: sensor and Agent →
 API, opt-in ([Sensor client certificates](#sensor-client-certificates)), and
-Lariska Agents cannot take part in it yet. NATS can also require a client
+Lariska Agents with client-certificate support can take part in it. NATS can also require a client
 certificate (`OCTO_NATS_TLS_CERT`, with `verify_and_map` on the broker), but
 that certificate authenticates a NATS user, not a particular sensor. Every other
 link in the table is TLS one-way at most.

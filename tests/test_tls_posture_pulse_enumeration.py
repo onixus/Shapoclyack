@@ -87,7 +87,7 @@ def test_cipher_versions_have_the_nmap_shape_and_complete_means_no_confirmation(
         }
         assert ours["least_strength"] == theirs["least_strength"]
         assert set(ours) - {"server_preference"} == {"version", "ciphers", "least_strength"}
-        assert all(set(c) == {"name", "grade"} for c in ours["ciphers"])
+        assert all({"name", "grade"} <= set(c) <= {"name", "grade", "grade_upper_bound"} for c in ours["ciphers"])
     assert not any(i.get("requires_confirmation") for i in row["issues"] if i["kind"] in CIPHER_KINDS)
     assert all(v["server_preference"] is True for v in row["cipher_versions"])
 
@@ -170,7 +170,7 @@ def test_unknown_suite_is_kept_with_no_grade_and_makes_no_grade_finding():
 def test_kex_detail_changes_the_grade():
     def grade(**kex):
         row = _from_pulse(_row({"complete": True, "versions": [{"version": "TLSv1.2", "ciphers": [
-            {"name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256", **kex}]}]}))
+            {"name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256", "kex_evidence": "server_key_exchange_dh_modulus", **kex}]}]}))
         return row["cipher_versions"][0]["ciphers"][0]["grade"]
 
     assert grade(kex_bits=2048) == "A"
@@ -425,11 +425,11 @@ def test_unknown_exchange_is_flagged_as_an_upper_bound_and_cannot_raise_a_kex_fi
     assert by_name["TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"]["grade_upper_bound"] is True
     assert not _cipher_signature(unknown["issues"])  # a 1024-bit DH is invisible without kex_bits
 
-    known = _from_pulse(_suite_row({"name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256", "kex_bits": 1024},
-                                   {"name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256", "kex_bits": 512},
+    known = _from_pulse(_suite_row({"name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256", "kex_bits": 1024, "kex_evidence": "server_key_exchange_dh_modulus"},
+                                   {"name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256", "kex_bits": 512, "kex_evidence": "server_key_exchange_dh_modulus"},
                                    {"name": "TLS_AES_128_GCM_SHA256"}))
     (suite,) = [c for c in known["cipher_versions"][0]["ciphers"] if "DHE" in c["name"]]
-    assert suite == {"name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256", "grade": "D"}  # worst of the duplicates
+    assert suite == {"name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256", "grade": "D", "kex_bits": 512, "kex_evidence": "server_key_exchange_dh_modulus"}  # worst of the duplicates
     assert ("weak_cipher_grade", "TLSv1.2", "D", None) in _cipher_signature(known["issues"])
     tls13 = next(c for c in known["cipher_versions"][0]["ciphers"] if c["name"] == "TLS_AES_128_GCM_SHA256")
     assert "grade_upper_bound" not in tls13
@@ -444,7 +444,7 @@ def test_accepted_false_with_a_suite_list_is_still_not_accepted():
 
 
 def test_duplicate_suites_collapse_to_the_worst_grade_within_and_across_entries():
-    dup = {"name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256"}
+    dup = {"name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256", "kex_evidence": "server_key_exchange_dh_modulus"}
     row = _from_pulse(_row({"complete": True, "versions": [
         {"version": "TLSv1.2", "ciphers": [{**dup, "kex_bits": 4096}, {**dup, "kex_bits": 512}, {**dup, "kex_bits": 2048}]},
         {"version": "TLS 1.2", "ciphers": [{**dup, "kex_bits": 4096}, {"name": "TLS_NEW_WITH_THING"}]},
@@ -458,7 +458,7 @@ def test_a_known_grade_replaces_an_unknown_one_for_the_same_name():
     row = _from_pulse(_suite_row({"name": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "kex_group": "nonsense"},
                                  {"name": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "kex_bits": 256}))
     assert row["cipher_versions"][0]["ciphers"] == [
-        {"name": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "grade": "A"}]
+        {"name": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "grade": "A", "grade_upper_bound": True}]
 
 
 @pytest.mark.parametrize("code", ["5", "0005", "771", "C02F", "c02f", " 5 ", "0x", "0x12345", "x0005", 0x10000, -5])
@@ -515,3 +515,97 @@ def test_a_suite_that_raises_while_being_read_is_skipped_alone():
         row = _from_pulse(_suite_row({"name": "TLS_RSA_WITH_RC4_128_SHA"},
                                      {"name": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "kex_bits": 256}))
     assert [c["name"] for c in row["cipher_versions"][0]["ciphers"]] == ["TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"]
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_raw_selection_evidence_is_preserved_without_claiming_completed_handshake(complete):
+    row = _from_pulse(_row({"complete": complete, "evidence": "server_hello_selection", "versions": [
+        {"version": "SSLv3", "accepted": True, "ciphers": [{"code": "0x0005", "name": "TLS_RSA_WITH_RC4_128_SHA"}]}]}))
+    assert row["enumeration_evidence"] == "server_hello_selection"
+    assert row["enumeration_complete"] is complete
+    assert all(issue.get("requires_confirmation") for issue in row["issues"] if issue["kind"] in CIPHER_KINDS)
+    assert {issue["kind"] for issue in row["issues"]} >= {"weak_protocol", "weak_cipher_name"}
+    assert row["cipher_versions"][0]["ciphers"][0]["grade_upper_bound"] is True
+
+
+def test_recorded_raw_engine_tls13_result_grades_observed_suites():
+    # Recorded from GenDec raw enumerator against a local OpenSSL TLS1.3 server.
+    payload = json.loads((Path(__file__).parent / "fixtures/pulse_tls/raw_tls13.json").read_text())
+    row = _from_pulse(payload["tls"][0])
+    assert row["enumeration_evidence"] == "server_hello_selection"
+    version = next(v for v in row["cipher_versions"] if v["version"] == "TLSv1.3")
+    assert {s["name"] for s in version["ciphers"]} == {
+        "TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256"}
+    assert version["server_preference"] is True
+    assert {s["grade"] for s in version["ciphers"]} == {"A"}
+
+
+def test_starttls_transport_and_validated_curve_can_be_reported_as_observations():
+    row = _from_pulse(_row({"complete": False, "evidence": "server_hello_selection", "transport": "smtp-starttls", "versions": [
+        {"version": "TLSv1.3", "accepted": True, "ciphers": [{"name": "TLS_AES_128_GCM_SHA256", "kex_group": "x25519", "kex_bits": 253}]}]}))
+    assert row["enumeration_transport"] == "smtp-starttls"
+    assert row["cipher_versions"][0]["ciphers"][0]["grade"] == "A"
+    assert not row["cipher_versions"][0]["ciphers"][0].get("grade_upper_bound")
+    assert row["enumeration_complete"] is False
+
+
+def test_recorded_postgres_starttls_result_preserves_transport_and_measured_curve_grading():
+    payload = json.loads((Path(__file__).parent / "fixtures/pulse_tls/raw_postgres_tls13.json").read_text())
+    row = _from_pulse(payload["tls"][0])
+    assert row["enumeration_transport"] == "postgres-sslrequest"
+    assert row["enumeration_evidence"] == "server_hello_selection"
+    assert row["enumeration_complete"] is False
+    version = next(v for v in row["cipher_versions"] if v["version"] == "TLSv1.3")
+    assert len(version["ciphers"]) == 3 and version["server_preference"] is True
+    assert all(s["grade"] == "A" and not s.get("grade_upper_bound") for s in version["ciphers"])
+
+
+def test_native_tls12_fixtures_report_measured_facts_and_surface_weak_dh_without_grade_invention():
+    payload = json.loads((Path(__file__).parent / "fixtures/pulse_tls/raw_tls12_keysize.json").read_text())
+    by_name = {}
+    rows = {}
+    for case in payload["cases"]:
+        row = _from_pulse(case["payload"]["tls"][0])
+        version = next(v for v in row["cipher_versions"] if v["version"] == "TLSv1.2")
+        suite, = version["ciphers"]
+        by_name[suite["name"]] = suite
+        rows[suite["name"]] = row
+        assert not suite.get("grade_upper_bound")
+    dh = by_name["TLS_DHE_RSA_WITH_AES_128_GCM_SHA256"]
+    assert dh["grade"] == "B" and dh["kex_bits"] == 1024
+    assert dh["kex_evidence"] == "server_key_exchange_dh_modulus"
+    issue, = [i for i in rows[dh["name"]]["issues"] if i["kind"] == "weak_key_exchange"]
+    assert issue["kex_bits"] == 1024 and issue["severity"] == "medium" and issue["requires_confirmation"] is True
+    ec = by_name["TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"]
+    assert ec["grade"] == "A" and ec["kex_group"] == "secp256r1" and ec["kex_bits"] == 256
+    rsa = by_name["TLS_RSA_WITH_AES_128_GCM_SHA256"]
+    assert rsa["grade"] == "A" and rsa["kex_bits"] == 2048 and rsa["kex_evidence"] == "certificate_rsa_modulus"
+
+
+def test_unknown_exchange_has_no_measured_keysize_finding():
+    row = _from_pulse(_row({"complete": False, "evidence": "server_hello_selection", "versions": [
+        {"version": "TLSv1.2", "accepted": True, "ciphers": [{"name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256"}]}]}))
+    assert row["cipher_versions"][0]["ciphers"][0]["grade_upper_bound"] is True
+    assert not any(i["kind"] == "weak_key_exchange" for i in row["issues"])
+
+
+@pytest.mark.parametrize("metadata", [
+    {"kex_bits": 8192},
+    {"kex_bits": 8192, "kex_evidence": "garbage"},
+    {"kex_bits": 8192, "kex_evidence": "certificate_rsa_modulus"},
+    {"kex_bits": True, "kex_evidence": "server_key_exchange_dh_modulus"},
+    {"kex_bits": 8192.0, "kex_evidence": "server_key_exchange_dh_modulus"},
+    {"kex_bits": 8192, "kex_group": "secp384r1", "kex_evidence": "server_key_exchange_dh_modulus"},
+])
+def test_untrusted_measurement_cannot_promote_dh_grade(metadata):
+    from scanner.pipeline.tls_enumeration import parse_suite
+    assert parse_suite({"name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256", **metadata}) == {
+        "name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256", "grade": "B", "grade_upper_bound": True}
+
+
+@pytest.mark.parametrize("bits", [1, 256, 4096])
+def test_named_curve_measurement_requires_exact_bits(bits):
+    from scanner.pipeline.tls_enumeration import parse_suite
+    suite = parse_suite({"name": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "kex_group": "secp384r1",
+                         "kex_bits": bits, "kex_evidence": "server_key_exchange_named_curve"})
+    assert suite == {"name": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "grade": "A", "grade_upper_bound": True}

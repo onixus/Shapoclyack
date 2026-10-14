@@ -1504,6 +1504,26 @@ def require_agent_enrolment(
     )
 
 
+def require_agent_certificate_recovery(
+    request: Request,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> AgentPrincipal:
+    """JWT authentication for reading an already issued same-key certificate.
+
+    This separate route never issues certificates. Optional presentation lets
+    a durable pending CSR recover a lost first-enrollment response; revocation
+    locks and presented-certificate binding remain enforced.
+    """
+    return _authenticate_agent(
+        request,
+        credentials,
+        settings,
+        allow_closed_tenant=False,
+        cert_mode="optional",
+    )
+
+
 #: Where the certificate bound to this request is left, for the route that
 #: wants to name it (the enrolment response does not; the audit row does).
 AGENT_CLIENT_CERT_ATTR = "agent_client_cert"

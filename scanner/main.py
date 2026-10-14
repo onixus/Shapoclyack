@@ -951,6 +951,8 @@ def _run_pipeline_body(
 
         def _do_pulse() -> None:
             pulse_cfg = merge_pulse_config(config.service_probe.pulse, profile.pulse)
+            if config.tls_posture.enabled and config.tls_posture.enumerate_ciphers and runtime.per_host_rate is not None:
+                logging.info("TLS enumeration disabled: per-host packet ceiling applies to this run")
             # The adapter validates persisted success receipts, then replaces
             # stale coarse/per-host progress before replay. Partial or failed
             # results must not inherit the old stage's completed flag.
@@ -970,6 +972,8 @@ def _run_pipeline_body(
                     os_detect=pulse_cfg.os_detect,
                     cve=pulse_cfg.cve,
                     cve_online=pulse_cfg.cve_online,
+                    tls_enum=(config.tls_posture.enabled and config.tls_posture.enumerate_ciphers
+                              and runtime.per_host_rate is None),
                     syn=pulse_cfg.syn,
                     max_hosts=pulse_cfg.max_hosts,
                     timeout_seconds=runtime.nse_timeout_seconds,

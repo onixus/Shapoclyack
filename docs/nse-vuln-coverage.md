@@ -7,11 +7,12 @@ matching, or a stated refusal
 [#547](https://github.com/onixus/Shapoclyack/issues/547)). Read it as a list of
 what is covered, by what, under which configuration, and what is **not**.
 
-Status after #548: the NSE stage is gone, so this is now the whole answer to
-"what replaced the `vuln` category", not a plan. The four scripts marked as gaps
-below (`smb-vuln-ms17-010`, `smb-vuln-ms10-061`, `smb-protocols`,
-`rdp-enum-encryption`) have no replacement, and neither does the TLS part until
-Pulse enumerates suites ([Migrating off Nmap](nmap-migration.md#known-gaps)).
+The NSE stage is gone. The original corpus below records v1.3.0 behavior;
+current Pulse 1.4.0 coverage is described alongside it, without
+rewriting that measurement. Native dialogue plugins and raw TLS/STARTTLS require signed Pulse v1.4.0,
+now selected by the image/workflow/checksum pins after workflow identity and
+all four archive digests were verified. These source/released-CLI observations
+remain separate from installed sensor acceptance ([ADR 0002](adr/0002-replacing-nmap-functions.md)).
 
 Sources of the table:
 
@@ -30,7 +31,7 @@ Sources of the table:
 
 | Assumption | Finding |
 |---|---|
-| `smb-vuln-ms17-010` has a Nuclei network template | **No.** v9.9.4 has none (no template mentions MS17-010, EternalBlue or CVE-2017-0143..0148). The check is an SMB1 transaction; it needs binary payloads (GenDec#38). Gap, stated below. |
+| `smb-vuln-ms17-010` has a Nuclei network template | **No.** v9.9.4 has none (no template mentions MS17-010, EternalBlue or CVE-2017-0143..0148). The check is an SMB1 transaction; it needs binary payloads (GenDec#38). The native status hypothesis below is separate from Nuclei. |
 | Network templates never run because the sweep only gets web URLs | **Half true.** A host that has a web port does get them: for a `javascript:` template nuclei v3.11.1 uses the template's own port for a URL input (`http://h:80/` and `http://h/` both ran `smb-signing-not-required` against `h:445`). What never happens is a host with **no** web port, the Samba of the stand, being looked at. The network pass fills that, and a finding the sweep already made on the same host, port and template is not repeated. |
 | `ssl-*` has Nuclei templates to map | The `ssl/` directory of v9.9.4 has protocol-version, weak-cipher, expiry and issuer templates, not CCS injection, Heartbleed or POODLE checks. Those are #545 and are not touched here. |
 | The slowloris and byterange hits were on the legacy nginx / IIS stub | Slowloris and TRACE were on the **Apache** (`.22`); byterange on both **nginx** (`.20`, `.21`) and not on Apache; the litespeed and phpMyAdmin hits were the IIS stub's catch-all page. |
@@ -47,7 +48,7 @@ printed.
 | `vulners` | 10 | CVE ids by version: 428 (host, port, CVE) triples over 10 endpoints | version matching | `retro_match` (API) first, `pulse --cve` second; see [CVE by version](#cve-by-version-vulners-vulscan) | Probe-free by construction. The shipped NVD dataset is a 23-CVE seed: until the real one is harvested the coverage is a handful (below). |
 | `http-vuln-cve2011-3192` | 4 | VULNERABLE (Apache byterange DoS) on **nginx** 1.27/1.18 :80/:443; Apache not flagged | refused | none | The reply to a many-range `Range` request is the whole test, and it flagged four nginx endpoints. No Nuclei template for CVE-2011-3192 in v9.9.4. A version question (Apache < 2.2.21) belongs to version matching. |
 | `http-slowloris-check` | 1 | LIKELY VULNERABLE (CVE-2007-6750) on Apache :80 | refused | none | Holds connections open to starve the server: a DoS check, against the non-destructive posture (`dos` is in the default `exclude_tags` for the same reason). |
-| `http-trace` | 2 | `TRACE is enabled` on Apache :80, :443 | Rhai plugin | **`shapo_http_trace`** (new, default on with the Pulse backend, `service_probe.pulse.plugins`) | Plain HTTP only: the sandbox has no TLS, so :443 is not reported (corpus: 1 of 2 endpoints agree). A hang-up on TRACE reads as refused (clean, and not evidence of a fix), a non-HTTP reply is a plugin error, and an echo server that answers every request with 200 is reported although it has no TRACE method. Nuclei `http-trace` exists (`http/miscellaneous`, **info**, tags `miscellaneous,misc,generic`) but the default floor drops info; it runs only with `nuclei.severities` widened or pinned. Live: reports :80 and :443 of the Apache, nothing on nginx. |
+| `http-trace` | 2 | `TRACE is enabled` on Apache :80, :443 | Rhai plugin | **`shapo_http_trace`** (new, default on with the Pulse backend, `service_probe.pulse.plugins`) | Plain HTTP plugin only: no HTTPS TRACE path is implemented, so :443 is not reported (corpus: 1 of 2 endpoints agree). A hang-up on TRACE reads as refused (clean, and not evidence of a fix), a non-HTTP reply is a plugin error, and an echo server that answers every request with 200 is reported although it has no TRACE method. Nuclei `http-trace` exists (`http/miscellaneous`, **info**, tags `miscellaneous,misc,generic`) but the default floor drops info; it runs only with `nuclei.severities` widened or pinned. Live: reports :80 and :443 of the Apache, nothing on nginx. |
 | `http-litespeed-sourcecode-download` | 1 | VULNERABLE (CVE-2010-2333), evidence: the IIS stub's index | refused | none | Exploit-category probe (`intrusive,exploit`); a false positive of a catch-all server on the stand. |
 | `http-phpmyadmin-dir-traversal` | 1 | VULNERABLE, state `UNKNOWN (unable to test)`, evidence: the stub's page | refused | none | CVE-2005-3299 (phpMyAdmin 2.6.4) traversal exploit; Nuclei has phpMyAdmin panel/misconfig templates but none for this CVE. |
 | `http-majordomo2-dir-traversal` | 1 | `ERROR: Script execution failed` (stub) | Nuclei web | **`CVE-2011-0049`** (`http/cves/2011`, medium, tags `cve,cve2011,majordomo2,lfi,edb,mj2`): inside the default floor and not excluded | Live: no match on the IIS stub or the Apache. |
@@ -59,26 +60,34 @@ printed.
 | `smb-vuln-ms10-054` | 1 | `false` | refused | none | `dos` category: a malformed SMB request. |
 | `smb-vuln-ms10-061` | 1 | `Could not negotiate a connection` | gap | none | Print-spooler RPC over SMB: binary protocol, no Nuclei template. GenDec#38. |
 | `samba-vuln-cve-2012-1182` | 1 | `Could not negotiate a connection` | version matching | `retro_match` / `pulse --cve` | The probe is a malformed RPC call (`intrusive`); the affected range (Samba < 3.6.4) is a version question. |
-| `smb-vuln-ms17-010` | 0 | (printed nothing; Samba is not affected) | gap | none | No Nuclei template in v9.9.4; SMB1 transaction, GenDec#38. Pulse raises an `exposure` hypothesis for SMB, which is a hypothesis and not a check. |
+| `smb-vuln-ms17-010` | 0 | (printed nothing on the reference Samba) | Rhai plugin | `shapo_ms17_010`, with Pulse v1.4.0 and plugins enabled | Read-only anonymous IPC$/FID0 Peek status hypothesis; positive indication requires confirmation. Every non-indicator/denial/error is UNKNOWN, never patched or exploit proof. No Nuclei template in v9.9.4. |
 
 ### Named by the issue, not in the `vuln` category
 
 | NSE script | n | Destination | Covered by | Not covered |
 |---|---|---|---|---|
 | `smb2-security-mode` | 1 | Nuclei network | **`smb-signing-not-required`** (`javascript/misconfiguration/smb`, **medium**, tags `js,network,smb,enum`), run by the network pass | Reports "signing enabled but not required", as Nmap's `311: Message signing enabled but not required` did. Not the dialect-specific form; SMB1's `smb-security-mode` is not mirrored. |
-| `smb-protocols` | 1 | gap | none | Dialect list. Nuclei's `smb-version-detect`, `samba-detect` and `smb2-capabilities` are **info**, report less and are not wired in. |
-| `rdp-enum-encryption` | 1 | gap | none | NLA/CredSSP/security layer needs the X.224 handshake (a `0xE0` byte): GenDec#38. Nuclei `rdp-detect` (`network/detection`, info, `port: 3389`) only detects RDP. |
+| `smb-protocols` | 1 | Rhai plugin | `shapo_smb_protocols`: SMB1 + single offers 2.0.2/2.1/3.0/3.0.2/3.1.1, direct 445 or RFC1002 on 139 | Selected dialect/signing observations, not all possible dialects, authenticated sessions or relay proof. Partial errors remain explicit. |
+| `rdp-enum-encryption` | 1 | gap | `shapo_rdp_negotiation` standard-security selection; `shapo_rdp_ntlm_info` X.224/TLS/CredSSP type2 inventory | No full encryption-strength enumeration, authenticated identity, type3, credentials or desktop session. Synthetic dialogue coverage is not Windows acceptance. |
 | `http-methods` | 2 | Rhai plugin | `shapo_http_trace` | TRACE only; PUT/DELETE/CONNECT are not probed. |
 | `http-malware-host` | 1 | refused | none | Heuristics for an infected page; printed `false`. |
 
 ### The `ssl-*` / TLS family
 
-All of `ssl-enum-ciphers`, `ssl-cert`, `ssl-date`, `ssl-ccs-injection` and the
-protocol-version checks are **#545** (TLS enumeration in Pulse, grading in
-`tls_posture`). This work neither touches that code nor adds a TLS check. The
-Nuclei `ssl/` templates (`deprecated-tls`, `weak-cipher-suites`, `tls-version`,
-`self-signed-ssl`, ...) are in the default sweep only for web ports and are not a
-substitute for it.
+The opt-in TLS path enumerates raw SSLv2/SSLv3…TLS1.3 selection
+and server preference, with native STARTTLS upgrades for SMTP/IMAP/POP3/FTP/
+LDAP/PostgreSQL/MySQL. Certificate/SKE facts provide RSA/DHE modulus sizes and
+supported ECDHE curves; normal TLS1.3 shares provide x25519 curve size. Unknown
+parameters and HRR retain upper-bound grading; raw signatures are not
+verified and findings require confirmation. Measured weak exchanges have a
+separate finding without changing the established A-F thresholds.
+
+This is not `ssl-date`, Heartbleed, CCS injection, Ticketbleed, POODLE exploit
+or known-key fingerprint coverage. No normal negotiation result supplies those
+verdicts. Nuclei's existing web-port SSL templates do not fill these gaps.
+[Detailed TLS limits](pulse-endpoints.md#optional-tls-suite-enumeration) and
+recorded native OpenSSL fixtures distinguish local wire proof from release or
+installed-sensor acceptance.
 
 ### Considered and not mapped
 

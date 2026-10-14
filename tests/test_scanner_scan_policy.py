@@ -1156,3 +1156,25 @@ def test_policy_cannot_turn_takeover_confirmation_back_on_or_widen_it():
 def test_policy_cannot_enable_l2_discovery():
     config = _config()
     assert apply_policy(config, _policy(max_discover_rate=100)).discovery.l2.enabled is False
+
+
+@pytest.mark.parametrize("policy_fields", [{"per_host_rate": 25}, {"skip_service_probe": True}])
+def test_packet_ceiling_or_service_skip_disables_tls_enumeration(policy_fields):
+    config = _config()
+    config.tls_posture = config.tls_posture.model_copy(update={"enabled": True, "enumerate_ciphers": True})
+    tightened = apply_policy(config, _policy(**policy_fields))
+    assert tightened.tls_posture.enabled is True
+    assert tightened.tls_posture.enumerate_ciphers is False
+
+
+def test_local_packet_ceiling_also_disables_tls_enumeration():
+    config = _config()
+    config.tls_posture = config.tls_posture.model_copy(update={"enabled": True, "enumerate_ciphers": True})
+    config.runtime = config.runtime.model_copy(update={"per_host_rate": 10})
+    assert apply_policy(config, _policy()).tls_posture.enumerate_ciphers is False
+
+
+def test_non_packet_policy_preserves_explicit_tls_enumeration_choice():
+    config = _config()
+    config.tls_posture = config.tls_posture.model_copy(update={"enabled": True, "enumerate_ciphers": True})
+    assert apply_policy(config, _policy(max_host_concurrency=1)).tls_posture.enumerate_ciphers is True

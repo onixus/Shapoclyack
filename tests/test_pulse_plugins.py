@@ -753,3 +753,35 @@ def test_a_run_of_timeouts_stops_the_stage_with_a_message_that_says_what_to_chan
     assert isinstance(raised.value, pp.PulseCrashLoopError)
     assert "chunk_hosts" in str(raised.value) and "plugins" in str(raised.value)
     assert slow.timeouts == pp.MAX_CONSECUTIVE_TIMED_OUT_CHUNKS  # not one more chunk is paid for
+
+
+@pytest.mark.parametrize("transport", ["udp", "tcp", "unknown"])
+def test_plugin_transport_survives_parse_and_report_without_tcp_fabrication(transport):
+    payload = {"cves": [{**_plugin_row(), "protocol": transport}]}
+    (_, _, records) = pp.parse_pulse_json(payload)
+    assert records[0].protocol == transport
+    (report,) = cves_to_extra_vulnerabilities(records)
+    assert report["protocol"] == transport
+
+
+@pytest.mark.parametrize("transport", ["udp", "unknown"])
+def test_tcp_completion_cannot_close_same_plugin_port_hash_on_other_transport(tmp_path, plugin_dir, pulse, transport):
+    coverage, sha = _coverage(tmp_path, plugin_dir, pulse)
+    legacy_tcp = _entry(ruleset=sha)
+    assert _gaps(coverage, legacy_tcp) == []
+    other_transport = {**legacy_tcp, "protocol": transport}
+    assert _gaps(coverage, other_transport) == ["plugin_transport_not_probed"]
+
+
+def test_legacy_plugin_report_without_transport_keeps_historical_tcp_default():
+    (_, _, records) = pp.parse_pulse_json({"cves": [_plugin_row()]})
+    assert records[0].protocol is None
+    assert cves_to_extra_vulnerabilities(records)[0]["protocol"] == "tcp"
+
+
+def test_later_tcp_plugin_observation_does_not_replace_udp_detector_obligation():
+    old = {**_entry(ruleset="sha256:x"), "protocol": "udp"}
+    fresh = {**old, "protocol": "tcp"}
+    merged = vulns.merge_detectors([old], [fresh])
+    assert {entry["protocol"] for entry in merged} == {"tcp", "udp"}
+    assert vc.finding_protocol(merged) is None

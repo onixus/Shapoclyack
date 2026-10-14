@@ -343,6 +343,15 @@ def _classify_ciphers(versions: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
         for cipher in version.get("ciphers", []):
             name = cipher.get("name", "")
+            bits = cipher.get("kex_bits")
+            evidence = cipher.get("kex_evidence")
+            if isinstance(bits, int) and not isinstance(bits, bool) and bits > 0 and evidence:
+                ec = evidence in ("server_hello_key_share", "server_key_exchange_named_curve")
+                minimum, high_below = (224, 160) if ec else (2048, 1024)
+                if bits < minimum:
+                    issues.append({"kind": "weak_key_exchange", "severity": "high" if bits < high_below else "medium",
+                                   "version": version_name, "cipher": name, "kex_bits": bits,
+                                   "kex_evidence": evidence})
             if any(needle in name for needle in _WEAK_CIPHER_SUBSTRINGS):
                 issues.append(
                     {
@@ -581,7 +590,7 @@ def findings_from_pulse_tls(
         if enumeration is not None:
             enum_issues = _classify_ciphers(enumeration.versions)
             for issue in enum_issues:
-                if not enumeration.complete:
+                if not enumeration.complete or enumeration.evidence == "server_hello_selection":
                     issue["requires_confirmation"] = True
                 if issue["kind"] == "weak_protocol":
                     enum_weak_versions.add(issue["version"])
@@ -639,6 +648,8 @@ def findings_from_pulse_tls(
             "source": "pulse-tls",
             "negotiated_protocol": neg_label,
             **({"enumeration_complete": enumeration.complete} if enumeration is not None else {}),
+            **({"enumeration_evidence": enumeration.evidence} if enumeration is not None and enumeration.evidence else {}),
+            **({"enumeration_transport": enumeration.transport} if enumeration is not None and enumeration.transport else {}),
             "accepts_weak_protocols": [
                 _normalize_proto_label(str(p)) for p in (weak_accepted or [])
             ]

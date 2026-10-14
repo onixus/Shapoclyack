@@ -233,8 +233,10 @@ Key = tuple[str, int, str]  # (host, port, protocol)
 #: The NSE scripts of ``default,safe`` that identified something on this stand
 #: (#544, ADR 0002), and what Shapoclyack's Rhai plugins do about each. ``plugin``
 #: is the file stem; ``None`` means nothing does, and ``why`` is the reason
-#: (the sandbox limits are GenDec v1.3.0's, ``docs/pulse-plugins.md``).
-NSE_PLUGIN_MAP: dict[str, dict[str, str | None]] = {
+#: Frozen v1.3.0 recording map, not current candidate capability. Binary/UDP
+#: and native 1.4.0 helpers are described separately in ``docs/pulse-plugins.md``;
+#: do not rewrite recorded evidence/counts as candidate acceptance.
+RECORDED_NSE_PLUGIN_MAP: dict[str, dict[str, str | None]] = {
     "ssh2-enum-algos": {"plugin": "shapo_ssh_algorithms", "covers": "weak algorithms only, not the full lists"},
     "ssh-hostkey": {"plugin": None, "why": "key fingerprints need the key exchange: binary packets"},
     "ftp-anon": {"plugin": "shapo_ftp_anonymous", "covers": "login accepted or not; no directory listing (needs a data connection)"},
@@ -251,7 +253,7 @@ NSE_PLUGIN_MAP: dict[str, dict[str, str | None]] = {
     "http-trace": {"plugin": "shapo_http_trace", "covers": "TRACE echo over plain HTTP only; HTTPS is out of the sandbox's reach"},
 }
 #: Plugins with no NSE script behind them: what they report beyond Nmap's default,safe.
-PLUGIN_ONLY = {
+RECORDED_PLUGIN_ONLY = {
     "shapo_cleartext_services": "services that cannot start TLS (Nmap's default,safe has no such check)",
     "shapo_ssh_banner": "protocol 1 / end-of-life OpenSSH from the banner (Pulse's CVE rules overlap)",
     "shapo_smb_exposure": "reachability of SMB/NetBIOS only (Pulse's own exposure rules overlap)",
@@ -268,7 +270,7 @@ PLUGIN_ONLY = {
 #: ``ref`` names the template, plugin or mechanism, ``why`` the limit or refusal.
 #: Template ids were looked up in nuclei-templates v9.9.4 (the image's pin).
 VULN_DESTINATIONS = ("nuclei_network", "nuclei_web", "plugin", "tls", "version_match", "gap", "refused")
-NSE_VULN_MAP: dict[str, dict[str, Any]] = {
+RECORDED_NSE_VULN_MAP: dict[str, dict[str, Any]] = {
     "vulners": {
         "categories": ["vuln", "safe", "external"], "destination": "version_match",
         "ref": "retro_match (API, offline NVD ranges) first; pulse --cve second",
@@ -361,6 +363,26 @@ NSE_VULN_MAP: dict[str, dict[str, Any]] = {
         "related": True,
     },
 }
+
+
+# Source capability accounting is separate from the frozen v1.3.0 observations.
+# These registrations do not add measurements to tcp-plugins.json or close its gaps.
+NSE_PLUGIN_MAP = dict(RECORDED_NSE_PLUGIN_MAP)
+NSE_PLUGIN_MAP.update({
+    "ssh-hostkey": {"plugin": "shapo_ssh_hostkey", "covers": "verified curve25519/Ed25519 host key only"},
+    "smb2-security-mode": {"plugin": "shapo_smb_signing", "covers": "SMB2 selected negotiation signing flags"},
+    "smb-security-mode": {"plugin": "shapo_smb1", "covers": "SMB1 negotiation only"},
+    "smb-protocols": {"plugin": "shapo_smb_protocols", "covers": "bounded SMB1/SMB2 dialect offers, partial errors explicit"},
+    "rdp-enum-encryption": {"plugin": "shapo_rdp_negotiation", "covers": "security layer selection only, not full encryption enumeration"},
+    "rdp-ntlm-info": {"plugin": "shapo_rdp_ntlm_info", "covers": "unauthenticated type2 host inventory only"},
+    "snmp-info": {"plugin": "shapo_snmp_info", "covers": "standalone UDP sysDescr/sysName GET only"},
+    "smb-vuln-ms17-010": {"plugin": "shapo_ms17_010", "covers": "positive read-only status hypothesis; other results UNKNOWN"},
+    "vnc-info": {"plugin": "shapo_vnc_security", "covers": "advertised RFB security types only, no authentication"},
+})
+PLUGIN_ONLY = dict(RECORDED_PLUGIN_ONLY)
+NSE_VULN_MAP = {key: dict(value) for key, value in RECORDED_NSE_VULN_MAP.items()}
+NSE_VULN_MAP["smb-vuln-ms17-010"].update(destination="plugin", ref="shapo_ms17_010")
+NSE_VULN_MAP["smb-protocols"].update(destination="plugin", ref="shapo_smb_protocols")
 
 
 def _canon_service(name: str) -> str:
@@ -520,7 +542,7 @@ def _plugins_section(
 ) -> dict[str, Any]:
     """Where the plugins stand against the NSE scripts that ran on the same stand.
 
-    For each NSE script in :data:`NSE_PLUGIN_MAP` that printed output: how many
+    For each NSE script in :data:`RECORDED_NSE_PLUGIN_MAP` that printed output: how many
     endpoints, which plugin answers it (or why none can), and, where both sides
     give a verdict, whether they agree per endpoint. A verdict is "weak
     algorithm present" for ``ssh2-enum-algos`` (Nmap's output read against the
@@ -546,7 +568,7 @@ def _plugins_section(
     }
     weak = _weak_ssh_names()
     nse: dict[str, Any] = {}
-    for script_id, mapping in NSE_PLUGIN_MAP.items():
+    for script_id, mapping in RECORDED_NSE_PLUGIN_MAP.items():
         # Host-level scripts (the SMB ones) have no port: they count as one "endpoint" per host.
         rows = [
             s for s in n_scripts
@@ -579,13 +601,13 @@ def _plugins_section(
         "files": len(files),
         "errors": errors,
         "findings_by_plugin": dict(sorted(by_plugin.items())),
-        "plugin_only": sorted(p for p in PLUGIN_ONLY if p in by_plugin),
+        "plugin_only": sorted(p for p in RECORDED_PLUGIN_ONLY if p in by_plugin),
         "nse": nse,
     }
 
 
 def _nse_vuln_section(n_scripts: list[dict[str, Any]], findings: list[Any]) -> dict[str, Any]:
-    """Nmap's ``vuln`` scripts of the stand, and where each now goes (:data:`NSE_VULN_MAP`).
+    """Nmap's ``vuln`` scripts of the stand, and historical destinations (:data:`RECORDED_NSE_VULN_MAP`).
 
     ``endpoints`` is how many hosts/ports printed something, ``flagged`` how many of
     those Nmap itself marked VULNERABLE. ``plugin_flags`` is filled for a
@@ -599,7 +621,7 @@ def _nse_vuln_section(n_scripts: list[dict[str, Any]], findings: list[Any]) -> d
     }
     scripts: dict[str, Any] = {}
     by_destination: Counter[str] = Counter()
-    for script_id, mapping in NSE_VULN_MAP.items():
+    for script_id, mapping in RECORDED_NSE_VULN_MAP.items():
         rows = [s for s in n_scripts if s["script_id"] == script_id and s["output"]]
         entry: dict[str, Any] = {
             "vuln": "vuln" in mapping["categories"],
@@ -615,7 +637,7 @@ def _nse_vuln_section(n_scripts: list[dict[str, Any]], findings: list[Any]) -> d
         scripts[script_id] = entry
         if entry["vuln"]:
             by_destination[mapping["destination"]] += 1
-    vuln_ids = {i for i, m in NSE_VULN_MAP.items() if "vuln" in m["categories"]}
+    vuln_ids = {i for i, m in RECORDED_NSE_VULN_MAP.items() if "vuln" in m["categories"]}
     vuln_rows = [s for s in n_scripts if s["output"] and s["script_id"] in vuln_ids]
     return {
         "vuln_scripts": sum(1 for e in scripts.values() if e["vuln"]),

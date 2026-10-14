@@ -161,3 +161,53 @@ in #452. No backend replacement or profile-default change is included.
 Rollback is a reviewed revert of the code change. It restores the previous
 overscan/resume limitations; there is deliberately no runtime switch that
 silently expands the exact endpoint set.
+
+## Optional TLS suite enumeration
+
+Set `tls_posture.enabled: true` and `tls_posture.enumerate_ciphers: true` to
+request Pulse `--tls-enum`. The selected binary must support this flag; Pulse
+v1.3.0 does not. Raw SSLv2/SSLv3…TLS1.3 ServerHello evidence is fed to the
+existing A-F grader with `source: pulse-tls`. `enumeration_evidence` records
+`server_hello_selection`, which establishes negotiation selection rather than
+a completed or trusted handshake. Missing exchange size retains
+`grade_upper_bound`; partial enumeration retains `enumeration_complete: false`.
+Enumeration uses a 30-second endpoint budget, with 16 KiB record limits.
+Enabling it invalidates certificate-only resume receipts. Certificate probe
+fallback remains available independently. GOST and exploit-specific TLS
+vulnerability checks are outside this enumeration.
+
+The Pulse 1.4.0 candidate also selects native STARTTLS transports for SMTP
+(25/587), IMAP (143), POP3 (110), FTP (21), LDAP (389), PostgreSQL (5432),
+and MySQL (3306), or an identified equivalent service on a nonstandard port.
+Every raw probe starts a new connection and repeats the bounded upgrade.
+Capability or upgrade rejection is inconclusive TLS coverage; no authentication
+credentials or database queries are sent. STARTTLS certificate collection
+skips direct JARM/HTTP probes. Normal TLS1.3 ServerHello x25519 shares record
+the group and its 253-bit curve size; HRR remains unmeasured. TLS1.2 certificate/SKE facts are described below.
+
+`--rate` paces additional connection starts across enumeration endpoints. It
+does not enforce a packet limit within multi-message upgrade exchanges, so
+`per_host_rate` scan policy disables cipher enumeration. The same restriction
+applies to a locally configured per-host packet ceiling. Passive TLS evidence
+parsing remains available. Released Pulse 1.3.0 lacks these capabilities; keep
+`enumerate_ciphers` off until an approved binary carrying the new engine is
+installed. Source, local protocol fixtures, and release acceptance remain
+separate gates.
+
+TLS enumeration resume receipts also carry the requested `raw-starttls-v2`
+contract. Earlier candidate receipts with v1 or without a marker are re-probed; this marker
+records the request and does not attest installed engine capability.
+
+TLS1.2 and earlier raw first flights can report RSA certificate modulus size
+(for RSA key transport), authenticated-suite ECDHE named curve/point size, and
+DHE modulus size from ServerKeyExchange. `kex_evidence` identifies the observed
+source. Fragments share the original timeout, eight-record and 16 KiB limits;
+truncated or conflicting parameter messages do not earn measured sizes.
+Signatures/chain trust are not authenticated by these raw probes, so findings
+retain `requires_confirmation`. HRR, static ECDH/PSK and unavailable exchange
+parameters retain upper-bound grading.
+
+The existing grade contract rates a 1024-bit DH exchange B. An explicit
+`weak_key_exchange` issue therefore surfaces measured finite-field exchange
+sizes below 2048 bits (EC below 224), including B-rated suites, without changing
+the established A-F thresholds or claiming exact Nmap letter parity.

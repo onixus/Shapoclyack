@@ -1508,6 +1508,12 @@ def test_an_endpoint_agent_can_follow_its_contract_under_required(tmp_path, monk
     )
     assert enrolled.status_code == 200, enrolled.text
     assert enrolled.json()["spiffe_id"] == spiffe("default", "laptop-7", kind="agent")
+    missing = client.post(
+        "/api/v1/agent/register", headers=bearer(token),
+        json={"hostname": "laptop-7", "agent_kind": "endpoint"},
+    )
+    assert missing.status_code == 403
+    assert missing.headers["X-Client-Cert-Error"] == "missing"
     registered = _peer(client, INGRESS_PEER).post(
         "/api/v1/agent/register",
         headers={**bearer(token), **_forwarded(enrolled.json()["certificate"])},
@@ -1522,6 +1528,13 @@ def test_an_endpoint_agent_can_follow_its_contract_under_required(tmp_path, monk
     )
     assert renewed.status_code == 200, renewed.text
     assert renewed.json()["spiffe_id"] == spiffe("default", "laptop-7", kind="agent")
+
+    heartbeat = _peer(client, INGRESS_PEER).post(
+        "/api/v1/agent/heartbeat",
+        headers={**bearer(token), **_forwarded(renewed.json()["certificate"])},
+        json={"agent_id": registered.json()["agent_id"], "status": "idle"},
+    )
+    assert heartbeat.status_code == 200, heartbeat.text
 
 
 # --------------------------------------------------------------------------
@@ -2573,3 +2586,134 @@ def test_the_trusted_proxy_is_the_socket_peer_not_x_forwarded_for(
             assert response.status == expected, response.read()
         finally:
             conn.close()
+
+
+@requires_postgres
+@pytest.mark.parametrize(
+    "case",
+    [
+        "same-key",
+        "other-key",
+        "other-agent",
+        "other-tenant",
+        "bad-signature",
+        "expired",
+        "revoked-locked",
+        "revoked-reset",
+        "no-signer",
+    ],
+)
+def test_certificate_recovery_reads_only_live_same_agent_same_key(
+    tmp_path, monkeypatch, case
+):
+    """Lost first-response recovery returns an existing public leaf only;
+    it cannot turn a stolen token into a new identity or undo revocation."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+    from sqlalchemy import update
+    from api.db import models
+    from api.db.engine import get_session
+    from api.services import agent_certs
+
+    ca = CA()
+    settings = _issuer_settings(tmp_path, ca, agent_mtls_mode="required")
+    client = _client(tmp_path, monkeypatch, settings)
+    admin = login(client, "admin")
+    key = _mint_key(client, admin)
+    token = _token(client, key, "recover-agent")
+    csr = _csr("recover-agent")[1]
+    issued = client.post(
+        "/api/v1/agent/certificate",
+        headers=bearer(token),
+        json={"csr": csr, "agent_kind": "endpoint"},
+    )
+    assert issued.status_code == 200, issued.text
+    registered = _peer(client, INGRESS_PEER).post(
+        "/api/v1/agent/register",
+        headers={**bearer(token), **_forwarded(issued.json()["certificate"])},
+        json={"hostname": "recover-agent", "agent_kind": "endpoint"},
+    )
+    assert registered.status_code == 200, registered.text
+    expected = 200
+    if case == "other-key":
+        csr = _csr("recover-agent")[1]
+        expected = 404
+    elif case == "other-agent":
+        token = _token(client, key, "another-agent")
+        expected = 404
+    elif case == "other-tenant":
+        created = client.post(
+            "/api/tenants",
+            headers=bearer(admin),
+            json={"name": "Other", "tenant_id": "recover-other"},
+        )
+        assert created.status_code == 201, created.text
+        with pytest.raises(LookupError):
+            agent_certs.recover(
+                settings,
+                tenant_id="recover-other",
+                agent_id="recover-agent",
+                csr_pem=csr,
+            )
+        token = _token(
+            client, _mint_key(client, admin, "recover-other"), "recover-other-agent"
+        )
+        expected = 404
+    elif case == "bad-signature":
+        der = bytearray(
+            x509.load_pem_x509_csr(csr.encode()).public_bytes(
+                serialization.Encoding.DER
+            )
+        )
+        der[-1] ^= 1
+        csr = (
+            x509.load_der_x509_csr(bytes(der))
+            .public_bytes(serialization.Encoding.PEM)
+            .decode()
+        )
+        expected = 422
+    elif case == "expired":
+        with get_session(settings.postgres_url) as session:
+            session.execute(
+                update(models.AgentClientCert)
+                .where(models.AgentClientCert.agent_id == "recover-agent")
+                .values(
+                    not_after=datetime.now(UTC).replace(tzinfo=None)
+                    - timedelta(minutes=1)
+                )
+            )
+        expected = 404
+    elif case.startswith("revoked"):
+        revoked = _revoke(client, admin, "recover-agent", all=True)
+        assert revoked.status_code == 200, revoked.text
+        if case == "revoked-reset":
+            assert _reset(client, admin, "recover-agent").status_code == 200
+            expected = 404
+        else:
+            expected = 403
+    elif case == "no-signer":
+        settings.agent_mtls_issuer_key = ""
+    before = agent_certs.list_certs(
+        settings, tenant_id="default", agent_id="recover-agent"
+    )
+    recovered = client.post(
+        "/api/v1/agent/certificate/recover", headers=bearer(token), json={"csr": csr}
+    )
+    assert recovered.status_code == expected, recovered.text
+    after = agent_certs.list_certs(
+        settings, tenant_id="default", agent_id="recover-agent"
+    )
+    assert after == before  # no issue, revoke, pin, or validity mutation
+    if expected == 200:
+        for field in (
+            "certificate",
+            "fingerprint_sha256",
+            "serial",
+            "spiffe_id",
+            "not_before",
+            "not_after",
+            "renew_after",
+        ):
+            assert recovered.json()[field] == issued.json()[field]
+    elif case == "revoked-locked":
+        assert recovered.headers["X-Client-Cert-Error"] == "enrolment-locked"

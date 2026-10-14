@@ -58,6 +58,9 @@ TENANT_GUARDS = frozenset(
         # The certificate enrolment's variant (#309): the same token, the same
         # tenant declared — only its client-certificate rule differs.
         auth.require_agent_enrolment.__qualname__,
+        # Recovery uses the same token and tenant declaration; optional client
+        # certificate presentation only retrieves an existing same-key leaf.
+        auth.require_agent_certificate_recovery.__qualname__,
     }
 )
 
@@ -364,6 +367,8 @@ def test_the_walk_sees_the_guards_it_is_looking_for(tmp_path, monkeypatch) -> No
         "api.routes.assets:list_assets",
         "api.routes.vulnerabilities:list_vulnerabilities",
         "api.routes.agents:heartbeat",
+        "api.routes.agent_certificates:enrol_certificate",
+        "api.routes.agent_certificates:recover_certificate",
         "api.routes.auth:list_members",
     ):
         assert key in seen, key

@@ -130,6 +130,7 @@ def parse_suite(raw: Any) -> dict[str, Any] | None:
     name = ""
     kex_group: str | None = None
     kex_bits: int | None = None
+    kex_evidence: str | None = None
     if isinstance(raw, str):
         text = raw.strip()
         if _SUITE_NAME_RE.match(text):
@@ -145,6 +146,10 @@ def parse_suite(raw: Any) -> dict[str, Any] | None:
         if isinstance(raw.get("kex_group"), str):
             kex_group = raw["kex_group"]
         kex_bits = _int_or_none(raw.get("kex_bits"))
+        if raw.get("kex_evidence") in ("server_hello_key_share", "certificate_rsa_modulus",
+                                       "server_key_exchange_named_curve", "server_key_exchange_dh_modulus",
+                                       "server_key_exchange_export_rsa_modulus"):
+            kex_evidence = raw["kex_evidence"]
     else:
         return None
     if not name and code is not None:
@@ -152,10 +157,31 @@ def parse_suite(raw: Any) -> dict[str, Any] | None:
     if not name or not _SUITE_NAME_RE.match(name):
         return None
     name = normalize_suite_name(name)
+    curves = {"x25519": 253, "secp256r1": 256, "secp384r1": 384}
+    valid = isinstance(raw, dict) and type(raw.get("kex_bits")) is int and 1 < raw["kex_bits"] <= 65535
+    if kex_evidence == "server_key_exchange_named_curve":
+        valid = valid and name.startswith(("TLS_ECDHE_RSA_WITH_", "TLS_ECDHE_ECDSA_WITH_")) and curves.get(kex_group) == kex_bits
+    elif kex_evidence == "server_hello_key_share":
+        valid = valid and "_WITH_" not in name and kex_group == "x25519" and kex_bits == 253
+    elif kex_evidence == "server_key_exchange_dh_modulus":
+        valid = valid and name.startswith(("TLS_DHE_RSA_WITH_", "TLS_DHE_DSS_WITH_", "TLS_DH_anon_WITH_")) and kex_group is None
+    elif kex_evidence == "server_key_exchange_export_rsa_modulus":
+        valid = valid and name.startswith("TLS_RSA_EXPORT_WITH_") and kex_group is None
+    elif kex_evidence == "certificate_rsa_modulus":
+        valid = valid and name.startswith(("TLS_RSA_WITH_", "TLS_RSA_EXPORT_WITH_")) and kex_group is None
+    else:
+        valid = False
+    if not valid:
+        kex_bits = kex_group = kex_evidence = None
     grade, upper_bound = grade_cipher_suite_detail(name, kex_bits=kex_bits, kex_group=kex_group)
     suite: dict[str, Any] = {"name": name, "grade": grade}
     if upper_bound and grade is not None:
-        suite["grade_upper_bound"] = True  # exchange unknown: the letter may be too good
+        suite["grade_upper_bound"] = True
+    if valid:
+        suite["kex_bits"] = kex_bits
+        suite["kex_evidence"] = kex_evidence
+        if kex_group:
+            suite["kex_group"] = kex_group
     return suite
 
 
@@ -194,6 +220,8 @@ def _collapse(suites: list[dict[str, Any]]) -> list[dict[str, Any]]:
 @dataclass
 class Enumeration:
     complete: bool
+    evidence: str | None = None
+    transport: str | None = None
     versions: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -227,4 +255,9 @@ def parse_enumeration(row: dict[str, Any]) -> Enumeration | None:
         slot["least_strength"] = worst_grade([c["grade"] for c in slot["ciphers"]])
     if not versions:
         return None
-    return Enumeration(complete=block.get("complete") is True, versions=list(versions.values()))
+    return Enumeration(complete=block.get("complete") is True,
+                       evidence="server_hello_selection" if block.get("evidence") == "server_hello_selection" else None,
+                       transport=block.get("transport") if block.get("transport") in (
+                           "direct", "smtp-starttls", "imap-starttls", "pop3-stls", "ftp-auth-tls",
+                           "ldap-starttls", "postgres-sslrequest", "mysql-sslrequest") else None,
+                       versions=list(versions.values()))

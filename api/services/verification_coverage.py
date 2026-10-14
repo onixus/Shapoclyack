@@ -450,8 +450,12 @@ class RunCoverage:
         return "endpoint_not_probed"
 
     def _plugin_gap(
-        self, ref: str, expected: str | None, hosts: set[str], port: int | None
+        self, ref: str, expected: str | None, hosts: set[str], port: int | None, protocol: str | None = "tcp"
     ) -> str | None:
+        if protocol != "tcp":
+            # Adapter completion receipts currently attest TCP only. Standalone
+            # UDP observations cannot be closed using a TCP receipt on the same port.
+            return "plugin_transport_not_probed"
         document = self.pulse
         if document is None:
             return "pulse_not_run"
@@ -537,7 +541,7 @@ class RunCoverage:
         if detector == PULSE:
             return self._pulse_gap(ref, entry.get("ruleset"), hosts, port)
         if detector == PULSE_PLUGIN:
-            return self._plugin_gap(ref, entry.get("ruleset"), hosts, port)
+            return self._plugin_gap(ref, entry.get("ruleset"), hosts, port, detector_protocol(entry))
         if detector == NMAP_NSE:
             return self._nse_gap(ref, hosts, port, detector_protocol(entry))
         return "no_coverage_rule"
@@ -631,10 +635,12 @@ class RunCoverage:
 
 
 def detector_protocol(entry: dict[str, Any]) -> str | None:
-    """``tcp``/``udp`` a detector observed on; pulse, its plugins and nuclei are TCP-only."""
+    """Explicit transport wins; historical Pulse/plugin/Nuclei records default TCP."""
     recorded = str(entry.get("protocol") or "").lower()
     if recorded in ("tcp", "udp"):
         return recorded
+    if recorded and entry.get("detector") == PULSE_PLUGIN:
+        return None
     return "tcp" if entry.get("detector") in (PULSE, NUCLEI, PULSE_PLUGIN) else None
 
 

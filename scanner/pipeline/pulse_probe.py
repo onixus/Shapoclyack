@@ -344,6 +344,10 @@ def _port_spec(ports: list[int]) -> str:
     return ",".join(str(p) for p in ports)
 
 
+# Requested feature contract; older candidate receipts did not request STARTTLS.
+_TLS_ENUMERATION_CONTRACT = "raw-starttls-v2"
+
+
 def build_pulse_command(
     *,
     bin_path: str,
@@ -364,6 +368,7 @@ def build_pulse_command(
     services_db: str | None = None,
     script_dir: str | None = None,
     probe_db: ProbeDbInfo | None | object = _RESOLVE,
+    tls_enum: bool = False,
 ) -> list[str]:
     # Pulse runs in a private temporary directory (``_probe_chunk``), so every
     # path it is given must mean the same from there: an output_dir that is
@@ -383,6 +388,7 @@ def build_pulse_command(
         "-f",
         "json",
         "-q",
+        "--no-nmap-data",
         "--services-db",
         os.path.abspath(services_db or resolve_services_db()),
     ]
@@ -411,6 +417,8 @@ def build_pulse_command(
         cmd += ["--os", "--os-mode", OS_MODE]
     if cve:
         cmd.append("--cve")
+    if tls_enum:
+        cmd.append("--tls-enum")
     if cve_online:
         cmd.append("--cve-online")
     if syn:
@@ -596,6 +604,7 @@ def parse_pulse_json(
         cves.append(
             CveRecord(
                 cve_id=cve_id,
+                protocol=str(row.get("protocol")).lower() if str(row.get("protocol")).lower() in {"tcp", "udp"} else ("unknown" if row.get("protocol") else None),
                 ip=str(row.get("ip") or ""),
                 port=port,
                 service=str(row.get("service") or ""),
@@ -858,6 +867,7 @@ def _run_pulse_probe(
     os_detect: bool = True,
     cve: bool = True,
     cve_online: bool = False,
+    tls_enum: bool = False,
     syn: bool = False,
     max_hosts: int = 65536,
     timeout_seconds: int = 600,
@@ -940,7 +950,12 @@ def _run_pulse_probe(
             previous = json.loads((output_dir / "pulse" / "raw.json").read_text(encoding="utf-8"))
             if not isinstance(previous, dict):
                 raise ValueError("expected an object")
-            done, cached = retain_completed_payload(grouped, requested_done, previous)
+            previous_adapter = previous.get("adapter") or {}
+            same_tls_contract = not tls_enum or previous_adapter.get("tls_enumeration_contract") == _TLS_ENUMERATION_CONTRACT
+            if bool(previous_adapter.get("tls_enum")) == tls_enum and same_tls_contract:
+                done, cached = retain_completed_payload(grouped, requested_done, previous)
+            else:
+                logging.warning("pulse: TLS enumeration request contract changed; re-probing completed hosts")
             prior = ((previous.get("adapter") or {}).get("plugins") or {}) if done else {}
             if verified:
                 same = str(prior.get("digest") or "") == plugin_receipt["digest"]
@@ -1018,6 +1033,8 @@ def _run_pulse_probe(
             "chunk_hosts": size,
             "cve": cve,
             "cve_online": cve_online,
+            "tls_enum": tls_enum,
+            "tls_enumeration_contract": _TLS_ENUMERATION_CONTRACT if tls_enum else None,
             "ruleset": None,
             "pulse_version": None,
             "plugins": plugin_receipt,
@@ -1060,6 +1077,8 @@ def _run_pulse_probe(
     consecutive_crashes = 0
     consecutive_timeouts = 0
     scan_mode = "syn" if syn else "connect"
+    if tls_enum:
+        scan_mode += f"/tls-enum:{_TLS_ENUMERATION_CONTRACT}"
 
     logging.info(
         "pulse_probe plan: %s unique input TCP endpoints, %s pending, "
@@ -1126,6 +1145,7 @@ def _run_pulse_probe(
                 probe_db=probe_db,
                 cve=cve,
                 cve_online=cve_online,
+                tls_enum=tls_enum,
                 syn=syn,
                 checkpoint=None,
                 max_hosts=max(max_hosts, len(host_chunk) + 1),
@@ -1325,6 +1345,8 @@ def _run_pulse_probe(
         # was matched against anything.
         "cve": cve,
         "cve_online": cve_online,
+        "tls_enum": tls_enum,
+        "tls_enumeration_contract": _TLS_ENUMERATION_CONTRACT if tls_enum else None,
         # The oldest ruleset any chunk matched with: one binary has one, and
         # if two ever answered, the claim made for the run is the weaker one.
         "ruleset": min(rulesets, key=ruleset_order) if rulesets else None,

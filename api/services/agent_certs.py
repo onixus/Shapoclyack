@@ -663,6 +663,96 @@ def issue(
     )
 
 
+def recover(
+    settings: Settings,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    csr_pem: str,
+) -> IssuedCert:
+    """Read a live issued leaf for the same CSR key, without minting anything.
+
+    Returning a public certificate cannot give a bearer-token thief a usable
+    private key. Even a replayed public CSR retrieves only its existing leaf.
+    The enrollment row serializes this read with revoke/reset/issue.
+    """
+    try:
+        csr = x509.load_pem_x509_csr(csr_pem.encode("ascii", errors="replace"))
+    except ValueError as exc:
+        raise ValueError("csr is not a PEM certificate signing request") from exc
+    if not csr.is_signature_valid:
+        raise ValueError("the CSR's signature does not verify")
+    public_key = csr.public_key()
+    _check_public_key(public_key)
+    requested = public_key.public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        enrollment = session.execute(
+            select(models.AgentCertEnrolment)
+            .where(
+                models.AgentCertEnrolment.tenant_id == tenant_id,
+                models.AgentCertEnrolment.agent_id == agent_id,
+            )
+            .with_for_update()
+        ).scalar_one_or_none()
+        if enrollment is None:
+            raise LookupError("No issued certificate enrollment exists for this agent")
+        if enrollment.locked_at is not None:
+            raise _refuse_locked(agent_id)
+        candidates = session.execute(
+            select(models.AgentClientCert)
+            .where(
+                models.AgentClientCert.tenant_id == tenant_id,
+                models.AgentClientCert.agent_id == agent_id,
+                models.AgentClientCert.source == SOURCE_CSR,
+                models.AgentClientCert.revoked_at.is_(None),
+                models.AgentClientCert.not_before <= now,
+                models.AgentClientCert.not_after > now,
+            )
+            .order_by(models.AgentClientCert.created_at.desc())
+        ).scalars()
+        for row in candidates:
+            if not row.certificate_pem:
+                continue
+            cert = x509.load_pem_x509_certificate(row.certificate_pem.encode("ascii"))
+            stored = cert.public_key().public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            if stored != requested:
+                continue
+            described = client_cert.describe(cert, source=SOURCE_CSR)
+            identities = [
+                identity
+                for identity in described.identities
+                if identity.tenant_id == tenant_id and identity.agent_id == agent_id
+            ]
+            if not identities:
+                continue
+            lifetime = described.not_after - described.not_before
+            return IssuedCert(
+                certificate_pem=row.certificate_pem,
+                # Public trust material lets clients present intermediate
+                # chains; recovery never loads the private signing key.
+                ca_certificate_pem="".join(
+                    ca.public_bytes(serialization.Encoding.PEM).decode("ascii")
+                    for ca in client_cert.load_ca_bundle(settings.agent_mtls_ca_path())
+                )
+                if settings.agent_mtls_ca_path()
+                else "",
+                fingerprint_sha256=described.fingerprint_sha256,
+                serial_hex=described.serial_hex,
+                spiffe_id=identities[0].uri,
+                not_before=described.not_before,
+                not_after=described.not_after,
+                renew_after=described.not_before + lifetime * 2 / 3,
+            )
+    raise LookupError("No live issued certificate matches this agent and CSR key")
+
+
 # --- operator side ------------------------------------------------------------
 
 
