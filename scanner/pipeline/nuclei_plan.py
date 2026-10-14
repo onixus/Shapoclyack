@@ -79,6 +79,39 @@ def catalog(
             document = yaml.safe_load(content)
         except yaml.YAMLError:
             return key, [], "catalog_invalid_yaml"
+        metadata = any(part.startswith(".") for part in Path(relative).parts)
+        template_like = isinstance(document, dict) and any(
+            key in document
+            for key in (
+                "id",
+                "info",
+                "http",
+                "requests",
+                "tcp",
+                "network",
+                "dns",
+                "javascript",
+                "code",
+                "headless",
+                "file",
+            )
+        )
+        if metadata or not template_like:
+            rows.append(
+                {
+                    "id": "metadata:" + relative,
+                    "path": relative,
+                    "origin": "custom" if index else "pinned",
+                    "metadata": True,
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "tags": [],
+                    "severity": "",
+                    "http": False,
+                    "scope_safe": False,
+                    "cve": False,
+                }
+            )
+            continue
         if not isinstance(document, dict) or not isinstance(document.get("info"), dict):
             return key, [], "catalog_invalid_template"
         template_id = str(document.get("id") or "")
@@ -268,7 +301,9 @@ def build_plan(
         "excluded_templates": [
             {
                 "id": t["id"],
-                "reason": "scope_unproven"
+                "reason": "catalog_metadata"
+                if t.get("metadata")
+                else "scope_unproven"
                 if not t["scope_safe"]
                 else "non_http_or_policy",
             }

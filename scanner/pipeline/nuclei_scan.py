@@ -691,6 +691,7 @@ def _run_web_sweep(
             raw_parts = []
             error_parts = []
             codes = []
+            plan["process_results"] = []
             attempted = 0
             raw_bytes_left = 8 * 1024 * 1024
             error_bytes_left = 8 * 1024 * 1024
@@ -730,6 +731,28 @@ def _run_web_sweep(
                     )
                     result["skipped_reason"] = "nuclei_run_failed"
                 attempted += 1
+                invocation_loaded = _TEMPLATES_LOADED.findall(stderr_parts[-1])
+                loaded_count = int(invocation_loaded[-1]) if invocation_loaded else None
+                dropped = sorted(set(_TARGET_SKIPPED.findall(stderr_parts[-1])))
+                if part_errors.is_file():
+                    # A capped error part invalidates aggregate completion.
+                    if _cap_errors_log(part_errors):
+                        plan["artifact_truncated"] = True
+                    dropped = sorted(
+                        set(dropped) | _permanent_error_addresses(part_errors)
+                    )
+                plan["process_results"].append(
+                    {
+                        "target_index": index,
+                        "returncode": codes[-1],
+                        "templates_expected": len(pinned),
+                        "templates_loaded": loaded_count,
+                        "skipped_targets": dropped,
+                        "complete": codes[-1] == 0
+                        and loaded_count == len(pinned)
+                        and not dropped,
+                    }
+                )
                 if part_errors.is_file():
                     if _cap_errors_log(part_errors):
                         plan["artifact_truncated"] = True
@@ -786,6 +809,13 @@ def _run_web_sweep(
     returncode = getattr(completed, "returncode", None)
     coverage["returncode"] = returncode if isinstance(returncode, int) else None
     coverage["ran"] = coverage["returncode"] == 0
+    if plan is not None:
+        receipts = plan.get("process_results", [])
+        coverage["ran"] = (
+            coverage["ran"]
+            and len(receipts) == len(plan["targets"])
+            and all(r["complete"] for r in receipts)
+        )
     if coverage["returncode"] not in (0, None):
         LOG.warning("nuclei exited %s; its run is not counted as coverage", returncode)
     stderr_text = getattr(completed, "stderr", None)

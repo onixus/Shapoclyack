@@ -194,3 +194,56 @@ def test_untrusted_confidence_retains_both_schemes(tmp_path):
         ]
         plan = build_plan(["10.0.0.1:80/tcp"], services, NucleiConfig(), digest, rows)
         assert len(plan["targets"]) == 2
+
+
+def test_catalog_ignores_repository_yaml_metadata_but_not_malformed_templates(tmp_path):
+    template(tmp_path)
+    workflow = tmp_path / ".github" / "workflows"
+    workflow.mkdir(parents=True)
+    (workflow / "ci.yml").write_text("name: CI\njobs: {}\n")
+    (tmp_path / "repository-settings.yaml").write_text("labels: [cve]\n")
+    digest, rows, error = catalog([tmp_path], 10)
+    assert error is None
+    plan = build_plan(["10.0.0.1:80/tcp"], [], NucleiConfig(), digest, rows)
+    assert plan["template_sets"]["safe_http_fallback"] == ["fixture-cve"]
+    assert (
+        len(
+            [t for t in plan["excluded_templates"] if t["reason"] == "catalog_metadata"]
+        )
+        == 2
+    )
+    (tmp_path / "malformed-template.yaml").write_text("id: bad-template\n")
+    assert catalog([tmp_path], 10)[2] == "catalog_invalid_template"
+
+
+def test_each_directed_invocation_requires_its_own_loaded_receipt(
+    tmp_path, monkeypatch
+):
+    template(tmp_path / "templates")
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", lambda _: "nuclei")
+    for loaded in ((2, 0), (1, None), (1, 1)):
+        remaining = iter(loaded)
+
+        def run(cmd, **kwargs):
+            n = next(remaining)
+            stderr = (
+                f"[INF] Templates loaded for current scan: {n}" if n is not None else ""
+            )
+            if loaded == (1, 1):
+                stderr += (
+                    "\n[INF] Skipped 10.0.0.1:80 from target list as found unresponsive"
+                )
+            Path(cmd[cmd.index("-jsonl-export") + 1]).write_text("")
+            return subprocess.CompletedProcess(cmd, 0, "", stderr)
+
+        monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", run)
+        cfg = NucleiConfig(
+            planner_mode="directed",
+            templates_dir=str(tmp_path / "templates"),
+            network_templates=False,
+        )
+        result = run_nuclei_scan(["10.0.0.1:80/tcp"], cfg, tmp_path)
+        assert not result["coverage"]["ran"]
+        assert not result["coverage"]["plan"]["complete"]
+        assert result["checked_count"] == 0
+        assert len(result["coverage"]["plan"]["process_results"]) == 2
