@@ -345,7 +345,7 @@ def _port_spec(ports: list[int]) -> str:
 
 
 # Requested feature contract; older candidate receipts did not request STARTTLS.
-_TLS_ENUMERATION_CONTRACT = "raw-starttls-v1"
+_TLS_ENUMERATION_CONTRACT = "raw-starttls-v2"
 
 
 def build_pulse_command(

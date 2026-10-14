@@ -1,0 +1,253 @@
+{
+  "provenance": {
+    "engine_source_snapshot": "90bc9e1",
+    "binary_sha256": "4512e1e2e6f70c2e6bec44a256206f8d9c33cfcda9a7800b8274ea35a31236cf",
+    "native_listener": "OpenSSL 3.6.4 25 Aug 2026",
+    "os": "macOS-26.7.1-arm64-arm-64bit-Mach-O",
+    "mode": "IPv4 loopback / TLS1.2 / serial independent cipher profiles"
+  },
+  "cases": [
+    {
+      "profile": "ecdhe_p256",
+      "payload": {
+        "tls": [
+          {
+            "enumeration": {
+              "complete": false,
+              "coverage": "bundled_iana_registry_excluding_gost_and_scsv",
+              "evidence": "server_hello_selection",
+              "transport": "direct",
+              "versions": [
+                {
+                  "accepted": null,
+                  "ciphers": [],
+                  "server_preference": null,
+                  "status": "inconclusive",
+                  "version": "SSLv2"
+                },
+                {
+                  "accepted": null,
+                  "ciphers": [],
+                  "server_preference": null,
+                  "status": "partial",
+                  "version": "SSLv3"
+                },
+                {
+                  "accepted": false,
+                  "ciphers": [],
+                  "server_preference": null,
+                  "status": "rejected",
+                  "version": "TLSv1.0"
+                },
+                {
+                  "accepted": false,
+                  "ciphers": [],
+                  "server_preference": null,
+                  "status": "rejected",
+                  "version": "TLSv1.1"
+                },
+                {
+                  "accepted": true,
+                  "ciphers": [
+                    {
+                      "code": "0xC02F",
+                      "kex_bits": 256,
+                      "kex_evidence": "server_key_exchange_named_curve",
+                      "kex_group": "secp256r1",
+                      "name": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+                    }
+                  ],
+                  "server_preference": null,
+                  "status": "partial",
+                  "version": "TLSv1.2"
+                },
+                {
+                  "accepted": false,
+                  "ciphers": [],
+                  "server_preference": null,
+                  "status": "rejected",
+                  "version": "TLSv1.3"
+                }
+              ]
+            },
+            "expired": false,
+            "expires_in_days": 0,
+            "host": "127.0.0.1",
+            "http_product": "TLS-regression",
+            "http_server": "TLS-regression",
+            "http_version": "",
+            "ip": "127.0.0.1",
+            "issuer_cn": "localhost",
+            "jarm": "29d29d29d29d00000029d29d29d29d79afa2e68b3d8e6c4a272a7e4fb26d3c",
+            "negotiated_protocol": "TLSv1_2",
+            "not_after": "2026-10-15 6:02:38.0 +00:00:00",
+            "not_before": "2026-10-14 6:02:38.0 +00:00:00",
+            "port": 8443,
+            "san": [],
+            "self_signed": true,
+            "source": "pulse-tls",
+            "subject_cn": "localhost"
+          }
+        ]
+      }
+    },
+    {
+      "profile": "dhe_1024",
+      "payload": {
+        "tls": [
+          {
+            "enumeration": {
+              "complete": false,
+              "coverage": "bundled_iana_registry_excluding_gost_and_scsv",
+              "evidence": "server_hello_selection",
+              "transport": "direct",
+              "versions": [
+                {
+                  "accepted": null,
+                  "ciphers": [],
+                  "server_preference": null,
+                  "status": "inconclusive",
+                  "version": "SSLv2"
+                },
+                {
+                  "accepted": null,
+                  "ciphers": [],
+                  "server_preference": null,
+                  "status": "partial",
+                  "version": "SSLv3"
+                },
+                {
+                  "accepted": false,
+                  "ciphers": [],
+                  "server_preference": null,
+                  "status": "rejected",
+                  "version": "TLSv1.0"
+                },
+                {
+                  "accepted": false,
+                  "ciphers": [],
+                  "server_preference": null,
+                  "status": "rejected",
+                  "version": "TLSv1.1"
+                },
+                {
+                  "accepted": true,
+                  "ciphers": [
+                    {
+                      "code": "0x009E",
+                      "kex_bits": 1024,
+                      "kex_evidence": "server_key_exchange_dh_modulus",
+                      "name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256"
+                    }
+                  ],
+                  "server_preference": null,
+                  "status": "partial",
+                  "version": "TLSv1.2"
+                },
+                {
+                  "accepted": false,
+                  "ciphers": [],
+                  "server_preference": null,
+                  "status": "rejected",
+                  "version": "TLSv1.3"
+                }
+              ]
+            },
+            "expired": false,
+            "expires_in_days": null,
+            "host": "127.0.0.1",
+            "ip": "127.0.0.1",
+            "issuer_cn": null,
+            "negotiated_protocol": null,
+            "not_after": null,
+            "not_before": null,
+            "port": 8443,
+            "san": [],
+            "self_signed": false,
+            "source": "pulse-tls",
+            "subject_cn": null
+          }
+        ]
+      }
+    },
+    {
+      "profile": "rsa_2048",
+      "payload": {
+        "tls": [
+          {
+            "enumeration": {
+              "complete": false,
+              "coverage": "bundled_iana_registry_excluding_gost_and_scsv",
+              "evidence": "server_hello_selection",
+              "transport": "direct",
+              "versions": [
+                {
+                  "accepted": null,
+                  "ciphers": [],
+                  "server_preference": null,
+                  "status": "inconclusive",
+                  "version": "SSLv2"
+                },
+                {
+                  "accepted": null,
+                  "ciphers": [],
+                  "server_preference": null,
+                  "status": "partial",
+                  "version": "SSLv3"
+                },
+                {
+                  "accepted": false,
+                  "ciphers": [],
+                  "server_preference": null,
+                  "status": "rejected",
+                  "version": "TLSv1.0"
+                },
+                {
+                  "accepted": false,
+                  "ciphers": [],
+                  "server_preference": null,
+                  "status": "rejected",
+                  "version": "TLSv1.1"
+                },
+                {
+                  "accepted": true,
+                  "ciphers": [
+                    {
+                      "code": "0x009C",
+                      "kex_bits": 2048,
+                      "kex_evidence": "certificate_rsa_modulus",
+                      "name": "TLS_RSA_WITH_AES_128_GCM_SHA256"
+                    }
+                  ],
+                  "server_preference": null,
+                  "status": "partial",
+                  "version": "TLSv1.2"
+                },
+                {
+                  "accepted": false,
+                  "ciphers": [],
+                  "server_preference": null,
+                  "status": "rejected",
+                  "version": "TLSv1.3"
+                }
+              ]
+            },
+            "expired": false,
+            "expires_in_days": null,
+            "host": "127.0.0.1",
+            "ip": "127.0.0.1",
+            "issuer_cn": null,
+            "negotiated_protocol": null,
+            "not_after": null,
+            "not_before": null,
+            "port": 8443,
+            "san": [],
+            "self_signed": false,
+            "source": "pulse-tls",
+            "subject_cn": null
+          }
+        ]
+      }
+    }
+  ]
+}

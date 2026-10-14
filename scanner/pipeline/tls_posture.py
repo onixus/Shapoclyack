@@ -343,6 +343,15 @@ def _classify_ciphers(versions: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
         for cipher in version.get("ciphers", []):
             name = cipher.get("name", "")
+            bits = cipher.get("kex_bits")
+            evidence = cipher.get("kex_evidence")
+            if isinstance(bits, int) and not isinstance(bits, bool) and bits > 0 and evidence:
+                ec = evidence in ("server_hello_key_share", "server_key_exchange_named_curve")
+                minimum, high_below = (224, 160) if ec else (2048, 1024)
+                if bits < minimum:
+                    issues.append({"kind": "weak_key_exchange", "severity": "high" if bits < high_below else "medium",
+                                   "version": version_name, "cipher": name, "kex_bits": bits,
+                                   "kex_evidence": evidence})
             if any(needle in name for needle in _WEAK_CIPHER_SUBSTRINGS):
                 issues.append(
                     {

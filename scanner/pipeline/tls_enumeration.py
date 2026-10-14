@@ -130,6 +130,7 @@ def parse_suite(raw: Any) -> dict[str, Any] | None:
     name = ""
     kex_group: str | None = None
     kex_bits: int | None = None
+    kex_evidence: str | None = None
     if isinstance(raw, str):
         text = raw.strip()
         if _SUITE_NAME_RE.match(text):
@@ -145,6 +146,10 @@ def parse_suite(raw: Any) -> dict[str, Any] | None:
         if isinstance(raw.get("kex_group"), str):
             kex_group = raw["kex_group"]
         kex_bits = _int_or_none(raw.get("kex_bits"))
+        if raw.get("kex_evidence") in ("server_hello_key_share", "certificate_rsa_modulus",
+                                       "server_key_exchange_named_curve", "server_key_exchange_dh_modulus",
+                                       "server_key_exchange_export_rsa_modulus"):
+            kex_evidence = raw["kex_evidence"]
     else:
         return None
     if not name and code is not None:
@@ -156,6 +161,12 @@ def parse_suite(raw: Any) -> dict[str, Any] | None:
     suite: dict[str, Any] = {"name": name, "grade": grade}
     if upper_bound and grade is not None:
         suite["grade_upper_bound"] = True  # exchange unknown: the letter may be too good
+    if kex_evidence and kex_bits is not None and kex_bits <= 65535:
+        if kex_evidence not in ("server_hello_key_share", "server_key_exchange_named_curve") or kex_bits <= 571:
+            suite["kex_bits"] = kex_bits
+            suite["kex_evidence"] = kex_evidence
+            if kex_group in ("x25519", "secp256r1", "secp384r1"):
+                suite["kex_group"] = kex_group
     return suite
 
 

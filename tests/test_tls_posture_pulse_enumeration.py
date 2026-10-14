@@ -558,3 +558,32 @@ def test_recorded_postgres_starttls_result_preserves_transport_and_measured_curv
     version = next(v for v in row["cipher_versions"] if v["version"] == "TLSv1.3")
     assert len(version["ciphers"]) == 3 and version["server_preference"] is True
     assert all(s["grade"] == "A" and not s.get("grade_upper_bound") for s in version["ciphers"])
+
+
+def test_native_tls12_fixtures_report_measured_facts_and_surface_weak_dh_without_grade_invention():
+    payload = json.loads((Path(__file__).parent / "fixtures/pulse_tls/raw_tls12_keysize.json").read_text())
+    by_name = {}
+    rows = {}
+    for case in payload["cases"]:
+        row = _from_pulse(case["payload"]["tls"][0])
+        version = next(v for v in row["cipher_versions"] if v["version"] == "TLSv1.2")
+        suite, = version["ciphers"]
+        by_name[suite["name"]] = suite
+        rows[suite["name"]] = row
+        assert not suite.get("grade_upper_bound")
+    dh = by_name["TLS_DHE_RSA_WITH_AES_128_GCM_SHA256"]
+    assert dh["grade"] == "B" and dh["kex_bits"] == 1024
+    assert dh["kex_evidence"] == "server_key_exchange_dh_modulus"
+    issue, = [i for i in rows[dh["name"]]["issues"] if i["kind"] == "weak_key_exchange"]
+    assert issue["kex_bits"] == 1024 and issue["severity"] == "medium" and issue["requires_confirmation"] is True
+    ec = by_name["TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"]
+    assert ec["grade"] == "A" and ec["kex_group"] == "secp256r1" and ec["kex_bits"] == 256
+    rsa = by_name["TLS_RSA_WITH_AES_128_GCM_SHA256"]
+    assert rsa["grade"] == "A" and rsa["kex_bits"] == 2048 and rsa["kex_evidence"] == "certificate_rsa_modulus"
+
+
+def test_unknown_exchange_has_no_measured_keysize_finding():
+    row = _from_pulse(_row({"complete": False, "evidence": "server_hello_selection", "versions": [
+        {"version": "TLSv1.2", "accepted": True, "ciphers": [{"name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256"}]}]}))
+    assert row["cipher_versions"][0]["ciphers"][0]["grade_upper_bound"] is True
+    assert not any(i["kind"] == "weak_key_exchange" for i in row["issues"])

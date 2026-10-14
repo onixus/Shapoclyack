@@ -14,3 +14,13 @@ release, or installed-device acceptance. No SQL or credentials were sent.
 The temporary private key was destroyed; only certificate facts and negotiated
 metadata appear in the fixture. The server rejected other versions and the
 remaining suite offers were inconclusive, so `complete` remains false.
+
+`raw_tls12_keysize.json` combines three independent local native OpenSSL
+TLS1.2 listener captures (ECDHE P-256, DHE1024, RSA2048) under separate `cases`.
+Each payload keeps the emitted engine TLS row; these were not one server
+offering all three cipher profiles simultaneously. The file records its
+source snapshot, actual CLI binary SHA256, OpenSSL and host OS. It proves
+observed first-flight parameters and consumer grading/weak-exchange findings,
+not peer-signature/CA authentication, release signing, or installed acceptance.
+Ephemeral server private keys were destroyed; only public certificate facts
+and exchange metadata are retained.

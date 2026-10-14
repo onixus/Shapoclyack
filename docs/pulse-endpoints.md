@@ -183,8 +183,7 @@ Every raw probe starts a new connection and repeats the bounded upgrade.
 Capability or upgrade rejection is inconclusive TLS coverage; no authentication
 credentials or database queries are sent. STARTTLS certificate collection
 skips direct JARM/HTTP probes. Normal TLS1.3 ServerHello x25519 shares record
-the group and its 253-bit curve size; HRR and TLS1.2 exchange sizes remain
-unknown and retain upper-bound grading.
+the group and its 253-bit curve size; HRR remains unmeasured. TLS1.2 certificate/SKE facts are described below.
 
 `--rate` paces additional connection starts across enumeration endpoints. It
 does not enforce a packet limit within multi-message upgrade exchanges, so
@@ -195,6 +194,20 @@ parsing remains available. Released Pulse 1.3.0 lacks these capabilities; keep
 installed. Source, local protocol fixtures, and release acceptance remain
 separate gates.
 
-TLS enumeration resume receipts also carry the requested `raw-starttls-v1`
-contract. Earlier candidate receipts without it are re-probed; this marker
+TLS enumeration resume receipts also carry the requested `raw-starttls-v2`
+contract. Earlier candidate receipts with v1 or without a marker are re-probed; this marker
 records the request and does not attest installed engine capability.
+
+TLS1.2 and earlier raw first flights can report RSA certificate modulus size
+(for RSA key transport), authenticated-suite ECDHE named curve/point size, and
+DHE modulus size from ServerKeyExchange. `kex_evidence` identifies the observed
+source. Fragments share the original timeout, eight-record and 16 KiB limits;
+truncated or conflicting parameter messages do not earn measured sizes.
+Signatures/chain trust are not authenticated by these raw probes, so findings
+retain `requires_confirmation`. HRR, static ECDH/PSK and unavailable exchange
+parameters retain upper-bound grading.
+
+The existing grade contract rates a 1024-bit DH exchange B. An explicit
+`weak_key_exchange` issue therefore surfaces measured finite-field exchange
+sizes below 2048 bits (EC below 224), including B-rated suites, without changing
+the established A-F thresholds or claiming exact Nmap letter parity.
