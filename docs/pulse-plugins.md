@@ -255,9 +255,9 @@ only `sysDescr.0` and `sysName.0`. No community guessing or SET is performed.
 It runs only when the endpoint transport is UDP. BER lengths, request ID,
 community, response type, exact OIDs and container boundaries are checked;
 exception values and malformed replies are errors, not empty clean results.
-Its INFO observation retains raw values as bounded hex evidence in Pulse's
-raw output; it is not a vulnerability and the adapter does not convert INFO
-into vulnerability findings. Asset-name enrichment is not implemented by this
+Its INFO observation retains raw values as bounded hex evidence. The adapter
+keeps it as an informational plugin record (the report maps INFO to unknown),
+not an assertion that a vulnerability was detected. Asset-name enrichment is not implemented by this
 plugin. Standalone acceptance uses `pulse plugin run ... --protocol udp`;
 the default is TCP, and an invalid or combined transport is rejected.
 
@@ -267,6 +267,6 @@ exchange, then verification of the server's Ed25519 exchange signature. No
 password, authentication request or session channel is sent. The signature
 proves possession on this connection; known-host trust and endpoint identity
 are not established. Other key-exchange/host-key algorithms are UNKNOWN errors,
-not negative evidence. The INFO observation stays in raw Pulse output, not in
-vulnerability findings. Its exchange encoding follows RFC 8731 section 3.1:
+not negative evidence. The adapter retains the INFO observation as an informational plugin record
+(the report maps INFO to unknown), not a vulnerability assertion. Its exchange encoding follows RFC 8731 section 3.1:
 X25519's returned bytes are interpreted in network byte order for SSH mpint.
