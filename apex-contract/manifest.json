@@ -18,6 +18,7 @@
       "kind": "http",
       "paths": [
         "POST /api/v1/auth/agent/token",
+        "POST /api/v1/agent/certificate",
         "POST /api/v1/agent/register",
         "POST /api/v1/agent/heartbeat",
         "POST /api/v1/endpoint/inventory"

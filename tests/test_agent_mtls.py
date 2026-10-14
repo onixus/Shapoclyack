@@ -1508,6 +1508,12 @@ def test_an_endpoint_agent_can_follow_its_contract_under_required(tmp_path, monk
     )
     assert enrolled.status_code == 200, enrolled.text
     assert enrolled.json()["spiffe_id"] == spiffe("default", "laptop-7", kind="agent")
+    missing = client.post(
+        "/api/v1/agent/register", headers=bearer(token),
+        json={"hostname": "laptop-7", "agent_kind": "endpoint"},
+    )
+    assert missing.status_code == 403
+    assert missing.headers["X-Client-Cert-Error"] == "missing"
     registered = _peer(client, INGRESS_PEER).post(
         "/api/v1/agent/register",
         headers={**bearer(token), **_forwarded(enrolled.json()["certificate"])},
@@ -1522,6 +1528,13 @@ def test_an_endpoint_agent_can_follow_its_contract_under_required(tmp_path, monk
     )
     assert renewed.status_code == 200, renewed.text
     assert renewed.json()["spiffe_id"] == spiffe("default", "laptop-7", kind="agent")
+
+    heartbeat = _peer(client, INGRESS_PEER).post(
+        "/api/v1/agent/heartbeat",
+        headers={**bearer(token), **_forwarded(renewed.json()["certificate"])},
+        json={"status": "idle"},
+    )
+    assert heartbeat.status_code == 200, heartbeat.text
 
 
 # --------------------------------------------------------------------------
