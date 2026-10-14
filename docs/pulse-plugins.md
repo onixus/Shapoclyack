@@ -2,7 +2,7 @@
 
 Rhai plugins that Shapoclyack hands to Pulse with `--script-dir`
 ([ADR 0002](adr/0002-replacing-nmap-functions.md), [#544](https://github.com/onixus/Shapoclyack/issues/544)).
-Candidate content covers weak SSH advertisements, verified Ed25519 host-key
+Content covers weak SSH advertisements, verified Ed25519 host-key
 observations, anonymous FTP, cleartext capabilities, plain HTTP TRACE,
 SMB dialect/signing and MS17-010 status hypotheses, RDP negotiation/type2
 inventory, VNC security advertisements, and standalone UDP SNMP inventory.
@@ -13,14 +13,13 @@ On by default wherever Pulse runs (`service_probe.backend: pulse`, the only
 backend). Off with `service_probe.pulse.plugins: false` (also per
 speed profile under `profiles.<mode>.pulse.plugins`).
 
-## Candidate content and engine dependency
+## Released content and engine dependency
 
-These are Pulse 1.4.0 source-candidate capabilities requiring
-[GenDec#39](https://github.com/onixus/GenDec/pull/39): bounded binary exchanges
-and native stateful protocol helpers. Dockerfiles, publish workflows and the
-checksum pin still select v1.3.0. It cannot provide these new mechanisms;
-source fixtures do not establish deployed acceptance. Final combined gates,
-reviewed signed publication and a verified pin update are required first.
+These capabilities require signed [Pulse v1.4.0](https://github.com/onixus/GenDec/releases/tag/v1.4.0),
+produced from merged GenDec#39. Dockerfiles, publish workflows and all four
+checksum pins select v1.4.0 after verifying its Sigstore workflow/tag identity
+and each downloaded archive. Source and released CLI fixtures do not establish
+installed sensor or fleet acceptance.
 
 ## Plugins
 
@@ -36,12 +35,12 @@ reviewed signed publication and a verified pin update are required first.
 | `shapo_smb_signing` | Selected SMB2 NEGOTIATE response does not require signing; offers SMB 2.0.2 and 2.1 | MEDIUM | signing-policy portion of `smb2-security-mode` |
 | `shapo_smb1` | SMB1-only NEGOTIATE explicitly selects NT LM 0.12 | MEDIUM | SMB1-support portion of `smb-protocols` |
 | `shapo_rdp_negotiation` | X.224 negotiation accepts standard RDP security without mandatory NLA | MEDIUM | standard-security acceptance; not full `rdp-enum-encryption` |
-| `shapo_ssh_hostkey` | Verified curve25519-sha256 / Ed25519 exchange signature and SHA256 host-key fingerprint | INFO observation; no known-host trust | candidate native observation |
-| `shapo_snmp_info` | One UDP SNMPv2c `public` GET of sysDescr/sysName | INFO; standalone/native UDP, not production adapter enrichment | candidate native observation |
-| `shapo_smb_protocols` | SMB1 and SMB2 2.0.2/2.1/3.0/3.0.2/3.1.1 selections/signing, including RFC1002 on 139 | MEDIUM when signing is not required; otherwise INFO inventory | candidate native observation |
-| `shapo_ms17_010` | Anonymous IPC$/FID0 Peek status indication | Positive hypothesis only; every non-indicator/error UNKNOWN, never patch proof | candidate native observation |
-| `shapo_rdp_ntlm_info` | X.224→TLS→CredSSP NTLM type2 host/domain/DNS/build/time fields | INFO unauthenticated inventory; no type3/credentials/session | candidate native observation |
-| `shapo_vnc_security` | RFB3.3/3.7/3.8 security-type advertisements | MEDIUM hypothesis when None is advertised; no security selection or desktop session | candidate native observation |
+| `shapo_ssh_hostkey` | Verified curve25519-sha256 / Ed25519 exchange signature and SHA256 host-key fingerprint | INFO observation; no known-host trust | native observation |
+| `shapo_snmp_info` | One UDP SNMPv2c `public` GET of sysDescr/sysName | INFO; standalone/native UDP, not production adapter enrichment | native observation |
+| `shapo_smb_protocols` | SMB1 and SMB2 2.0.2/2.1/3.0/3.0.2/3.1.1 selections/signing, including RFC1002 on 139 | MEDIUM when signing is not required; otherwise INFO inventory | native observation |
+| `shapo_ms17_010` | Anonymous IPC$/FID0 Peek status indication | Positive hypothesis only; every non-indicator/error UNKNOWN, never patch proof | native observation |
+| `shapo_rdp_ntlm_info` | X.224→TLS→CredSSP NTLM type2 host/domain/DNS/build/time fields | INFO unauthenticated inventory; no type3/credentials/session | native observation |
+| `shapo_vnc_security` | RFB3.3/3.7/3.8 security-type advertisements | MEDIUM hypothesis when None is advertised; no security selection or desktop session | native observation |
 
 The two exposure plugins still claim reachability only. Negotiation and
 inventory observations do not establish relay/exploitability, trusted identity,
@@ -54,11 +53,11 @@ under their own detector and are not merged with those.
 
 ## Sandbox capabilities and remaining gaps
 
-The GenDec#39 candidate adds `probe_send_hex` and `probe_udp_hex`: strict hex
+GenDec#39 adds `probe_send_hex` and `probe_udp_hex`: strict hex
 requests and byte-preserving hex replies, restricted to the bound numeric IP
 and port, with a shared eight-exchange budget. TCP connect/write/read share one
 50–5000 ms deadline; UDP uses a connected peer and the same deadline, send
-limit (4 KiB) and receive limit (16 KiB). Candidate negotiation plugins request
+limit (4 KiB) and receive limit (16 KiB). Negotiation plugins request
 1500 ms. The SNMP plugin uses UDP explicitly; UDP support does not make TCP completion
 receipts interchangeable with UDP results.
 
@@ -115,10 +114,10 @@ first in every list, which is the case a naive parse loses.
   probed again. On a host without a Pulse binary the check cannot be asked and the
   receipt's `offered_digest` (the files on disk) is compared instead.
 - **Time.** Pulse runs the plugins after the scan, one open port and one plugin at a
-  time, never concurrently. The GenDec#39 candidate applies one deadline per
+  time, never concurrently. GenDec#39 applies one deadline per
   network call, including text calls. The old v1.3.0 per-read timeout allowed
   trickling responses to last 14.5 s for a nominal 1500 ms call; this is
-  historical evidence, not the candidate deadline contract.
+  historical evidence, not the current deadline contract.
   A chunk therefore gets `endpoints * 10` seconds added to the process timeout,
   capped at 30 minutes (`PLUGIN_SECONDS_PER_ENDPOINT`, `PLUGIN_BUDGET_CAP_SECONDS`):
   an allowance for ordinary servers, not a worst case. The services behind the open
@@ -231,7 +230,7 @@ a string.
 
 ### Binary negotiation probes (GenDec binary sandbox API)
 
-The candidate `shapo_smb_signing`, `shapo_smb1` and
+The `shapo_smb_signing`, `shapo_smb1` and
 `shapo_rdp_negotiation` require the engine's `probe_send_hex` API. Their
 requests preserve bytes above 0x7f and contain only protocol negotiation,
 without credentials, authentication attempts or exploit payloads. They use the

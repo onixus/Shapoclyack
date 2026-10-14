@@ -269,7 +269,7 @@ Release** (not a vendored Rust tree). Canonical pipeline:
 
 ```dockerfile
 # stage pulse-bin downloads:
-#   pulse-v1.3.0-linux-amd64.tar.gz from onixus/GenDec releases
+#   pulse-v1.4.0-linux-amd64.tar.gz from onixus/GenDec releases
 # /out/bin/pulse + /out/share/shapoclyack/pulse-install.txt, one COPY per
 # directory; with INSTALL_PULSE=0 both are empty and nothing is copied:
 COPY --from=pulse-bin /out/bin/ /usr/local/bin/
@@ -279,7 +279,7 @@ COPY --from=pulse-bin /out/share/ /usr/local/share/
 
 | Arg / secret | Default | Meaning |
 |--------------|---------|---------|
-| `PULSE_VERSION` | `v1.3.0` | GenDec release tag |
+| `PULSE_VERSION` | `v1.4.0` | GenDec release tag |
 | `PULSE_GITHUB_REPO` | `onixus/GenDec` | release owner/repo |
 | BuildKit secret `github_token` | — | PAT for **private** GenDec releases (`GENDEC_READ_TOKEN` in CI) |
 | `INSTALL_PULSE` | `1` | set `0` to build without Pulse — and without a token for the private GenDec repo |
@@ -327,7 +327,7 @@ pin. That is what GenDec's release signature is for, and why it is checked in
 `scripts/pulse-pin.sh` rather than at install time:
 
 ```bash
-GITHUB_TOKEN=… scripts/pulse-pin.sh v1.3.0
+GITHUB_TOKEN=… scripts/pulse-pin.sh v1.4.0
 ```
 
 The helper fetches the release's `checksums.txt` and its
@@ -374,7 +374,7 @@ Local image build (GenDec is private, so pass a token with `contents:read`):
 printf '%s' "$GITHUB_TOKEN" > /tmp/gh_token
 docker build -f Dockerfile \
   --secret id=github_token,src=/tmp/gh_token \
-  --build-arg PULSE_VERSION=v1.3.0 \
+  --build-arg PULSE_VERSION=v1.4.0 \
   -t shapoclyack-scanner:local .
 ```
 
@@ -388,7 +388,7 @@ Host install without Docker:
 
 ```bash
 GITHUB_TOKEN=… scripts/install-pulse.sh          # release tarball, verified
-PULSE_VERSION=v1.3.0 scripts/install-pulse.sh    # pick a tag
+PULSE_VERSION=v1.4.0 scripts/install-pulse.sh    # pick a tag
 PULSE_DEST=$HOME/.local/bin/pulse scripts/install-pulse.sh
 PULSE_FROM_SOURCE=1 scripts/install-pulse.sh     # cargo fallback (PULSE_REF picks a ref)
 scripts/smoke-pulse.sh
@@ -470,7 +470,7 @@ sensor, for a container sensor as a mounted file.
 | Source | When | Covers |
 |--------|------|--------|
 | `nmap-nse` | SSL scripts present in the Nmap XML of a run recorded before #548 (read-only) | cert validity / self-signed heuristic / key size and signature digest + full cipher grades and every offered version |
-| `pulse-tls` | `pulse/tls.json` has rows | cert validity / self-signed / Pulse's own legacy-protocol probe (`requires_confirmation`); with a suite enumeration (see below, candidate GenDec#34/39) also observed selections/suites with A-F grades |
+| `pulse-tls` | `pulse/tls.json` has rows | cert validity / self-signed / Pulse's own legacy-protocol probe (`requires_confirmation`); with a suite enumeration (see below, Pulse v1.4.0, GenDec#34/39) also observed selections/suites with A-F grades |
 | `pulse-tls-probe` | fallback handshake | cert and chain validity / self-signed / chain trust / key size and signature digest / TLS 1.0 and 1.1 acceptance |
 
 Artifacts: `tls_posture.json` (same shape; `source` field), plus
@@ -483,7 +483,7 @@ has no Pulse row, and those rows join `tls_posture.json` with their own
 `source: pulse-tls-probe` (the run-level `source` stays `pulse-tls`). They count
 toward `max_targets` together with the Pulse rows (`truncated` is set when either
 side is cut); `tls_probe.json` holds just the probed rows. The stdlib fallback does not look outside
-`probe_tls_ports` (465, 636, 993, 3306, ...); the candidate opt-in native enumerator has separate direct/STARTTLS selection, and the
+`probe_tls_ports` (465, 636, 993, 3306, ...); the opt-in native enumerator has separate direct/STARTTLS selection, and the
 budget is spent on open `probe_tls_ports` endpoints whether or not they speak TLS.
 The "443 and 8443 only" figure was measured live on the corpus stand with extra
 `openssl s_server` listeners (443, 8443, 465, 636, 993, 9443); the measurement is
@@ -491,13 +491,13 @@ in ADR 0002, section "TLS (#545)", not in the recorded fixtures.
 
 ### Cipher suites and A-F grades on the Pulse path
 
-Released/pinned Pulse v1.3.0 does not enumerate suites. The prepared 1.4.0
-source candidate adds `--tls-enum`, requested only when both
+Signed/pinned Pulse v1.4.0 provides `--tls-enum`, requested only when both
 `tls_posture.enabled` and `tls_posture.enumerate_ciphers` are true (the latter
-is off by default). Dockerfiles/workflows/checksum pins still select 1.3.0:
-source code is not an installed or signed-release capability.
+is off by default). Dockerfiles/workflows/checksum pins select v1.4.0 after
+workflow identity and all four archive digests were verified. Released CLI
+fixtures do not establish installed sensor acceptance.
 
-The candidate uses raw ClientHellos for SSLv2/SSLv3…TLS1.3 and native STARTTLS
+The engine uses raw ClientHellos for SSLv2/SSLv3…TLS1.3 and native STARTTLS
 for SMTP/IMAP/POP3/FTP/LDAP/PostgreSQL/MySQL. Each endpoint has a 30-second,
 256-connection budget; per-connection deadlines are at most 3 seconds and
 first-flight collection is limited to eight records/16 KiB. Shared `--rate`
@@ -615,7 +615,7 @@ not run never reads as a clean result:
     scanner host is never reported as "server refuses TLS 1.0");
   * `not_evaluated` with `reason: disabled` — `probe_legacy_protocols` is off;
   * `not_testable` — SSLv2 and SSLv3, always: modern OpenSSL cannot send them;
-    the candidate raw Pulse enumerator covers these separately. This restriction applies to the stdlib fallback.
+    the raw Pulse enumerator covers these separately. This restriction applies to the stdlib fallback.
 * `checks.chain_trust` — `trusted` (with `store` and `validity_checked`),
   `untrusted` (with `verify_code`), `inconclusive` (no handshake completed),
   `not_evaluated` (by `chain_trust`: `reason: internal_address` or
@@ -644,7 +644,7 @@ Limits worth knowing:
   `inconclusive`: the probe cannot tell that from a refused version. The probe
   offers OpenSSL's `DEFAULT` list at security level 0, which on OpenSSL 3 holds
   no RC4/DES/NULL/EXPORT/anon suite: it cannot see weak ciphers at all, and
-  `weak_cipher_name` needs the candidate native enumeration or historical nmap output, not this stdlib fallback.
+  `weak_cipher_name` needs the native enumeration or historical nmap output, not this stdlib fallback.
 * Where chain trust is `not_evaluated` (an internal address under
   `public_only`), the chain's validity is not judged either: an expired
   intermediate on an internal endpoint is visible only with `ca_bundle` or
@@ -693,7 +693,7 @@ tls_posture:
   hostname_mismatch: true       # default true
 ```
 
-Cipher enumeration/grading is available in the prepared source candidate,
+Cipher enumeration/grading is available with signed/pinned Pulse v1.4.0,
 with the opt-in settings and evidence limits above. The default/pinned 1.3.0
 binary does not acquire it from a config change. Key size and signature
 algorithm on the stdlib probe path still need `cryptography` (both images).
@@ -856,7 +856,7 @@ required for **naabu** and Pulse SYN/OS — see `k8s/README.md`.
 ## Reference corpus: Nmap versus Pulse (#541)
 
 This immutable v1.3.0 corpus remains the historical baseline. Its recorded
-plugin map and counts do not describe current 1.4.0 candidate capabilities.
+plugin map and counts do not describe current 1.4.0 capabilities.
 Candidate unit/native fixtures add separate evidence; the historical recordings
 are not silently rewritten or counted as final deployed acceptance.
 

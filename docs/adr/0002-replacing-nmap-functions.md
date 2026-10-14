@@ -207,7 +207,7 @@ nothing.
 
 ## Plugins (#544)
 
-The candidate plugins are in `scanner/pipeline/pulse_data/plugins/` and
+The plugins are in `scanner/pipeline/pulse_data/plugins/` and
 described in [Pulse plugins](../pulse-plugins.md). Original v1.3.0 measurements
 showed that text-only UTF-8 requests could not send SMB/RDP binary negotiation,
 UDP was unavailable and per-read timeouts were not total call deadlines.
@@ -283,10 +283,9 @@ Decided:
 - **The enumeration format began as our proposal**
   (`tls[].enumeration`, read by `scanner/pipeline/tls_enumeration.py`; shape in
   [pulse-backend.md](../pulse-backend.md#cipher-suites-and-a-f-grades-on-the-pulse-path)).
-  The GenDec#39 engine candidate now emits it; it is not yet released/pinned. A contract test builds that shape from the
+  Signed/pinned Pulse v1.4.0 now emits it. A contract test builds that shape from the
   recorded Nmap output and checks that the Pulse path yields the same findings
-  as the Nmap path on the same endpoints. An enumeration not marked complete
-  makes its findings `requires_confirmation`; a suite missing from it is not
+  as the Nmap path on the same endpoints. Raw-selection findings always retain `requires_confirmation`; a suite missing from it is not
   read as refused. Code points without names resolve through the IANA
   registry copied into `scanner/pipeline/pulse_data/tls_cipher_suites.tsv`.
 - **NSE `vuln` scripts at the TLS level** — split with #547:
@@ -304,7 +303,7 @@ Decided:
   (`No reply from server (TIMEOUT)`); no TLS-level `vuln` script reported a
   vulnerability.
 
-The Pulse 1.4.0 source candidate enumerates raw SSLv2/SSLv3…TLS1.3
+Pulse 1.4.0 enumerates raw SSLv2/SSLv3…TLS1.3
 selection and server preference. Opt-in STARTTLS covers SMTP, IMAP, POP3,
 FTP, LDAP, PostgreSQL and MySQL. Visible Certificate/ServerKeyExchange facts
 supply RSA/DHE modulus sizes and supported ECDHE curves; normal TLS1.3 x25519
@@ -330,7 +329,7 @@ the reference has to be recorded while Nmap still runs.
 3. [#543](https://github.com/onixus/Shapoclyack/issues/543) — Pin Pulse's inputs: `--services-db`, `--os-mode sinfp`, private `HOME`;
    service name from the probe (GenDec).
 4. [#544](https://github.com/onixus/Shapoclyack/issues/544) — Audit plugins in Shapoclyack, `--script-dir`, finding contract and parser.
-   **Content implemented; binary functionality is a prepared, unreleased engine candidate** — see [Plugins (#544)](#plugins-544) below.
+   **Content and bounded native helpers are implemented with signed/pinned Pulse v1.4.0** — see [Plugins (#544)](#plugins-544) below.
 5. [#545](https://github.com/onixus/Shapoclyack/issues/545) — TLS suite and version enumeration (GenDec) and grading (`tls_posture`).
 6. [#546](https://github.com/onixus/Shapoclyack/issues/546) — Probe DB in Shapoclyack: clean-room rules, distribution revision, CPE
    mapping.
@@ -351,18 +350,21 @@ XML of past runs, `nmap-nse` findings and `prober: nmap` rows stay readable
 (`scanner/pipeline/legacy_nmap.py`); the golden corpus of #541 stays as the
 reference it was recorded to be.
 
-**Prepared source candidate; epic remains open.** #548 removed runtime Nmap
-paths before every replacement was complete (owner decision, 2026-10-11).
-Current source adds input isolation, bounded raw TLS/STARTTLS and exchange-size
-facts, verified SSH host-key observations, native SMB/RDP/VNC dialogue helpers,
-and standalone/native UDP SNMP inventory. GenDec#31/#32 are merged upstream;
-[GenDec#39](https://github.com/onixus/GenDec/pull/39) is the combined engine candidate.
+**Release-backed implementation.** #548 removed runtime Nmap paths before
+all replacements were complete (owner decision, 2026-10-11). Input isolation,
+bounded raw TLS/STARTTLS and exchange-size facts, verified SSH host-key
+observations, native SMB/RDP/VNC helpers, and standalone/native UDP SNMP
+inventory are now implemented. GenDec#31/#32 and
+[GenDec#39](https://github.com/onixus/GenDec/pull/39) are merged upstream.
 
-Dockerfiles, publish workflows and `scripts/pulse-pinned.sha256` still select
-v1.3.0. The v1.4.0 candidate has not been published/signed/pinned here. Source
-and local fixtures are not shipped sensor acceptance; final combined gates,
-reviewed publication, signature/digest verification and a real pin update are
-still required. Do not fabricate hashes or treat this ADR as epic closure.
+Dockerfiles, publish workflows and all four archive pins select signed
+[Pulse v1.4.0](https://github.com/onixus/GenDec/releases/tag/v1.4.0), built from
+`cf5c4e82677ccb9b5edea84e775590d51068afff` (the tree matches the reviewed
+`6ca248b` source). Its Sigstore bundle was verified against the exact release
+workflow/tag identity and each downloaded archive matched the signed checksum.
+Combined CI is required before merge; source and released CLI fixtures do not
+establish installed sensor acceptance. Historical corpus evidence remains
+unchanged and distinct from the current capability map.
 
 Remaining limits: production Pulse enrichment is TCP-only, so SNMP UDP cannot
 be verified by a TCP completion receipt. SSH trust/other algorithms, complete

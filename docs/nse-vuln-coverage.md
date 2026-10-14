@@ -8,11 +8,11 @@ matching, or a stated refusal
 what is covered, by what, under which configuration, and what is **not**.
 
 The NSE stage is gone. The original corpus below records v1.3.0 behavior;
-current Pulse 1.4.0 candidate coverage is described alongside it, without
-rewriting that measurement. Native dialogue plugins and raw TLS/STARTTLS are
-source candidate work, not signed/pinned deployment acceptance. The current
-image/workflow/checksum pin remains v1.3.0; final combined gates and a verified
-release/pin transition remain required ([ADR 0002](adr/0002-replacing-nmap-functions.md)).
+current Pulse 1.4.0 coverage is described alongside it, without
+rewriting that measurement. Native dialogue plugins and raw TLS/STARTTLS require signed Pulse v1.4.0,
+now selected by the image/workflow/checksum pins after workflow identity and
+all four archive digests were verified. These source/released-CLI observations
+remain separate from installed sensor acceptance ([ADR 0002](adr/0002-replacing-nmap-functions.md)).
 
 Sources of the table:
 
@@ -31,7 +31,7 @@ Sources of the table:
 
 | Assumption | Finding |
 |---|---|
-| `smb-vuln-ms17-010` has a Nuclei network template | **No.** v9.9.4 has none (no template mentions MS17-010, EternalBlue or CVE-2017-0143..0148). The check is an SMB1 transaction; it needs binary payloads (GenDec#38). The native candidate status hypothesis below is separate from Nuclei. |
+| `smb-vuln-ms17-010` has a Nuclei network template | **No.** v9.9.4 has none (no template mentions MS17-010, EternalBlue or CVE-2017-0143..0148). The check is an SMB1 transaction; it needs binary payloads (GenDec#38). The native status hypothesis below is separate from Nuclei. |
 | Network templates never run because the sweep only gets web URLs | **Half true.** A host that has a web port does get them: for a `javascript:` template nuclei v3.11.1 uses the template's own port for a URL input (`http://h:80/` and `http://h/` both ran `smb-signing-not-required` against `h:445`). What never happens is a host with **no** web port, the Samba of the stand, being looked at. The network pass fills that, and a finding the sweep already made on the same host, port and template is not repeated. |
 | `ssl-*` has Nuclei templates to map | The `ssl/` directory of v9.9.4 has protocol-version, weak-cipher, expiry and issuer templates, not CCS injection, Heartbleed or POODLE checks. Those are #545 and are not touched here. |
 | The slowloris and byterange hits were on the legacy nginx / IIS stub | Slowloris and TRACE were on the **Apache** (`.22`); byterange on both **nginx** (`.20`, `.21`) and not on Apache; the litespeed and phpMyAdmin hits were the IIS stub's catch-all page. |
@@ -60,7 +60,7 @@ printed.
 | `smb-vuln-ms10-054` | 1 | `false` | refused | none | `dos` category: a malformed SMB request. |
 | `smb-vuln-ms10-061` | 1 | `Could not negotiate a connection` | gap | none | Print-spooler RPC over SMB: binary protocol, no Nuclei template. GenDec#38. |
 | `samba-vuln-cve-2012-1182` | 1 | `Could not negotiate a connection` | version matching | `retro_match` / `pulse --cve` | The probe is a malformed RPC call (`intrusive`); the affected range (Samba < 3.6.4) is a version question. |
-| `smb-vuln-ms17-010` | 0 | (printed nothing on the reference Samba) | Rhai plugin | `shapo_ms17_010`, with candidate engine and plugins enabled | Read-only anonymous IPC$/FID0 Peek status hypothesis; positive indication requires confirmation. Every non-indicator/denial/error is UNKNOWN, never patched or exploit proof. No Nuclei template in v9.9.4. |
+| `smb-vuln-ms17-010` | 0 | (printed nothing on the reference Samba) | Rhai plugin | `shapo_ms17_010`, with Pulse v1.4.0 and plugins enabled | Read-only anonymous IPC$/FID0 Peek status hypothesis; positive indication requires confirmation. Every non-indicator/denial/error is UNKNOWN, never patched or exploit proof. No Nuclei template in v9.9.4. |
 
 ### Named by the issue, not in the `vuln` category
 
@@ -74,7 +74,7 @@ printed.
 
 ### The `ssl-*` / TLS family
 
-The candidate opt-in TLS path enumerates raw SSLv2/SSLv3…TLS1.3 selection
+The opt-in TLS path enumerates raw SSLv2/SSLv3…TLS1.3 selection
 and server preference, with native STARTTLS upgrades for SMTP/IMAP/POP3/FTP/
 LDAP/PostgreSQL/MySQL. Certificate/SKE facts provide RSA/DHE modulus sizes and
 supported ECDHE curves; normal TLS1.3 shares provide x25519 curve size. Unknown
