@@ -36,16 +36,16 @@ directories, which [`report.py`](../../scanner/pipeline/report.py),
 [`evidence_artifacts.py`](../../scanner/pipeline/evidence_artifacts.py) and
 [`verification_coverage.py`](../../api/services/verification_coverage.py) read.
 
-### What Pulse already does
+### Historical Pulse baseline (v1.3.0, 2026-10-10)
 
-From the Pulse v1.3.0 CLI and GenDec `ROADMAP.md`: host discovery over ARP,
+At the original measurement, from the Pulse v1.3.0 CLI and GenDec `ROADMAP.md`: host discovery over ARP,
 ICMP and TCP (`-D --discover-method arp|auto`); a declarative service-probe DB
 (17 probes, 203 rules) replaceable with `--probe-db`; SinFP OS detection;
 offline CVE rules with KEV/EPSS; a TLS handshake probe and JARM (it already
 builds its own ClientHellos); Rhai audit plugins run inside the scan
 (`--scripts`, `--script-dir`, 30 plugins upstream, a sandboxed network API
 limited to the audited host and its open ports). The Shapoclyack adapter
-([`pulse_probe.py`](../../scanner/pipeline/pulse_probe.py)) passes neither
+([`pulse_probe.py`](../../scanner/pipeline/pulse_probe.py)) then passed neither
 `--scripts` nor `--probe-db` nor `--services-db`.
 
 ### Measured, 2026-10-10
@@ -207,27 +207,29 @@ nothing.
 
 ## Plugins (#544)
 
-The plugins are in `scanner/pipeline/pulse_data/plugins/` and described in
-[Pulse plugins](../pulse-plugins.md). Measured against the real Pulse v1.3.0 sandbox
-(`pulse plugin run`, a stub server that records what arrives):
+The candidate plugins are in `scanner/pipeline/pulse_data/plugins/` and
+described in [Pulse plugins](../pulse-plugins.md). Original v1.3.0 measurements
+showed that text-only UTF-8 requests could not send SMB/RDP binary negotiation,
+UDP was unavailable and per-read timeouts were not total call deadlines.
+[GenDec#39](https://github.com/onixus/GenDec/pull/39) supplies byte-preserving
+TCP/UDP APIs and one deadline per exchange. It is not yet a released/pinned
+engine dependency, so source and loopback validation do not establish shipped
+sensor acceptance.
 
-| NSE `default,safe` function | Reachable from the sandbox? | State |
+| Function | Candidate status | Remaining boundary |
 |---|---|---|
-| `ssh2-enum-algos` (weak algorithms) | yes: the reply is ASCII name-lists after sanitising | `shapo_ssh_algorithms` |
-| `ssh-hostkey` | no: needs a key exchange | **blocked in GenDec** |
-| `ftp-anon` | the login, yes; the listing, no (data connection) | `shapo_ftp_anonymous`, partial |
-| cleartext services (not an NSE script) | yes | `shapo_cleartext_services` |
-| `smb2-security-mode`, `smb-security-mode`, `smb-protocols` | **no**: the SMB negotiate begins with `0xFE`/`0xFF` and a Rhai string is sent as UTF-8, so `"\xfe"` reaches the wire as `C3 BE` | `shapo_smb_exposure` says only that the service answers (LOW); **blocked in GenDec** |
-| `rdp-enum-encryption`, `rdp-ntlm-info` | **no**: the X.224 request carries `0xE0`, and CredSSP/NTLM follows | `shapo_remote_admin_exposure`, exposure only (LOW); **blocked in GenDec** |
-| `snmp-info` and any UDP probe | **no**: TCP only | not written; **blocked in GenDec** |
+| `ssh2-enum-algos` weaknesses | `shapo_ssh_algorithms` | algorithm advertisement only |
+| `ssh-hostkey` | unimplemented | requires SSH key exchange and fingerprint extraction |
+| `ftp-anon` | anonymous login checked | no PASV directory listing |
+| cleartext services | capability checks implemented | no STARTTLS handshake continuation |
+| SMB2 signing | `shapo_smb_signing` parses selected SecurityMode | no session or relay exploitability test |
+| SMB1 support | `shapo_smb1` confirms NT LM 0.12 selection | not all dialects; port 139 remains exposure-only |
+| RDP standard security | `shapo_rdp_negotiation` checks acceptance without mandatory NLA | no full encryption enumeration or NTLM host info |
+| SNMP | UDP engine API prepared | community/identity plugin not implemented |
+| VNC | exposure observation | authentication negotiation not implemented |
 
-Filed as [onixus/GenDec#38](https://github.com/onixus/GenDec/issues/38). What GenDec has to add is binary-safe payloads (a hex or blob argument to
-`probe_send`, and a reply that keeps its bytes) , a UDP call with the same
-per-host, per-port, budget and time limits, and one deadline per call (the sandbox's
-timeout applies to every read, so a trickling server stretches a call without bound). Until then the gap is stated, per NSE
-script and with its reason, in the corpus report
-(`scripts/compare-nmap-pulse-corpus.py`), and the two exposure plugins say in the
-finding that signing, SMBv1, NLA and NTLM information were not checked.
+The LOW exposure plugins remain independent observations. New negotiation
+plugins do not turn their reachability evidence into vulnerability proof.
 
 Decisions taken while implementing it:
 
@@ -239,7 +241,7 @@ Decisions taken while implementing it:
   `vulnerabilities.detectors` is JSON.
 - **A probe that fails is an error, not an empty result**, so that "the plugin
   could not look" is not read as "the plugin looked and found nothing".
-- **Plugins are off under a `per_host_rate` policy** and in a shadow run, because
+- **Plugins are off under a `per_host_rate` policy** because
   their connections bypass `--rate`; they are serial, so a concurrency ceiling needs
   nothing.
 - **Pulse loads three directories**: `--script-dir`, `./scripts` and
@@ -278,10 +280,10 @@ Decided:
   and F, so the C caps (RC4, 64-bit blocks, MD5) and the key-size steps are
   covered by unit tests against the guide, not by a recorded reference.
   Finding kinds and the C–F threshold are the same as on the `nmap-nse` path.
-- **The enumeration format is our proposal, not a Pulse output yet**
+- **The enumeration format began as our proposal**
   (`tls[].enumeration`, read by `scanner/pipeline/tls_enumeration.py`; shape in
   [pulse-backend.md](../pulse-backend.md#cipher-suites-and-a-f-grades-on-the-pulse-path)).
-  Expected from onixus/GenDec#34. A contract test builds that shape from the
+  The GenDec#39 engine candidate now emits it; it is not yet released/pinned. A contract test builds that shape from the
   recorded Nmap output and checks that the Pulse path yields the same findings
   as the Nmap path on the same endpoints. An enumeration not marked complete
   makes its findings `requires_confirmation`; a suite missing from it is not
@@ -302,11 +304,12 @@ Decided:
   (`No reply from server (TIMEOUT)`); no TLS-level `vuln` script reported a
   vulnerability.
 
-What GenDec#34 still has to say, beyond its current text: run the TLS probe on
-every port where a handshake succeeds (and STARTTLS for SMTP, IMAP, POP3, FTP,
-LDAP, PostgreSQL, MySQL), not on 443/8443 only; a `complete` flag when the
-connection budget cut the enumeration short; SSLv2 with its own CLIENT-HELLO;
-the JSON shape above.
+The candidate enumerates direct TLS suites and protocol support with explicit
+completion/error metadata and bounded connections. Deployment still depends on
+a signed engine release and verified pin. STARTTLS (SMTP, IMAP, POP3, FTP, LDAP,
+PostgreSQL, MySQL), DH/ECDH key sizes (`kex_bits`) and server preference remain
+unimplemented; missing metadata is not evidence of a strong key exchange.
+The measured v1.3.0 results above remain the historical comparison baseline.
 
 ## Work items
 
@@ -319,7 +322,7 @@ the reference has to be recorded while Nmap still runs.
 3. [#543](https://github.com/onixus/Shapoclyack/issues/543) — Pin Pulse's inputs: `--services-db`, `--os-mode sinfp`, private `HOME`;
    service name from the probe (GenDec).
 4. [#544](https://github.com/onixus/Shapoclyack/issues/544) — Audit plugins in Shapoclyack, `--script-dir`, finding contract and parser.
-   **Implemented, with a blocker in GenDec for part of it** — see [Plugins (#544)](#plugins-544) below.
+   **Content implemented; binary functionality is a prepared, unreleased engine candidate** — see [Plugins (#544)](#plugins-544) below.
 5. [#545](https://github.com/onixus/Shapoclyack/issues/545) — TLS suite and version enumeration (GenDec) and grading (`tls_posture`).
 6. [#546](https://github.com/onixus/Shapoclyack/issues/546) — Probe DB in Shapoclyack: clean-room rules, distribution revision, CPE
    mapping.
@@ -340,18 +343,23 @@ XML of past runs, `nmap-nse` findings and `prober: nmap` rows stay readable
 (`scanner/pipeline/legacy_nmap.py`); the golden corpus of #541 stays as the
 reference it was recorded to be.
 
-**Consequences that were accepted, not solved.** The decision above set Pulse
-and Shapoclyack up to replace each function; three of them are not replaced yet,
-and #548 went ahead without waiting for them (the owner's decision, 2026-10-11):
+**Current prepared candidate; epic remains open.** #548 removed the runtime
+Nmap paths before every replacement was complete (owner decision, 2026-10-11).
+The current work adds adapter flags, direct TLS enumeration/grading and binary
+SMB/RDP negotiation plugins. GenDec#31/#32 are merged upstream; GenDec#39 is
+the combined engine candidate. No signed release/pin or deployed sensor
+acceptance is claimed here.
 
-1. **TLS suite enumeration and A-F grades (#545).** The grading and the contract
-   are in place; Pulse does not enumerate suites until GenDec#34. A real scan on
-   the Pulse path has no grade.
-2. **`smb-vuln-ms17-010`, `smb-vuln-ms10-061`, `smb-protocols`,
-   `rdp-enum-encryption`** have no destination: binary-safe payloads are
-   GenDec#38 ([NSE `vuln` coverage](../nse-vuln-coverage.md)).
-3. **Pinned inputs (#543)** are only partly pinned: service names still come from
-   the port table rather than the matched probe (GenDec#31, GenDec#32).
+1. **TLS (#545):** direct TLS enumeration/grading is prepared and tested, but
+   STARTTLS, key-exchange sizes, server preference and release acceptance remain.
+2. **Plugin coverage:** SMB2 signing, SMB1 support and RDP standard-security
+   acceptance are prepared. `smb-vuln-ms17-010`, `smb-vuln-ms10-061`, full
+   `smb-protocols`, `rdp-enum-encryption`, `rdp-ntlm-info`, SSH host keys,
+   SNMP and VNC authentication remain gaps; negotiation is not exploit proof.
+3. **Inputs (#543):** the adapter prepares `--no-nmap-data`, own services/probe
+   tables, `sinfp` and private HOME. Upstream matched-probe naming and ambient
+   database restrictions need a signed release containing #31/#32 and a verified
+   pin before the installed-engine requirement is fulfilled.
 
 A verification re-scan can no longer re-run an NSE script, so a finding that only
 an NSE script detected stays inconclusive after it and is closed by hand.

@@ -5,7 +5,8 @@ Rhai plugins that Shapoclyack hands to Pulse with `--script-dir`
 [#544](https://github.com/onixus/Shapoclyack/issues/544)). They are what is left
 of Nmap's NSE `default,safe` identification that Pulse's scripting sandbox can
 do: weak SSH algorithms, anonymous FTP, services that cannot start TLS, the
-reachability of SMB, RDP and VNC, and HTTP TRACE over plain HTTP. They live in
+reachability of SMB, RDP and VNC, binary SMB signing/SMB1 and RDP security
+negotiation, and HTTP TRACE over plain HTTP. They live in
 `scanner/pipeline/pulse_data/plugins/`, beside the code and not under
 `scanner/data/`, for the same reason `services.tsv` does: an enrichment volume
 mounted over `scanner/data` would hide them.
@@ -14,7 +15,15 @@ On by default wherever Pulse runs (`service_probe.backend: pulse`, the only
 backend). Off with `service_probe.pulse.plugins: false` (also per
 speed profile under `profiles.<mode>.pulse.plugins`).
 
-## What ships
+## Candidate content and engine dependency
+
+The source tree contains the plugins below. The three binary negotiation
+plugins require [GenDec#39](https://github.com/onixus/GenDec/pull/39). That engine
+change is a prepared candidate, not a released or pinned Pulse binary here.
+The existing v1.3.0 release cannot execute these plugins; a signed release and
+verified pin update are required before deployment acceptance.
+
+## Plugins
 
 | Plugin | Finds | Severity | Replaces |
 |---|---|---|---|
@@ -25,41 +34,43 @@ speed profile under `profiles.<mode>.pulse.plugins`).
 | `shapo_cleartext_services` | Telnet (HIGH); FTP, POP3, IMAP without a way to start TLS (MEDIUM), judged only when the capability command (`FEAT` 211, `CAPA` +OK, `CAPABILITY` OK, `EHLO` 250) was accepted, otherwise an error, not a finding; SMTP with `AUTH` but no STARTTLS (MEDIUM), without both (LOW) | see left | nothing in `default,safe` |
 | `shapo_smb_exposure` | SMB / NetBIOS session service answers (by detected service; the port number counts only when the scan could not name the service) | LOW | GenDec `smb_netbios_exposure_audit` (derived, MIT) |
 | `shapo_remote_admin_exposure` | RDP or VNC (confirmed from the `RFB` greeting) answers (same gate rule) | LOW | GenDec `rdp_vnc_exposure_audit` (derived, MIT) |
+| `shapo_smb_signing` | Selected SMB2 NEGOTIATE response does not require signing; offers SMB 2.0.2 and 2.1 | MEDIUM | signing-policy portion of `smb2-security-mode` |
+| `shapo_smb1` | SMB1-only NEGOTIATE explicitly selects NT LM 0.12 | MEDIUM | SMB1-support portion of `smb-protocols` |
+| `shapo_rdp_negotiation` | X.224 negotiation accepts standard RDP security without mandatory NLA | MEDIUM | standard-security acceptance; not full `rdp-enum-encryption` |
 
-The two exposure plugins claim exposure only. SMB signing, SMBv1, RDP NLA and
-NTLM host information are **not** checked, and the finding text says so.
+The two exposure plugins still claim reachability only. The separate binary
+plugins observe signing policy, SMB1 acceptance and standard RDP negotiation.
+They do not authenticate, demonstrate exploits, enumerate every dialect or
+retrieve NTLM host information.
 
 Pulse's own rules already raise `exposure` findings for SMB and RDP (the
 EternalBlue and BlueKeep hypotheses); the plugin findings are separate rows
 under their own detector and are not merged with those.
 
-## What the plugins cannot do
+## Sandbox capabilities and remaining gaps
 
-The sandbox of Pulse v1.3.0 (`src/scanner/sandbox.rs`) allows TCP to the one host
-and port being audited, 8 connections per script run, timeouts of 50 to 5000 ms,
-4 KiB out and 16 KiB in, and it passes the reply through `from_utf8_lossy` with
-control characters turned into `.`. A plugin passes the payload as a Rhai string,
-which is UTF-8. Consequences, checked against the real binary:
+The GenDec#39 candidate adds `probe_send_hex` and `probe_udp_hex`: strict hex
+requests and byte-preserving hex replies, restricted to the bound numeric IP
+and port, with a shared eight-exchange budget. TCP connect/write/read share one
+50–5000 ms deadline; UDP uses a connected peer and the same deadline, send
+limit (4 KiB) and receive limit (16 KiB). Shipped negotiation plugins request
+1500 ms. UDP availability does not implement SNMP or mean that TCP and UDP
+service discovery are interchangeable.
 
-- **No byte above 0x7F can be sent.** `"\xfe"` goes out as `C3 BE`. SMB2 and SMB1
-  negotiate (`FE 53 4D 42` / `FF 53 4D 42`), the RDP X.224 connection request
-  (`0xE0`) and everything after it (NLA, CredSSP, NTLM host information) are
-  unreachable: Nmap's `smb2-security-mode`, `smb-security-mode`, `smb-protocols`,
-  `rdp-enum-encryption` and `rdp-ntlm-info` have no equivalent here (`smb2-security-mode` is
-  answered by a Nuclei template, see [NSE vuln coverage](nse-vuln-coverage.md)).
-- **No UDP.** SNMP (`snmp-info`) and any other UDP probe cannot be written.
-- **`ssh-hostkey` needs a key exchange**, which is a binary protocol. Not covered.
-- **A second connection to another port is refused**, so `ftp-anon` cannot list the
-  directory (PASV opens a data connection) and a STARTTLS upgrade cannot be
-  followed.
-- The reply is sanitised, so binary replies are read through what survives. The
-  SSH plugin is built around that; see below.
+Pulse v1.3.0 historically had text-only UTF-8 payloads, sanitised replies,
+no UDP API and a timeout reset on each read. Those measured restrictions
+explain the original GenDec#38 gap; GenDec#39 addresses the engine mechanisms,
+not all protocol coverage. The existing SSH algorithm plugin continues to
+parse sanitised ASCII name lists; it does not use the new binary API.
 
-The gap is filed for GenDec as
-[onixus/GenDec#38](https://github.com/onixus/GenDec/issues/38): binary-safe payloads
-(hex or a blob type), a UDP call and one deadline per call. Until then it is a documented gap, not a silent one: the
-reference corpus lists each NSE script with the reason no plugin answers it
-([Reference corpus](pulse-backend.md#reference-corpus-nmap-versus-pulse-541)).
+Remaining functions include SSH host-key exchange/fingerprints, SNMP
+community/identity enumeration, RDP NTLM information and encryption strength,
+VNC authentication negotiation, and SMB NetBIOS-session negotiation on 139.
+A second port remains outside the capability, so FTP PASV directory listing
+is not implemented. STARTTLS requires stateful upgrade support; a separate
+connection cannot complete the capability command's TLS transition.
+The [reference corpus](pulse-backend.md#reference-corpus-nmap-versus-pulse-541)
+remains historical evidence, not a live acceptance result for this candidate.
 
 ### How `shapo_ssh_algorithms` reads a binary reply
 
@@ -95,10 +106,10 @@ first in every list, which is the case a naive parse loses.
   probed again. On a host without a Pulse binary the check cannot be asked and the
   receipt's `offered_digest` (the files on disk) is compared instead.
 - **Time.** Pulse runs the plugins after the scan, one open port and one plugin at a
-  time, never concurrently. No per-call bound can be promised: the sandbox applies the
-  timeout to the connect and to *each read*, and a call with a payload reads until EOF,
-  so a server that trickles bytes stretches one call far past the plugin's timeout
-  (14.5 s measured for a 1500 ms call; GenDec#38 asks for one deadline per call).
+  time, never concurrently. The GenDec#39 candidate applies one deadline per
+  network call, including text calls. The old v1.3.0 per-read timeout allowed
+  trickling responses to last 14.5 s for a nominal 1500 ms call; this is
+  historical evidence, not the candidate deadline contract.
   A chunk therefore gets `endpoints * 10` seconds added to the process timeout,
   capped at 30 minutes (`PLUGIN_SECONDS_PER_ENDPOINT`, `PLUGIN_BUDGET_CAP_SECONDS`):
   an allowance for ordinary servers, not a worst case. The services behind the open
@@ -211,7 +222,7 @@ a string.
 
 ### Binary negotiation probes (GenDec binary sandbox API)
 
-The shipped `shapo_smb_signing`, `shapo_smb1` and
+The candidate `shapo_smb_signing`, `shapo_smb1` and
 `shapo_rdp_negotiation` require the engine's `probe_send_hex` API. Their
 requests preserve bytes above 0x7f and contain only protocol negotiation,
 without credentials, authentication attempts or exploit payloads. They use the
