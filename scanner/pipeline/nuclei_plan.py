@@ -402,6 +402,13 @@ def read_services(output_dir: Path) -> list[dict[str, Any]]:
     rows, _ = bounded_document(output_dir / "services.json")
     if not isinstance(rows, list):
         return []
+    # Input artifacts cannot smuggle a receipt copied from another endpoint.
+    # Every protocol receipt is reconstructed from this run's raw bytes.
+    rows = [
+        {k: v for k, v in row.items() if k != "protocol_observation"}
+        for row in rows
+        if isinstance(row, dict)
+    ]
     raw, sha = bounded_document(output_dir / "pulse" / "raw.json")
     if not isinstance(raw, dict) or not sha or not isinstance(raw.get("open"), list):
         return rows

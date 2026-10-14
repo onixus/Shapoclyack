@@ -23,8 +23,15 @@ interfaces = {
     for line in Path("/proc/net/dev").read_text().splitlines()[2:]
     if ":" in line
 }
-if interfaces != {"lo"}:
-    raise RuntimeError(f"fixture requires network isolation; interfaces={interfaces}")
+active_interfaces = {
+    name
+    for name in interfaces
+    if int((Path("/sys/class/net") / name / "flags").read_text().strip(), 16) & 1
+}
+if active_interfaces != {"lo"}:
+    raise RuntimeError(
+        f"fixture requires network isolation; active_interfaces={active_interfaces}"
+    )
 ROOT = Path("/evidence")
 ROOT.mkdir(exist_ok=True)
 TEMPLATES = ROOT / "templates"
@@ -132,6 +139,8 @@ report = {
     "fixture": "synthetic HTTP response; no real CVE acceptance",
     "network": "container --network none, loopback only",
     "interfaces_observed": sorted(interfaces),
+    "active_interfaces_observed": sorted(active_interfaces),
+    "instrumentation_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
     "engine_binary_sha256": binary_digest.hexdigest(),
     "architecture": platform.machine(),
     "source_snapshot_sha256": source_digest.hexdigest(),
@@ -192,4 +201,45 @@ print(
     )
 )
 assert report["expected_matches_preserved"]
+# An adversarial template is a controlled, unauthorized-to-this-scan second
+# loopback listener. It must be excluded before Nuclei loads any template.
+other = Server(("127.0.0.1", 0), Handler)
+other.connections = other.requests = 0
+threading.Thread(target=other.serve_forever, daemon=True).start()
+(TEMPLATES / "scope-override.yaml").write_text(
+    (TEMPLATES / "fixture.yaml")
+    .read_text()
+    .replace("id: local-fixture-cve", "id: local-scope-override")
+    + f"constants:\n  BaseURL: http://127.0.0.1:{other.server_port}\n"
+)
+scope_dir = ROOT / "scope-override"
+scope_dir.mkdir(exist_ok=True)
+(scope_dir / "services.json").write_text(
+    json.dumps(
+        [{"ip": "127.0.0.1", "port": port, "service": "http", "confidence": 100}]
+    )
+)
+result = run_nuclei_scan(
+    [f"127.0.0.1:{port}/tcp"],
+    NucleiConfig(
+        templates_dir=str(TEMPLATES),
+        planner_mode="directed",
+        network_templates=False,
+        retries=0,
+        timeout_seconds=1,
+        overall_timeout_seconds=60,
+    ),
+    scope_dir,
+)
+excluded = result["coverage"]["plan"]["excluded_templates"]
+report["scope_override_fixture"] = {
+    "connections": other.connections,
+    "requests": other.requests,
+    "excluded_templates": excluded,
+    "expected_problem_matches": len(result["findings"]),
+}
+assert other.connections == 0 and other.requests == 0
+assert {"id": "local-scope-override", "reason": "scope_unproven"} in excluded
+(ROOT / "benchmark.json").write_text(json.dumps(report, indent=2) + "\n")
+other.shutdown()
 server.shutdown()

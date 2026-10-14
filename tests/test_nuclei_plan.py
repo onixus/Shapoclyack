@@ -394,3 +394,41 @@ def test_combined_raw_preserves_adapter_authority_while_original_is_exact(
         part.read_text() == original
         for part in tmp_path.glob("nuclei_plan_*_raw.jsonl")
     )
+
+
+def test_stale_uploaded_protocol_receipt_never_overrides_unknown_endpoint(tmp_path):
+    from scanner.pipeline.nuclei_plan import read_services
+
+    rows = [
+        {
+            "ip": "127.99.0.9",
+            "port": 12345,
+            "service": "unknown",
+            "source": "pulse",
+            "protocol": "tcp",
+            "protocol_observation": {
+                "scheme": "https",
+                "path": "pulse/raw.json",
+                "sha256": "a" * 64,
+                "locator": "/open/0",
+            },
+        }
+    ]
+    (tmp_path / "services.json").write_text(json.dumps(rows))
+    assert "protocol_observation" not in read_services(tmp_path)[0]
+    (tmp_path / "pulse").mkdir()
+    actual = Path(
+        "tests/fixtures/nuclei_plan/pulse-production-protocol.json"
+    ).read_text()
+    (tmp_path / "pulse" / "raw.json").write_text(actual)
+    assert "protocol_observation" not in read_services(tmp_path)[0]
+    template(tmp_path / "templates")
+    digest, templates, _ = catalog([tmp_path / "templates"], 10)
+    plan = build_plan(
+        ["127.99.0.9:12345/tcp"],
+        read_services(tmp_path),
+        NucleiConfig(),
+        digest,
+        templates,
+    )
+    assert len(plan["targets"]) == 2

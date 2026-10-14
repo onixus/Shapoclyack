@@ -69,7 +69,7 @@ JSONL matches survive timeout, including in legacy mode.
 
 `tests/fixtures/nuclei_plan/benchmark.json` records an actual isolated loopback
 execution with Nuclei v3.11.1 from local image `shapo-go-tools-check:latest`
-(image ID 9c84d15ed039), using Python runtime `shapo-issue448-benchmark:local`
+(image ID 9c84d15ed039), using hash-pinned Python scanner runtime `shapo-issue450-benchmark:local`
 with `--network none`. The archived JSONL is an actual engine record. The additional
 `pulse-production-protocol.json` fixture is extracted from issue #448's immutable
 `raw-outputs.tar.gz`, member `heterogeneous-0-after/pulse/raw.json`; a regression
@@ -82,9 +82,9 @@ and CVE-2099-9999 are explicitly synthetic, not proof of a real vulnerability.
 | HTTP requests | 1 | 1 |
 | Processes / selected templates | 1 / 1 | 1 / 1 |
 | Expected synthetic problem matches | 1 | 1 |
-| Wall time (seconds) | 0.0921 | 0.0905 |
-| Child CPU (seconds) | 0.0951 | 0.1093 |
-| Peak child RSS (KiB) | 103580 | 99884 |
+| Wall time (seconds) | 0.0710 | 0.0735 |
+| Child CPU (seconds) | 0.0884 | 0.1052 |
+| Peak child RSS (KiB) | 105364 | 104364 |
 
 This single small fixture demonstrates scheme selection removing one failed TLS
 connection while preserving the expected match; it does **not** establish a
@@ -105,3 +105,12 @@ The per-process raw JSONL retains exact engine bytes. The combined
 (`octo.nuclei_input.v1`) containing dial IP/port and actual Host authority/SNI.
 It is invocation metadata rather than a field emitted by Nuclei, and prevents
 multiple virtual hosts on the same IP/path from losing their distinct subjects.
+
+The final receipt records the executed binary SHA-256, architecture, scanner
+source content digest, instrumentation digest, and observed/active interfaces.
+The active interface preflight confirmed only loopback. The controlled
+`scope_override_fixture` added a template overriding BaseURL to a second
+loopback listener; it was explicitly excluded and that listener accepted zero
+connections/requests. Runtime comparison uses the same safe template as before.
+`benchmark-historical.json` retains the earlier exploratory measurement without
+exact source/binary provenance; use `benchmark.json` for the final source receipt.
