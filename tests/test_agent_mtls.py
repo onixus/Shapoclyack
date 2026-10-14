@@ -1532,7 +1532,7 @@ def test_an_endpoint_agent_can_follow_its_contract_under_required(tmp_path, monk
     heartbeat = _peer(client, INGRESS_PEER).post(
         "/api/v1/agent/heartbeat",
         headers={**bearer(token), **_forwarded(renewed.json()["certificate"])},
-        json={"status": "idle"},
+        json={"agent_id": registered.json()["agent_id"], "status": "idle"},
     )
     assert heartbeat.status_code == 200, heartbeat.text
 
