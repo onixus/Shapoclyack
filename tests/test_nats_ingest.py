@@ -91,6 +91,50 @@ def test_publish_raw_results_without_nats(monkeypatch):
     assert meta["archive_sha256"] == nats_bus.archive_sha256(archive)
 
 
+def test_nats_bus_close_cancels_pending_connect_before_client_exists(monkeypatch):
+    import asyncio
+    import nats
+
+    entered = threading.Event()
+    cancelled = threading.Event()
+    transport_cancelled = threading.Event()
+
+    async def open_transport():
+        try:
+            await asyncio.Future()
+        finally:
+            transport_cancelled.set()
+
+    async def connect(*args, **kwargs):
+        asyncio.create_task(open_transport())
+        entered.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(nats, "connect", connect)
+    bus = nats_bus.NatsBus(nats_bus.NatsConfig(url="nats://localhost:4222"))
+    errors = []
+    bus._loop.set_exception_handler(lambda loop, context: errors.append(context))
+    bus._thread.start()
+    future = asyncio.run_coroutine_threadsafe(bus._connect(), bus._loop)
+    try:
+        assert entered.wait(timeout=2)
+        assert bus._nc is None
+    finally:
+        bus.close()
+
+    assert cancelled.is_set()
+    assert transport_cancelled.is_set()
+    assert future.cancelled()
+    assert not bus._thread.is_alive()
+    assert bus._loop.is_closed()
+    assert not asyncio.all_tasks(bus._loop)
+    assert errors == []
+    bus.close()
+
+
 def test_nats_bus_close_waits_for_shutdown_and_closes_loop():
     class FakeNatsClient:
         is_closed = False

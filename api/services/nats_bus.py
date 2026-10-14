@@ -486,7 +486,7 @@ class NatsBus:
     def close(self) -> None:
         loop = self._loop
 
-        if self._nc is not None and loop.is_running():
+        if loop.is_running():
             async def _shutdown() -> None:
                 if self._nc is not None:
                     try:
@@ -514,8 +514,6 @@ class NatsBus:
             finally:
                 if loop.is_running():
                     loop.call_soon_threadsafe(loop.stop)
-        elif loop.is_running():
-            loop.call_soon_threadsafe(loop.stop)
 
         if self._thread.is_alive() and threading.current_thread() is not self._thread:
             self._thread.join(timeout=5)
