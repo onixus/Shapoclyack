@@ -205,11 +205,12 @@ def test_a_note_that_cannot_be_cleared_does_not_cost_the_run_its_projections(
         raise RuntimeError("connection reset")
 
     monkeypatch.setattr(run_completion, "clear_publication_notes", _database_hiccup)
-    monkeypatch.setattr(
-        run_completion,
-        "on_run_published",
-        lambda _settings, _job_id, **kwargs: projected.append(kwargs["run_id"]),
-    )
+    real_project = run_completion.on_run_published
+    def project(_settings, _job_id, **kwargs):
+        projected.append(kwargs["run_id"])
+        # Preserve the receipt obligation while observing cosmetic-note tests.
+        return real_project(_settings, _job_id, **kwargs)
+    monkeypatch.setattr(run_completion, "on_run_published", project)
 
     assert run_publisher.reconcile_once(settings)["published"] == 1
     assert projected == [run_id]
@@ -873,11 +874,12 @@ def test_a_note_the_database_refuses_to_clear_neither_undoes_the_close_out_nor_h
         session.execute(text("SELECT 1/0"))
 
     monkeypatch.setattr(run_completion, "clear_publication_notes", _database_refuses)
-    monkeypatch.setattr(
-        run_completion,
-        "on_run_published",
-        lambda _settings, _job_id, **kwargs: projected.append(kwargs["run_id"]),
-    )
+    real_project = run_completion.on_run_published
+    def project(_settings, _job_id, **kwargs):
+        projected.append(kwargs["run_id"])
+        # Preserve the receipt obligation while observing cosmetic-note tests.
+        return real_project(_settings, _job_id, **kwargs)
+    monkeypatch.setattr(run_completion, "on_run_published", project)
     stale = metrics_service.REGISTRY.get_sample_value(
         "octo_run_publication_stale_notes_total"
     ) or 0.0

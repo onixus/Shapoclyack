@@ -579,9 +579,18 @@ def test_the_ingest_step_never_touches_the_bus_that_manages_streams(monkeypatch,
     monkeypatch.setattr(results_ingest, "publish_raw_results", forbidden)
     monkeypatch.setattr(nats, "connect", _FakeNats(max_payload=1024 * 1024).connect)
     inserted: dict[str, int] = {}
+    queries: list[str] = []
 
     class Client:
+        def query(self, sql):
+            # A provisioned schema is checked with SELECT, without DDL or
+            # modifying the bus that owns the stand's streams.
+            assert sql == f"SELECT risk_assessment FROM {ch.VULN_TABLE} LIMIT 0"
+            queries.append(sql)
+            return type("Result", (), {"result_rows": []})()
+
         def insert(self, table, rows, column_names):
+            assert all(len(row) == len(column_names) for row in rows)
             inserted[table] = len(rows)
 
     monkeypatch.setattr(ch, "get_client", lambda url: Client())
@@ -600,6 +609,7 @@ def test_the_ingest_step_never_touches_the_bus_that_manages_streams(monkeypatch,
     assert result["nats_accepted"] is True and result["nats_max_payload"] == 1024 * 1024
     assert result["envelope_bytes"] > 0
     assert inserted[ch.VULN_TABLE] > 0
+    assert queries == [f"SELECT risk_assessment FROM {ch.VULN_TABLE} LIMIT 0"]
 
 
 def test_zero_query_memory_is_below_resolution_not_a_measurement():

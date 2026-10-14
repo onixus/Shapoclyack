@@ -1557,6 +1557,7 @@ class Vulnerability(Base):
     exploit_maturity: Mapped[str | None] = mapped_column(default=None)
     # Latest observation's network exposure (#171). external | internal | unknown.
     # ``unknown`` is the default so a missing observation is not "not exposed".
+    risk_assessment: Mapped[dict | None] = mapped_column(_JSON_DOC, default=None)
     network_exposure: Mapped[str | None] = mapped_column(default=None)
     network_exposure_source: Mapped[str | None] = mapped_column(default=None)
     # Lifecycle. Legal moves live in api/services/vuln_states.py; the column
@@ -2151,6 +2152,9 @@ class Job(Base):
     execution: Mapped[str] = mapped_column(default="local")  # local | agent
     mode: Mapped[str] = mapped_column(default="balanced")
     run_id: Mapped[str | None] = mapped_column(default=None, index=True)
+    # Durable server-owned obligation retained after the publication outbox closes.
+    risk_assessment_contract: Mapped[str | None] = mapped_column(default=None)
+    risk_assessment_execution_id: Mapped[str | None] = mapped_column(default=None)
     command: Mapped[list] = mapped_column(JSON, default=list)
     scan_options: Mapped[dict] = mapped_column(JSON, default=dict)
     target_counts: Mapped[dict | None] = mapped_column(JSON, default=None)
@@ -2284,6 +2288,8 @@ class RunPublication(Base):
     # one reports hosts as gone), so it travels with the publication rather
     # than being re-read from a job row that may since have been retried.
     job_status: Mapped[str] = mapped_column(default="succeeded")
+    # NULL for pre-453 publications; only the server constructors set this.
+    risk_assessment_contract: Mapped[str | None] = mapped_column(default=None)
     exit_code: Mapped[int | None] = mapped_column(default=None)
     # The scanner's error string, for the bus payload only. Not the job's
     # ``error``: that one also carries who asked for a cancellation.
@@ -3369,3 +3375,35 @@ class RetroMatchState(Base):
     last_stats: Mapped[dict] = mapped_column(JSON, default=dict)
     refresh_requested_at: Mapped[datetime | None] = mapped_column(default=None)
     refresh_requested_by: Mapped[str | None] = mapped_column(default=None)
+
+
+class RunRiskAssessment(Base):
+    """Immutable point-in-time scoring inputs/results, appended at scan fold (#453)."""
+
+    __tablename__ = "run_risk_assessments"
+    assessment_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id"), index=True)
+    run_id: Mapped[str]
+    execution_id: Mapped[str]
+    job_id: Mapped[str | None] = mapped_column(default=None)
+    observation_digest: Mapped[str]
+    captured_at: Mapped[datetime]
+    publication_id: Mapped[str | None] = mapped_column(default=None)
+    scores: Mapped[list] = mapped_column(_JSON_DOC, default=list)
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "run_id",
+            "execution_id",
+            "observation_digest",
+            name="uq_run_risk_assessment_observation",
+        ),
+        Index(
+            "ix_run_risk_assessment_lookup",
+            "tenant_id",
+            "run_id",
+            "execution_id",
+            "observation_digest",
+            "captured_at",
+        ),
+    )

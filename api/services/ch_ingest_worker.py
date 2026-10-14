@@ -26,6 +26,7 @@ from typing import Any
 from api.services import ch_transform
 from api.services import clickhouse_client as ch
 from api.services import metrics as metrics_service
+from api.services.risk_context import RiskAssessmentPending
 from api.services.nats_bus import STREAM_INGEST
 from api.settings import Settings
 
@@ -38,6 +39,12 @@ LOG = logging.getLogger("shapoclyack.ch-ingest")
 CONSUMER_CH_INGEST = "octo-ch-ingest-results"
 SUBJECT_FILTER = "ingest.results.>"
 SUBJECT_PREFIX = "ingest.results."
+MAX_DELIVER = 5
+#: Redelivery delay while the tracker has not captured the run's risk receipt
+#: yet: doubled per delivery and capped, so the wait spans the publication's
+#: retries instead of burning ``MAX_DELIVER`` in milliseconds.
+PENDING_RECEIPT_DELAY_SECONDS = 15.0
+PENDING_RECEIPT_DELAY_CAP_SECONDS = 120.0
 
 
 def is_ingest_results_subject(subject: str) -> bool:
@@ -127,7 +134,7 @@ class ClickHouseIngestWorker:
                         ack_policy=AckPolicy.EXPLICIT,
                         filter_subject=SUBJECT_FILTER,
                         deliver_policy=DeliverPolicy.ALL,
-                        max_deliver=5,
+                        max_deliver=MAX_DELIVER,
                     ),
                 )
                 sub = await js.pull_subscribe(
@@ -196,11 +203,48 @@ class ClickHouseIngestWorker:
             if not isinstance(payload, dict):
                 await msg.term()
                 return
-            vuln_rows, port_rows, control_rows = await asyncio.to_thread(
-                ch_transform.transform_ingest_payload,
-                payload,
-                settings=self._settings,
-            )
+            try:
+                vuln_rows, port_rows, control_rows = await asyncio.to_thread(
+                    ch_transform.transform_ingest_payload,
+                    payload,
+                    settings=self._settings,
+                )
+            except RiskAssessmentPending:
+                delivered = _num_delivered(msg)
+                if delivered < MAX_DELIVER:
+                    delay = min(
+                        PENDING_RECEIPT_DELAY_CAP_SECONDS,
+                        PENDING_RECEIPT_DELAY_SECONDS * 2 ** max(0, delivered - 1),
+                    )
+                    metrics_service.CH_INGEST_MESSAGES_TOTAL.labels(
+                        result="pending"
+                    ).inc()
+                    LOG.info(
+                        "Risk receipt for job=%s run=%s not captured yet; "
+                        "redelivering in %.0fs (delivery %s of %s)",
+                        payload.get("job_id"),
+                        payload.get("run_id"),
+                        delay,
+                        delivered,
+                        MAX_DELIVER,
+                    )
+                    await msg.nak(delay=delay)
+                    return
+                # Last delivery: the receipt never came (the publication died,
+                # or the fold keeps failing). Keep the rows, honestly labelled
+                # pending-current, rather than drop them with the message.
+                LOG.warning(
+                    "Risk receipt for job=%s run=%s still missing on the last "
+                    "delivery; ingesting with pending-current scores",
+                    payload.get("job_id"),
+                    payload.get("run_id"),
+                )
+                vuln_rows, port_rows, control_rows = await asyncio.to_thread(
+                    ch_transform.transform_ingest_payload,
+                    payload,
+                    settings=self._settings,
+                    require_captured=False,
+                )
             inserted_v = await asyncio.to_thread(
                 ch.insert_rows,
                 client,
@@ -254,6 +298,14 @@ class ClickHouseIngestWorker:
                 pass
         finally:
             metrics_service.CH_INGEST_BATCH_DURATION_SECONDS.observe(time.perf_counter() - start)
+
+
+def _num_delivered(msg: Any) -> int:
+    """JetStream delivery count; 1 when the message carries no metadata."""
+    try:
+        return int(msg.metadata.num_delivered)
+    except Exception:  # noqa: BLE001 - core NATS / test doubles have none
+        return 1
 
 
 _WORKER: ClickHouseIngestWorker | None = None

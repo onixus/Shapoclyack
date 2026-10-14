@@ -57,6 +57,7 @@ from api.services import endpoint_agent_mgmt
 from api.services import ingest_gate
 from api.services import audit as audit_service
 from api.services import config_override as config_override_service
+from api.services import job_inputs
 from api.services import jobs as jobs_service
 from api.services import scan_policy
 from api.services import sensor_bundle
@@ -363,6 +364,11 @@ def claim_job(
             tenant_id=principal.tenant_id,
             agent=agent,
         )
+    except job_inputs.JobInputsUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"{exc}; restore the admitted job inputs before retrying",
+        ) from exc
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except (

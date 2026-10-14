@@ -45,5 +45,6 @@ wait_for() {
 # Exhaustion must stop here, before migrations or a misleading pytest run.
 wait_for postgres python -c "import socket; socket.create_connection(('pg', 5432), 1).close()"
 wait_for jetstream python -c "import urllib.request; urllib.request.urlopen('http://nats:8222/healthz', timeout=1).close()"
+wait_for clickhouse python -c "import os, clickhouse_connect; client = clickhouse_connect.get_client(dsn=os.environ['OCTO_CLICKHOUSE_URL'], connect_timeout=1, send_receive_timeout=1); assert client.query('SELECT 1').result_rows == [(1,)]; client.close()"
 alembic -c api/db/alembic.ini upgrade head
 as_agent scripts/ci-pytest.sh "$@"

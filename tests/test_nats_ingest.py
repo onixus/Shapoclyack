@@ -91,6 +91,67 @@ def test_publish_raw_results_without_nats(monkeypatch):
     assert meta["archive_sha256"] == nats_bus.archive_sha256(archive)
 
 
+def test_nats_bus_close_cancels_pending_connect_before_client_exists(monkeypatch):
+    import asyncio
+    import gc
+    import nats
+
+    entered = threading.Event()
+    cancelled = threading.Event()
+    transport_cancelled = threading.Event()
+    transport_entered = threading.Event()
+    transport_tasks = []
+
+    async def open_transport():
+        try:
+            transport_entered.set()
+            await asyncio.Future()
+        finally:
+            transport_cancelled.set()
+
+    async def connect(*args, **kwargs):
+        # asyncio only holds weak references: the fake client owns its
+        # transport task, just as the real client owns connection workers.
+        transport_tasks.append(asyncio.create_task(open_transport()))
+        entered.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(nats, "connect", connect)
+    bus = nats_bus.NatsBus(nats_bus.NatsConfig(url="nats://localhost:4222"))
+    errors = []
+    bus._loop.set_exception_handler(lambda loop, context: errors.append(context))
+    bus._thread.start()
+    future = asyncio.run_coroutine_threadsafe(bus._connect(), bus._loop)
+    try:
+        assert entered.wait(timeout=2)
+        assert transport_entered.wait(timeout=2)
+        assert bus._nc is None
+        collected = threading.Event()
+
+        def collect_pending():
+            gc.collect()
+            collected.set()
+
+        bus._loop.call_soon_threadsafe(collect_pending)
+        assert collected.wait(timeout=2)
+        assert not transport_cancelled.is_set()
+    finally:
+        bus.close()
+
+    assert cancelled.is_set()
+    assert transport_cancelled.is_set()
+    assert all(task.cancelled() for task in transport_tasks)
+    assert future.cancelled()
+    assert not bus._thread.is_alive()
+    assert bus._loop.is_closed()
+    assert not asyncio.all_tasks(bus._loop)
+    assert errors == []
+    bus.close()
+
+
 def test_nats_bus_close_waits_for_shutdown_and_closes_loop():
     class FakeNatsClient:
         is_closed = False

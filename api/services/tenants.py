@@ -171,6 +171,7 @@ def reset_for_tests() -> None:
         # Children before parents (FK constraints): identifiers/tags -> assets;
         # jobs/agents/scan_schedules/provisioning_keys -> tenants;
         # endpoint_* -> assets/tenants.
+        session.query(models.RunRiskAssessment).delete()
         session.query(models.Job).delete()
         session.query(models.Agent).delete()
         session.query(models.EndpointSoftwareChange).delete()

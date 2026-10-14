@@ -35,7 +35,12 @@ pytestmark = requires_postgres
 BEFORE = "0066_tenant_lifecycle"
 REVISION = "0067_tenant_rls"
 #: Tenant tables created after REVISION; absent from a database stopped at it.
-ADDED_LATER = {"compliance_framework_definitions", "agent_client_certs", "agent_cert_enrolments"}
+ADDED_LATER = {
+    "compliance_framework_definitions",
+    "agent_client_certs",
+    "agent_cert_enrolments",
+    "run_risk_assessments",  # Created by 0086, with its own tenant RLS policy.
+}
 
 
 @pytest.fixture

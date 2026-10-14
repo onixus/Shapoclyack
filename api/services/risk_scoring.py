@@ -601,6 +601,26 @@ class RiskScoring:
         # leak into their explanations. The process-wide get_scorer() turns this
         # on so a stale EPSS/KEV file is visible to operators (#172).
         self._report_overlay_age = report_overlay_age
+        self._data_version = self._compute_data_version()
+
+    def data_version(self) -> str:
+        """Stable content identity of this loaded scorer; calculated once at load."""
+        return self._data_version
+
+    def _compute_data_version(self) -> str:
+        """Content identity of the loaded scoring intelligence, never file mtime alone."""
+        import hashlib
+        import json
+
+        inputs = {
+            "epss": self._epss,
+            "kev": sorted(self._kev),
+            "exploit": self._exploits.overlay,
+            "nuclei_cves": sorted(self._exploits.nuclei_cves),
+        }
+        return hashlib.sha256(
+            json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
 
     @classmethod
     def from_env(cls) -> RiskScoring:
@@ -629,7 +649,11 @@ class RiskScoring:
 
     @staticmethod
     def _severity(item: dict[str, Any], base_cvss: float) -> str:
-        sev = str(item.get("severity") or item.get("cvss4_severity") or "").lower().strip()
+        sev = (
+            str(item.get("severity") or item.get("cvss4_severity") or "")
+            .lower()
+            .strip()
+        )
         if sev in _SEVERITY_CRITICALITY:
             return sev
         if base_cvss >= 9.0:
@@ -694,7 +718,10 @@ class RiskScoring:
         observation is still worth triaging, just never worth paging on.
         """
         finding_class = str(item.get("finding_class") or "").strip().lower()
-        unconfirmed = bool(item.get("requires_confirmation")) or finding_class in _UNCONFIRMED_CLASSES
+        unconfirmed = (
+            bool(item.get("requires_confirmation"))
+            or finding_class in _UNCONFIRMED_CLASSES
+        )
         if not unconfirmed:
             return 1.0, False
         try:
@@ -768,6 +795,7 @@ class RiskScoring:
         declared_surface: str | None = None,
         cdn_waf_index: dict[tuple[str, int], tuple[str, ...]] | None = None,
         same_asset_foothold: bool = False,
+        now: datetime | None = None,
     ) -> dict[str, Any]:
         cve = str(item.get("cve") or item.get("script_id") or "")
         is_cve = cve.upper().startswith("CVE-")
@@ -794,7 +822,11 @@ class RiskScoring:
         factor, unconfirmed = self.confidence_factor(item)
 
         assessment = self._exploits.assess(
-            item, cve=cve if is_cve else "", epss=epss, kev_active=bool(exploit), kev_source=kev_source
+            item,
+            cve=cve if is_cve else "",
+            epss=epss,
+            kev_active=bool(exploit),
+            kev_source=kev_source,
         )
 
         vector = _parse_vector(_finding_vector(item))
@@ -815,8 +847,10 @@ class RiskScoring:
             declared_surface=declared_surface,
         )
         exposed = apply_network_exposure(raw_likelihood, exposure)
-        published = str(item.get("cve_published") or item.get("published") or "") or None
-        age_years, age_source = resolve_cve_age(cve=cve, published=published)
+        published = (
+            str(item.get("cve_published") or item.get("published") or "") or None
+        )
+        age_years, age_source = resolve_cve_age(cve=cve, published=published, now=now)
         age_bump = cve_age_raise(age_years)
         providers, control_source = resolve_compensating_control(
             host=str(item.get("host") or "") or None,
@@ -831,13 +865,16 @@ class RiskScoring:
             shielded, role=role, has_foothold=same_asset_foothold
         )
         path_bump = likelihood - shielded
-        stale_overlays = overlay_staleness() if self._report_overlay_age else []
+        stale_overlays = overlay_staleness(now=now) if self._report_overlay_age else []
         likelihood_level = nist_risk.level_for(likelihood)
         impact_level = nist_risk.level_for(contextual_impact)
         risk = nist_risk.risk_level(likelihood_level, impact_level)
 
         decision = self.cisa_decision(base_cvss=base, epss=epss, exploit_active=exploit)
-        capped = unconfirmed and _DECISION_RANK[decision] > _DECISION_RANK[_UNCONFIRMED_DECISION_CAP]
+        capped = (
+            unconfirmed
+            and _DECISION_RANK[decision] > _DECISION_RANK[_UNCONFIRMED_DECISION_CAP]
+        )
         if capped:
             decision = _UNCONFIRMED_DECISION_CAP
 
@@ -969,7 +1006,9 @@ class RiskScoring:
         if epss:
             why_likely.append(f"EPSS {epss:.3f} ({epss_source})")
         if unconfirmed:
-            finding_class = str(item.get("finding_class") or "unconfirmed").strip().lower()
+            finding_class = (
+                str(item.get("finding_class") or "unconfirmed").strip().lower()
+            )
             try:
                 confidence = int(item.get("confidence") or 0)
             except (TypeError, ValueError):
@@ -1022,7 +1061,9 @@ class RiskScoring:
             )
 
         # --- why this impact ---
-        origin = "operator-set" if asset_criticality_override is not None else "heuristic"
+        origin = (
+            "operator-set" if asset_criticality_override is not None else "heuristic"
+        )
         why_impact: list[str] = []
         if impact_source == "cvss-vector":
             why_impact.append(f"technical impact {technical_impact:g}/100 from CVSS vector")

@@ -26,6 +26,7 @@ from __future__ import annotations
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 from api.schemas import AgentClaimResponse, AgentInfo, JobInfo, StartScanRequest
@@ -197,7 +198,7 @@ def _build_command(
     notify: bool,
     export_defectdojo: bool,
     run_id: str | None,
-    target_args: list[str],
+    input_paths: Mapping[str, str],
     config_path: str,
 ) -> list[str]:
     return job_submission.build_command(
@@ -208,7 +209,7 @@ def _build_command(
         notify=notify,
         export_defectdojo=export_defectdojo,
         run_id=run_id,
-        target_args=target_args,
+        input_paths=input_paths,
         config_path=config_path,
     )
 

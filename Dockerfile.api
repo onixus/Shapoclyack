@@ -57,6 +57,10 @@ COPY scanner /app/scanner
 # and the floor would have nothing to copy from.
 COPY scanner/data /opt/shapoclyack/seed-data
 COPY api /app/api
+# Shared standard-library contracts also ship in the signed sensor tree. The
+# API needs only this leaf package, not the sensor worker or its dependencies.
+COPY agent/__init__.py /app/agent/__init__.py
+COPY agent/runtime /app/agent/runtime
 COPY scripts /app/scripts
 COPY --from=web-build /web/out /app/web/dist
 

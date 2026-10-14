@@ -270,6 +270,7 @@ def new_publication(
     ``publication_id`` is the caller's ingest lease token — one publication
     per accepted upload, and none for an upload the fence refuses.
     """
+    from api.services.risk_context import CONTEXT_VERSION
     now = _now()
     return models.RunPublication(
         publication_id=publication_id,
@@ -278,6 +279,7 @@ def new_publication(
         run_id=run_id,
         agent_id=agent_id,
         job_status=job_status,
+        risk_assessment_contract=CONTEXT_VERSION if job_status == "succeeded" else None,
         exit_code=exit_code,
         scan_error=scan_error,
         surface=surface,
@@ -340,6 +342,7 @@ def new_local_publication(
     ``ingest.results`` (a local run has never been put on that bus), and the
     scanner already wrote ``latest_run.json`` itself.
     """
+    from api.services.risk_context import CONTEXT_VERSION
     now = _now()
     return models.RunPublication(
         publication_id=local_publication_id(job_id),
@@ -348,6 +351,7 @@ def new_local_publication(
         run_id=run_id,
         agent_id=None,
         job_status=job_status,
+        risk_assessment_contract=CONTEXT_VERSION if job_status == "succeeded" else None,
         exit_code=exit_code,
         scan_error=scan_error,
         surface=surface,
@@ -432,6 +436,11 @@ def _attempt(settings: Settings, publication: _Publication) -> bool:
             # Still under the lease, and before the row is closed: see
             # :func:`_project`.
             _project(settings, publication)
+            # Keep a new receipt obligation durable if the best-effort fold failed.
+            # The broker may have delivered already; CH retries against this
+            # trusted publication marker instead of storing a current heuristic.
+            from api.services import risk_context
+            risk_context.ensure_publication_receipt(settings, publication)
     except _TreeIsGone as exc:
         _record_failure(settings, publication, str(exc) or _TREE_IS_GONE, final=True)
         return False
@@ -603,6 +612,7 @@ def _publish(settings: Settings, publication: _Publication) -> None:
             publication.tenant_id,
             job_id=publication.job_id,
             surface=publication.surface,
+            publication_id=publication.publication_id,
         )
         # Into the store from staging: the copy the other replicas read is
         # complete and marked the first time they can see it.
@@ -866,6 +876,15 @@ def _record_success(settings: Settings, publication: _Publication) -> None:
     with get_session(settings.postgres_url) as session:
         row = session.get(models.RunPublication, publication.publication_id, with_for_update=True)
         if row is not None:
+            if row.risk_assessment_contract is not None:
+                job = session.scalars(select(models.Job).where(
+                    models.Job.tenant_id == row.tenant_id,
+                    models.Job.job_id == row.job_id,
+                    models.Job.run_id == row.run_id,
+                )).first()
+                if job is not None:
+                    job.risk_assessment_contract = row.risk_assessment_contract
+                    job.risk_assessment_execution_id = "publication:" + row.publication_id
             failed_before = row.last_error is not None or row.status == STATUS_DEAD
             reasons = [row.last_error] if row.last_error else []
             session.delete(row)

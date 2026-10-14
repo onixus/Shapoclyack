@@ -13,6 +13,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from agent.runtime.invocation import INPUT_FLAGS
+
 from api.services import artifact_store
 from api.services import scan_scopes
 from api.services.targets import ParsedTargets
@@ -22,20 +24,16 @@ from scanner.pipeline import config_overlay
 
 _log = logging.getLogger(__name__)
 
+
+class JobInputsUnavailable(RuntimeError):
+    """An admitted input is missing; keep the job queued rather than widen it."""
+
+
 SCAN_SCOPE_INPUT = "scan_scope.json"
 PROMOTED_DOMAINS_INPUT = "promoted_domains.txt"
 SCAN_POLICY_INPUT = "scan_policy.json"
 CONFIG_OVERLAY_INPUT = config_overlay.INPUT_NAME
-JOB_INPUT_FILES = (
-    "ranges.txt",
-    "domains.txt",
-    "ports.txt",
-    "ports_udp.txt",
-    SCAN_SCOPE_INPUT,
-    PROMOTED_DOMAINS_INPUT,
-    SCAN_POLICY_INPUT,
-    CONFIG_OVERLAY_INPUT,
-)
+JOB_INPUT_FILES = tuple(INPUT_FLAGS)
 
 
 def _write_lines(path: Path, lines: list[str]) -> None:
@@ -59,10 +57,11 @@ def prepare_target_inputs(
     promoted: list[str] | None = None,
     scope: scan_scopes.ScanScope | None = None,
     policy: dict[str, Any] | None = None,
-) -> tuple[Path | None, dict[str, int] | None, list[str]]:
+) -> tuple[Path | None, dict[str, int] | None, dict[str, str]]:
     """Write target, scope and policy files for one already-admitted job.
 
-    Returns (inputs_dir, target_counts, extra_cli_args).
+    Returns (inputs_dir, target_counts, input_paths), the last keyed by
+    input file name as :class:`agent.runtime.invocation.ScanInvocation` takes it.
 
     Takes the parsed targets rather than the request: deciding whether a
     target is well-formed and in scope is admission's job (scan_admission,
@@ -86,7 +85,7 @@ def prepare_target_inputs(
         json.dumps(scope.to_document(), indent=2, ensure_ascii=True) + "\n",
         encoding="utf-8",
     )
-    extra: list[str] = ["--scan-scope", str(scope_path)]
+    paths = {SCAN_SCOPE_INPUT: str(scope_path)}
     counts: dict[str, int] = {}
 
     if policy is not None:
@@ -95,39 +94,39 @@ def prepare_target_inputs(
         # handed the same document by the same mechanism — a policy only one
         # of the two paths applied would be a ceiling that depends on where
         # the scan happened to run.
-        extra.extend(["--scan-policy", str(write_policy_input(inputs_dir, policy))])
+        paths[SCAN_POLICY_INPUT] = str(write_policy_input(inputs_dir, policy))
 
     if promoted:
         promoted_path = inputs_dir / PROMOTED_DOMAINS_INPUT
         _write_lines(promoted_path, promoted)
-        extra.extend(["--promoted-domains", str(promoted_path)])
+        paths[PROMOTED_DOMAINS_INPUT] = str(promoted_path)
         counts["promoted_domains"] = len(promoted)
 
     if parsed is None:
-        return inputs_dir, counts or None, extra
+        return inputs_dir, counts or None, paths
 
     if parsed.ranges is not None and parsed.domains is not None:
         ranges_path = inputs_dir / "ranges.txt"
         domains_path = inputs_dir / "domains.txt"
         _write_lines(ranges_path, parsed.ranges)
         _write_lines(domains_path, parsed.domains)
-        extra.extend(["--ranges", str(ranges_path), "--domains", str(domains_path)])
+        paths.update({"ranges.txt": str(ranges_path), "domains.txt": str(domains_path)})
         counts["ranges"] = len(parsed.ranges)
         counts["domains"] = len(parsed.domains)
 
     if parsed.ports is not None:
         ports_path = inputs_dir / "ports.txt"
         _write_lines(ports_path, parsed.ports)
-        extra.extend(["--ports-file", str(ports_path)])
+        paths["ports.txt"] = str(ports_path)
         counts["ports"] = len(parsed.ports)
 
     if parsed.ports_udp is not None:
         ports_udp_path = inputs_dir / "ports_udp.txt"
         _write_lines(ports_udp_path, parsed.ports_udp)
-        extra.extend(["--ports-udp-file", str(ports_udp_path)])
+        paths["ports_udp.txt"] = str(ports_udp_path)
         counts["ports_udp"] = len(parsed.ports_udp)
 
-    return inputs_dir, counts or None, extra
+    return inputs_dir, counts or None, paths
 
 
 def write_policy_input(inputs_dir: Path, policy: dict[str, Any]) -> Path:
@@ -142,8 +141,8 @@ def write_policy_input(inputs_dir: Path, policy: dict[str, Any]) -> Path:
 
 def write_config_overlay_input(
     settings: Settings, job_id: str, overlay: dict[str, Any]
-) -> list[str]:
-    """Write the agent job's config overlay; return the scanner arguments.
+) -> str:
+    """Write the agent job's config overlay; return its path.
 
     ``to_document`` checks every path against the scanner's own allow-list, so
     a setting an executor would refuse fails this request rather than the
@@ -157,7 +156,7 @@ def write_config_overlay_input(
         json.dumps(document, indent=2, ensure_ascii=True, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    return ["--config-overlay", str(path)]
+    return str(path)
 
 
 def publish(settings: Settings, job_id: str) -> None:
@@ -182,7 +181,9 @@ def ensure_local(settings: Settings, job_id: str) -> Path:
             artifact_store.keys.job_inputs_prefix(job_id), directory
         )
     except artifact_store.ArtifactStoreError:
-        _log.warning("Could not fetch the input files for job %s", job_id, exc_info=True)
+        _log.warning(
+            "Could not fetch the input files for job %s", job_id, exc_info=True
+        )
     return directory
 
 
@@ -198,7 +199,9 @@ def discard(settings: Settings, job_id: str) -> None:
             # finished scan must not be reported as failed because its
             # scratch directory outlived it. The retention sweep collects it
             # later.
-            _log.warning("Could not remove stored inputs for job %s", job_id, exc_info=True)
+            _log.warning(
+                "Could not remove stored inputs for job %s", job_id, exc_info=True
+            )
     try:
         shutil.rmtree(job_inputs_dir(settings, job_id), ignore_errors=False)
     except FileNotFoundError:
@@ -215,7 +218,9 @@ def discard_wordlist(settings: Settings, job_id: str) -> None:
     try:
         wordlist_file_for_job(settings, job_id).unlink(missing_ok=True)
     except OSError:
-        _log.warning("Could not remove wordlist scratch file for job %s", job_id, exc_info=True)
+        _log.warning(
+            "Could not remove wordlist scratch file for job %s", job_id, exc_info=True
+        )
 
 
 def wordlist_overrides(

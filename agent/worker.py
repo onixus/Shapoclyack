@@ -52,6 +52,8 @@ from typing import Any
 
 from agent import __version__, egress, mtls
 from agent import logging_setup, run_retention
+from agent.runtime.invocation import INPUT_FLAGS, ScanInvocation, input_arguments
+from agent.runtime.process import run_process, terminate_process
 
 LOG = logging.getLogger("octo-agent")
 
@@ -1034,54 +1036,32 @@ def _scan_env() -> dict[str, str]:
 
 
 def _write_inputs(workdir: Path, inputs: dict[str, str]) -> list[str]:
-    args: list[str] = []
+    return input_arguments(_write_input_paths(workdir, inputs))
+
+
+def _write_input_paths(workdir: Path, inputs: dict[str, str]) -> dict[str, str]:
+    # Refused, not skipped: an input this build cannot hand on may be what
+    # narrows the scan, and ignoring it would run wider than was admitted.
+    # New inputs reach a sensor only behind a capability it declares.
+    unknown = set(inputs) - INPUT_FLAGS.keys()
+    if unknown:
+        raise ValueError(f"unsupported scanner inputs: {sorted(unknown)}")
+    # Legacy jobs sent either target file alone; materialize its empty pair,
+    # never fall back to the installation targets for that missing half.
+    if not all(isinstance(value, str) for value in inputs.values()):
+        raise ValueError("scanner input contents must be text")
+    inputs = dict(inputs)
     if "ranges.txt" in inputs or "domains.txt" in inputs:
-        ranges_path = workdir / "ranges.txt"
-        domains_path = workdir / "domains.txt"
-        ranges_path.write_text(inputs.get("ranges.txt", ""), encoding="utf-8")
-        domains_path.write_text(inputs.get("domains.txt", ""), encoding="utf-8")
-        args.extend(["--ranges", str(ranges_path), "--domains", str(domains_path)])
-    if "ports.txt" in inputs:
-        ports_path = workdir / "ports.txt"
-        ports_path.write_text(inputs["ports.txt"], encoding="utf-8")
-        args.extend(["--ports-file", str(ports_path)])
-    if "ports_udp.txt" in inputs:
-        ports_udp_path = workdir / "ports_udp.txt"
-        ports_udp_path.write_text(inputs["ports_udp.txt"], encoding="utf-8")
-        args.extend(["--ports-udp-file", str(ports_udp_path)])
-    if "scan_scope.json" in inputs:
-        # The tenant's approved scope (#244). Handed through unread: this worker
-        # has no opinion about it, and the pipeline that resolves the names is
-        # the only place that can hold the resulting addresses to it.
-        scope_path = workdir / "scan_scope.json"
-        scope_path.write_text(inputs["scan_scope.json"], encoding="utf-8")
-        args.extend(["--scan-scope", str(scope_path)])
-    if "scan_policy.json" in inputs:
-        # The tenant's scan policy (#362): rate ceilings, host concurrency and
-        # the ports this run must not touch, decided by the API. Handed through
-        # unread like the scope above — the pipeline applies it onto the local
-        # config, where it can only ever lower a rate, and this worker has no
-        # opinion about it. The ``scan_policy`` capability this agent declares
-        # is the promise to pass it on; an agent that did not would be refused
-        # the job on claim.
-        policy_path = workdir / "scan_policy.json"
-        policy_path.write_text(inputs["scan_policy.json"], encoding="utf-8")
-        args.extend(["--scan-policy", str(policy_path)])
-    if "config_overlay.json" in inputs:
-        # The job's config overlay (#338). Handed through unread as well: the
-        # scanner merges it onto --config and refuses any setting outside its
-        # own allow-list (scanner/pipeline/config_overlay.py).
-        overlay_path = workdir / "config_overlay.json"
-        overlay_path.write_text(inputs["config_overlay.json"], encoding="utf-8")
-        args.extend(["--config-overlay", str(overlay_path)])
-    if "promoted_domains.txt" in inputs:
-        # Related domains the tenant promoted (org_profile M4). Also handed
-        # through unread: the pipeline merges them into its name scope and
-        # holds them to the scope above like every other name.
-        promoted_path = workdir / "promoted_domains.txt"
-        promoted_path.write_text(inputs["promoted_domains.txt"], encoding="utf-8")
-        args.extend(["--promoted-domains", str(promoted_path)])
-    return args
+        inputs.setdefault("ranges.txt", "")
+        inputs.setdefault("domains.txt", "")
+    paths = {}
+    for name in INPUT_FLAGS:
+        if name in inputs:
+            workdir.mkdir(parents=True, exist_ok=True)
+            path = workdir / name
+            path.write_text(inputs[name], encoding="utf-8")
+            paths[name] = str(path)
+    return paths
 
 
 def _tar_directory(source: Path, archive_path: Path) -> None:
@@ -1129,29 +1109,11 @@ def _detect_current_stage(output_dir: Path | None, run_id: str | None) -> str | 
 _CANCEL_POLL_SECONDS = 1.0
 
 
-def _terminate_process_group(proc: "subprocess.Popen[str]", *, use_session: bool) -> None:
-    """Put down the scanner and everything it started.
-
-    The process group rather than the process: a scan is ``scanner.main``
-    shelling out to pulse, httpx and nuclei, and killing only the parent would
-    leave the tool that is actually touching the target running with no one to
-    report it. SIGTERM first so the pipeline can close its files, SIGKILL five
-    seconds later for whatever ignored it.
-    """
-    if not use_session:
-        proc.kill()
-        proc.wait()
-        return
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        proc.wait(timeout=5.0)
-    except (subprocess.TimeoutExpired, ProcessLookupError, OSError):
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, OSError):
-            pass
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=5.0)
+def _terminate_process_group(
+    proc: "subprocess.Popen[str]", *, use_session: bool
+) -> None:
+    """Compatibility wrapper; shared runtime owns group termination."""
+    terminate_process(proc, use_session=use_session)
 
 
 def _run_scan(
@@ -1163,75 +1125,44 @@ def _run_scan(
     timeout: float | None = 7200.0,
     cancel_event: threading.Event | None = None,
 ) -> tuple[int, str | None, Path | None]:
-    target_args = _write_inputs(workdir, dict(job.get("inputs") or {}))
-    run_id = str(job["run_id"])
-    command = [
-        sys.executable,
-        "-m",
-        "scanner.main",
-        "--config",
-        str(config),
-        "--mode",
-        str(job.get("mode") or "balanced"),
-        "--run-id",
-        run_id,
-    ]
-    if job.get("delta"):
-        command.append("--delta")
-    if job.get("skip_nse"):
-        command.append("--skip-nse")
-    if job.get("notify"):
-        command.append("--notify")
-    if job.get("export_defectdojo"):
-        command.append("--export-defectdojo")
-    command.extend(target_args)
-
-    LOG.info("Running: %s", " ".join(command))
-
-    use_session = sys.platform != "win32"
     try:
-        proc = subprocess.Popen(
+        input_paths = _write_input_paths(workdir, dict(job.get("inputs") or {}))
+        run_id = str(job["run_id"])
+        command = ScanInvocation(
+            config=str(config),
+            mode=str(job.get("mode") or "balanced"),
+            run_id=run_id,
+            delta=bool(job.get("delta")),
+            skip_nse=bool(job.get("skip_nse")),
+            notify=bool(job.get("notify")),
+            export_defectdojo=bool(job.get("export_defectdojo")),
+            inputs=input_paths,
+        ).argv(sys.executable)
+    except (ValueError, TypeError, KeyError) as exc:
+        return 1, f"invalid scan invocation: {exc}", None
+    LOG.info("Running: %s", " ".join(command))
+    try:
+        result = run_process(
             command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=use_session,
             env=_scan_env(),
+            timeout=timeout,
+            cancel_event=cancel_event,
+            poll_interval=_CANCEL_POLL_SECONDS,
         )
     except Exception as exc:
         return 1, f"failed to spawn scan process: {exc}", None
-
-    # Waited on in short slices rather than one long ``communicate(timeout=…)``
-    # so the cancellation the heartbeat thread may set is noticed while the
-    # scan runs, not two hours later (#360). Retrying ``communicate`` after a
-    # TimeoutExpired is the documented way to keep waiting on the same pipes.
-    deadline = None if timeout is None else time.monotonic() + timeout
-    while True:
-        try:
-            stdout, stderr = proc.communicate(timeout=_CANCEL_POLL_SECONDS)
-            break
-        except subprocess.TimeoutExpired:
-            if cancel_event is not None and cancel_event.is_set():
-                LOG.warning("Scan run %s cancelled by the API; terminating process group", run_id)
-                _terminate_process_group(proc, use_session=use_session)
-                # Whatever the pipeline had written before the signal is still
-                # this scan's output, and the operator who stopped it asked for
-                # a stop, not for the partial findings to be thrown away. The
-                # archive is best-effort: a run killed early may have no
-                # directory at all.
-                return 143, "cancelled on the operator's request", _archive_run(
-                    output_dir, workdir, run_id
-                )
-            if deadline is not None and time.monotonic() >= deadline:
-                LOG.warning(
-                    "Scan run %s timed out after %ss; terminating process group", run_id, timeout
-                )
-                _terminate_process_group(proc, use_session=use_session)
-                return 124, f"scan timed out after {timeout}s", None
-
-    if proc.returncode != 0:
-        err = (stderr or stdout or f"exit {proc.returncode}")[:2000]
-        return proc.returncode, err, None
+    if result.reason == "cancelled":
+        return (
+            143,
+            "cancelled on the operator's request",
+            _archive_run(output_dir, workdir, run_id),
+        )
+    if result.reason == "timeout":
+        return 124, f"scan timed out after {timeout}s", None
+    stdout, stderr = result.stdout, result.stderr
+    if result.returncode != 0:
+        err = (stderr or stdout or f"exit {result.returncode}")[:2000]
+        return result.returncode, err, None
 
     run_dir = output_dir / "runs" / run_id
     if not run_dir.is_dir():

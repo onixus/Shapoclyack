@@ -10,6 +10,8 @@ import tarfile
 from datetime import datetime
 from unittest import mock
 
+import pytest
+
 from api.services import ch_ingest_worker
 from api.services import ch_transform
 from api.services import metrics as metrics_service
@@ -374,8 +376,8 @@ def test_vulnerabilities_to_rows_falls_back_when_asset_unset(tmp_path):
 
 @requires_postgres
 def test_vulnerabilities_to_rows_batches_lookup_per_host(tmp_path):
-    from unittest.mock import patch
-
+    from sqlalchemy import event
+    from api.db.engine import get_engine
     from api.services.risk_scoring import RiskScoring, reset_scorer_for_tests
 
     settings, tenant_id = _settings_with_tenant(tmp_path)
@@ -400,14 +402,20 @@ def test_vulnerabilities_to_rows_batches_lookup_per_host(tmp_path):
             "job_id": "job1",
             "archive_b64": base64.b64encode(archive).decode(),
         }
-        with patch(
-            "api.services.ch_transform.assets_service.get_asset_criticality_by_ip",
-            wraps=ch_transform.assets_service.get_asset_criticality_by_ip,
-        ) as spy:
+        statements = []
+        def record(_conn, _cursor, statement, *_):
+            if statement.lstrip().upper().startswith("SELECT"):
+                statements.append(statement)
+        engine = get_engine(settings.postgres_url)
+        event.listen(engine, "before_cursor_execute", record)
+        try:
             vuln_rows, _, _ = ch_transform.transform_ingest_payload(payload, settings=settings)
+        finally:
+            event.remove(engine, "before_cursor_execute", record)
         assert len(vuln_rows) == 3
         assert all(row[5] == 3 for row in vuln_rows)
-        assert spy.call_count == 1
+        # Receipt+publication reads plus identifiers/assets/job, independent of findings.
+        assert len(statements) == 5
     finally:
         reset_scorer_for_tests(None)
 
@@ -430,8 +438,9 @@ class _FakeMsg:
     async def ack(self) -> None:
         self.acked = True
 
-    async def nak(self) -> None:
+    async def nak(self, delay: float | None = None) -> None:
         self.naked = True
+        self.nak_delay = delay
 
     async def term(self) -> None:
         self.termed = True
@@ -501,6 +510,85 @@ def test_endpoint_inventory_message_is_not_counted_as_an_ingest(monkeypatch):
     assert result.acked is True
     assert _counter("ok") == before_ok + 1
     assert worker.stats["messages"] == 1
+
+
+@pytest.mark.parametrize("delivered", [1, 3])
+def test_pending_risk_receipt_is_redelivered_with_a_delay(monkeypatch, delivered):
+    """A receipt not captured yet is waited for, not burned through max_deliver.
+
+    An immediate nak spent all five deliveries in milliseconds and then dropped
+    the run's rows from ClickHouse for good.
+    """
+    from types import SimpleNamespace
+
+    from api.services.risk_context import RiskAssessmentPending
+
+    worker = ch_ingest_worker.ClickHouseIngestWorker(
+        nats_url="nats://localhost:4222", clickhouse_url="http://localhost:8123"
+    )
+    inserted: list[str] = []
+    monkeypatch.setattr(
+        ch_ingest_worker.ch,
+        "insert_rows",
+        lambda client, table, columns, rows: inserted.append(table) or len(rows),
+    )
+
+    def pending(payload, settings=None, require_captured=True):
+        raise RiskAssessmentPending("not captured yet")
+
+    monkeypatch.setattr(ch_ingest_worker.ch_transform, "transform_ingest_payload", pending)
+    before_err = _counter("error")
+    msg = _FakeMsg(
+        nats_bus.ingest_results_subject("ten_acme"),
+        {"tenant_id": "ten_acme", "job_id": "job1", "run_id": "run1"},
+    )
+    msg.metadata = SimpleNamespace(num_delivered=delivered)
+    asyncio.run(worker._handle_msg(object(), msg))  # noqa: SLF001
+
+    assert msg.naked is True and msg.acked is False
+    assert msg.nak_delay == min(
+        ch_ingest_worker.PENDING_RECEIPT_DELAY_CAP_SECONDS,
+        ch_ingest_worker.PENDING_RECEIPT_DELAY_SECONDS * 2 ** (delivered - 1),
+    )
+    assert msg.nak_delay > 0
+    assert inserted == []
+    assert _counter("error") == before_err
+
+
+def test_pending_risk_receipt_on_last_delivery_keeps_the_rows(monkeypatch):
+    from types import SimpleNamespace
+
+    from api.services.risk_context import RiskAssessmentPending
+
+    worker = ch_ingest_worker.ClickHouseIngestWorker(
+        nats_url="nats://localhost:4222", clickhouse_url="http://localhost:8123"
+    )
+    worker._controls_enabled = True  # noqa: SLF001
+    inserted: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        ch_ingest_worker.ch,
+        "insert_rows",
+        lambda client, table, columns, rows: inserted.append((table, len(rows))) or len(rows),
+    )
+    calls: list[bool] = []
+
+    def transform(payload, settings=None, require_captured=True):
+        calls.append(require_captured)
+        if require_captured:
+            raise RiskAssessmentPending("never captured")
+        return [["row"]], [], []
+
+    monkeypatch.setattr(ch_ingest_worker.ch_transform, "transform_ingest_payload", transform)
+    msg = _FakeMsg(
+        nats_bus.ingest_results_subject("ten_acme"),
+        {"tenant_id": "ten_acme", "job_id": "job1", "run_id": "run1"},
+    )
+    msg.metadata = SimpleNamespace(num_delivered=ch_ingest_worker.MAX_DELIVER)
+    asyncio.run(worker._handle_msg(object(), msg))  # noqa: SLF001
+
+    assert calls == [True, False]
+    assert msg.acked is True and msg.naked is False
+    assert (ch_ingest_worker.ch.VULN_TABLE, 1) in inserted
 
 
 def test_controls_rows_are_skipped_when_the_table_cannot_be_created():
@@ -581,3 +669,33 @@ def test_ensure_controls_table_reports_a_refused_ddl():
 
     client.command.side_effect = RuntimeError("read only")
     assert clickhouse_client.ensure_controls_table(client) is False
+
+
+def test_risk_column_probe_runs_once_per_client_and_only_after_success():
+    queries: list[str] = []
+    inserts: list[int] = []
+
+    class Client:
+        missing = True
+
+        def query(self, sql):
+            queries.append(sql)
+            if self.missing:
+                raise RuntimeError("Code: 47. UNKNOWN_IDENTIFIER risk_assessment")
+
+        def insert(self, table, rows, column_names):
+            inserts.append(len(rows))
+
+    client = Client()
+    row = [[None] * len(clickhouse_client.VULN_COLUMNS)]
+    with pytest.raises(clickhouse_client.ClickHouseError, match="migrate-clickhouse"):
+        clickhouse_client.insert_rows(
+            client, clickhouse_client.VULN_TABLE, clickhouse_client.VULN_COLUMNS, row
+        )
+    client.missing = False  # the administrator applied the expand step
+    for _ in range(3):
+        clickhouse_client.insert_rows(
+            client, clickhouse_client.VULN_TABLE, clickhouse_client.VULN_COLUMNS, row
+        )
+    assert len(queries) == 2  # the failed probe, then one successful one
+    assert inserts == [1, 1, 1]

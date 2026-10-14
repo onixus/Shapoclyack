@@ -6,6 +6,8 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from agent.runtime.invocation import required_input_names
+
 from sqlalchemy import and_, func, not_, or_, select
 
 from api.db import models
@@ -38,15 +40,23 @@ def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
-def _read_job_inputs(settings: Settings, job_id: str) -> dict[str, str]:
+def _read_job_inputs(
+    settings: Settings,
+    job_id: str,
+    *,
+    required: set[str] | None = None,
+) -> dict[str, str]:
     inputs_dir = job_inputs.ensure_local(settings, job_id)
-    if not inputs_dir.is_dir():
-        return {}
     out: dict[str, str] = {}
     for name in job_inputs.JOB_INPUT_FILES:
         path = inputs_dir / name
         if path.is_file():
             out[name] = path.read_text(encoding="utf-8")
+    missing = (required or set()) - out.keys()
+    if missing:
+        raise job_inputs.JobInputsUnavailable(
+            f"job {job_id} is missing admitted scanner inputs: {', '.join(sorted(missing))}"
+        )
     return out
 
 
@@ -95,9 +105,7 @@ def apply_policy_to_queued(
         for row in rows:
             options = dict(row.scan_options or {})
             frozen = options.get("scan_policy")
-            merged = scan_policy.snapshot(
-                scan_policy.tighten(frozen, resolved)
-            )
+            merged = scan_policy.snapshot(scan_policy.tighten(frozen, resolved))
             if merged is None or merged == frozen:
                 continue
 
@@ -240,19 +248,45 @@ def claim_job(
         )
         if job_id:
             eligible = eligible.where(models.Job.job_id == job_id)
+
         # ``->>`` is NULL for an absent key and for a NULL document alike, and
         # neither predicate above can itself be NULL (``coalesce``, a literal
         # IN list), so "runnable" and "blocked" partition the queue.
+        accepted_inputs: dict[str, dict[str, str]] = {}
+
         def next_admitted(query):
             while True:
-                candidate = session.execute(
-                    query.limit(1).with_for_update(skip_locked=True)
-                ).scalars().first()
+                candidate = (
+                    session.execute(query.limit(1).with_for_update(skip_locked=True))
+                    .scalars()
+                    .first()
+                )
                 if candidate is None:
                     return None
                 if queued_maintenance.admitted(settings, session, candidate):
-                    return candidate
-                # A group's blackout must not starve unrelated jobs behind it,
+                    # Validate before assigning a lease: absent mandatory
+                    # scope/policy must never turn an admitted scan into
+                    # installation-default targets. Read per candidate so one
+                    # job whose stored inputs are gone is passed over rather
+                    # than answered 503 to every claim in the fleet; a claim
+                    # naming that job still gets the 503.
+                    try:
+                        accepted_inputs[candidate.job_id] = _read_job_inputs(
+                            settings,
+                            candidate.job_id,
+                            required=required_input_names(candidate.command or []),
+                        )
+                        return candidate
+                    except job_inputs.JobInputsUnavailable:
+                        if job_id:
+                            raise
+                        _log.warning(
+                            "Job %s is missing its admitted inputs; leaving it "
+                            "queued and offering the next job",
+                            candidate.job_id,
+                            exc_info=True,
+                        )
+                # Neither a group's blackout nor lost inputs may starve unrelated jobs behind it,
                 # regardless of priority. Named NATS claims use this same gate.
                 query = query.where(models.Job.job_id != candidate.job_id)
 
@@ -329,9 +363,7 @@ def claim_job(
         # promotes it (see mark_running), which is also the signal the P1.4
         # reaper needs to tell "taken by a worker that died" from "actually
         # scanning".
-        job_states.check_transition(
-            row.job_id, row.status, job_states.CLAIMED
-        )
+        job_states.check_transition(row.job_id, row.status, job_states.CLAIMED)
         row.status = job_states.CLAIMED
         row.assigned_agent_id = agent_id
         # `started_at` deliberately stays unset until the agent reports
@@ -357,13 +389,9 @@ def claim_job(
             delta=bool(opts.get("delta", False)),
             skip_nse=bool(opts.get("skip_nse", False)),
             notify=bool(opts.get("notify", False)),
-            export_defectdojo=bool(
-                opts.get("export_defectdojo", False)
-            ),
-            inputs=_read_job_inputs(settings, claimed_id),
-            tenant_id=(
-                row.tenant_id or tenants_service.DEFAULT_TENANT_ID
-            ),
+            export_defectdojo=bool(opts.get("export_defectdojo", False)),
+            inputs=accepted_inputs[row.job_id],
+            tenant_id=(row.tenant_id or tenants_service.DEFAULT_TENANT_ID),
             # The fencing token for this hand-out: a lease that expired and was
             # reissued bumps it, so a late upload from the previous attempt can
             # be told apart from the current one even when both come from the
@@ -507,9 +535,7 @@ def cancel_job(
         if row is None:
             raise LookupError("Job not found")
 
-        job_tenant = (
-            row.tenant_id or tenants_service.DEFAULT_TENANT_ID
-        )
+        job_tenant = row.tenant_id or tenants_service.DEFAULT_TENANT_ID
         if tenant_id is not None and job_tenant != tenant_id:
             raise PermissionError("Cross-tenant job access denied")
 
@@ -576,10 +602,7 @@ def cancel_job(
             )
             return job_store.to_info(row)
 
-        if (
-            before in job_states.IN_FLIGHT
-            and row.execution != "agent"
-        ):
+        if before in job_states.IN_FLIGHT and row.execution != "agent":
             raise job_states.InvalidJobTransition(
                 f"Job {job_id} is {before} in the API process itself; "
                 "a local scan cannot be stopped once it has started, "
@@ -602,9 +625,7 @@ def cancel_job(
             row.finished_at = _now()
             row.claimed_until = None
             row.error = f"Cancelled by {username}"[:2000]
-            metrics_service.JOB_CANCELLATIONS_TOTAL.labels(
-                outcome="queued"
-            ).inc()
+            metrics_service.JOB_CANCELLATIONS_TOTAL.labels(outcome="queued").inc()
 
         audit_service.record(
             session,

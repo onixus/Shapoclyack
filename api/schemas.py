@@ -154,6 +154,10 @@ class VulnerabilityItem(BaseModel):
     contextual_score: float | None = None
     cisa_decision: str | None = None
     risk_explanation: str | None = None
+    risk_assessment: dict[str, Any] | None = None
+    asset_id: str | None = None
+    asset_criticality: int | None = None
+    scoring_model_version: str | None = None
     # NIST SP 800-30 assessment (scoring model nist-1). `risk_level` is the
     # verdict from Table I-2; `contextual_score` above stays a continuous 0-10
     # sort key so a table can order rows within a level.
@@ -2430,6 +2434,8 @@ class VulnerabilityInfo(BaseModel):
     title: str = ""
     severity: str = "unknown"
     risk_level: str | None = None
+    risk_assessment: dict[str, Any] | None = None
+    risk_explanation: str | None = None
     contextual_score: float | None = None
     cvss: float | None = None
     in_kev: bool = False

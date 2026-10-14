@@ -8,13 +8,12 @@ dragging job persistence with it.
 
 from __future__ import annotations
 
-import contextlib
-import os
-import signal
 import subprocess
 import sys
 import threading
 import time
+
+from agent.runtime.process import run_process, terminate_process
 
 _USE_PROCESS_GROUP = sys.platform != "win32"
 
@@ -22,6 +21,25 @@ _lock = threading.Lock()
 _threads: set[threading.Thread] = set()
 _processes: dict[str, "subprocess.Popen[str]"] = {}
 _draining = threading.Event()
+# Executor threads a timed-out stop gave up on. They stay cancelled -- a spawn
+# still on its way must not escape the failed stop -- while scans started after
+# it run normally, instead of every later local job failing with 143.
+_abandoned: set[threading.Thread] = set()
+# One cancel event per running ``run_scanner``: a stop sets them all, and a
+# failed stop leaves them set while ``_draining`` itself is cleared.
+_cancels: dict[threading.Thread, threading.Event] = {}
+
+
+class _ScanCancel:
+    """Set by this scan's own stop, or by a stop in progress."""
+
+    def __init__(self, own: threading.Event) -> None:
+        self._own = own
+
+    def is_set(self) -> bool:
+        return self._own.is_set() or _draining.is_set()
+_CANCELLED = threading.Event()
+_CANCELLED.set()
 
 # Captured before tests replace threading.Thread.
 REAL_THREAD = threading.Thread
@@ -33,43 +51,54 @@ def register_thread(thread: threading.Thread) -> None:
         return
     with _lock:
         _threads.difference_update({item for item in _threads if not item.is_alive()})
+        _abandoned.difference_update({item for item in _abandoned if not item.is_alive()})
         _threads.add(thread)
 
 
-def run_scanner(job_id: str, command: list[str]) -> subprocess.CompletedProcess[str]:
-    """Run the scanner to completion, leaving a handle on it while it lives.
-
-    Same result as the ``subprocess.run`` this replaces, plus two things that
-    call is structurally unable to offer: the process is registered in
-    :data:`_processes` while it runs, so :func:`stop_all` can
-    find it, and it is put in its own session, so signalling it reaches the
-    tools it has shelled out to rather than just the Python parent. That is the
-    same shape the agent's copy of this has used since #360
-    (``agent/worker.py:_run_scan``); the API's local path simply never had a
-    caller that wanted the process back.
-    """
-    proc = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=_USE_PROCESS_GROUP,
-    )
+def _cancel_event() -> threading.Event:
     with _lock:
-        _processes[job_id] = proc
-    if _draining.is_set():
-        # Started into a stop. The window is small -- between the thread being
-        # registered and this line -- but it is the whole of the leak that
-        # survived the first version of this: a stop that finds the registry
-        # empty has nothing to signal, and goes on to wait out a scan that had
-        # not been spawned yet when it looked.
-        _terminate(proc)
+        abandoned = threading.current_thread() in _abandoned
+    return _CANCELLED if abandoned else _draining
+
+
+def run_scanner(job_id: str, command: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run through shared mechanics, with this replica's live registry.
+
+    Local scans retain their historical unlimited duration. Draining is a
+    replica-local teardown signal, not cross-replica production cancellation.
+    """
+
+    current = threading.current_thread()
+    cancel = threading.Event()
+    with _lock:
+        if current in _abandoned:
+            cancel.set()
+        _cancels[current] = cancel
+
+    def register(proc):
+        with _lock:
+            _processes[job_id] = proc
+
+    def unregister(proc):
+        with _lock:
+            if _processes.get(job_id) is proc:
+                _processes.pop(job_id, None)
+
     try:
-        stdout, stderr = proc.communicate()
+        result = run_process(
+            command,
+            cancel_event=_ScanCancel(cancel),  # type: ignore[arg-type]
+            on_spawn=register,
+            on_finish=unregister,
+            use_session=_USE_PROCESS_GROUP,
+        )
     finally:
         with _lock:
-            _processes.pop(job_id, None)
-    return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+            if _cancels.get(current) is cancel:
+                del _cancels[current]
+    return subprocess.CompletedProcess(
+        command, result.returncode, result.stdout, result.stderr
+    )
 
 
 def wait_unless_draining(seconds: float) -> bool:
@@ -79,41 +108,12 @@ def wait_unless_draining(seconds: float) -> bool:
     process is stopping its scans and the waiting thread should give up
     rather than hold :func:`stop_all` for the rest of its budget.
     """
-    return _draining.wait(seconds)
+    return _cancel_event().wait(seconds)
 
 
 def _terminate(proc: "subprocess.Popen[str]") -> None:
-    """Put down one scanner and everything it started.
-
-    The process *group*, for the reason ``agent/worker.py`` gives: a scan is
-    ``scanner.main`` driving pulse, httpx and nuclei, and killing only the
-    parent leaves the tool that is actually touching the target running with
-    nobody to report it. SIGTERM first so the pipeline can close its files,
-    SIGKILL for whatever ignores it.
-    """
-    if proc.poll() is not None:
-        return
-    try:
-        if _USE_PROCESS_GROUP:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        else:  # pragma: no cover - the suite does not run on Windows
-            proc.terminate()
-    except (ProcessLookupError, OSError):
-        return
-    try:
-        proc.wait(timeout=5.0)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    try:
-        if _USE_PROCESS_GROUP:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        else:  # pragma: no cover - the suite does not run on Windows
-            proc.kill()
-    except (ProcessLookupError, OSError):
-        pass
-    with contextlib.suppress(subprocess.TimeoutExpired):
-        proc.wait(timeout=5.0)
+    """Compatibility forwarding wrapper."""
+    terminate_process(proc, use_session=_USE_PROCESS_GROUP)
 
 
 def live() -> list[str]:
@@ -125,9 +125,7 @@ def live() -> list[str]:
     """
     with _lock:
         alive = [
-            f"job {job_id} (pid {proc.pid})"
-            for job_id, proc in _processes.items()
-            if proc.poll() is None
+            f"job {job_id} (pid {proc.pid})" for job_id, proc in _processes.items()
         ]
         alive.extend(
             f"executor thread {thread.name}" for thread in _threads if thread.is_alive()
@@ -157,19 +155,28 @@ def stop_all(timeout: float = 30.0) -> bool:
     to the same tables the next test truncates, so returning while one is still
     running would trade the leak for the race #257 and #351 already document.
 
-    The registry is emptied either way, so the answer is given once: see the
-    comment on that below.
+    On timeout the registry keeps the survivors and their threads stay
+    cancelled, so a late spawn cannot escape the failed stop; the barrier
+    itself is lifted, so scans started afterwards are not refused.
     """
     deadline = time.monotonic() + timeout
-    _draining.set()
+    with _lock:
+        _draining.set()
+        for cancel in _cancels.values():
+            cancel.set()
     try:
         while True:
             with _lock:
                 processes = list(_processes.values())
                 threads = [thread for thread in _threads if thread.is_alive()]
             for proc in processes:
-                _terminate(proc)
-            if not threads:
+                terminate_process(
+                    proc,
+                    use_session=_USE_PROCESS_GROUP,
+                    deadline=deadline,
+                    term_grace=min(5.0, max(0.0, deadline - time.monotonic()) / 2),
+                )
+            if not threads and not processes:
                 break
             # A slice rather than the whole budget, because an executor still
             # on its way to ``Popen`` is alive and holding no process yet: the
@@ -179,18 +186,18 @@ def stop_all(timeout: float = 30.0) -> bool:
             if time.monotonic() >= deadline:
                 break
     finally:
-        _draining.clear()
+        survivors = live()
+        with _lock:
+            _abandoned.update(thread for thread in _threads if thread.is_alive())
+            _draining.clear()
 
-    survivors = live()
     with _lock:
-        # Emptied whether or not everything stopped. What survived a SIGKILL
-        # to its process group will not answer a second round either, and
-        # keeping the handle would fail the teardown of every test after the
-        # one that actually caused it — burying the report in its own echo.
-        # The caller is told once, here; the session-wide check in
-        # tests/scanner_gate.py is what still sees the process itself.
-        _threads.clear()
-        _processes.clear()
+        _threads.difference_update(
+            {thread for thread in _threads if not thread.is_alive()}
+        )
+    # A timed-out handle remains visible until run_process's on_finish removes
+    # it. Clearing it here would conceal an inherited pipe or late spawn.
+
     return not survivors
 
 

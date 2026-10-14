@@ -150,6 +150,7 @@ data:
         cisa_decision Enum8('Track' = 1, 'Attend' = 2, 'Act' = 3, 'Immediate' = 4),
         contextual_score Float32,
         scoring_model_version String,
+        risk_assessment String DEFAULT '',
         timestamp DateTime
     ) ENGINE = ReplacingMergeTree()
     ORDER BY (tenant_id, asset_ip, cve_id)

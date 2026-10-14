@@ -273,3 +273,110 @@ Each of these is a real gap with its own issue, not a silent approximation.
   `asset_criticality` dial and, since #171, `exposure_level=internet|internal`
   as a named likelihood source. Environment and data class still do not move
   the verdict.
+
+## Shared operation context and recorded assessments (#453)
+
+`api.services.risk_context` supplies one tenant-scoped batch to the run API,
+scan tracker and ClickHouse transform. Registered asset identities, IP/FQDN
+identifiers, operator criticality/exposure and the operator-declared job surface
+are read once per operation. Operator criticality **0–4**, including zero,
+continues to override finding values. Several IPs/FQDNs already registered to
+one asset share foothold correlation by `asset_id`; the builder does not perform
+DNS lookup or merge identities. Both identifier and asset rows are tenant-filtered.
+An explicit foreign-tenant asset ID is unresolved. Without a registered identity,
+correlation is an explicitly named tenant-qualified host fallback; it cannot join
+separate addresses. CDN/WAF remains evidence for the exact observed host:port,
+never a protection inherited by every listener of an asset.
+
+The formula and `nist-1` version are unchanged. Its clock can now be supplied
+explicitly, so CVE age and intelligence freshness use the same evaluation time
+for an operation. The loaded EPSS/KEV/exploit/Nuclei-CVE intelligence has a content
+hash computed once when its scorer is loaded. Input observation, context and data
+hashes are distinct. Missing criticality remains heuristic; missing exposure
+remains unknown unless the existing scorer has explicit/operator/declared-surface
+or private-address evidence. A missing context never asserts a complete snapshot.
+
+The tracker captures immutable `run_risk_assessments` in the same transaction as
+its fold. The key is `(tenant_id, run_id, execution_id, observation_digest)`;
+`execution_id` names the accepted server publication, not the tenant-chosen run
+ID. Concurrent writers/replays of that same publication reuse the first committed
+receipt. A different accepted job/publication reusing the same run ID and exactly
+the same observation bytes captures its own current operator context/time.
+Older execution receipts remain immutable.
+No existing rows are backfilled or recalculated. The
+receipt contains all shared scores/explanations and the captured time,
+model/data/context versions, origin/completeness and asset inputs. The latest
+scan receipt is also retained on the tracked finding and in its observation event;
+its finding key, assignment, state, deadline and exceptions keep their existing
+lifecycle rules. Editing asset context or requesting current scores does not
+rewrite these records.
+
+`GET /api/runs/{id}/vulnerabilities?assessment_mode=historical` is the default and
+returns the receipt of the actual server-published folder generation. Its job and
+publication marker are matched to tenant/run/accepted receipt ownership, rather
+than selecting the newest queued job. ClickHouse uses the exact publisher job
+envelope (bound to the accepted receipt in PostgreSQL); ambiguous executions
+are refused rather than selecting a newer assessment. `assessment_mode=current` explicitly computes a
+read-only current assessment. `risk_assessment.mode`, `evaluated_at`, versions,
+`inputs`, source and `complete` distinguish the two. Old runs with no receipt
+return `legacy-current` (their old operator inputs cannot be reconstructed).
+Without PostgreSQL the mode is `uncaptured-current`, context is unavailable and
+`complete=false`; configured database errors remain errors, not silent fallback.
+An unbound legacy direct registration computes `uncaptured-current`; it cannot
+fabricate an accepted execution or immutable historical receipt. A new successful
+server publication owns a `risk_assessment_contract` marker,
+initially on its durable publication intent and retained on its tenant/job/run
+binding when the outbox row closes. Any existing accepted execution receipt also preserves its
+obligation after job retention. If such a run has no matching receipt,
+the API labels its provisional current result `pending-current` and incomplete;
+ClickHouse ingestion retries instead of storing it as historical. Legacy NULL
+markers impose no new requirement. Client archive/payload flags cannot set this
+obligation or provide trusted operator context.
+
+The broker may deliver an archive before the tracker projection completes.
+New publications therefore verify that their canonical receipt exists before
+closing their durable intent; a failed capture remains retryable under the
+existing publication lease/backoff. Successful empty scans capture an empty
+receipt. Failed/cancelled archives add no successful-assessment obligation.
+The order and ownership of the other post-publication projections is unchanged.
+The tracker validates the server-written tenant/job/publication folder generation
+before mutations and before commit. A replaced folder is an explicit retry and
+rolls its fold back, preserving the accepted intent; it is not recorded under an
+older execution. An already captured old execution can complete its outbox even
+after a newer publication replaced the folder.
+
+ClickHouse keeps its existing IPv4 row/key contract; FQDN-only observations are
+still excluded from that projection while participating in batch asset
+correlation. Its appended `risk_assessment` String holds the complete JSON score
+and provenance used by the API/tracker, including explanations. It remains a
+latest-value analytics projection with the existing ReplacingMergeTree key, not
+the immutable assessment journal. Old ClickHouse rows have an empty receipt,
+never fabricated provenance. On an existing deployment an administrator must
+apply [`scripts/migrate-clickhouse-risk-context.sql`](../scripts/migrate-clickhouse-risk-context.sql)
+before rolling out ingest workers. Runtime users need only SELECT+INSERT; no
+ALTER grant or automatic history rewrite is required. Missing schema is a visible
+migration error; ingestion never drops provenance to make an insert succeed.
+
+The batch context costs at most three PostgreSQL SELECTs (identifiers, assets,
+job surface), independent of observation count. A captured historical consumer
+needs one receipt read. An uncaptured historical read additionally checks its
+trusted obligation. The tracker still performs its existing per-finding identity,
+SLA, event and verification work; these query bounds apply to context loading,
+not a claim that the entire tracker operation takes constant time.
+
+Evidence adapters accept tenant-validated `asset_id` and preserve each input's
+source/CVSS/finding class/confirmation evidence. A local endpoint-software or
+retro-match observation does not become network exposure merely by joining an
+asset; same-asset path context needs a separate actual foothold observation.
+This context contract does not implement all identity/evidence work of #449 or
+change that observer's authoritative proofs.
+
+Validation: `tests/test_risk_context.py` covers real PostgreSQL tenant/asset
+correlation, multi-IP/FQDN, zero criticality, declared/unknown exposure, exact
+endpoint CDN/WAF, consumer parity, historical/current separation, concurrent
+capture, RLS append/read and UPDATE refusal, constant context query counts,
+legacy/new publication obligations, two jobs reusing identical run ID/bytes,
+wrong-generation rollback, and actual ClickHouse old-schema migration
+plus SELECT+INSERT-only roundtrip. `tests/test_scan_risk_criticality.py` retains
+its existing identity/owner/SLA/exception regression coverage. These are query
+budget and correctness proofs, not a production latency benchmark.

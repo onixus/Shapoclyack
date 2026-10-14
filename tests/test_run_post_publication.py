@@ -129,7 +129,15 @@ class _Derived:
 def derived(monkeypatch) -> _Derived:
     spy = _Derived()
     monkeypatch.setattr(assets_service, "upsert_assets_from_run", spy.record("assets"))
-    monkeypatch.setattr(vulns_service, "register_findings_from_run", spy.record("findings"))
+    real_findings = vulns_service.register_findings_from_run
+    record_findings = spy.record("findings")
+    def findings(*args, **kwargs):
+        record_findings(*args, **kwargs)
+        # New successful publications owe a real risk receipt. Keep the order
+        # recorder while exercising the real fold/capture, rather than faking
+        # the projection's durable outcome.
+        return real_findings(*args, **kwargs)
+    monkeypatch.setattr(vulns_service, "register_findings_from_run", findings)
     monkeypatch.setattr(
         vulns_service, "release_unfinished_verification", spy.record("verification", 0)
     )
@@ -656,6 +664,9 @@ def _owed(settings, job_id: str, run_id: str = RUN_ID) -> str:
     )
     with get_session(settings.postgres_url) as session:
         session.add(publication)
+    from api.services import runs
+    runs.stage_run_tenant(Path(settings.output_dir) / "runs" / run_id, "default",
+        job_id=job_id, publication_id=publication.publication_id)
     return publication.publication_id
 
 
@@ -795,7 +806,8 @@ def test_two_attempts_folding_one_publication_at_once_count_it_once(tmp_path, mo
     publication_id = _owed(settings, "job-raced")
     # The registry first, as the sequence has it: a finding needs its asset.
     assets_service.upsert_assets_from_run(settings, tenant_id="default", run_id=RUN_ID)
-    real = vulns_service._declared_surface_for_run  # noqa: SLF001
+    from api.services import risk_context
+    real = risk_context.load_batch
     first_inside = threading.Event()
     release = threading.Event()
     callers: list[str] = []
@@ -807,7 +819,7 @@ def test_two_attempts_folding_one_publication_at_once_count_it_once(tmp_path, mo
             release.wait(10)
         return real(session, **kwargs)
 
-    monkeypatch.setattr(vulns_service, "_declared_surface_for_run", _hold_the_first)
+    monkeypatch.setattr(risk_context, "load_batch", _hold_the_first)
 
     def _fold():
         vulns_service.register_findings_from_run(

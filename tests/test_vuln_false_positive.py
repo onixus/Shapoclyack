@@ -185,6 +185,34 @@ def test_the_suppressed_reobservation_event_is_written_once_not_per_scan(tmp_pat
     assert _kinds(settings, tenant_id, vuln_id).count("fp_reobserved") == 1
 
 
+def test_receipt_changes_are_deduplicated_but_changed_risk_is_recorded(tmp_path):
+    settings, tenant_id, vuln_id, _ = _marked(tmp_path)
+
+    def observe(run_id):
+        _write_run(settings.output_dir, run_id, _HOSTS, _FINDINGS)
+        vulns.register_findings_from_run(settings, tenant_id=tenant_id, run_id=run_id)
+        return vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=vuln_id)
+
+    first = observe("run-2")
+    second = observe("run-3")
+    assert first["risk_assessment"]["evaluated_at"] != second["risk_assessment"]["evaluated_at"]
+    assert _kinds(settings, tenant_id, vuln_id).count("fp_reobserved") == 1
+
+    with get_session(settings.postgres_url) as session:
+        asset_id = session.scalar(select(models.Vulnerability.asset_id).where(
+            models.Vulnerability.tenant_id == tenant_id,
+            models.Vulnerability.vuln_id == vuln_id,
+        ))
+        session.execute(update(models.Asset).where(
+            models.Asset.tenant_id == tenant_id, models.Asset.asset_id == asset_id,
+        ).values(asset_criticality=0))
+    changed = observe("run-4")
+    assert changed["contextual_score"] != second["contextual_score"]
+    assert changed["state"] == vuln_states.CLOSED
+    assert changed["fp_observations"] == 3
+    assert _kinds(settings, tenant_id, vuln_id).count("fp_reobserved") == 2
+
+
 def test_a_lapsed_suppression_falls_back_to_the_ordinary_reopen(tmp_path):
     settings, tenant_id, vuln_id, _ = _marked(tmp_path, suppress_days=1)
     _expire_suppression(settings, vuln_id)
