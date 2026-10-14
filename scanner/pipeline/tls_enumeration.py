@@ -157,16 +157,31 @@ def parse_suite(raw: Any) -> dict[str, Any] | None:
     if not name or not _SUITE_NAME_RE.match(name):
         return None
     name = normalize_suite_name(name)
+    curves = {"x25519": 253, "secp256r1": 256, "secp384r1": 384}
+    valid = isinstance(raw, dict) and type(raw.get("kex_bits")) is int and 1 < raw["kex_bits"] <= 65535
+    if kex_evidence == "server_key_exchange_named_curve":
+        valid = valid and name.startswith(("TLS_ECDHE_RSA_WITH_", "TLS_ECDHE_ECDSA_WITH_")) and curves.get(kex_group) == kex_bits
+    elif kex_evidence == "server_hello_key_share":
+        valid = valid and "_WITH_" not in name and kex_group == "x25519" and kex_bits == 253
+    elif kex_evidence == "server_key_exchange_dh_modulus":
+        valid = valid and name.startswith(("TLS_DHE_RSA_WITH_", "TLS_DHE_DSS_WITH_", "TLS_DH_anon_WITH_")) and kex_group is None
+    elif kex_evidence == "server_key_exchange_export_rsa_modulus":
+        valid = valid and name.startswith("TLS_RSA_EXPORT_WITH_") and kex_group is None
+    elif kex_evidence == "certificate_rsa_modulus":
+        valid = valid and name.startswith(("TLS_RSA_WITH_", "TLS_RSA_EXPORT_WITH_")) and kex_group is None
+    else:
+        valid = False
+    if not valid:
+        kex_bits = kex_group = kex_evidence = None
     grade, upper_bound = grade_cipher_suite_detail(name, kex_bits=kex_bits, kex_group=kex_group)
     suite: dict[str, Any] = {"name": name, "grade": grade}
     if upper_bound and grade is not None:
-        suite["grade_upper_bound"] = True  # exchange unknown: the letter may be too good
-    if kex_evidence and kex_bits is not None and kex_bits <= 65535:
-        if kex_evidence not in ("server_hello_key_share", "server_key_exchange_named_curve") or kex_bits <= 571:
-            suite["kex_bits"] = kex_bits
-            suite["kex_evidence"] = kex_evidence
-            if kex_group in ("x25519", "secp256r1", "secp384r1"):
-                suite["kex_group"] = kex_group
+        suite["grade_upper_bound"] = True
+    if valid:
+        suite["kex_bits"] = kex_bits
+        suite["kex_evidence"] = kex_evidence
+        if kex_group:
+            suite["kex_group"] = kex_group
     return suite
 
 
