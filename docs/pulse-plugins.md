@@ -208,3 +208,33 @@ a string.
   (`RECORD_PARTS=pulse`, see [Pulse backend](pulse-backend.md#reference-corpus-nmap-versus-pulse-541));
   `tests/test_nmap_pulse_corpus.py` fails while the recorded sha256 and the shipped
   files differ.
+
+### Binary negotiation probes (GenDec binary sandbox API)
+
+The shipped `shapo_smb_signing`, `shapo_smb1` and
+`shapo_rdp_negotiation` require the engine's `probe_send_hex` API. Their
+requests preserve bytes above 0x7f and contain only protocol negotiation,
+without credentials, authentication attempts or exploit payloads. They use the
+sandbox's existing target/port permission checks and 1500 ms per-call deadline.
+Malformed, truncated, unexpected or failed replies raise script errors rather
+than claiming that the endpoint was checked and clean.
+
+`shapo_smb_signing` offers SMB 2.0.2 and 2.1 and checks the selected response's
+SecurityMode. A response without the required-signing bit produces a MEDIUM
+finding. This does not establish relay exploitability. `shapo_smb1` offers only
+NT LM 0.12 and reports MEDIUM only when that SMB1 dialect is explicitly
+selected. These plugins cover direct SMB on TCP; NetBIOS session negotiation
+on port 139 remains exposure-only. Neither probe enumerates every dialect.
+
+`shapo_rdp_negotiation` offers standard RDP security and checks X.224's
+negotiation response. Selecting PROTOCOL_RDP demonstrates that NLA is not
+mandatory for negotiation; explicit SSL/HYBRID requirements produce no finding.
+Other negotiation failures remain errors. NTLM host information, authenticated
+login, password policy and encryption-strength enumeration remain unimplemented.
+
+The existing exposure plugins continue to provide separate LOW reachability
+observations. SSH host-key fingerprints, SNMP community/identity enumeration and
+VNC authentication-method negotiation remain gaps; SSH algorithm advertisement
+is not a host-key fingerprint. Loopback binary fixtures verify observed signing
+bits, SMB1 acceptance/refusal, standard RDP acceptance/refusal and malformed
+responses, independently of service discovery.

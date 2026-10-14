@@ -230,6 +230,9 @@ APPLICABILITY: dict[str, dict[str, Any]] = {
         "banner": (("220", "ftp"), ("+ok", ""), ("* ok", ""), ("220", "smtp")),
         "ports": {23},
     },
+    "shapo_smb1": {"services": {"smb", "microsoft-ds"}, "banner": (), "ports": {445}},
+    "shapo_smb_signing": {"services": {"smb", "microsoft-ds"}, "banner": (), "ports": {445}},
+    "shapo_rdp_negotiation": {"services": {"rdp", "ms-wbt-server"}, "banner": (), "ports": {3389}},
     "shapo_smb_exposure": {"services": {"smb", "microsoft-ds", "netbios-ssn"}, "banner": (), "ports": {445, 139}},
     "shapo_remote_admin_exposure": {
         "services": {"rdp", "ms-wbt-server", "vnc"}, "banner": (("rfb ", ""),), "ports": {3389},

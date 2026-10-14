@@ -70,7 +70,7 @@ def test_plugin_defines_the_loader_contract_and_is_named_like_its_file(path):
 def test_plugin_stays_inside_the_sandbox_limits(path):
     text = path.read_text(encoding="utf-8")
     assert "http_get(" not in text, "http_get has a fixed 2 s timeout the time budget does not count"
-    calls = re.findall(r"probe_(?:send|recv)\(([^;]*)\)\s*;", text)
+    calls = re.findall(r"probe_(?:send_hex|udp_hex|send|recv)\(([^)]*)\)", text)
     for arguments in calls:
         timeout = int(arguments.rsplit(",", 1)[1])
         assert timeout <= pulse_plugins.PLUGIN_CALL_TIMEOUT_MS, f"{path.name}: {arguments}"
@@ -91,7 +91,7 @@ def test_a_failed_probe_is_raised_not_swallowed(path):
     error lines are the only trace that it did not look.
     """
     text = path.read_text(encoding="utf-8")
-    if "probe_send(" in text or "probe_recv(" in text:
+    if any(call in text for call in ("probe_send(", "probe_recv(", "probe_send_hex(", "probe_udp_hex(")):
         assert "throw " in text or re.search(r"\bexpect\(", text), path.name
 
 
@@ -680,3 +680,79 @@ def test_http_trace_a_server_that_hangs_up_on_trace_refused_it_and_is_clean(stub
     lines, stderr = run_plugin("shapo_http_trace", server.port)
     assert finding(lines) is None
     assert "error" not in stderr.lower()
+
+# Binary protocol fixtures force the already-tested applicability input; the
+# loopback listener uses an ephemeral port, never a real SMB/RDP endpoint.
+def _run_binary_plugin(name, service_name, server, tmp_path):
+    source = (pulse_plugins.PLUGINS_DIR / f"{name}.rhai").read_text()
+    source = source.replace("fn run() {", f'fn run() {{ let service = "{service_name}";', 1)
+    script = tmp_path / f"{name}.rhai"
+    script.write_text(source)
+    result = subprocess.run([PULSE, "plugin", "run", str(script), f"127.0.0.1:{server.port}"], capture_output=True, text=True, timeout=30)
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+    return [line.strip() for line in clean.splitlines() if line.strip()], result.stderr
+
+
+def _smb2_response(mode):
+    packet = bytearray(128)
+    packet[:4] = b"\xfeSMB"
+    struct.pack_into("<H", packet, 4, 64)
+    struct.pack_into("<I", packet, 16, 1)
+    struct.pack_into("<HHH", packet, 64, 65, mode, 0x0210)
+    return len(packet).to_bytes(4, "big") + packet
+
+
+@needs_pulse
+@pytest.mark.parametrize("mode, expected", [(0, True), (1, True), (3, False)])
+def test_smb2_signing_is_observed_from_binary_negotiation(mode, expected, stub, tmp_path):
+    server = stub(b"", lambda _: _smb2_response(mode))
+    lines, errors = _run_binary_plugin("shapo_smb_signing", "smb", server, tmp_path)
+    assert (finding(lines) is not None) is expected, errors
+    assert not errors.strip(), errors
+    assert any(request[4:8] == b"\xfeSMB" for request in server.received)
+    assert all(len(request) == 108 for request in server.received)
+
+
+@needs_pulse
+@pytest.mark.parametrize("reply", [b"", b"\x00\x00\x00\xff", _smb2_response(0)[:40], _smb2_response(8), _smb2_response(0) + b"junk"])
+def test_smb_malformed_reply_is_an_error_not_a_clean_result(reply, stub, tmp_path):
+    server = stub(b"", lambda _: reply)
+    lines, errors = _run_binary_plugin("shapo_smb_signing", "smb", server, tmp_path)
+    assert finding(lines) is None and errors.strip()
+    assert "Function not found" not in errors
+
+
+@needs_pulse
+@pytest.mark.parametrize("kind, value, expected", [(2, 0, True), (3, 1, False), (3, 5, False), (3, 6, False)])
+def test_rdp_negotiation_distinguishes_standard_security_from_refusal(kind, value, expected, stub, tmp_path):
+    reply = bytes.fromhex("030000130ed00000000000") + bytes([kind, 0]) + struct.pack("<HI", 8, value)
+    server = stub(b"", lambda _: reply)
+    lines, errors = _run_binary_plugin("shapo_rdp_negotiation", "rdp", server, tmp_path)
+    assert (finding(lines) is not None) is expected, errors
+    assert not errors.strip(), errors
+    assert bytes.fromhex("030000130ee000000000000100080000000000") in server.received
+
+
+@needs_pulse
+@pytest.mark.parametrize("reply", [b"", b"\x03\x00", bytes.fromhex("030000130ed000000000000200080002000000"), bytes.fromhex("030000130ed000000000000300080002000000")])
+def test_rdp_malformed_or_unrequested_protocol_does_not_assert_policy(reply, stub, tmp_path):
+    server = stub(b"", lambda _: reply)
+    lines, errors = _run_binary_plugin("shapo_rdp_negotiation", "rdp", server, tmp_path)
+    assert finding(lines) is None and errors.strip()
+    assert "Function not found" not in errors
+
+
+@needs_pulse
+@pytest.mark.parametrize("accepted", [True, False])
+def test_smb1_only_reports_an_explicit_selected_dialect(accepted, stub, tmp_path):
+    packet = bytearray(69 if accepted else 37)
+    packet[:5] = b"\xffSMB\x72"
+    packet[9] = 0x80
+    packet[32] = 17 if accepted else 1
+    packet[33:35] = b"\0\0" if accepted else b"\xff\xff"
+    reply = len(packet).to_bytes(4, "big") + packet
+    server = stub(b"", lambda _: reply)
+    lines, errors = _run_binary_plugin("shapo_smb1", "smb", server, tmp_path)
+    assert (finding(lines) is not None) is accepted, errors
+    assert not errors.strip(), errors
+    assert any(request[4:9] == b"\xffSMB\x72" for request in server.received)
