@@ -195,6 +195,7 @@ def _collapse(suites: list[dict[str, Any]]) -> list[dict[str, Any]]:
 class Enumeration:
     complete: bool
     evidence: str | None = None
+    transport: str | None = None
     versions: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -230,4 +231,7 @@ def parse_enumeration(row: dict[str, Any]) -> Enumeration | None:
         return None
     return Enumeration(complete=block.get("complete") is True,
                        evidence="server_hello_selection" if block.get("evidence") == "server_hello_selection" else None,
+                       transport=block.get("transport") if block.get("transport") in (
+                           "direct", "smtp-starttls", "imap-starttls", "pop3-stls", "ftp-auth-tls",
+                           "ldap-starttls", "postgres-sslrequest", "mysql-sslrequest") else None,
                        versions=list(versions.values()))

@@ -538,3 +538,23 @@ def test_recorded_raw_engine_tls13_result_grades_observed_suites():
         "TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256"}
     assert version["server_preference"] is True
     assert {s["grade"] for s in version["ciphers"]} == {"A"}
+
+
+def test_starttls_transport_and_validated_curve_can_be_reported_as_observations():
+    row = _from_pulse(_row({"complete": False, "evidence": "server_hello_selection", "transport": "smtp-starttls", "versions": [
+        {"version": "TLSv1.3", "accepted": True, "ciphers": [{"name": "TLS_AES_128_GCM_SHA256", "kex_group": "x25519", "kex_bits": 253}]}]}))
+    assert row["enumeration_transport"] == "smtp-starttls"
+    assert row["cipher_versions"][0]["ciphers"][0]["grade"] == "A"
+    assert not row["cipher_versions"][0]["ciphers"][0].get("grade_upper_bound")
+    assert row["enumeration_complete"] is False
+
+
+def test_recorded_postgres_starttls_result_preserves_transport_and_measured_curve_grading():
+    payload = json.loads((Path(__file__).parent / "fixtures/pulse_tls/raw_postgres_tls13.json").read_text())
+    row = _from_pulse(payload["tls"][0])
+    assert row["enumeration_transport"] == "postgres-sslrequest"
+    assert row["enumeration_evidence"] == "server_hello_selection"
+    assert row["enumeration_complete"] is False
+    version = next(v for v in row["cipher_versions"] if v["version"] == "TLSv1.3")
+    assert len(version["ciphers"]) == 3 and version["server_preference"] is True
+    assert all(s["grade"] == "A" and not s.get("grade_upper_bound") for s in version["ciphers"])

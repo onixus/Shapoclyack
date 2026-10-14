@@ -721,3 +721,17 @@ def test_enabling_enumeration_invalidates_certificate_only_resume(tmp_path, monk
     assert len(calls) == 1 and "--tls-enum" in calls[0]
     calls, _ = _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE], done_hosts={"10.0.0.1"}, tls_enum=True)
     assert calls == []
+
+
+def test_old_enum_receipt_without_starttls_request_contract_is_reprobed(tmp_path, monkeypatch):
+    _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE], tls_enum=True)
+    path = tmp_path / "pulse" / "raw.json"
+    raw = json.loads(path.read_text())
+    raw["adapter"].pop("tls_enumeration_contract")
+    old_hosts_file = path.parent / f"chunk_{chunk_key(['10.0.0.1'], [22], 'connect/tls-enum')}.hosts.txt"
+    old_hosts_file.write_text("10.0.0.1\n")
+    path.write_text(json.dumps(raw))
+    calls, _ = _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE], tls_enum=True, done_hosts={"10.0.0.1"})
+    assert len(calls) == 1
+    assert Path(calls[0][calls[0].index("--targets-file") + 1]) != old_hosts_file
+    assert json.loads(path.read_text())["adapter"]["tls_enumeration_contract"] == "raw-starttls-v1"

@@ -640,6 +640,7 @@ def findings_from_pulse_tls(
             "negotiated_protocol": neg_label,
             **({"enumeration_complete": enumeration.complete} if enumeration is not None else {}),
             **({"enumeration_evidence": enumeration.evidence} if enumeration is not None and enumeration.evidence else {}),
+            **({"enumeration_transport": enumeration.transport} if enumeration is not None and enumeration.transport else {}),
             "accepts_weak_protocols": [
                 _normalize_proto_label(str(p)) for p in (weak_accepted or [])
             ]

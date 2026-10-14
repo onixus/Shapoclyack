@@ -175,3 +175,26 @@ Enumeration uses a 30-second endpoint budget, with 16 KiB record limits.
 Enabling it invalidates certificate-only resume receipts. Certificate probe
 fallback remains available independently. GOST and exploit-specific TLS
 vulnerability checks are outside this enumeration.
+
+The Pulse 1.4.0 candidate also selects native STARTTLS transports for SMTP
+(25/587), IMAP (143), POP3 (110), FTP (21), LDAP (389), PostgreSQL (5432),
+and MySQL (3306), or an identified equivalent service on a nonstandard port.
+Every raw probe starts a new connection and repeats the bounded upgrade.
+Capability or upgrade rejection is inconclusive TLS coverage; no authentication
+credentials or database queries are sent. STARTTLS certificate collection
+skips direct JARM/HTTP probes. Normal TLS1.3 ServerHello x25519 shares record
+the group and its 253-bit curve size; HRR and TLS1.2 exchange sizes remain
+unknown and retain upper-bound grading.
+
+`--rate` paces additional connection starts across enumeration endpoints. It
+does not enforce a packet limit within multi-message upgrade exchanges, so
+`per_host_rate` scan policy disables cipher enumeration. The same restriction
+applies to a locally configured per-host packet ceiling. Passive TLS evidence
+parsing remains available. Released Pulse 1.3.0 lacks these capabilities; keep
+`enumerate_ciphers` off until an approved binary carrying the new engine is
+installed. Source, local protocol fixtures, and release acceptance remain
+separate gates.
+
+TLS enumeration resume receipts also carry the requested `raw-starttls-v1`
+contract. Earlier candidate receipts without it are re-probed; this marker
+records the request and does not attest installed engine capability.

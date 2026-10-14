@@ -80,7 +80,8 @@ NON_SECONDARY_ACTIVE_STAGES: dict[str, str] = {
     "verify_alive": "primary: discovery.verify.rate held to max_discover_rate",
     "pulse": (
         "primary: pulse rate/concurrency/host_parallel; off with skip_service_probe; "
-        "its Rhai plugins (serial, outside --rate) are off under per_host_rate"
+        "its Rhai plugins and TLS enumeration are off under per_host_rate; "
+        "enumeration paces connections, not packets in STARTTLS exchanges"
     ),
     "nuclei": "primary: rate_limit, concurrency; off with skip_service_probe",
     # Third-party sources and DNS: no connection to an address in scope.
@@ -418,6 +419,12 @@ def apply_policy(config: AppConfig, policy: dict[str, Any]) -> AppConfig:
         max_concurrency=max_concurrency,
         skip_service_probe=skip_service_probe,
     )
+
+    if per_host_rate is not None or config.runtime.per_host_rate is not None or skip_service_probe:
+        tls_config = secondary_updates.get("tls_posture", config.tls_posture)
+        secondary_updates["tls_posture"] = tls_config.model_copy(update={"enumerate_ciphers": False})
+        if tls_config.enumerate_ciphers:
+            logging.info("Scan policy: TLS suite enumeration disabled; upgrade exchanges have no per-host packet limiter")
 
     # Batching is deliberately not among the knobs above. Narrowing a batch to
     # one address is the only way "one host at a time" becomes literally true,

@@ -344,6 +344,10 @@ def _port_spec(ports: list[int]) -> str:
     return ",".join(str(p) for p in ports)
 
 
+# Requested feature contract; older candidate receipts did not request STARTTLS.
+_TLS_ENUMERATION_CONTRACT = "raw-starttls-v1"
+
+
 def build_pulse_command(
     *,
     bin_path: str,
@@ -946,10 +950,11 @@ def _run_pulse_probe(
             if not isinstance(previous, dict):
                 raise ValueError("expected an object")
             previous_adapter = previous.get("adapter") or {}
-            if bool(previous_adapter.get("tls_enum")) == tls_enum:
+            same_tls_contract = not tls_enum or previous_adapter.get("tls_enumeration_contract") == _TLS_ENUMERATION_CONTRACT
+            if bool(previous_adapter.get("tls_enum")) == tls_enum and same_tls_contract:
                 done, cached = retain_completed_payload(grouped, requested_done, previous)
             else:
-                logging.warning("pulse: TLS enumeration setting changed; re-probing completed hosts")
+                logging.warning("pulse: TLS enumeration request contract changed; re-probing completed hosts")
             prior = ((previous.get("adapter") or {}).get("plugins") or {}) if done else {}
             if verified:
                 same = str(prior.get("digest") or "") == plugin_receipt["digest"]
@@ -1028,6 +1033,7 @@ def _run_pulse_probe(
             "cve": cve,
             "cve_online": cve_online,
             "tls_enum": tls_enum,
+            "tls_enumeration_contract": _TLS_ENUMERATION_CONTRACT if tls_enum else None,
             "ruleset": None,
             "pulse_version": None,
             "plugins": plugin_receipt,
@@ -1071,7 +1077,7 @@ def _run_pulse_probe(
     consecutive_timeouts = 0
     scan_mode = "syn" if syn else "connect"
     if tls_enum:
-        scan_mode += "/tls-enum"
+        scan_mode += f"/tls-enum:{_TLS_ENUMERATION_CONTRACT}"
 
     logging.info(
         "pulse_probe plan: %s unique input TCP endpoints, %s pending, "
@@ -1339,6 +1345,7 @@ def _run_pulse_probe(
         "cve": cve,
         "cve_online": cve_online,
         "tls_enum": tls_enum,
+        "tls_enumeration_contract": _TLS_ENUMERATION_CONTRACT if tls_enum else None,
         # The oldest ruleset any chunk matched with: one binary has one, and
         # if two ever answered, the claim made for the run is the weaker one.
         "ruleset": min(rulesets, key=ruleset_order) if rulesets else None,
