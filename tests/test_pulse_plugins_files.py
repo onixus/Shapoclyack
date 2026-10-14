@@ -919,3 +919,34 @@ def test_ssh_hostkey_verifies_real_exchange_signature_and_rejects_bad_peers(case
         assert not server_errors, server_errors
     finally:
         listener.close()
+
+
+@needs_pulse
+@pytest.mark.parametrize("case", ["async", "compound", "tree-id", "session-id", "buffer-header-overlap", "buffer-overrun"])
+def test_direct_smb_signing_rejects_uncorrelated_headers_and_bad_security_buffers(case, stub, tmp_path):
+    reply = bytearray(_smb2_response(3))
+    if case == "async":
+        struct.pack_into("<I", reply, 20, 3)
+    elif case == "compound":
+        struct.pack_into("<I", reply, 24, 64)
+    elif case == "tree-id":
+        struct.pack_into("<I", reply, 40, 1)
+    elif case == "session-id":
+        struct.pack_into("<Q", reply, 44, 1)
+    elif case == "buffer-header-overlap":
+        struct.pack_into("<HH", reply, 124, 120, 1)
+    elif case == "buffer-overrun":
+        struct.pack_into("<HH", reply, 124, 128, 1)
+    server = stub(b"", lambda _: bytes(reply))
+    lines, errors = _run_binary_plugin("shapo_smb_signing", "smb", server, tmp_path)
+    assert finding(lines) is None and "script error" in errors
+    assert "Function not found" not in errors
+
+
+@needs_pulse
+@pytest.mark.parametrize("size", [0, 3, 4, 63, 64, 67, 127, 131])
+def test_direct_smb_signing_short_headers_are_unknown_before_field_access(size, stub, tmp_path):
+    server = stub(b"", lambda _: _smb2_response(3)[:size])
+    lines, errors = _run_binary_plugin("shapo_smb_signing", "smb", server, tmp_path)
+    assert finding(lines) is None and "script error" in errors
+    assert "Function not found" not in errors and "index out of bounds" not in errors.lower()
