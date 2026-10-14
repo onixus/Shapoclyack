@@ -470,7 +470,7 @@ sensor, for a container sensor as a mounted file.
 | Source | When | Covers |
 |--------|------|--------|
 | `nmap-nse` | SSL scripts present in the Nmap XML of a run recorded before #548 (read-only) | cert validity / self-signed heuristic / key size and signature digest + full cipher grades and every offered version |
-| `pulse-tls` | `pulse/tls.json` has rows | cert validity / self-signed / Pulse's own legacy-protocol probe (`requires_confirmation`); with a suite enumeration (see below, expected GenDec#34) also the offered versions and suites with A-F grades |
+| `pulse-tls` | `pulse/tls.json` has rows | cert validity / self-signed / Pulse's own legacy-protocol probe (`requires_confirmation`); with a suite enumeration (see below, candidate GenDec#34/39) also observed selections/suites with A-F grades |
 | `pulse-tls-probe` | fallback handshake | cert and chain validity / self-signed / chain trust / key size and signature digest / TLS 1.0 and 1.1 acceptance |
 
 Artifacts: `tls_posture.json` (same shape; `source` field), plus
@@ -482,8 +482,8 @@ on, the stdlib probe now also runs on every open port of `probe_tls_ports` that
 has no Pulse row, and those rows join `tls_posture.json` with their own
 `source: pulse-tls-probe` (the run-level `source` stays `pulse-tls`). They count
 toward `max_targets` together with the Pulse rows (`truncated` is set when either
-side is cut); `tls_probe.json` holds just the probed rows. Ports outside
-`probe_tls_ports` (465, 636, 993, 3306, ...) are still not looked at, and the
+side is cut); `tls_probe.json` holds just the probed rows. The stdlib fallback does not look outside
+`probe_tls_ports` (465, 636, 993, 3306, ...); the candidate opt-in native enumerator has separate direct/STARTTLS selection, and the
 budget is spent on open `probe_tls_ports` endpoints whether or not they speak TLS.
 The "443 and 8443 only" figure was measured live on the corpus stand with extra
 `openssl s_server` listeners (443, 8443, 465, 636, 993, 9443); the measurement is
@@ -491,57 +491,42 @@ in ADR 0002, section "TLS (#545)", not in the recorded fixtures.
 
 ### Cipher suites and A-F grades on the Pulse path
 
-Nmap's `ssl-enum-ciphers` brings a letter for every suite; Pulse reports only
-what the server negotiated plus the legacy protocols it accepts, so on this path
-`cipher_versions[].ciphers` is empty and there are no `weak_cipher_grade` /
-`weak_cipher_name` findings. Two pieces are in place for when the engine learns
-to enumerate suites (opt-in, [GenDec#34](https://github.com/onixus/GenDec/issues/34)):
+Released/pinned Pulse v1.3.0 does not enumerate suites. The prepared 1.4.0
+source candidate adds `--tls-enum`, requested only when both
+`tls_posture.enabled` and `tls_posture.enumerate_ciphers` are true (the latter
+is off by default). Dockerfiles/workflows/checksum pins still select 1.3.0:
+source code is not an installed or signed-release capability.
 
-* **Our grader**, `scanner/pipeline/tls_grading.py`: a letter A-F per suite from
-  the suite name (IANA, or Nmap's `TLS_AKE_WITH_*` for TLS 1.3) and, when known,
-  the key-exchange size or group. Method: the public Qualys SSL Labs *SSL Server
-  Rating Guide* (key-exchange and cipher strength to points, points to a letter),
-  with ceilings: anonymous key exchange, NULL, EXPORT and 64-bit-or-less keys give
-  F; RC4 and 64-bit block ciphers (3DES, IDEA, GOST 28147, Magma) give C;
-  finite-field DH or RSA exchange under 2048 bits gives B (under 1024, D); a
-  finite-field DH of unknown size gives B. A suite it cannot parse has grade
-  `null`, never a guessed letter, and does not count toward `least_strength`.
-  When the key exchange is unknown (no `kex_bits` / `kex_group`) the letter is the
-  best the cipher allows and the suite carries `"grade_upper_bound": true`. Such a
-  suite cannot produce a `weak_cipher_grade` because of its key exchange: a
-  1024-bit DH (Logjam) stays invisible until the engine reports `kex_bits`.
-  The `weak_cipher_grade` threshold (C-F) is the same for every source.
-  It was checked against the recorded Nmap output of the corpus; that sample only
-  contains A and F, so the C-E rules rest on the guide, not on Nmap.
-* **A reader for the enumeration**, `scanner/pipeline/tls_enumeration.py`. The
-  form below is **expected from GenDec#34 and is Shapoclyack's proposal; no Pulse
-  release emits it today.** It would sit in a `tls[]` row:
+The candidate uses raw ClientHellos for SSLv2/SSLv3…TLS1.3 and native STARTTLS
+for SMTP/IMAP/POP3/FTP/LDAP/PostgreSQL/MySQL. Each endpoint has a 30-second,
+256-connection budget; per-connection deadlines are at most 3 seconds and
+first-flight collection is limited to eight records/16 KiB. Shared `--rate`
+paces connection starts, not packets within an upgrade. A per-host packet
+ceiling disables enumeration. Missing or inconclusive results never mean
+rejection; a raw ServerHello selection is not a completed/authenticated session.
 
-  ```json
-  "enumeration": {"complete": true, "versions": [
-    {"version": "TLSv1.2", "accepted": true, "server_preference": true,
-     "ciphers": [{"code": "0xC02F", "name": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
-                  "kex_group": "x25519", "kex_bits": 253}]},
-    {"version": "SSLv3", "accepted": false}]}
-  ```
+`tls_grading.py` and `tls_enumeration.py` grade observed IANA names from the
+bundled registry, excluding GOST/signaling suites. Letter thresholds stay the
+established SSL Labs-derived contract; the historical Nmap corpus only tests
+A/F parity, not complete letter or coverage parity. Unknown sizes retain
+`grade_upper_bound`, and raw-selection findings always require confirmation,
+even when the advertised catalog coverage is complete.
 
-  The reader accepts a version as `TLSv1_2`, `TLSv1.2`, `TLS 1.2`, `0x0303` or
-  the int `771`, `SSLv2`/`SSLv3` (a decimal string such as `"771"` is not read);
-  a suite as a name string or an object; a `code` as an int or an `0x` hex string
-  (a bare `"0005"` is ambiguous and ignored); a name that is not IANA-style
-  (`RC4-SHA`) is replaced by the one the code stands for; and names a suite given by code alone from the IANA table
-  `scanner/pipeline/pulse_data/tls_cipher_suites.tsv` (IANA *TLS Cipher Suites*
-  registry, fetched 2026-10-10; rebuilt by `scripts/build-pulse-tls-ciphers.py`).
-  `kex_bits` is the RSA/DH modulus size for a finite-field exchange and the
-  **curve size** for an EC one (x25519: 253); an EC value over 571 is not a curve
-  size and is ignored. Repeated suite names collapse to the worst grade. Anything
-  it cannot read is skipped, and one unreadable suite or row never fails the stage. Findings keep their existing kinds and
-  shapes (`weak_protocol`, `weak_cipher_grade`, `weak_cipher_name`; `source:
-  pulse-tls`) and come from the same classifier as the nmap path. If `complete`
-  is not exactly `true` (or is absent) every finding drawn from the enumeration
-  carries `requires_confirmation`, and a suite or version missing from the list
-  is never read as "not accepted". The row also gets `enumeration_complete`.
-  Without an `enumeration` key nothing changes.
+Normal TLS1.3 x25519 shares and TLS≤1.2 Certificate/SKE fields can supply
+`kex_group`, `kex_bits` and `kex_evidence`. RSA/DHE sizes are modulus bits;
+EC sizes are curve bits, not RSA-equivalent bits. Signatures/chain trust are
+not authenticated here; HRR, static ECDH/PSK and missing/conflicting parameters
+remain unknown. Finite-field exchange sizes below 2048 (EC below 224) produce
+`weak_key_exchange`; this includes a 1024-bit DH suite rated B, without
+inventing a C-F grade. Existing `weak_protocol`, `weak_cipher_grade` and
+`weak_cipher_name` forms remain.
+
+`enumeration_complete`, `enumeration_evidence` and `enumeration_transport`
+retain the measurement boundary. Resume receipts/chunk keys carry requested
+`raw-starttls-v2`; older candidate contracts re-probe rather than reuse unknown
+exchange coverage. The marker records the request, not binary capability.
+See [configuration/limits](pulse-endpoints.md#optional-tls-suite-enumeration)
+and [native fixture provenance](../tests/fixtures/pulse_tls/README.md).
 
 ### What the probe checks, and what it can establish
 
@@ -630,7 +615,7 @@ not run never reads as a clean result:
     scanner host is never reported as "server refuses TLS 1.0");
   * `not_evaluated` with `reason: disabled` — `probe_legacy_protocols` is off;
   * `not_testable` — SSLv2 and SSLv3, always: modern OpenSSL cannot send them;
-    nmap `ssl-enum-ciphers` can.
+    the candidate raw Pulse enumerator covers these separately. This restriction applies to the stdlib fallback.
 * `checks.chain_trust` — `trusted` (with `store` and `validity_checked`),
   `untrusted` (with `verify_code`), `inconclusive` (no handshake completed),
   `not_evaluated` (by `chain_trust`: `reason: internal_address` or
@@ -659,7 +644,7 @@ Limits worth knowing:
   `inconclusive`: the probe cannot tell that from a refused version. The probe
   offers OpenSSL's `DEFAULT` list at security level 0, which on OpenSSL 3 holds
   no RC4/DES/NULL/EXPORT/anon suite: it cannot see weak ciphers at all, and
-  `weak_cipher_name` comes from nmap `ssl-enum-ciphers` only.
+  `weak_cipher_name` needs the candidate native enumeration or historical nmap output, not this stdlib fallback.
 * Where chain trust is `not_evaluated` (an internal address under
   `public_only`), the chain's validity is not judged either: an expired
   intermediate on an internal endpoint is visible only with `ca_bundle` or
@@ -708,11 +693,10 @@ tls_posture:
   hostname_mismatch: true       # default true
 ```
 
-Full cipher-suite enumeration (the A–F grade Nmap's `ssl-enum-ciphers` gave)
-has no source on the Pulse path until Pulse enumerates suites
-([GenDec#34](https://github.com/onixus/GenDec/issues/34), #545): a real scan
-gets no grade today. Key size and signature algorithm on the probe
-path need the `cryptography` package (both images; see the limits above).
+Cipher enumeration/grading is available in the prepared source candidate,
+with the opt-in settings and evidence limits above. The default/pinned 1.3.0
+binary does not acquire it from a config change. Key size and signature
+algorithm on the stdlib probe path still need `cryptography` (both images).
 
 ## CVE stack without nmap-vulners (Phase 4.2)
 
@@ -870,6 +854,11 @@ K8s caps (`NET_RAW` / `NET_ADMIN` + `allowPrivilegeEscalation: true`) remain
 required for **naabu** and Pulse SYN/OS — see `k8s/README.md`.
 
 ## Reference corpus: Nmap versus Pulse (#541)
+
+This immutable v1.3.0 corpus remains the historical baseline. Its recorded
+plugin map and counts do not describe current 1.4.0 candidate capabilities.
+Candidate unit/native fixtures add separate evidence; the historical recordings
+are not silently rewritten or counted as final deployed acceptance.
 
 The former `pulse_shadow` module compared endpoints and OS family on a live run;
 its comparison now lives in `scripts/pulse_corpus.py`. The golden corpus

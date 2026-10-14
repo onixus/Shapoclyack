@@ -233,7 +233,9 @@ Key = tuple[str, int, str]  # (host, port, protocol)
 #: The NSE scripts of ``default,safe`` that identified something on this stand
 #: (#544, ADR 0002), and what Shapoclyack's Rhai plugins do about each. ``plugin``
 #: is the file stem; ``None`` means nothing does, and ``why`` is the reason
-#: (the sandbox limits are GenDec v1.3.0's, ``docs/pulse-plugins.md``).
+#: Frozen v1.3.0 recording map, not current candidate capability. Binary/UDP
+#: and native 1.4.0 helpers are described separately in ``docs/pulse-plugins.md``;
+#: do not rewrite recorded evidence/counts as candidate acceptance.
 NSE_PLUGIN_MAP: dict[str, dict[str, str | None]] = {
     "ssh2-enum-algos": {"plugin": "shapo_ssh_algorithms", "covers": "weak algorithms only, not the full lists"},
     "ssh-hostkey": {"plugin": None, "why": "key fingerprints need the key exchange: binary packets"},

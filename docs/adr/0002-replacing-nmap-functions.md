@@ -177,7 +177,7 @@ data and measurement live in Shapoclyack.**
 | L2: ARP, NetBIOS and mDNS names | discovery (ARP exists; MAC, names and a packet-rate cap in structured output: GenDec#35) | scope, `max_hosts`, rate cap, the artifact shape `l2_discovery` writes today | — |
 | TLS suites, versions, SSLv2/SSLv3 | enumeration with its own ClientHellos | grading and thresholds in `tls_posture` | — |
 | NSE `default,safe` identification (SSH algorithms, SMB signing, RDP NTLM info, FTP anonymous, SNMP…) | the Rhai sandbox | the plugins (`scanner/pipeline/pulse_data/plugins/`, passed with `--script-dir`) and the parser for their findings | — |
-| NSE `vuln` checks | TLS-level ones (Heartbleed and the like) with the enumeration above | the list of checks and where each lands, [script by script](../nse-vuln-coverage.md) | network templates first (a curated table run by a network pass; v9.9.4 has one for SMB signing and none for MS17-010); Rhai only for what has none and the sandbox can send (HTTP TRACE) |
+| NSE `vuln` checks | planned TLS-level probes; enumeration does not implement Heartbleed/CCS/Ticketbleed | the list of checks and where each lands, [script by script](../nse-vuln-coverage.md) | network templates first (a curated table run by a network pass; v9.9.4 has one for SMB signing and none for MS17-010); Rhai only for what has none and the sandbox can send (HTTP TRACE) |
 | CVE by version (`vulners`, Vulscan) | `--cve` stays a secondary source | `retro_match` is authoritative (API side, offline NVD ranges; only as complete as its dataset, [measured](../nse-vuln-coverage.md#cve-by-version-vulners-vulscan)) | — |
 | Quality reference (`pulse_shadow`) | — | a golden corpus recorded **before** Nmap goes, replayed in CI and on a kind stand | — |
 | `nmap_timing` | — | mapped onto Pulse `rate` / `concurrency` in profiles | — |
@@ -216,17 +216,17 @@ TCP/UDP APIs and one deadline per exchange. It is not yet a released/pinned
 engine dependency, so source and loopback validation do not establish shipped
 sensor acceptance.
 
-| Function | Candidate status | Remaining boundary |
+| Function | Candidate source status | Remaining boundary |
 |---|---|---|
-| `ssh2-enum-algos` weaknesses | `shapo_ssh_algorithms` | algorithm advertisement only |
-| `ssh-hostkey` | unimplemented | requires SSH key exchange and fingerprint extraction |
-| `ftp-anon` | anonymous login checked | no PASV directory listing |
-| cleartext services | capability checks implemented | no STARTTLS handshake continuation |
-| SMB2 signing | `shapo_smb_signing` parses selected SecurityMode | no session or relay exploitability test |
-| SMB1 support | `shapo_smb1` confirms NT LM 0.12 selection | not all dialects; port 139 remains exposure-only |
-| RDP standard security | `shapo_rdp_negotiation` checks acceptance without mandatory NLA | no full encryption enumeration or NTLM host info |
-| SNMP | UDP engine API prepared | community/identity plugin not implemented |
-| VNC | exposure observation | authentication negotiation not implemented |
+| `ssh2-enum-algos` weaknesses | `shapo_ssh_algorithms` | advertisement, not a complete algorithm inventory |
+| `ssh-hostkey` | `shapo_ssh_hostkey`: curve25519-sha256 / Ed25519 exchange signature verified | possession on this connection; no known-host trust; other algorithms unknown |
+| `ftp-anon` | anonymous login checked | no PASV directory listing or second-port connection |
+| cleartext services / STARTTLS | capability plugin plus opt-in native TLS upgrade enumeration | plugin capability alone is not a completed TLS handshake |
+| SMB inventory/signing | `shapo_smb_protocols`: SMB1 and single offers for SMB2 2.0.2/2.1/3.0/3.0.2/3.1.1; direct 445 or RFC1002 on 139 | selected dialects/signing only; no relay exploit proof |
+| MS17-010 | separate `shapo_ms17_010` read-only anonymous IPC$/FID0 status hypothesis | non-indicator, denial and error stay UNKNOWN; no exploit or patch attestation |
+| RDP | standard-security negotiation plus `shapo_rdp_ntlm_info` X.224/TLS/CredSSP type2 inventory | no type3, credentials, desktop session, authenticated identity or full encryption enumeration |
+| SNMP | `shapo_snmp_info`: one UDP SNMPv2c GET with `public`, sysDescr/sysName | standalone/native UDP only; production adapter remains TCP-only; no guessing/SET |
+| VNC | `shapo_vnc_security`: RFB3.3/3.7/3.8 security advertisements | no client security selection, ClientInit or desktop/session acceptance |
 
 The LOW exposure plugins remain independent observations. New negotiation
 plugins do not turn their reachability evidence into vulnerability proof.
@@ -304,11 +304,19 @@ Decided:
   (`No reply from server (TIMEOUT)`); no TLS-level `vuln` script reported a
   vulnerability.
 
-The candidate enumerates direct TLS suites and protocol support with explicit
-completion/error metadata and bounded connections. Deployment still depends on
-a signed engine release and verified pin. STARTTLS (SMTP, IMAP, POP3, FTP, LDAP,
-PostgreSQL, MySQL), DH/ECDH key sizes (`kex_bits`) and server preference remain
-unimplemented; missing metadata is not evidence of a strong key exchange.
+The Pulse 1.4.0 source candidate enumerates raw SSLv2/SSLv3…TLS1.3
+selection and server preference. Opt-in STARTTLS covers SMTP, IMAP, POP3,
+FTP, LDAP, PostgreSQL and MySQL. Visible Certificate/ServerKeyExchange facts
+supply RSA/DHE modulus sizes and supported ECDHE curves; normal TLS1.3 x25519
+shares supply curve size. HRR, static ECDH/PSK and unavailable parameters remain
+unmeasured. Raw selection and unverified signatures are not authenticated/full
+handshake acceptance; findings require confirmation and missing sizes keep
+upper-bound grades. GOST and vulnerability-specific malformed-record probes
+(Heartbleed, CCS injection, Ticketbleed) are not implemented.
+
+Local native OpenSSL fixtures record TLS1.2 ECDHE/DHE/RSA and a PostgreSQL
+SSLRequest→TLS1.3 shim. They do not establish an installed release or complete
+native-service fleet acceptance. See [TLS contracts and limits](../pulse-endpoints.md#optional-tls-suite-enumeration).
 The measured v1.3.0 results above remain the historical comparison baseline.
 
 ## Work items
@@ -343,31 +351,23 @@ XML of past runs, `nmap-nse` findings and `prober: nmap` rows stay readable
 (`scanner/pipeline/legacy_nmap.py`); the golden corpus of #541 stays as the
 reference it was recorded to be.
 
-**Current prepared candidate; epic remains open.** #548 removed the runtime
-Nmap paths before every replacement was complete (owner decision, 2026-10-11).
-The current work adds adapter flags, direct TLS enumeration/grading and binary
-SMB/RDP negotiation plugins. GenDec#31/#32 are merged upstream; GenDec#39 is
-the combined engine candidate. No signed release/pin or deployed sensor
-acceptance is claimed here.
+**Prepared source candidate; epic remains open.** #548 removed runtime Nmap
+paths before every replacement was complete (owner decision, 2026-10-11).
+Current source adds input isolation, bounded raw TLS/STARTTLS and exchange-size
+facts, verified SSH host-key observations, native SMB/RDP/VNC dialogue helpers,
+and standalone/native UDP SNMP inventory. GenDec#31/#32 are merged upstream;
+[GenDec#39](https://github.com/onixus/GenDec/pull/39) is the combined engine candidate.
 
-1. **TLS (#545):** direct TLS enumeration/grading is prepared and tested, but
-   STARTTLS, key-exchange sizes, server preference and release acceptance remain.
-2. **Plugin coverage:** SMB2 signing, SMB1 support and RDP standard-security
-   acceptance are prepared. `smb-vuln-ms17-010`, `smb-vuln-ms10-061`, full
-   `smb-protocols`, `rdp-enum-encryption`, `rdp-ntlm-info`, SSH host keys,
-   SNMP and VNC authentication remain gaps; negotiation is not exploit proof.
-3. **Inputs (#543):** the adapter prepares `--no-nmap-data`, own services/probe
-   tables, `sinfp` and private HOME. Upstream matched-probe naming and ambient
-   database restrictions need a signed release containing #31/#32 and a verified
-   pin before the installed-engine requirement is fulfilled.
+Dockerfiles, publish workflows and `scripts/pulse-pinned.sha256` still select
+v1.3.0. The v1.4.0 candidate has not been published/signed/pinned here. Source
+and local fixtures are not shipped sensor acceptance; final combined gates,
+reviewed publication, signature/digest verification and a real pin update are
+still required. Do not fabricate hashes or treat this ADR as epic closure.
 
-A verification re-scan can no longer re-run an NSE script, so a finding that only
-an NSE script detected stays inconclusive after it and is closed by hand.
-
-## Not decided here
-
-- How Pulse itself is distributed — [ADR 0001](0001-pulse-distribution-model.md).
-- Whether Naabu or Pulse finds ports — [#452](https://github.com/onixus/Shapoclyack/issues/452).
-- How Nuclei templates are planned from Pulse services — [#450](https://github.com/onixus/Shapoclyack/issues/450).
-- GOST cipher suites in TLS posture: Nmap did not cover them either; a separate
-  question for the Russian compliance work.
+Remaining limits: production Pulse enrichment is TCP-only, so SNMP UDP cannot
+be verified by a TCP completion receipt. SSH trust/other algorithms, complete
+RDP encryption/authentication, VNC session authentication, FTP PASV, SMB
+print-spooler RPC and vulnerability-specific TLS checks remain unsupported.
+DoS, write/exploit, brute-force and credential-guessing checks described in
+[NSE coverage](../nse-vuln-coverage.md) remain deliberately excluded. Negotiation,
+version matches and status hypotheses never establish exploitability or a patch.

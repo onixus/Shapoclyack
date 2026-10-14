@@ -1,15 +1,13 @@
 # Pulse plugins
 
 Rhai plugins that Shapoclyack hands to Pulse with `--script-dir`
-([ADR 0002](adr/0002-replacing-nmap-functions.md), work item
-[#544](https://github.com/onixus/Shapoclyack/issues/544)). They are what is left
-of Nmap's NSE `default,safe` identification that Pulse's scripting sandbox can
-do: weak SSH algorithms, anonymous FTP, services that cannot start TLS, the
-reachability of SMB, RDP and VNC, binary SMB signing/SMB1 and RDP security
-negotiation, and HTTP TRACE over plain HTTP. They live in
-`scanner/pipeline/pulse_data/plugins/`, beside the code and not under
-`scanner/data/`, for the same reason `services.tsv` does: an enrichment volume
-mounted over `scanner/data` would hide them.
+([ADR 0002](adr/0002-replacing-nmap-functions.md), [#544](https://github.com/onixus/Shapoclyack/issues/544)).
+Candidate content covers weak SSH advertisements, verified Ed25519 host-key
+observations, anonymous FTP, cleartext capabilities, plain HTTP TRACE,
+SMB dialect/signing and MS17-010 status hypotheses, RDP negotiation/type2
+inventory, VNC security advertisements, and standalone UDP SNMP inventory.
+The files live in `scanner/pipeline/pulse_data/plugins/`, where an enrichment
+volume mounted over `scanner/data` cannot hide them.
 
 On by default wherever Pulse runs (`service_probe.backend: pulse`, the only
 backend). Off with `service_probe.pulse.plugins: false` (also per
@@ -17,11 +15,12 @@ speed profile under `profiles.<mode>.pulse.plugins`).
 
 ## Candidate content and engine dependency
 
-The source tree contains the plugins below. The three binary negotiation
-plugins require [GenDec#39](https://github.com/onixus/GenDec/pull/39). That engine
-change is a prepared candidate, not a released or pinned Pulse binary here.
-The existing v1.3.0 release cannot execute these plugins; a signed release and
-verified pin update are required before deployment acceptance.
+These are Pulse 1.4.0 source-candidate capabilities requiring
+[GenDec#39](https://github.com/onixus/GenDec/pull/39): bounded binary exchanges
+and native stateful protocol helpers. Dockerfiles, publish workflows and the
+checksum pin still select v1.3.0. It cannot provide these new mechanisms;
+source fixtures do not establish deployed acceptance. Final combined gates,
+reviewed signed publication and a verified pin update are required first.
 
 ## Plugins
 
@@ -37,11 +36,17 @@ verified pin update are required before deployment acceptance.
 | `shapo_smb_signing` | Selected SMB2 NEGOTIATE response does not require signing; offers SMB 2.0.2 and 2.1 | MEDIUM | signing-policy portion of `smb2-security-mode` |
 | `shapo_smb1` | SMB1-only NEGOTIATE explicitly selects NT LM 0.12 | MEDIUM | SMB1-support portion of `smb-protocols` |
 | `shapo_rdp_negotiation` | X.224 negotiation accepts standard RDP security without mandatory NLA | MEDIUM | standard-security acceptance; not full `rdp-enum-encryption` |
+| `shapo_ssh_hostkey` | Verified curve25519-sha256 / Ed25519 exchange signature and SHA256 host-key fingerprint | INFO observation; no known-host trust  candidate native observation |
+| `shapo_snmp_info` | One UDP SNMPv2c `public` GET of sysDescr/sysName | INFO; standalone/native UDP, not production adapter enrichment  candidate native observation |
+| `shapo_smb_protocols` | SMB1 and SMB2 2.0.2/2.1/3.0/3.0.2/3.1.1 selections/signing, including RFC1002 on 139 | MEDIUM when signing is not required; otherwise INFO inventory  candidate native observation |
+| `shapo_ms17_010` | Anonymous IPC$/FID0 Peek status indication | Positive hypothesis only; every non-indicator/error UNKNOWN, never patch proof  candidate native observation |
+| `shapo_rdp_ntlm_info` | X.224→TLS→CredSSP NTLM type2 host/domain/DNS/build/time fields | INFO unauthenticated inventory; no type3/credentials/session  candidate native observation |
+| `shapo_vnc_security` | RFB3.3/3.7/3.8 security-type advertisements | MEDIUM hypothesis when None is advertised; no security selection or desktop session  candidate native observation |
 
-The two exposure plugins still claim reachability only. The separate binary
-plugins observe signing policy, SMB1 acceptance and standard RDP negotiation.
-They do not authenticate, demonstrate exploits, enumerate every dialect or
-retrieve NTLM host information.
+The two exposure plugins still claim reachability only. Negotiation and
+inventory observations do not establish relay/exploitability, trusted identity,
+authenticated access or patch state. INFO records are retained as informational
+plugin observations; the report maps their severity to unknown.
 
 Pulse's own rules already raise `exposure` findings for SMB and RDP (the
 EternalBlue and BlueKeep hypotheses); the plugin findings are separate rows
@@ -53,9 +58,9 @@ The GenDec#39 candidate adds `probe_send_hex` and `probe_udp_hex`: strict hex
 requests and byte-preserving hex replies, restricted to the bound numeric IP
 and port, with a shared eight-exchange budget. TCP connect/write/read share one
 50–5000 ms deadline; UDP uses a connected peer and the same deadline, send
-limit (4 KiB) and receive limit (16 KiB). Shipped negotiation plugins request
-1500 ms. UDP availability does not implement SNMP or mean that TCP and UDP
-service discovery are interchangeable.
+limit (4 KiB) and receive limit (16 KiB). Candidate negotiation plugins request
+1500 ms. The SNMP plugin uses UDP explicitly; UDP support does not make TCP completion
+receipts interchangeable with UDP results.
 
 Pulse v1.3.0 historically had text-only UTF-8 payloads, sanitised replies,
 no UDP API and a timeout reset on each read. Those measured restrictions
@@ -63,14 +68,18 @@ explain the original GenDec#38 gap; GenDec#39 addresses the engine mechanisms,
 not all protocol coverage. The existing SSH algorithm plugin continues to
 parse sanitised ASCII name lists; it does not use the new binary API.
 
-Remaining functions include SSH host-key exchange/fingerprints, SNMP
-community/identity enumeration, RDP NTLM information and encryption strength,
-VNC authentication negotiation, and SMB NetBIOS-session negotiation on 139.
-A second port remains outside the capability, so FTP PASV directory listing
-is not implemented. STARTTLS requires stateful upgrade support; a separate
-connection cannot complete the capability command's TLS transition.
-The [reference corpus](pulse-backend.md#reference-corpus-nmap-versus-pulse-541)
-remains historical evidence, not a live acceptance result for this candidate.
+Stateful native helpers use scoped dialogues with an absolute deadline up to
+5 seconds, total plaintext caps of 4 KiB sent/16KiB received and 64 KiB wire caps
+per direction. Buffered TLS reads also check the deadline. They do not grant
+an arbitrary host, second port, filesystem or process capability.
+
+Remaining limits include SSH known-host trust/other algorithms, full RDP
+security/authentication and VNC session acceptance. FTP PASV still needs a
+second port and is not implemented. The cleartext plugin only observes
+capabilities; native TLS enumeration separately performs bounded STARTTLS
+upgrades ([TLS contract](pulse-endpoints.md#optional-tls-suite-enumeration)).
+The [v1.3.0 reference corpus](pulse-backend.md#reference-corpus-nmap-versus-pulse-541)
+is immutable historical evidence, not candidate or deployed acceptance.
 
 ### How `shapo_ssh_algorithms` reads a binary reply
 
@@ -237,18 +246,23 @@ NT LM 0.12 and reports MEDIUM only when that SMB1 dialect is explicitly
 selected. These plugins cover direct SMB on TCP; NetBIOS session negotiation
 on port 139 remains exposure-only. Neither probe enumerates every dialect.
 
-`shapo_rdp_negotiation` offers standard RDP security and checks X.224's
-negotiation response. Selecting PROTOCOL_RDP demonstrates that NLA is not
-mandatory for negotiation; explicit SSL/HYBRID requirements produce no finding.
-Other negotiation failures remain errors. NTLM host information, authenticated
-login, password policy and encryption-strength enumeration remain unimplemented.
+`shapo_smb_protocols` adds single-dialect SMB1/SMB2 offers and RFC1002
+wildcard session setup on 139. `shapo_ms17_010` separately performs anonymous
+SMB1 IPC$/FID0 PeekNamedPipe and records only the positive status hypothesis.
+Denied/non-indicator responses remain UNKNOWN with assessment errors. Isolated
+Samba 4.17.12 checks exercised 445/139 and signing optional/mandatory; its
+INVALID_HANDLE response was unknown, not a patched verdict.
 
-The existing exposure plugins continue to provide separate LOW reachability
-observations. SSH host-key fingerprints, SNMP community/identity enumeration and
-VNC authentication-method negotiation remain gaps; SSH algorithm advertisement
-is not a host-key fingerprint. Loopback binary fixtures verify observed signing
-bits, SMB1 acceptance/refusal, standard RDP acceptance/refusal and malformed
-responses, independently of service discovery.
+`shapo_rdp_negotiation` tests standard RDP negotiation. The native
+`shapo_rdp_ntlm_info` helper proceeds through X.224/TLS/CredSSP only to an NTLM
+type2 challenge; host/domain/build fields are advertised and unauthenticated.
+It sends no type3, credentials or desktop-session messages. Full encryption
+strength, login and password-policy assessment remain unimplemented.
+
+`shapo_vnc_security` reads RFB3.3/3.7/3.8 security advertisements and stops before
+selection/ClientInit. None is a conditional security finding, not proof of
+an unauthenticated desktop session. RDP/VNC dialogue tests are synthetic
+loopback fixtures; they are not native Windows or VNC fleet acceptance.
 
 `shapo_snmp_info` performs one SNMPv2c GET with community `public`, requesting
 only `sysDescr.0` and `sysName.0`. No community guessing or SET is performed.
