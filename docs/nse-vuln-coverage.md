@@ -60,15 +60,15 @@ printed.
 | `smb-vuln-ms10-054` | 1 | `false` | refused | none | `dos` category: a malformed SMB request. |
 | `smb-vuln-ms10-061` | 1 | `Could not negotiate a connection` | gap | none | Print-spooler RPC over SMB: binary protocol, no Nuclei template. GenDec#38. |
 | `samba-vuln-cve-2012-1182` | 1 | `Could not negotiate a connection` | version matching | `retro_match` / `pulse --cve` | The probe is a malformed RPC call (`intrusive`); the affected range (Samba < 3.6.4) is a version question. |
-| `smb-vuln-ms17-010` | 0 | (printed nothing on the reference Samba) | candidate native plugin | `shapo_ms17_010`, with candidate engine and plugins enabled | Read-only anonymous IPC$/FID0 Peek status hypothesis; positive indication requires confirmation. Every non-indicator/denial/error is UNKNOWN, never patched or exploit proof. No Nuclei template in v9.9.4. |
+| `smb-vuln-ms17-010` | 0 | (printed nothing on the reference Samba) | Rhai plugin | `shapo_ms17_010`, with candidate engine and plugins enabled | Read-only anonymous IPC$/FID0 Peek status hypothesis; positive indication requires confirmation. Every non-indicator/denial/error is UNKNOWN, never patched or exploit proof. No Nuclei template in v9.9.4. |
 
 ### Named by the issue, not in the `vuln` category
 
 | NSE script | n | Destination | Covered by | Not covered |
 |---|---|---|---|---|
 | `smb2-security-mode` | 1 | Nuclei network | **`smb-signing-not-required`** (`javascript/misconfiguration/smb`, **medium**, tags `js,network,smb,enum`), run by the network pass | Reports "signing enabled but not required", as Nmap's `311: Message signing enabled but not required` did. Not the dialect-specific form; SMB1's `smb-security-mode` is not mirrored. |
-| `smb-protocols` | 1 | candidate native plugin | `shapo_smb_protocols`: SMB1 + single offers 2.0.2/2.1/3.0/3.0.2/3.1.1, direct 445 or RFC1002 on 139 | Selected dialect/signing observations, not all possible dialects, authenticated sessions or relay proof. Partial errors remain explicit. |
-| `rdp-enum-encryption` | 1 | partial candidate | `shapo_rdp_negotiation` standard-security selection; `shapo_rdp_ntlm_info` X.224/TLS/CredSSP type2 inventory | No full encryption-strength enumeration, authenticated identity, type3, credentials or desktop session. Synthetic dialogue coverage is not Windows acceptance. |
+| `smb-protocols` | 1 | Rhai plugin | `shapo_smb_protocols`: SMB1 + single offers 2.0.2/2.1/3.0/3.0.2/3.1.1, direct 445 or RFC1002 on 139 | Selected dialect/signing observations, not all possible dialects, authenticated sessions or relay proof. Partial errors remain explicit. |
+| `rdp-enum-encryption` | 1 | gap | `shapo_rdp_negotiation` standard-security selection; `shapo_rdp_ntlm_info` X.224/TLS/CredSSP type2 inventory | No full encryption-strength enumeration, authenticated identity, type3, credentials or desktop session. Synthetic dialogue coverage is not Windows acceptance. |
 | `http-methods` | 2 | Rhai plugin | `shapo_http_trace` | TRACE only; PUT/DELETE/CONNECT are not probed. |
 | `http-malware-host` | 1 | refused | none | Heuristics for an infected page; printed `false`. |
 

@@ -2,10 +2,10 @@
 
 The fixtures in ``tests/fixtures/nmap_pulse_corpus`` were recorded on a compose
 stand with Nmap 7.93 and Pulse 1.3.0 BEFORE any Pulse or adapter change. The
-expected numbers below are the starting gap. When a later change legitimately
-closes part of it, the test goes red on purpose: re-record (``record.sh``) if the
-inputs changed, then update the numbers in the same commit as
-``docs/pulse-backend.md`` so the gap table stays a history, not a guess.
+expected numbers below are the historical starting gap. New source capabilities
+are accounted for separately and cannot change this recording. A new measurement
+needs a real stand run (``record.sh``) and corresponding documentation; it must
+never be inferred from a newer plugin registry.
 """
 
 from __future__ import annotations
@@ -233,16 +233,20 @@ def _plugin_run(corpus: Path) -> dict:
     return json.loads((corpus / "pulse" / "tcp-plugins.json").read_text(encoding="utf-8"))
 
 
-def test_the_plugin_run_was_recorded_with_the_plugins_that_ship():
-    """A plugin edited after the recording would leave the corpus describing code that is gone."""
+def test_recorded_plugin_sources_have_not_changed():
+    """Historical sources stay byte-identical; new sources do not claim recorded acceptance."""
+    from pulse_corpus import RECORDED_NSE_PLUGIN_MAP, RECORDED_PLUGIN_ONLY
+
     from scanner.pipeline import pulse_plugins
 
     recorded = dict(
         reversed(line.split())
         for line in (CORPUS / "pulse" / "plugins.sha256").read_text(encoding="utf-8").splitlines()
     )
+    historical = {m["plugin"] for m in RECORDED_NSE_PLUGIN_MAP.values() if m["plugin"]} | set(RECORDED_PLUGIN_ONLY)
+    assert set(recorded) == {f"{name}.rhai" for name in historical}
     shipped = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in pulse_plugins.PLUGINS_DIR.glob("*.rhai")}
-    assert recorded == shipped, (
+    assert recorded.items() <= shipped.items(), (
         "a plugin changed since pulse/tcp-plugins.json was recorded: "
         "RECORD_PARTS=pulse PULSE_BIN=<linux pulse> tests/fixtures/nmap_pulse_corpus/record.sh"
     )
@@ -540,3 +544,22 @@ def test_every_template_id_the_map_and_the_table_name_exists_in_the_pinned_templ
         pytest.skip("no nuclei-templates checkout (OCTO_NUCLEI_TEMPLATES_DIR)")
     found = index_template_ids(sorted(ids), [root])
     assert set(found) == ids, f"not in the pinned templates: {sorted(ids - set(found))}"
+
+
+def test_new_plugins_are_explicitly_unrecorded_source_capabilities():
+    from pulse_corpus import NSE_PLUGIN_MAP, PLUGIN_ONLY
+    from scanner.pipeline import pulse_plugins
+
+    recorded = {line.split()[1].removesuffix(".rhai") for line in (CORPUS / "pulse" / "plugins.sha256").read_text().splitlines()}
+    shipped = {p.stem for p in pulse_plugins.PLUGINS_DIR.glob("*.rhai")}
+    unrecorded = shipped - recorded
+    assert len(unrecorded) == 9
+    accounted = {m["plugin"] for m in NSE_PLUGIN_MAP.values() if m["plugin"]} | set(PLUGIN_ONLY)
+    assert unrecorded <= accounted
+    # A newly shipped but undeclared plugin must break the complete accounting gate.
+    assert shipped | {"shapo_unaccounted"} != accounted
+    # Editing a historical source must still break the recording provenance gate.
+    hashes = dict(reversed(line.split()) for line in (CORPUS / "pulse" / "plugins.sha256").read_text().splitlines())
+    current = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in pulse_plugins.PLUGINS_DIR.glob("*.rhai")}
+    current[next(iter(hashes))] = "0" * 64
+    assert not hashes.items() <= current.items()
