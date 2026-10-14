@@ -93,6 +93,7 @@ POSTGRES_TABLES = (
     "scan_schedules",
     "maintenance_windows",
     "risk_score_snapshots",
+    "run_risk_assessments",
     "workflow_event_markers",
     "idempotency_records",
     "retro_match_state",

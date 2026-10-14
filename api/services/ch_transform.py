@@ -12,8 +12,8 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from api.services import assets as assets_service
-from api.services.risk_scoring import FOOTHOLD, LOCAL, get_scorer, index_cdn_waf, path_role
+from api.services import risk_context
+from api.services.risk_scoring import get_scorer
 from api.settings import Settings
 
 LOG = logging.getLogger("shapoclyack.ch-transform")
@@ -100,47 +100,23 @@ def vulnerabilities_to_rows(
     if not isinstance(vulns, list):
         return []
 
-    scorer = get_scorer()
-    cdn_waf = index_cdn_waf(_load_json_member(members, "fingerprint.json"))
-    db_enabled = settings is not None and bool(settings.postgres_url.strip())
-    criticality_cache: dict[str, int | None] = {}
-    exposure_cache: dict[str, str | None] = {}
-
-    def _criticality_override(host_ip: str) -> int | None:
-        if host_ip not in criticality_cache:
-            criticality_cache[host_ip] = assets_service.get_asset_criticality_by_ip(
-                settings, tenant_id, host_ip
-            )
-        return criticality_cache[host_ip]
-
-    def _operator_exposure(host_ip: str) -> str | None:
-        if host_ip not in exposure_cache:
-            exposure_cache[host_ip] = assets_service.get_asset_exposure_by_ip(
-                settings, tenant_id, host_ip
-            )
-        return exposure_cache[host_ip]
-
-    foothold_hosts = {
-        str(item.get("host") or "").strip()
-        for item in vulns
-        if isinstance(item, dict) and path_role(item) == FOOTHOLD
-    }
+    vulns = [item for item in vulns if isinstance(item, dict)]
+    scores = risk_context.assess_operation(
+        settings,
+        tenant_id=tenant_id,
+        run_id=str(payload.get("run_id") or ""),
+        entries=vulns,
+        fingerprint=_load_json_member(members, "fingerprint.json"),
+        scorer=get_scorer(),
+        require_captured=True,
+        job_id=str(payload.get("job_id") or "") or None,
+    )
     rows: list[list[Any]] = []
-    for item in vulns:
-        if not isinstance(item, dict):
-            continue
+    for item, scored in zip(vulns, scores, strict=True):
         host = str(item.get("host") or "").strip()
         if not host or not _is_ipv4(host):
             continue
         cve = item.get("cve") or item.get("script_id") or ""
-        override = _criticality_override(host) if db_enabled else None
-        scored = scorer.score_vulnerability(
-            item,
-            asset_criticality_override=override,
-            operator_exposure=_operator_exposure(host) if db_enabled else None,
-            cdn_waf_index=cdn_waf,
-            same_asset_foothold=path_role(item) == LOCAL and host in foothold_hosts,
-        )
         rows.append(
             [
                 tenant_uuid,
@@ -154,6 +130,7 @@ def vulnerabilities_to_rows(
                 float(scored["contextual_score"]),
                 str(scored["scoring_model_version"]),
                 ts,
+                json.dumps(scored, sort_keys=True, separators=(",", ":")),
             ]
         )
     return rows

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import signal
 import threading
 import time
 from types import SimpleNamespace
@@ -1251,7 +1250,9 @@ def test_run_scan_handles_timeout(monkeypatch, tmp_path):
     assert archive is None
 
 
-def test_run_scan_puts_the_process_group_down_when_the_api_cancels(monkeypatch, tmp_path):
+def test_run_scan_puts_the_process_group_down_when_the_api_cancels(
+    monkeypatch, tmp_path
+):
     """The stop the heartbeat thread signalled has to reach the scanner (#360).
 
     The process *group*, not the process: the scan is `scanner.main` shelling
@@ -1262,12 +1263,17 @@ def test_run_scan_puts_the_process_group_down_when_the_api_cancels(monkeypatch, 
     from unittest.mock import MagicMock
 
     mock_proc = MagicMock()
-    mock_proc.communicate.side_effect = subprocess.TimeoutExpired(cmd=["scanner"], timeout=1.0)
+    mock_proc.communicate.side_effect = subprocess.TimeoutExpired(
+        cmd=["scanner"], timeout=1.0
+    )
     mock_proc.pid = 12345
     mock_proc.returncode = 143
     signalled: list[int] = []
+    spawned: list[bool] = []
 
-    monkeypatch.setattr("subprocess.Popen", lambda *args, **kwargs: mock_proc)
+    monkeypatch.setattr(
+        "subprocess.Popen", lambda *args, **kwargs: spawned.append(True)
+    )
     monkeypatch.setattr("os.getpgid", lambda pid: pid)
     monkeypatch.setattr("os.killpg", lambda pgid, sig: signalled.append(sig))
 
@@ -1294,7 +1300,8 @@ def test_run_scan_puts_the_process_group_down_when_the_api_cancels(monkeypatch, 
 
     assert code == 143
     assert "cancelled" in (err or "")
-    assert signalled and signalled[0] == signal.SIGTERM
+    assert not spawned
+    assert not signalled
     assert archive is not None and archive.is_file()
 
 

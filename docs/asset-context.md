@@ -64,15 +64,19 @@ state, existing SLA deadline and accepted exception are not reset by that
 refresh. Criticality alone does not override a false-positive suppression;
 the existing evidence-based rules for reopening still apply.
 
-Run API/ClickHouse context parity, batch asset resolution and versioned
-historical assessment snapshots remain separate work under #453. This fix
-does not claim that scores made with different contexts are comparable or
-that the existing per-finding identity lookups have been batched.
+The complete batch/historical contract is now implemented under #453; see
+[shared operation context](risk-scoring.md#shared-operation-context-and-recorded-assessments-453).
+Run API and ClickHouse reuse the immutable scan receipt; explicit current API
+assessment is read-only. A new run captures current operator values, while
+replaying the same accepted publication retains its first captured context.
+A different accepted job/publication reusing that run ID and identical bytes
+captures new operator context while keeping the older receipt. Old unsnapshotted runs and unavailable context remain explicit.
 
-Regression coverage: `tests/test_scan_risk_criticality.py` runs the real scan
-fold, ORM and shared scorer on the SQLite test fallback, without requiring
-Postgres or contacting scanned hosts. Production Postgres concurrency is not
-validated by that fallback.
+Regression coverage: `tests/test_scan_risk_criticality.py` preserves the real
+fold/ORM/scorer identity and lifecycle tests on SQLite;
+`tests/test_risk_context.py` adds real PostgreSQL consumer parity, tenant-safe
+batch resolution, concurrent immutable capture, RLS/query budgets and an actual
+least-privilege ClickHouse receipt roundtrip.
 
 ## CMDB / AD
 

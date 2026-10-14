@@ -374,8 +374,8 @@ def test_vulnerabilities_to_rows_falls_back_when_asset_unset(tmp_path):
 
 @requires_postgres
 def test_vulnerabilities_to_rows_batches_lookup_per_host(tmp_path):
-    from unittest.mock import patch
-
+    from sqlalchemy import event
+    from api.db.engine import get_engine
     from api.services.risk_scoring import RiskScoring, reset_scorer_for_tests
 
     settings, tenant_id = _settings_with_tenant(tmp_path)
@@ -400,14 +400,20 @@ def test_vulnerabilities_to_rows_batches_lookup_per_host(tmp_path):
             "job_id": "job1",
             "archive_b64": base64.b64encode(archive).decode(),
         }
-        with patch(
-            "api.services.ch_transform.assets_service.get_asset_criticality_by_ip",
-            wraps=ch_transform.assets_service.get_asset_criticality_by_ip,
-        ) as spy:
+        statements = []
+        def record(_conn, _cursor, statement, *_):
+            if statement.lstrip().upper().startswith("SELECT"):
+                statements.append(statement)
+        engine = get_engine(settings.postgres_url)
+        event.listen(engine, "before_cursor_execute", record)
+        try:
             vuln_rows, _, _ = ch_transform.transform_ingest_payload(payload, settings=settings)
+        finally:
+            event.remove(engine, "before_cursor_execute", record)
         assert len(vuln_rows) == 3
         assert all(row[5] == 3 for row in vuln_rows)
-        assert spy.call_count == 1
+        # Receipt+publication reads plus identifiers/assets/job, independent of findings.
+        assert len(statements) == 5
     finally:
         reset_scorer_for_tests(None)
 

@@ -246,8 +246,17 @@ templates above:
 |---|---|---|
 | `OCTO_HTTPS_PROXY` | API, sensor, scanner | Proxy for `https://` targets. `[http://][user:pass@]host[:port]` — the proxy URL itself must be `http://`, no `https://` and no SOCKS |
 | `OCTO_HTTP_PROXY` | API, sensor | The same for `http://` targets |
-| `OCTO_NO_PROXY` | API, sensor | Comma-separated exemptions. `*` bypasses everything; a bare name matches it and its subdomains (`example.com` covers `api.example.com`, not `notexample.com`); `host:port` pins the port; a CIDR matches an address literal inside it |
+| `OCTO_NO_PROXY` | API, sensor | Comma-separated exemptions. `*` bypasses everything; a bare name matches it and its subdomains (`example.com` covers `api.example.com`, not `notexample.com`); `host:port` pins a hostname or IPv4 port; an IPv4 or IPv6 CIDR matches an address literal inside it. IPv6 literals are supported without a port; `[IPv6]:port` exemptions are unsupported |
 | `OCTO_CA_BUNDLE` | API, sensor, scanner | PEM file **added to** the system trust store, for HTTPS, SMTP and NATS alike — on the API's NATS connection as well as the sensor's. Verification is never turned off |
+
+The API and standalone sensor use one stdlib implementation in
+`agent/runtime/egress.py`, shipped inside the sensor's signed agent tree.
+`api.services.egress` and `agent.egress` retain their public import paths and
+share the same proxy types and configuration errors. The sensor rejects HTTP
+redirects so its bearer token cannot follow a new destination; API callers
+retain their existing redirect and outbound-target restrictions. This does not
+change which targets pass SSRF authorization or which scanner requests bypass
+the proxy to pin a validated address.
 
 Each falls back to the conventional `HTTPS_PROXY` / `NO_PROXY` (and their
 lowercase spellings) when unset — with one exception, and it runs the other way

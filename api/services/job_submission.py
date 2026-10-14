@@ -21,6 +21,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from agent.runtime.invocation import ScanInvocation, paths_from_arguments
+
 from api.db import models
 from api.db.engine import get_session
 from api.schemas import JobInfo, StartScanRequest
@@ -166,27 +168,16 @@ def build_command(
     target_args: list[str],
     config_path: str,
 ) -> list[str]:
-    command = [
-        sys.executable,
-        "-m",
-        "scanner.main",
-        "--config",
-        config_path,
-        "--mode",
-        mode,
-    ]
-    if delta:
-        command.append("--delta")
-    if skip_nse:
-        command.append("--skip-nse")
-    if notify:
-        command.append("--notify")
-    if export_defectdojo:
-        command.append("--export-defectdojo")
-    if run_id:
-        command.extend(["--run-id", run_id])
-    command.extend(target_args)
-    return command
+    return ScanInvocation(
+        config=config_path,
+        mode=mode,
+        delta=delta,
+        skip_nse=skip_nse,
+        notify=notify,
+        export_defectdojo=export_defectdojo,
+        run_id=run_id,
+        inputs=paths_from_arguments(target_args),
+    ).argv(sys.executable)
 
 
 def _reserve_run_dir(settings: Settings, run_id: str) -> Path:

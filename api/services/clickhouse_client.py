@@ -23,6 +23,7 @@ VULN_COLUMNS = [
     "contextual_score",
     "scoring_model_version",
     "timestamp",
+    "risk_assessment",
 ]
 
 PORT_COLUMNS = [
@@ -201,5 +202,16 @@ def insert_rows(
 ) -> int:
     if not rows:
         return 0
+    if table == VULN_TABLE and "risk_assessment" in columns:
+        # Runtime users need only SELECT+INSERT, never ALTER. Old deployments
+        # require the explicit administrator expand migration before ingest.
+        try:
+            client.query("SELECT risk_assessment FROM " + VULN_TABLE + " LIMIT 0")
+        except Exception as exc:
+            if "UNKNOWN_IDENTIFIER" in str(exc) or "Unknown expression identifier" in str(exc):
+                raise ClickHouseError(
+                    "risk_assessment column is missing; apply scripts/migrate-clickhouse-risk-context.sql as the ClickHouse administrator"
+                ) from exc
+            raise
     client.insert(table, rows, column_names=list(columns))
     return len(rows)

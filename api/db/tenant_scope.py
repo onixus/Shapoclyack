@@ -325,7 +325,10 @@ class TenantRlsUnavailable(RuntimeError):
 
 #: Model tables whose tenant role privileges are narrower than full DML, as
 #: granted by 0067: the trail is append-only for everyone but retention.
-_NARROWED_PRIVILEGES = {"audit_events": ("SELECT", "INSERT")}
+_NARROWED_PRIVILEGES = {
+    "audit_events": ("SELECT", "INSERT"),
+    "run_risk_assessments": ("SELECT", "INSERT", "DELETE"),
+}
 _FULL_PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "DELETE")
 
 #: Tenant data without a ``tenant_id`` column, held to the tenant through the

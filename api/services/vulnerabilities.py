@@ -62,13 +62,9 @@ from api.services import workflow_events
 from scanner.pipeline.config_schema import MAX_NUCLEI_TEMPLATE_IDS, NUCLEI_TEMPLATE_ID_RE
 from scanner.pipeline.cvss4 import normalize_cwes
 from api.services.risk_scoring import (
-    FOOTHOLD,
-    LOCAL,
     NETWORK_EXPOSURES,
     UNKNOWN_EXPOSURE,
     get_scorer,
-    index_cdn_waf,
-    path_role,
 )
 from api.settings import Settings
 from scanner.pipeline.asset_identity import identity_candidates_for_host
@@ -79,6 +75,7 @@ LOG = logging.getLogger("shapoclyack.vulnerabilities")
 
 class VerificationDispatchError(RuntimeError):
     """A verification scan could not be started, so the finding stays put."""
+
 
 #: Fallback remediation windows, in days, when the tenant has no matching
 #: ``sla_policies`` row. Roughly the shape most published remediation standards
@@ -1293,7 +1290,11 @@ def _declared_surface_for_run(session: Any, *, tenant_id: str, run_id: str) -> s
 
 
 def register_findings_from_run(
-    settings: Settings, *, tenant_id: str, run_id: str, publication_id: str | None = None
+    settings: Settings,
+    *,
+    tenant_id: str,
+    run_id: str,
+    publication_id: str | None = None,
 ) -> RegisterStats:
     """Fold one run's findings into the tracker. Idempotent per publication.
 
@@ -1312,7 +1313,8 @@ def register_findings_from_run(
     the same id is a new sighting that must reopen what was closed.
     """
     entries = _run_findings(settings, run_id, tenant_id=tenant_id)
-    if not entries and not _run_verifies_anything(settings, run_id=run_id, tenant_id=tenant_id):
+    verifies_anything = bool(entries) or _run_verifies_anything(settings, run_id=run_id, tenant_id=tenant_id)
+    if not entries and runs_service.get_written_run_dir(settings, run_id, tenant_id=tenant_id) is None:
         return RegisterStats(0, 0, 0, 0, 0)
 
     # A verification run that finds nothing is the *success* case — it is the
@@ -1321,10 +1323,14 @@ def register_findings_from_run(
 
     scorer = get_scorer()
     run_dir = runs_service.get_written_run_dir(settings, run_id, tenant_id=tenant_id)
-    cdn_waf = index_cdn_waf(
-        runs_service._load_json(run_dir / "fingerprint.json") if run_dir is not None else None  # noqa: SLF001
-    )
     now = _now()
+    from api.services import risk_context
+
+    fingerprint = (
+        runs_service._load_json(run_dir / "fingerprint.json")
+        if run_dir is not None
+        else None
+    )
     created = reobserved = reopened = skipped = 0
     verification_passed = verification_failed = verification_inconclusive = 0
     verification_unreachable = 0
@@ -1342,16 +1348,36 @@ def register_findings_from_run(
                 publication_id,
             )
             return RegisterStats(0, 0, 0, 0, 0)
-        declared_surface = _declared_surface_for_run(
-            session, tenant_id=tenant_id, run_id=run_id
-        )
+        publication = session.get(models.RunPublication, publication_id) if publication_id else None
+        if publication is not None:
+            if publication.tenant_id != tenant_id or publication.run_id != run_id:
+                raise ValueError("risk publication belongs to a different tenant/run")
+            risk_context.validate_generation(run_dir, tenant_id=tenant_id, publication=publication)
+            # Read observations after checking the server-published generation.
+            entries = _run_findings(settings, run_id, tenant_id=tenant_id)
+            fingerprint = runs_service._load_json(run_dir / "fingerprint.json")
+        context = risk_context.load_batch(session, tenant_id=tenant_id, run_id=run_id,
+            entries=entries, job_id=publication.job_id if publication else None)
+        scores = risk_context.read_snapshot(session, tenant_id=tenant_id, run_id=run_id,
+            execution_id="publication:" + publication_id if publication_id else None,
+            input_digest=risk_context.observation_digest(entries, fingerprint))
+        if scores is None:
+            scores = risk_context.score_batch(entries, context=context, fingerprint=fingerprint,
+                scorer=scorer, now=now, mode="historical" if publication else "uncaptured-current")
+            if publication is not None:
+                scores = risk_context.capture_snapshot(session, tenant_id=tenant_id, run_id=run_id,
+                    entries=entries, fingerprint=fingerprint, scores=scores, now=now,
+                    publication_id=publication_id, job_id=publication.job_id)
+        if publication is not None:
+            risk_context.validate_generation(run_dir, tenant_id=tenant_id, publication=publication)
+        if not entries and not verifies_anything:
+            return RegisterStats(0, 0, 0, 0, 0)
         # Where this run looked from (#451): recorded on every detector it
         # observes, compared with the verification run's at closure.
         vantage = _run_vantage(session, tenant_id=tenant_id, run_id=run_id)
-        resolved: list[tuple[dict[str, Any], Any]] = []
-        for entry in entries:
-            host = str(entry.get("host") or "")
-            asset = _asset_for_finding(session, tenant_id=tenant_id, host=host)
+        resolved: list[tuple[dict[str, Any], Any, dict[str, Any]]] = []
+        for entry, scored in zip(entries, scores, strict=True):
+            asset = context.asset_for(entry)
             if asset is None:
                 skipped += 1
                 continue
@@ -1360,28 +1386,16 @@ def register_findings_from_run(
             if not cve and not script_id:
                 skipped += 1
                 continue
-            resolved.append((entry, asset))
+            resolved.append((entry, asset, scored))
 
-        footholds = {
-            asset.asset_id for entry, asset in resolved if path_role(entry) == FOOTHOLD
-        }
-
-        for entry, asset in resolved:
+        for entry, asset, scored in resolved:
             port = str(entry.get("port")) if entry.get("port") is not None else None
             cve = str(entry.get("cve") or "").strip() or None
             script_id = str(entry.get("script_id") or "").strip() or None
-            scored = scorer.score_vulnerability(
-                entry,
-                asset_criticality_override=asset.asset_criticality,
-                operator_exposure=asset.exposure_level,
-                declared_surface=declared_surface,
-                cdn_waf_index=cdn_waf,
-                same_asset_foothold=(
-                    path_role(entry) == LOCAL and asset.asset_id in footholds
-                ),
-            )
             severity = _severity_of(entry)
-            key = finding_key(asset_id=asset.asset_id, cve=cve, script_id=script_id, port=port)
+            key = finding_key(
+                asset_id=asset.asset_id, cve=cve, script_id=script_id, port=port
+            )
             # Who saw it and where, merged into the row whatever else this
             # observation does — a held false positive included: provenance is
             # what a later verification is judged against, not a verdict.
@@ -1397,6 +1411,7 @@ def register_findings_from_run(
             ).scalar_one_or_none()
 
             latest = {
+                "risk_assessment": scored,
                 "severity": severity,
                 "risk_level": scored.get("risk_level"),
                 "contextual_score": scored.get("contextual_score"),
@@ -1468,6 +1483,7 @@ def register_findings_from_run(
                         detail={
                             "run_id": run_id,
                             "first_seen": True,
+                            "risk_assessment": scored,
                             "severity": severity,
                             "due_at": _iso(row.due_at),
                             "sla_days": days,
@@ -1562,7 +1578,11 @@ def register_findings_from_run(
                     row.sla_source = source
                 row.reopen_count += 1
                 reopened += 1
-                detail: dict[str, Any] = {"run_id": run_id, "reopen_count": row.reopen_count}
+                detail: dict[str, Any] = {
+                    "run_id": run_id,
+                    "reopen_count": row.reopen_count,
+                    "risk_assessment": scored,
+                }
                 if continue_clock:
                     detail["sla_continued"] = True
                     detail["after"] = ENDPOINT_UNREACHABLE
@@ -1592,7 +1612,11 @@ def register_findings_from_run(
                     kind="observed",
                     occurred_at=now,
                     to_state=row.state,
-                    detail={"run_id": run_id, "severity": severity},
+                    detail={
+                        "run_id": run_id,
+                        "severity": severity,
+                        "risk_assessment": scored,
+                    },
                 )
 
         # Close the loop, but only for the findings this run was dispatched to
@@ -1784,6 +1808,9 @@ def register_findings_from_run(
                 )
                 verification_passed += 1
 
+        if publication is not None:
+            risk_context.validate_generation(run_dir, tenant_id=tenant_id, publication=publication)
+
     stats = RegisterStats(
         findings_seen=len(entries),
         created=created,
@@ -1916,6 +1943,8 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
         "exploit_maturity": row.exploit_maturity,
         "network_exposure": row.network_exposure,
         "network_exposure_source": row.network_exposure_source,
+        "risk_assessment": (row.risk_assessment or {}).get("risk_assessment"),
+        "risk_explanation": (row.risk_assessment or {}).get("risk_explanation"),
         "state": row.state,
         "state_changed_at": _iso(row.state_changed_at),
         "state_changed_by": row.state_changed_by,

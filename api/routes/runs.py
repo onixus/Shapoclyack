@@ -115,6 +115,9 @@ def get_vulnerabilities(
     limit: Annotated[int, Query(ge=1, le=10000)] = 5000,
     host: Annotated[str | None, Query(description="Filter findings by target host/IP")] = None,
     port: Annotated[str | None, Query(description="Filter findings by port")] = None,
+    assessment_mode: Annotated[
+        str, Query(pattern="^(historical|current)$")
+    ] = "historical",
 ) -> list[VulnerabilityItem]:
     items = runs_service.get_vulnerabilities(
         settings,
@@ -122,6 +125,7 @@ def get_vulnerabilities(
         limit=limit,
         host=host,
         port=port,
+        assessment_mode=assessment_mode,
         tenant_id=_run_tenant_filter(principal),
     )
     if items is None:
@@ -352,6 +356,3 @@ def get_leak_identifiers(
             detail="Leak identifiers not found for this run",
         )
     return LeakIdentifiersResponse(**data)
-
-
-

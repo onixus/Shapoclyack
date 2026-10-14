@@ -14,7 +14,7 @@ from api.services import retention_policy
 from api.services import tenants as tenants_service
 from api.services.artifact_store import keys as artifact_keys
 from api.services.artifact_store import workspace
-from api.services.risk_scoring import FOOTHOLD, LOCAL, get_scorer, index_cdn_waf, path_role
+from api.services.risk_scoring import get_scorer
 from scanner.pipeline.asset_identity import registrable_domain
 from api.settings import Settings
 
@@ -312,13 +312,15 @@ def _run_locations(
 
 
 def _run_tenant_marker(
-    tenant_id: str, *, job_id: str | None = None, surface: str | None = None
+    tenant_id: str, *, job_id: str | None = None, surface: str | None = None, publication_id: str | None = None
 ) -> bytes:
     payload: dict[str, Any] = {"tenant_id": tenant_id}
     if job_id:
         payload["job_id"] = job_id
     if surface:
         payload["surface"] = surface
+    if publication_id:
+        payload["publication_id"] = publication_id
     return (json.dumps(payload, indent=2) + "\n").encode("utf-8")
 
 
@@ -328,6 +330,7 @@ def stage_run_tenant(
     *,
     job_id: str | None = None,
     surface: str | None = None,
+    publication_id: str | None = None,
 ) -> None:
     """Tag an upload that has not been published yet, in its staging tree.
 
@@ -340,7 +343,7 @@ def stage_run_tenant(
     here cost the upload its outcome instead.
     """
     (Path(staging) / RUN_TENANT_FILE).write_bytes(
-        _run_tenant_marker(tenant_id, job_id=job_id, surface=surface)
+        _run_tenant_marker(tenant_id, job_id=job_id, surface=surface, publication_id=publication_id)
     )
 
 
@@ -552,6 +555,7 @@ def get_vulnerabilities(
     host: str | None = None,
     port: str | None = None,
     tenant_id: str | None = None,
+    assessment_mode: str = "historical",
 ) -> list[VulnerabilityItem] | None:
     run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
     if run_dir is None:
@@ -564,23 +568,25 @@ def get_vulnerabilities(
     host_filter = host.strip().lower() if host else None
     port_filter = port.strip() if port else None
     geo = _geo_map(run_dir)
-    # Prioritisation is computed here rather than read back from ClickHouse so
-    # it is available on every deployment, CH or not. The operator-set asset
-    # criticality is deliberately not looked up: that would be one Postgres
-    # query per distinct host on an interactive endpoint. The CH rows written
-    # at ingest do carry it, so their contextual_score can be the stricter of
-    # the two — the explanation says which criticality it used.
-    scorer = get_scorer()
-    cdn_waf = index_cdn_waf(_load_json(run_dir / "fingerprint.json"))
-    foothold_hosts = {
-        str(entry.get("host") or "")
-        for entry in raw
-        if isinstance(entry, dict) and path_role(entry) == FOOTHOLD
-    }
+    from api.services import risk_context
+
+    raw = [entry for entry in raw if isinstance(entry, dict)]
+    ref = resolve_run(settings, run_id, tenant_id=tenant_id)
+    owner = (
+        run_tenant_of(settings, ref) if ref is not None else read_run_tenant(run_dir)
+    )
+    scores = risk_context.assess_operation(
+        settings,
+        tenant_id=owner,
+        run_id=run_id,
+        entries=raw,
+        fingerprint=_load_json(run_dir / "fingerprint.json"),
+        scorer=get_scorer(),
+        mode=assessment_mode,
+        generation=_load_json(run_dir / RUN_TENANT_FILE),
+    )
     items: list[VulnerabilityItem] = []
-    for entry in raw:
-        if not isinstance(entry, dict):
-            continue
+    for entry, scored in zip(raw, scores, strict=True):
         entry_host = entry.get("host")
         entry_port = str(entry.get("port")) if entry.get("port") is not None else None
         if host_filter and str(entry_host or "").lower() != host_filter:
@@ -589,11 +595,6 @@ def get_vulnerabilities(
             continue
         host_key = str(entry_host or "")
         geo_hit = geo.get(host_key, {})
-        scored = scorer.score_vulnerability(
-            entry,
-            cdn_waf_index=cdn_waf,
-            same_asset_foothold=path_role(entry) == LOCAL and host_key in foothold_hosts,
-        )
         confidence = entry.get("confidence")
         items.append(
             VulnerabilityItem(
@@ -617,6 +618,10 @@ def get_vulnerabilities(
                 contextual_score=scored["contextual_score"],
                 cisa_decision=scored["cisa_decision"],
                 risk_explanation=scored["risk_explanation"],
+                risk_assessment=scored["risk_assessment"],
+                asset_id=scored["risk_assessment"]["inputs"]["asset_id"],
+                asset_criticality=scored["asset_criticality"],
+                scoring_model_version=scored["scoring_model_version"],
                 risk_level=scored.get("risk_level"),
                 likelihood=scored.get("likelihood"),
                 impact=scored.get("impact"),
@@ -1270,6 +1275,3 @@ def get_leak_identifiers(
         "withheld_identifiers": int(raw.get("withheld_identifiers") or 0),
         "generated_at": raw.get("generated_at"),
     }
-
-
-
