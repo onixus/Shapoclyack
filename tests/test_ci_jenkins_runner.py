@@ -48,7 +48,8 @@ sys.exit(7 if mode == step else 0)
     [('none', 'ci-pytest.sh', 0), ('retry', 'ci-pytest.sh', 0),
      ('root', 'stat', 1), ('pip', 'pip', 7), ('compile', 'python', 7),
      ('postgres', 'python', 1), ('jetstream', 'python', 1),
-     ('clickhouse', 'python', 1), ('alembic', 'alembic', 7), ('ci-pytest.sh', 'ci-pytest.sh', 7)],
+     ('clickhouse', 'python', 1), ('alembic', 'alembic', 7), ('ci-sdk.sh', 'ci-sdk.sh', 7),
+     ('ci-pytest.sh', 'ci-pytest.sh', 7)],
 )
 def test_cell_stops_at_failed_step_and_preserves_test_status(tmp_path, failure, last_step, returncode):
     scripts = tmp_path / 'scripts'
@@ -61,9 +62,10 @@ def test_cell_stops_at_failed_step_and_preserves_test_status(tmp_path, failure, 
         stub = bindir / name
         stub.write_text(f'#!{sys.executable}\n' + _STUB)
         stub.chmod(0o755)
-    pytest_stub = scripts / 'ci-pytest.sh'
-    pytest_stub.write_text(f'#!{sys.executable}\n' + _STUB)
-    pytest_stub.chmod(0o755)
+    for name in ['ci-sdk.sh', 'ci-pytest.sh']:
+        script_stub = scripts / name
+        script_stub.write_text(f'#!{sys.executable}\n' + _STUB)
+        script_stub.chmod(0o755)
     log = tmp_path / 'calls.jsonl'
     env = dict(os.environ, PATH=f'{bindir}:{os.environ["PATH"]}', CALL_LOG=str(log),
                FAIL_AT=failure, JUNIT_XML='junit-3.12.xml', COVERAGE_XML='coverage-3.12.xml')
@@ -76,13 +78,16 @@ def test_cell_stops_at_failed_step_and_preserves_test_status(tmp_path, failure, 
         assert f'{failure} did not become ready after 60 attempts' in result.stderr
         assert sum(c[0] == 'sleep' for c in calls) == 59
         assert result.stderr.count(f'probe-error:{failure}') == 1
-        assert not any(c[0] in {'alembic', 'ci-pytest.sh'} for c in calls)
+        assert not any(c[0] in {'alembic', 'ci-sdk.sh', 'ci-pytest.sh'} for c in calls)
+    if failure == 'ci-sdk.sh':
+        assert not any(c[0] == 'ci-pytest.sh' for c in calls)
     if last_step == 'ci-pytest.sh':
         assert calls[-1][1:] == [['-k', 'a test'], '/tmp/ci-home',
                                 'junit-3.12.xml', 'coverage-3.12.xml']
         assert [c[1] for c in calls if c[0] == 'setpriv'] == [
             ['--reuid=1001', '--regid=1001', '--clear-groups',
              'python', '-m', 'compileall', '-q', 'scanner', 'api', 'tests', 'agent'],
+            ['--reuid=1001', '--regid=1001', '--clear-groups', 'scripts/ci-sdk.sh'],
             ['--reuid=1001', '--regid=1001', '--clear-groups',
              'scripts/ci-pytest.sh', '-k', 'a test'],
         ]

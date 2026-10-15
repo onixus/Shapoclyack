@@ -215,6 +215,14 @@ def test_trailing_slash_redirect_keeps_version_prefix(setup):
         assert client.get(response.headers["location"], headers=headers).status_code == 200
 
 
+def test_versioned_location_leaves_other_hosts_alone():
+    from api.versioning import versioned_location
+
+    assert versioned_location("/api/assets") == "/api/v1/assets"
+    assert versioned_location("http://api.test/api/assets", "api.test") == "http://api.test/api/v1/assets"
+    assert versioned_location("https://other.example/api/x", "api.test") == "https://other.example/api/x"
+
+
 def test_schedule_dates_are_trimmed_and_errors_name_the_variable():
     middleware = ApiVersionMiddleware(
         None, deprecated_at=" 2026-01-01T00:00:00Z\n", sunset_at=" 2027-01-01T00:00:00Z "

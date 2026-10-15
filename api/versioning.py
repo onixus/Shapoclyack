@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from email.utils import format_datetime
 from urllib.parse import urlsplit, urlunsplit
 
-from starlette.datastructures import MutableHeaders
+from starlette.datastructures import Headers, MutableHeaders
 from starlette.responses import JSONResponse
 
 
@@ -12,10 +12,13 @@ def canonical_path(path: str) -> str:
     return "/api/" + path[len("/api/v1/") :] if path.startswith("/api/v1/") else path
 
 
-def versioned_location(location: str) -> str:
+def versioned_location(location: str, host: str | None = None) -> str:
     """Put ``/v1`` back into a same-site redirect target the router built from
-    the canonical path (e.g. the ``redirect_slashes`` 307)."""
+    the canonical path (e.g. the ``redirect_slashes`` 307). A target on another
+    host (``host`` is the request's ``Host``) is left untouched."""
     parts = urlsplit(location)
+    if parts.netloc and parts.netloc != host:
+        return location
     if parts.path.startswith("/api/") and not parts.path.startswith("/api/v1/"):
         parts = parts._replace(path="/api/v1/" + parts.path[len("/api/") :])
     return urlunsplit(parts)
@@ -88,7 +91,8 @@ class ApiVersionMiddleware:
                 if versioned and 300 <= message["status"] < 400:
                     location = headers.get("location")
                     if location:
-                        headers["location"] = versioned_location(location)
+                        host = Headers(scope=scope).get("host")
+                        headers["location"] = versioned_location(location, host)
                 if not versioned:
                     headers.update(self.headers)
                     headers.append("Link", '</api/v1/>; rel="successor-version"')
