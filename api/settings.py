@@ -205,6 +205,8 @@ class Settings:
     # to anyone who can reach it, while a developer who wants it back sets one
     # variable (#319).
     api_docs_enabled: bool = False
+    api_deprecated_at: str = ""
+    api_sunset_at: str = ""
     # Bearer token GET /metrics demands when set (OCTO_METRICS_TOKEN). Empty
     # leaves the endpoint open — standard Prometheus practice, and true only
     # while the scrape path stays inside the cluster; a prod start without it
@@ -2043,6 +2045,8 @@ def load_settings() -> Settings:
         hsts_enabled=os.environ.get("OCTO_HSTS_ENABLED", "true" if env == ENV_PROD else "false").lower()
         in {"1", "true", "yes"},
         api_docs_enabled=_api_docs_enabled(env),
+        api_deprecated_at=os.environ.get("OCTO_API_DEPRECATED_AT", ""),
+        api_sunset_at=os.environ.get("OCTO_API_SUNSET_AT", ""),
         metrics_token=os.environ.get("OCTO_METRICS_TOKEN", "").strip(),
         metrics_tenant_top_n=_metrics_tenant_top_n(),
         users=users,

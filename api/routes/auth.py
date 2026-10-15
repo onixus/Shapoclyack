@@ -752,7 +752,7 @@ def agent_token(
     return AgentTokenResponse.model_validate(result)
 
 
-@router.post("/v1/auth/exchange", response_model=AuthExchangeResponse, dependencies=_AUTHENTICATION)
+@router.post("/auth/exchange", response_model=AuthExchangeResponse, dependencies=_AUTHENTICATION)
 def auth_exchange(
     body: AuthExchangeRequest,
     settings: Annotated[Settings, Depends(get_settings)],

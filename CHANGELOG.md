@@ -6,6 +6,10 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- API v1 aliases, twelve-month deprecation policy, bounded tenant-scoped CSV/NDJSON
+  exports and generated Python client/CLI ([#354](https://github.com/onixus/Shapoclyack/issues/354));
+  see [API changelog](docs/api-changelog.md) and [integration guide](docs/api-versioning.md).
+
 - TLS posture on the Pulse path
   ([#545](https://github.com/onixus/Shapoclyack/issues/545), [Pulse backend](docs/pulse-backend.md)):
   an A-F grade per cipher suite computed by Shapoclyack (`scanner/pipeline/tls_grading.py`,

@@ -12,6 +12,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.routing import Mount
 
+from api.versioning import ApiVersionMiddleware
+
 from api import __version__
 from api.auth import get_settings
 from api.db import engine as db_engine
@@ -415,7 +417,7 @@ def create_app() -> FastAPI:
         # asking for an id nothing could report (#330).
         # ``Retry-After`` for the same reason: a 429 that cannot say when to
         # come back leaves the console guessing (#320).
-        expose_headers=[REQUEST_ID_HEADER, "Retry-After"],
+        expose_headers=[REQUEST_ID_HEADER, "Retry-After", "X-Next-Cursor", "API-Version", "Deprecation", "Sunset", "Link"],
     )
 
     @app.middleware("http")
@@ -483,6 +485,9 @@ def create_app() -> FastAPI:
         )
 
     @app.get(
+        "/api/v1/health", response_model=HealthResponse, tags=["health"], dependencies=probe_scope
+    )
+    @app.get(
         "/api/health", response_model=HealthResponse, tags=["health"], dependencies=probe_scope
     )
     def health() -> HealthResponse:
@@ -506,58 +511,63 @@ def create_app() -> FastAPI:
         )
 
     # Legacy /api routes remain for deployed agents and console clients.
-    app.include_router(auth_routes.router, prefix="/api")
-    app.include_router(runs_routes.router, prefix="/api")
-    app.include_router(jobs_routes.router, prefix="/api")
-    app.include_router(agents_routes.router, prefix="/api")
-    app.include_router(agent_certificates_routes.router, prefix="/api")
+    def include_api_router(router):
+        app.include_router(router, prefix="/api")
+        app.include_router(router, prefix="/api/v1")
 
-    # APEX Architecture Contract v1: stable versioned aliases for machine-to-
-    # machine agent boundaries. The same handlers and authorization checks are
-    # mounted twice intentionally; /api remains a compatibility alias.
-    app.include_router(auth_routes.router, prefix="/api/v1")
-    app.include_router(agents_routes.router, prefix="/api/v1")
-    app.include_router(agent_certificates_routes.router, prefix="/api/v1")
-    app.include_router(assets_routes.router, prefix="/api")
-    app.include_router(system_routes.router, prefix="/api")
-    app.include_router(config_routes.router, prefix="/api")
-    app.include_router(schedules_routes.router, prefix="/api")
+    include_api_router(auth_routes.router)
+    include_api_router(runs_routes.router)
+    include_api_router(jobs_routes.router)
+    include_api_router(agents_routes.router)
+    include_api_router(agent_certificates_routes.router)
+
+    # Stable v1 schema aliases share the same handlers and dependencies. The
+    # outer middleware canonicalizes requests before all existing path guards.
+    include_api_router(assets_routes.router)
+    include_api_router(system_routes.router)
+    include_api_router(config_routes.router)
+    include_api_router(schedules_routes.router)
     # Three routers from one module (#352): the calendar as its own
     # collection, the per-tenant change freeze, and the provider's read-only
     # view of one customer's calendar.
-    app.include_router(maintenance_routes.router, prefix="/api")
-    app.include_router(maintenance_routes.freeze_router, prefix="/api")
-    app.include_router(maintenance_routes.tenant_router, prefix="/api")
-    app.include_router(wordlists_routes.router, prefix="/api")
-    app.include_router(users_routes.router, prefix="/api")
-    app.include_router(mfa_routes.router, prefix="/api")
-    app.include_router(passkeys_routes.router, prefix="/api")
-    app.include_router(audit_routes.router, prefix="/api")
-    app.include_router(rbac_routes.router, prefix="/api")
-    app.include_router(rbac_routes.tenant_router, prefix="/api")
-    app.include_router(retention_routes.router, prefix="/api")
-    app.include_router(tenant_lifecycle_routes.router, prefix="/api")
+    include_api_router(maintenance_routes.router)
+    include_api_router(maintenance_routes.freeze_router)
+    include_api_router(maintenance_routes.tenant_router)
+    include_api_router(wordlists_routes.router)
+    include_api_router(users_routes.router)
+    include_api_router(mfa_routes.router)
+    include_api_router(passkeys_routes.router)
+    include_api_router(audit_routes.router)
+    include_api_router(rbac_routes.router)
+    include_api_router(rbac_routes.tenant_router)
+    include_api_router(retention_routes.router)
+    include_api_router(tenant_lifecycle_routes.router)
     if settings.service_tokens_enabled:
-        app.include_router(service_tokens_routes.router, prefix="/api")
+        include_api_router(service_tokens_routes.router)
     # SCIM 2.0 (#316): its own prefix, its own credential. The token
     # administration lives under /api/auth, out of every service token's reach.
-    app.include_router(scim_tokens_routes.router, prefix="/api")
+    include_api_router(scim_tokens_routes.router)
     app.include_router(scim_routes.router, prefix="/scim/v2")
-    app.include_router(vulnerabilities_routes.router, prefix="/api")
-    app.include_router(retro_match_routes.router, prefix="/api")
-    app.include_router(compliance_routes.router, prefix="/api")
-    app.include_router(adoption_routes.router, prefix="/api")
-    app.include_router(usage_routes.router, prefix="/api")
-    app.include_router(promoted_domains_routes.router, prefix="/api")
+    include_api_router(vulnerabilities_routes.router)
+    include_api_router(retro_match_routes.router)
+    include_api_router(compliance_routes.router)
+    include_api_router(adoption_routes.router)
+    include_api_router(usage_routes.router)
+    include_api_router(promoted_domains_routes.router)
     if settings.reports_enabled:
-        app.include_router(reports_routes.router, prefix="/api")
+        include_api_router(reports_routes.router)
     if settings.webhooks_enabled:
-        app.include_router(webhooks_routes.router, prefix="/api")
+        include_api_router(webhooks_routes.router)
     if settings.notification_channels_enabled:
-        app.include_router(notification_channels_routes.router, prefix="/api")
+        include_api_router(notification_channels_routes.router)
     if settings.endpoint_inventory_enabled:
-        app.include_router(endpoint_inventory_routes.router, prefix="/api")
-        app.include_router(endpoint_inventory_routes.router, prefix="/api/v1")
+        include_api_router(endpoint_inventory_routes.router)
+
+    app.add_middleware(
+        ApiVersionMiddleware,
+        deprecated_at=settings.api_deprecated_at,
+        sunset_at=settings.api_sunset_at,
+    )
 
     web_dist = settings.web_dist
     if web_dist.is_dir() and (web_dist / "index.html").exists():

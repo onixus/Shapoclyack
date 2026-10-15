@@ -82,6 +82,7 @@ from api.services import risk_snapshots
 from api.services import vuln_states
 from api.services import vulnerabilities as vulns_service
 from api.settings import Settings
+from api.services import api_exports
 
 router = APIRouter(prefix="/vulnerabilities", tags=["vulnerabilities"])
 
@@ -108,6 +109,29 @@ def _found(row: dict[str, Any] | None) -> dict[str, Any]:
             status_code=status.HTTP_404_NOT_FOUND, detail="Vulnerability not found"
         )
     return row
+
+
+@router.get("/export", response_model=None)
+def export_vulnerabilities(
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: Annotated[Settings, Depends(get_settings)],
+    format: Literal["csv", "ndjson"] = "ndjson",
+    cursor: Annotated[str | None, Query(max_length=2048)] = None,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 1000,
+) -> StreamingResponse:
+    """Stream one bounded, tenant-scoped export page in stable ID order.
+
+    Continue with X-Next-Cursor until that header is absent. Cursors expire
+    after 24 hours. Concurrent changes are visible; this is not a snapshot.
+    """
+    try:
+        rows, next_cursor = api_exports.export_page(settings, tenant_id=principal.tenant_id, resource="vulnerabilities", cursor=cursor, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    headers = {"Content-Disposition": f'attachment; filename="vulnerabilities.{format}"', "Cache-Control": "no-store"}
+    if next_cursor:
+        headers["X-Next-Cursor"] = next_cursor
+    return StreamingResponse(api_exports.stream_rows("vulnerabilities", rows, format), media_type="text/csv" if format == "csv" else "application/x-ndjson", headers=headers)
 
 
 # Declared before /{vuln_id} so these paths are not read as ids.

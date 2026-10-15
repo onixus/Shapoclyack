@@ -1,6 +1,7 @@
 # API and RBAC
 
-The API is served under `/api`. The Web UI uses the same API and stores the
+The API is served under `/api/v1`, with `/api` retained as a compatibility alias.
+See [API versioning, exports and generated clients](api-versioning.md). The Web UI uses the same API and stores the
 access token in browser local storage.
 
 ## Request correlation
