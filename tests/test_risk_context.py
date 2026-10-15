@@ -287,6 +287,9 @@ def test_live_clickhouse_expands_existing_schema_and_preserves_full_receipt(esta
     settings, a, _, _, _, _, _, _, members = estate
     _register(settings, a)
     rows = ch_transform.vulnerabilities_to_rows({"tenant_id": a, "run_id": "risk-run", "job_id": "risk-job-" + a.removeprefix("risk-a-")}, members, settings=settings)
+    # The legacy analytics table admits IPv4 CVEs only: the exposure and
+    # DNS-only CVE remain in the canonical tracker, outside this projection.
+    assert [(row[1], row[2]) for row in rows] == [("10.42.0.2", "CVE-2020-10000")]
     table = "shapoclyack.risk_receipt_test_" + uuid.uuid4().hex[:12]
     client = ch.get_client(url)
     monkeypatch.setattr(ch, "VULN_TABLE", table)
@@ -302,7 +305,7 @@ def test_live_clickhouse_expands_existing_schema_and_preserves_full_receipt(esta
             ch.insert_rows(client, table, ch.VULN_COLUMNS, rows)
         # Expansion is an explicit administrator action, not a runtime grant.
         client.command(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS risk_assessment String DEFAULT ''")
-        assert ch.insert_rows(client, table, ch.VULN_COLUMNS, rows) == 2
+        assert ch.insert_rows(client, table, ch.VULN_COLUMNS, rows) == 1
         loaded = client.query(f"SELECT cve_id,risk_assessment FROM {table} ORDER BY cve_id").result_rows
         assert {cve: json.loads(receipt) for cve, receipt in loaded} == {row[2]: json.loads(row[11]) for row in rows}
         # Actual SELECT+INSERT-only user, with no ALTER/CREATE privileges.
@@ -318,8 +321,8 @@ def test_live_clickhouse_expands_existing_schema_and_preserves_full_receipt(esta
             try:
                 grants = restricted.query("SHOW GRANTS").result_rows
                 assert all("ALTER" not in grant[0] for grant in grants)
-                assert ch.insert_rows(restricted, table, ch.VULN_COLUMNS, rows) == 2
-                assert restricted.query(f"SELECT count() FROM {table}").result_rows[0][0] == 4
+                assert ch.insert_rows(restricted, table, ch.VULN_COLUMNS, rows) == 1
+                assert restricted.query(f"SELECT count() FROM {table}").result_rows[0][0] == 2
             finally:
                 restricted.close()
         finally:
