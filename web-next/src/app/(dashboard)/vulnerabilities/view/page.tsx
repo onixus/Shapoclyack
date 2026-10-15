@@ -286,6 +286,10 @@ function VulnerabilityDetailInner() {
             <h2 className="text-sm font-semibold text-foreground">{t("ui.finding")}</h2>
             <dl className="mt-4 grid gap-4 sm:grid-cols-2 text-xs">
               <Field label="CVE" value={vuln.cve || "—"} mono />
+              {vuln.finding_type ? <Field label="Finding type" value={vuln.finding_type} /> : null}
+              {vuln.detector_source ? <Field label="Detector" value={vuln.detector_source} /> : null}
+              {vuln.template_id ? <Field label="Template" value={vuln.template_id} mono /> : null}
+              {vuln.remediation ? <Field label="Remediation" value={vuln.remediation} /> : null}
               <Field
                 label="CWE"
                 value={vuln.cwe?.length ? vuln.cwe.join(", ") : "—"}

@@ -49,6 +49,8 @@ function filtersKey(filters: VulnerabilityListFilters): Record<string, unknown> 
     // Both were missing from the key: switching the Source filter served the
     // previous filter's page from cache until the next poll.
     source: filters.source ?? "",
+    finding_type: filters.finding_type ?? "",
+    detector_source: filters.detector_source ?? "",
     network_exposure: filters.network_exposure ?? "",
   };
 }

@@ -101,6 +101,7 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | [Observability](observability.md) | Metrics catalogue and label bounds, Grafana dashboards, opt-in ServiceMonitor/PrometheusRule components, pool and sensor alerts |
 | [Risk scoring](risk-scoring.md) | NIST SP 800-30 model, exploit maturity (PoC vs theoretical), asset criticality |
 | [Vulnerability lifecycle](vulnerability-lifecycle.md) | Tracked findings, states, SLA, exceptions, audit trail |
+| [Actionable non-CVE findings](non-cve-findings.md) | Reviewed Nuclei rules, precise identity, shared remediation workflow and exact-object verification (#451) |
 | [Software → CVE matching](software-cve-matching.md) | Endpoint inventory matched against vendor advisories; statuses, offline datasets, and what it does not cover |
 | [Advisory coverage](advisory-coverage.md) | When a package reads `unknown` (no advisory data for the host's release) rather than assessed, and what a loaded dataset does not guarantee |
 | [RPM advisories](rpm-advisories.md) | RHEL, SLES and Amazon Linux binary-RPM providers: supported inputs, explicit channel bindings, dataset overrides (#358, feed acceptance still open) |

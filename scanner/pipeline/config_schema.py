@@ -944,6 +944,20 @@ class ScreenshotConfig(BaseModel):
         return ports
 
 
+class NonCveRule(BaseModel):
+    """Operator-reviewed inclusion; names survive template upgrades/renames."""
+    rule_id: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_.:-]+$")
+    issue_type: Literal["misconfiguration", "exposure"] = "misconfiguration"
+    remediation: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("remediation")
+    @classmethod
+    def meaningful_remediation(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("remediation must describe an action")
+        return value.strip()
+
+
 class NucleiConfig(BaseModel):
     """Nuclei template-based vulnerability/misconfig scanning.
 
@@ -963,7 +977,8 @@ class NucleiConfig(BaseModel):
     ``vulnerabilities.json`` (feeding CVSS4/EPSS/KEV enrichment, risk scoring,
     and report diffs, tagged ``source: "nuclei"``); non-CVE matches (exposed
     panels, misconfig, tech detection) are reported separately in
-    ``nuclei.json`` only. ``max_targets`` caps how many endpoints get probed
+    ``nuclei.json``; reviewed ``non_cve_rules`` also enter the common tracker
+    (see docs/non-cve-findings.md). ``max_targets`` caps how many endpoints get probed
     per run -- past the cap, remaining endpoints are skipped and the run is
     flagged "truncated".
 
@@ -996,6 +1011,7 @@ class NucleiConfig(BaseModel):
     """
 
     enabled: bool = True
+    non_cve_rules: dict[str, NonCveRule] = Field(default_factory=dict)
     network_templates: bool = True
     planner_mode: Literal["legacy", "directed"] = "legacy"
     planner_max_templates: int = Field(default=20000, ge=1, le=50000)
@@ -1004,6 +1020,7 @@ class NucleiConfig(BaseModel):
     templates_dir: str = "/usr/share/nuclei-templates"
     custom_templates_dir: str = ""
     template_ids: list[str] = Field(default_factory=list, max_length=MAX_NUCLEI_TEMPLATE_IDS)
+    verification_targets: list[dict[str, Any]] = Field(default_factory=list, max_length=1)
     severities: list[str] = Field(default_factory=lambda: ["critical", "high", "medium"])
     tags: list[str] = Field(default_factory=list)
     exclude_tags: list[str] = Field(default_factory=lambda: ["intrusive", "fuzz", "dos"])
@@ -1034,6 +1051,12 @@ class NucleiConfig(BaseModel):
             if port < 1 or port > 65535:
                 raise ValueError(f"invalid nuclei port: {port}")
         return ports
+
+    @field_validator("verification_targets")
+    @classmethod
+    def validate_verification_targets(cls, values: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        from .non_cve_verification import validate_target
+        return [validate_target(value) for value in values]
 
     @field_validator("template_ids")
     @classmethod

@@ -59,13 +59,14 @@ from api.settings import Settings
 
 LOG = logging.getLogger("shapoclyack.asset_events")
 
-# The five kinds Phase 10.1 defines. An unknown kind is dropped rather than
+# The bounded asset-event kinds. An unknown kind is dropped rather than
 # published: the subject token comes from this value, so an unvalidated kind
 # would let a scanner artifact create arbitrary subjects.
 EVENT_KINDS = (
     "new_asset",
     "new_open_port",
     "new_cve",
+    "new_finding",
     "cert_expiring",
     "decommissioned_host",
 )
@@ -84,6 +85,7 @@ DEFAULT_MAX_EVENTS_PER_RUN = 1000
 # sorts vulnerabilities by severity.
 _KIND_PRIORITY = {
     "new_cve": 0,
+    "new_finding": 0,
     "cert_expiring": 1,
     "decommissioned_host": 2,
     "new_open_port": 3,
@@ -121,6 +123,16 @@ def event_id(tenant_id: str, event: dict[str, Any]) -> str:
     (report_diff only emits it when it is newly added), and collapsing those
     would suppress a re-appearance after remediation.
     """
+    if event.get("kind") == "new_finding":
+        from scanner.pipeline.finding_evidence import digest, subject
+        # Every non-CVE diff row is a new_finding, legacy ones included, and
+        # not all of them have a canonical subject. One such row must not
+        # abort the whole run's events: it keeps the field-based identity.
+        try:
+            return digest(["asset-non-cve-v1", tenant_id, event.get("run_id"),
+                           event.get("rule_id") or event.get("script_id"), subject(event)])[:48]
+        except (ValueError, TypeError):
+            pass
     parts = [
         tenant_id,
         str(event.get("run_id") or ""),

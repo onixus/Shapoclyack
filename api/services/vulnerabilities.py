@@ -34,6 +34,8 @@ acceptance runs out rather than never.
 
 from __future__ import annotations
 
+from scanner.pipeline.non_cve_policy import actionable
+
 import hashlib
 import ipaddress
 import logging
@@ -43,7 +45,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 
 from api.db import models
 from api.db.engine import get_session, insert_or_skip
@@ -287,6 +289,18 @@ MAX_VANTAGES = 8
 #: known vantage (:func:`merge_detectors`), while a run no job owns did look,
 #: from a place nobody knows, and stays beside any known one.
 UNKNOWN_VANTAGE = "unknown"
+
+
+def observation_finding_key(*, tenant_id: str, asset_id: str, entry: dict[str, Any]) -> str:
+    """Versioned actionable identity; never rename an existing CVE container."""
+    if not actionable(entry):
+        return finding_key(asset_id=asset_id, cve=entry.get("cve"),
+                           script_id=entry.get("script_id"), port=str(entry["port"]) if entry.get("port") is not None else None)
+    from scanner.pipeline.finding_evidence import digest, subject
+    rule = str(entry.get("rule_id") or entry.get("script_id") or "").strip()
+    if not rule:
+        raise ValueError("actionable finding requires a stable rule")
+    return digest(["non-cve-remediation-v1", tenant_id, asset_id, rule, subject(entry)])
 
 
 def _detector_of(source: Any, script_id: Any) -> tuple[str, str] | None:
@@ -1403,9 +1417,7 @@ def register_findings_from_run(
             cve = str(entry.get("cve") or "").strip() or None
             script_id = str(entry.get("script_id") or "").strip() or None
             severity = _severity_of(entry)
-            key = finding_key(
-                asset_id=asset.asset_id, cve=cve, script_id=script_id, port=port
-            )
+            key = observation_finding_key(tenant_id=tenant_id, asset_id=asset.asset_id, entry=entry)
             # Who saw it and where, merged into the row whatever else this
             # observation does — a held false positive included: provenance is
             # what a later verification is judged against, not a verdict.
@@ -1422,6 +1434,7 @@ def register_findings_from_run(
 
             from scanner.pipeline.production_evidence import scoped, merge
             evidence = scoped(entry.get("finding_evidence"), tenant_id=tenant_id, run_id=run_id)
+            from scanner.pipeline.non_cve_verification import metadata as non_cve_metadata
             latest = {
                 "risk_assessment": scored,
                 "severity": severity,
@@ -1433,7 +1446,12 @@ def register_findings_from_run(
                 "network_exposure": scored.get("network_exposure"),
                 "network_exposure_source": scored.get("network_exposure_source"),
                 "cwe": normalize_cwes(entry.get("cwe")),
-                "title": (cve or script_id or "")[:500],
+                "title": str(entry.get("title") or cve or script_id or "")[:500],
+                "finding_type": "cve" if cve else str(entry.get("finding_type") or "exposure"),
+                "detector_source": str(entry.get("source") or "")[:32] or None,
+                "template_id": str(entry.get("template_id") or "")[:256] or None,
+                "remediation": str(entry.get("remediation") or "")[:4000] or None,
+                "non_cve": non_cve_metadata(entry) if actionable(entry) else None,
             }
 
             if row is None:
@@ -1510,6 +1528,18 @@ def register_findings_from_run(
                         models.Vulnerability.finding_key == key,
                     )
                 ).scalar_one()
+
+            if actionable(entry):
+                # Replaying a published observation must not inflate counts,
+                # reopen a manually closed task or roll latest state backwards.
+                def observation_ids(data):
+                    return {o.get("observation_id") for g in (data or {}).get("findings", [])
+                            for o in g.get("observations", [])}
+                current_ids = observation_ids(evidence)
+                if (current_ids and current_ids <= observation_ids(row.finding_evidence)) or (
+                        not current_ids and row.last_seen_run_id == run_id):
+                    reobserved += 1
+                    continue
 
             # Weighed before ``latest`` is written over the row: an escalation
             # is a difference between what the verdict was made on and what
@@ -1690,7 +1720,14 @@ def register_findings_from_run(
                     asset_hosts=addresses,
                 )
                 from scanner.pipeline.production_evidence import closure_gaps
-                evidence_gaps = closure_gaps(v_row.finding_evidence)
+                exact_subjects = []
+                non_cve = getattr(v_row, 'non_cve', None)
+                if non_cve is not None and not v_row.cve:
+                    precise_gaps = coverage.non_cve_gaps(non_cve)
+                    gaps.extend(precise_gaps)
+                    if not precise_gaps:
+                        exact_subjects = [non_cve['subject']]
+                evidence_gaps = closure_gaps(v_row.finding_evidence, covered_subjects=exact_subjects)
                 gaps = [*gaps, *evidence_gaps]
                 unreachable = (
                     coverage.endpoint_unreachable(
@@ -1940,6 +1977,10 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
         "source": row.source,
         "device_id": row.device_id,
         "cve": row.cve,
+        "finding_type": row.finding_type or ("cve" if row.cve else "exposure"),
+        "detector_source": row.detector_source,
+        "template_id": row.template_id,
+        "remediation": row.remediation,
         "bdu_ids": list(bdu["bdu_ids"]),
         "bdu_source": bdu["source"],
         "bdu_updated": bdu["updated"],
@@ -2345,6 +2386,11 @@ class VerificationPlan:
     # from: the re-scan goes out from there, so "not observed" is about the
     # same network path (#451). None when no detector recorded a group.
     agent_group: str | None = None
+    exact_targets: tuple[dict[str, Any], ...] = ()
+
+    @property
+    def overlay_version(self) -> int:
+        return 3 if self.exact_targets else VERIFICATION_OVERLAY_VERSION
 
     def config_extra(self) -> dict[str, Any]:
         # The connect probe of the finding's port, always: it is the only
@@ -2353,6 +2399,8 @@ class VerificationPlan:
         extra: dict[str, Any] = {"reachability": {"enabled": True}}
         if self.template_ids:
             extra["nuclei"] = {"enabled": True, "template_ids": list(self.template_ids)}
+            if self.exact_targets:
+                extra['nuclei']['verification_targets'] = list(self.exact_targets)
         # No service_probe override for ``nse``: the Nmap stage is gone, so a
         # finding an NSE script made is re-checked by whatever else detected it
         # (verification_coverage waives the NSE detector when another covers the
@@ -2376,6 +2424,20 @@ def _verification_plan(session: Any, row: models.Vulnerability) -> VerificationP
     all adds every address of the asset to the targets, because its closure
     then needs coverage on each of them (verification_coverage.assess).
     """
+    exact_targets: tuple[dict[str, Any], ...] = ()
+    non_cve = getattr(row, 'non_cve', None)
+    if non_cve is not None and not row.cve:
+        from scanner.pipeline.non_cve_verification import validate_target
+        try:
+            target = validate_target({'url': non_cve['verification_target'],
+                                      'subject': non_cve['subject'],
+                                      'template_id': non_cve['template_id']})
+        except (ValueError, TypeError, KeyError):
+            raise VerificationDispatchError(
+                'This non-CVE finding has no reproducible exact HTTP subject; '
+                'triage it manually instead of verifying a different object.'
+            ) from None
+        exact_targets = (target,)
     detectors = [entry for entry in (row.detectors or []) if isinstance(entry, dict)]
     hosts = {str(entry["host"]).strip() for entry in detectors if entry.get("host")}
     if not detectors or any(not entry.get("host") for entry in detectors):
@@ -2385,6 +2447,10 @@ def _verification_plan(session: Any, row: models.Vulnerability) -> VerificationP
         addresses = _asset_hosts(session, row)
         asset_ips = {host for host in addresses if _is_ip(host)}
         hosts |= asset_ips or addresses
+    if exact_targets:
+        # Scope approval must cover the exact authority, even if the original
+        # detector recorded only its transport address.
+        hosts.add(exact_targets[0]['subject']['host'])
     if not hosts:
         raise VerificationDispatchError(
             f"Vulnerability '{row.vuln_id}' has no scannable address on record"
@@ -2430,6 +2496,7 @@ def _verification_plan(session: Any, row: models.Vulnerability) -> VerificationP
         nse=nse,
         from_detectors=bool(detectors) and all(entry.get("host") for entry in detectors),
         agent_group=next((str(e["agent_group"]) for e in detectors if e.get("agent_group")), None),
+        exact_targets=exact_targets,
     )
 
 
@@ -2576,7 +2643,8 @@ def trigger_verification(
         except (ValueError, PermissionError) as exc:
             raise VerificationDispatchError(f"Could not dispatch a verification scan: {exc}") from exc
         live = _verification_sensors(settings, owning_tenant, group)
-        if not any(VERIFICATION_CAPABILITY in capabilities for capabilities in live):
+        required_capability = f'config_overlay.v{plan.overlay_version}'
+        if not any(required_capability in capabilities for capabilities in live):
             # Refused rather than queued: the job would wait for a sensor
             # that may never come, with the finding parked in VERIFYING
             # meanwhile — the state this function exists never to create. A
@@ -2587,7 +2655,7 @@ def trigger_verification(
             if live:
                 raise VerificationDispatchError(
                     f"No live sensor of {where} can run a verification re-scan: it needs "
-                    f"capability {VERIFICATION_CAPABILITY} (a sensor from this release, which "
+                    f"capability {required_capability} (a sensor from this release, which "
                     "loads pinned nuclei templates and records the coverage evidence the "
                     "closure is judged on). Upgrade a sensor there and verify again."
                 )
@@ -2596,7 +2664,7 @@ def trigger_verification(
             raise VerificationDispatchError(
                 f"No live sensor of {where} can run a verification re-scan: none is "
                 "active and reporting in, of scanner kind and at or above the version "
-                f"floor. Bring one online (with capability {VERIFICATION_CAPABILITY}) "
+                f"floor. Bring one online (with capability {required_capability}) "
                 "and verify again."
             )
 
@@ -2636,7 +2704,7 @@ def trigger_verification(
             # Explicitly, not through some setting the overlay happens to
             # carry: a verification is only handed to a build that writes the
             # coverage evidence it will be judged on.
-            min_overlay_version=VERIFICATION_OVERLAY_VERSION,
+            min_overlay_version=plan.overlay_version,
             verification_of=vuln_id,
         )
     except scan_scopes.ScanScopeDenied as exc:
@@ -4056,6 +4124,8 @@ def list_vulnerabilities(
     severity: str | None = None,
     asset_id: str | None = None,
     source: str | None = None,
+    finding_type: str | None = None,
+    detector_source: str | None = None,
     network_exposure: str | None = None,
     assignee: str | None = None,
     unassigned: bool = False,
@@ -4100,6 +4170,10 @@ def list_vulnerabilities(
             f"unknown network_exposure {network_exposure!r}; "
             f"expected one of {', '.join(NETWORK_EXPOSURES)}"
         )
+    if finding_type and finding_type not in {"cve", "misconfiguration", "exposure"}:
+        raise ValueError("unknown finding_type")
+    if detector_source and detector_source not in {"pulse", "pulse-plugin", "nuclei", "nmap-nse"}:
+        raise ValueError("unknown detector_source")
     if severity:
         severity = _validate_severity(severity)
 
@@ -4120,6 +4194,11 @@ def list_vulnerabilities(
         filters.append(models.Vulnerability.asset_id == asset_id)
     if source:
         filters.append(models.Vulnerability.source == source)
+    if finding_type:
+        filters.append(func.coalesce(models.Vulnerability.finding_type,
+            case((models.Vulnerability.cve.is_not(None), "cve"), else_="exposure")) == finding_type)
+    if detector_source:
+        filters.append(models.Vulnerability.detector_source == detector_source)
     if network_exposure == UNKNOWN_EXPOSURE:
         # Findings scored before the exposure signal existed carry NULL, which
         # says the same thing as "unknown" — excluding them would hide most of
@@ -4280,9 +4359,11 @@ def summary(
                 models.Vulnerability.exception_until,
                 models.Vulnerability.machine_verified,
                 models.Vulnerability.network_exposure,
+                models.Vulnerability.cve,
             ).where(*filters)
         ).all()
     machine_verified_closed = 0
+    cve_findings = 0
     for (
         state,
         severity,
@@ -4292,8 +4373,10 @@ def summary(
         exception_until,
         machine_verified,
         network_exposure,
+        cve,
     ) in rows:
         total += 1
+        cve_findings += int(bool(cve))
         by_state[str(state)] = by_state.get(str(state), 0) + 1
         if state == vuln_states.CLOSED and machine_verified:
             machine_verified_closed += 1
@@ -4325,6 +4408,8 @@ def summary(
     closed_total = by_state.get(vuln_states.CLOSED, 0)
     return {
         "total": total,
+        "cve_findings": cve_findings,
+        "non_cve_findings": total - cve_findings,
         "open_total": open_total,
         "untriaged": by_state.get(vuln_states.OPEN, 0),
         "unassigned": unassigned,

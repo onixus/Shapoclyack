@@ -44,6 +44,17 @@ function grouped(items: Vulnerability[]): Record<Severity, Vulnerability[]> {
 const NOT_TRUNCATED = { isTruncated: false, shown: 0, total: 0 };
 
 describe("FindingsList prioritisation", () => {
+  it("renders non-CVE remediation and classification in the run report", () => {
+    render(<FindingsList grouped={grouped([vuln({
+      cve: null, script_id: "public-backup", finding_type: "misconfiguration",
+      detector_source: "nuclei", remediation: "Remove the backup from the web root.",
+    })])} truncation={NOT_TRUNCATED} />);
+    expect(screen.getByText("public-backup")).toBeInTheDocument();
+    expect(screen.getByText("misconfiguration · nuclei")).toBeInTheDocument();
+    expect(screen.getByText("Remediation: Remove the backup from the web root.")).toBeInTheDocument();
+    expect(screen.queryByText("CVE-2021-44228")).not.toBeInTheDocument();
+  });
+
   it("shows the risk score, decision, and explanation for a scored finding", () => {
     render(<FindingsList grouped={grouped([vuln({})])} truncation={NOT_TRUNCATED} />);
     expect(screen.getByText("risk 8.4 · Immediate")).toBeInTheDocument();

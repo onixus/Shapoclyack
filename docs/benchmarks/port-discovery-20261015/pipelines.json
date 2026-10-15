@@ -1,0 +1,5655 @@
+[
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 0,
+    "variant": "baseline_union",
+    "seconds": 1.098890167020727,
+    "cpu_seconds": 0.10699999999999998,
+    "accepted_connections": 9,
+    "packets": 216,
+    "wire_bytes": 16548,
+    "processes": 2,
+    "peak_rss_kib": 54980,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "naabu",
+          "-host",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-s",
+          "c",
+          "-json",
+          "-silent",
+          "-duc",
+          "-no-stdin",
+          "-Pn",
+          "-rate",
+          "100",
+          "-c",
+          "16",
+          "-retries",
+          "1",
+          "-timeout",
+          "150",
+          "-warm-up-time",
+          "1"
+        ],
+        "returncode": 0,
+        "seconds": 1.0747143339831382,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.08350099999999999,
+        "peak_rss_kib": 54980,
+        "processes": 1,
+        "accepted_connections": 3,
+        "traffic": {
+          "packets": 74,
+          "wire_bytes": 5202,
+          "tcp_syn": {
+            "127.20.0.2:8443": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.3:8999": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.1:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8999": 2,
+            "127.20.0.3:2222": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 18,
+            "18": 6,
+            "16": 8,
+            "17": 6,
+            "24": 6,
+            "4": 6
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 74,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.024175833037588745,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.023499,
+        "peak_rss_kib": 30456,
+        "processes": 1,
+        "accepted_connections": 6,
+        "traffic": {
+          "packets": 142,
+          "wire_bytes": 11346,
+          "tcp_syn": {
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8443": 8,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 14,
+            "18": 12,
+            "16": 44,
+            "24": 26,
+            "17": 20,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 142,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 0,
+    "variant": "fixed_exact",
+    "seconds": 1.1594562929822132,
+    "cpu_seconds": 0.16821599999999998,
+    "accepted_connections": 9,
+    "packets": 190,
+    "wire_bytes": 14880,
+    "processes": 4,
+    "peak_rss_kib": 54980,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "naabu",
+          "-host",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-s",
+          "c",
+          "-json",
+          "-silent",
+          "-duc",
+          "-no-stdin",
+          "-Pn",
+          "-rate",
+          "100",
+          "-c",
+          "16",
+          "-retries",
+          "1",
+          "-timeout",
+          "150",
+          "-warm-up-time",
+          "1"
+        ],
+        "returncode": 0,
+        "seconds": 1.0747143339831382,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.08350099999999999,
+        "peak_rss_kib": 54980,
+        "processes": 1,
+        "accepted_connections": 3,
+        "traffic": {
+          "packets": 74,
+          "wire_bytes": 5202,
+          "tcp_syn": {
+            "127.20.0.2:8443": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.3:8999": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.1:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8999": 2,
+            "127.20.0.3:2222": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 18,
+            "18": 6,
+            "16": 8,
+            "17": 6,
+            "24": 6,
+            "4": 6
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 74,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1",
+          "-p",
+          "8080",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.027198541967663914,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.028137,
+        "peak_rss_kib": 30456,
+        "processes": 1,
+        "accepted_connections": 1,
+        "traffic": {
+          "packets": 20,
+          "wire_bytes": 1698,
+          "tcp_syn": {
+            "127.20.0.1:8080": 2
+          },
+          "tcp_flags": {
+            "2": 2,
+            "18": 2,
+            "16": 8,
+            "24": 4,
+            "17": 4
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 20,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.2",
+          "-p",
+          "8443",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.028688332997262478,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.028060999999999996,
+        "peak_rss_kib": 30456,
+        "processes": 1,
+        "accepted_connections": 4,
+        "traffic": {
+          "packets": 80,
+          "wire_bytes": 6846,
+          "tcp_syn": {
+            "127.20.0.2:8443": 8
+          },
+          "tcp_flags": {
+            "2": 8,
+            "18": 8,
+            "16": 30,
+            "24": 18,
+            "17": 14,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 80,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.3",
+          "-p",
+          "2222",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.028855084034148604,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.028517,
+        "peak_rss_kib": 30456,
+        "processes": 1,
+        "accepted_connections": 1,
+        "traffic": {
+          "packets": 16,
+          "wire_bytes": 1134,
+          "tcp_syn": {
+            "127.20.0.3:2222": 2
+          },
+          "tcp_flags": {
+            "2": 2,
+            "18": 2,
+            "16": 6,
+            "24": 4,
+            "20": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 16,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 0,
+    "variant": "pulse_reuse",
+    "seconds": 0.028890749963466078,
+    "cpu_seconds": 0.029324,
+    "accepted_connections": 6,
+    "packets": 152,
+    "wire_bytes": 11982,
+    "processes": 1,
+    "peak_rss_kib": 30456,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.028890749963466078,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.029324,
+        "peak_rss_kib": 30456,
+        "processes": 1,
+        "accepted_connections": 6,
+        "traffic": {
+          "packets": 152,
+          "wire_bytes": 11982,
+          "tcp_syn": {
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8443": 8,
+            "127.20.0.2:8999": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.3:8999": 2
+          },
+          "tcp_flags": {
+            "2": 30,
+            "20": 20,
+            "18": 12,
+            "16": 44,
+            "24": 26,
+            "17": 18,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 152,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 1,
+    "variant": "baseline_union",
+    "seconds": 1.0965384590090252,
+    "cpu_seconds": 0.100187,
+    "accepted_connections": 9,
+    "packets": 220,
+    "wire_bytes": 16812,
+    "processes": 2,
+    "peak_rss_kib": 55240,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "naabu",
+          "-host",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-s",
+          "c",
+          "-json",
+          "-silent",
+          "-duc",
+          "-no-stdin",
+          "-Pn",
+          "-rate",
+          "100",
+          "-c",
+          "16",
+          "-retries",
+          "1",
+          "-timeout",
+          "150",
+          "-warm-up-time",
+          "1"
+        ],
+        "returncode": 0,
+        "seconds": 1.0734631670056842,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.07886599999999999,
+        "peak_rss_kib": 55240,
+        "processes": 1,
+        "accepted_connections": 3,
+        "traffic": {
+          "packets": 78,
+          "wire_bytes": 5466,
+          "tcp_syn": {
+            "127.20.0.3:8999": 2,
+            "127.20.0.2:8999": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.2:8443": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.3:2222": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 18,
+            "18": 6,
+            "16": 12,
+            "17": 6,
+            "24": 6,
+            "4": 6
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 78,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.02307529200334102,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.021321,
+        "peak_rss_kib": 30456,
+        "processes": 1,
+        "accepted_connections": 6,
+        "traffic": {
+          "packets": 142,
+          "wire_bytes": 11346,
+          "tcp_syn": {
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8443": 8,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 14,
+            "18": 12,
+            "16": 44,
+            "24": 26,
+            "17": 20,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 142,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 1,
+    "variant": "fixed_exact",
+    "seconds": 1.1468986269901507,
+    "cpu_seconds": 0.152855,
+    "accepted_connections": 9,
+    "packets": 194,
+    "wire_bytes": 15144,
+    "processes": 4,
+    "peak_rss_kib": 55240,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "naabu",
+          "-host",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-s",
+          "c",
+          "-json",
+          "-silent",
+          "-duc",
+          "-no-stdin",
+          "-Pn",
+          "-rate",
+          "100",
+          "-c",
+          "16",
+          "-retries",
+          "1",
+          "-timeout",
+          "150",
+          "-warm-up-time",
+          "1"
+        ],
+        "returncode": 0,
+        "seconds": 1.0734631670056842,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.07886599999999999,
+        "peak_rss_kib": 55240,
+        "processes": 1,
+        "accepted_connections": 3,
+        "traffic": {
+          "packets": 78,
+          "wire_bytes": 5466,
+          "tcp_syn": {
+            "127.20.0.3:8999": 2,
+            "127.20.0.2:8999": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.2:8443": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.3:2222": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 18,
+            "18": 6,
+            "16": 12,
+            "17": 6,
+            "24": 6,
+            "4": 6
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 78,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1",
+          "-p",
+          "8080",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.023797083995305002,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.024121999999999998,
+        "peak_rss_kib": 30456,
+        "processes": 1,
+        "accepted_connections": 1,
+        "traffic": {
+          "packets": 20,
+          "wire_bytes": 1698,
+          "tcp_syn": {
+            "127.20.0.1:8080": 2
+          },
+          "tcp_flags": {
+            "2": 2,
+            "18": 2,
+            "16": 8,
+            "24": 4,
+            "17": 4
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 20,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.2",
+          "-p",
+          "8443",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.023395208991132677,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.023207,
+        "peak_rss_kib": 30456,
+        "processes": 1,
+        "accepted_connections": 4,
+        "traffic": {
+          "packets": 80,
+          "wire_bytes": 6846,
+          "tcp_syn": {
+            "127.20.0.2:8443": 8
+          },
+          "tcp_flags": {
+            "2": 8,
+            "18": 8,
+            "16": 30,
+            "24": 18,
+            "17": 14,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 80,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.3",
+          "-p",
+          "2222",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.026243166998028755,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.02666,
+        "peak_rss_kib": 30456,
+        "processes": 1,
+        "accepted_connections": 1,
+        "traffic": {
+          "packets": 16,
+          "wire_bytes": 1134,
+          "tcp_syn": {
+            "127.20.0.3:2222": 2
+          },
+          "tcp_flags": {
+            "2": 2,
+            "18": 2,
+            "16": 6,
+            "24": 4,
+            "20": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 16,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 1,
+    "variant": "pulse_reuse",
+    "seconds": 0.028816084028221667,
+    "cpu_seconds": 0.027075999999999996,
+    "accepted_connections": 6,
+    "packets": 154,
+    "wire_bytes": 12114,
+    "processes": 1,
+    "peak_rss_kib": 30456,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.028816084028221667,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.027075999999999996,
+        "peak_rss_kib": 30456,
+        "processes": 1,
+        "accepted_connections": 6,
+        "traffic": {
+          "packets": 154,
+          "wire_bytes": 12114,
+          "tcp_syn": {
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8443": 8,
+            "127.20.0.2:8999": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.3:8999": 2
+          },
+          "tcp_flags": {
+            "2": 30,
+            "20": 20,
+            "18": 12,
+            "16": 44,
+            "24": 26,
+            "17": 20,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 154,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 2,
+    "variant": "baseline_union",
+    "seconds": 1.100371583015658,
+    "cpu_seconds": 0.11514899999999999,
+    "accepted_connections": 9,
+    "packets": 218,
+    "wire_bytes": 16680,
+    "processes": 2,
+    "peak_rss_kib": 54948,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "naabu",
+          "-host",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-s",
+          "c",
+          "-json",
+          "-silent",
+          "-duc",
+          "-no-stdin",
+          "-Pn",
+          "-rate",
+          "100",
+          "-c",
+          "16",
+          "-retries",
+          "1",
+          "-timeout",
+          "150",
+          "-warm-up-time",
+          "1"
+        ],
+        "returncode": 0,
+        "seconds": 1.0717553329886869,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.08713099999999999,
+        "peak_rss_kib": 54948,
+        "processes": 1,
+        "accepted_connections": 3,
+        "traffic": {
+          "packets": 76,
+          "wire_bytes": 5334,
+          "tcp_syn": {
+            "127.20.0.1:8080": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.2:8443": 2,
+            "127.20.0.3:8999": 2,
+            "127.20.0.2:8999": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.1:2222": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 18,
+            "18": 6,
+            "16": 10,
+            "17": 6,
+            "24": 6,
+            "4": 6
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 76,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.028616250026971102,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.028017999999999998,
+        "peak_rss_kib": 30456,
+        "processes": 1,
+        "accepted_connections": 6,
+        "traffic": {
+          "packets": 142,
+          "wire_bytes": 11346,
+          "tcp_syn": {
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8443": 8,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 14,
+            "18": 12,
+            "16": 44,
+            "24": 26,
+            "17": 20,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 142,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 2,
+    "variant": "fixed_exact",
+    "seconds": 1.1490151670295745,
+    "cpu_seconds": 0.16392999999999996,
+    "accepted_connections": 9,
+    "packets": 194,
+    "wire_bytes": 15144,
+    "processes": 4,
+    "peak_rss_kib": 54948,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "naabu",
+          "-host",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-s",
+          "c",
+          "-json",
+          "-silent",
+          "-duc",
+          "-no-stdin",
+          "-Pn",
+          "-rate",
+          "100",
+          "-c",
+          "16",
+          "-retries",
+          "1",
+          "-timeout",
+          "150",
+          "-warm-up-time",
+          "1"
+        ],
+        "returncode": 0,
+        "seconds": 1.0717553329886869,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.08713099999999999,
+        "peak_rss_kib": 54948,
+        "processes": 1,
+        "accepted_connections": 3,
+        "traffic": {
+          "packets": 76,
+          "wire_bytes": 5334,
+          "tcp_syn": {
+            "127.20.0.1:8080": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.2:8443": 2,
+            "127.20.0.3:8999": 2,
+            "127.20.0.2:8999": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.1:2222": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 18,
+            "18": 6,
+            "16": 10,
+            "17": 6,
+            "24": 6,
+            "4": 6
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 76,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1",
+          "-p",
+          "8080",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.025132749986369163,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.024357999999999998,
+        "peak_rss_kib": 30456,
+        "processes": 1,
+        "accepted_connections": 1,
+        "traffic": {
+          "packets": 22,
+          "wire_bytes": 1830,
+          "tcp_syn": {
+            "127.20.0.1:8080": 2
+          },
+          "tcp_flags": {
+            "2": 2,
+            "18": 2,
+            "16": 10,
+            "24": 4,
+            "17": 4
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 22,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.2",
+          "-p",
+          "8443",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.026241959014441818,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.025556999999999996,
+        "peak_rss_kib": 30456,
+        "processes": 1,
+        "accepted_connections": 4,
+        "traffic": {
+          "packets": 80,
+          "wire_bytes": 6846,
+          "tcp_syn": {
+            "127.20.0.2:8443": 8
+          },
+          "tcp_flags": {
+            "2": 8,
+            "18": 8,
+            "16": 30,
+            "24": 18,
+            "17": 14,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 80,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.3",
+          "-p",
+          "2222",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.025885125040076673,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.026883999999999998,
+        "peak_rss_kib": 30456,
+        "processes": 1,
+        "accepted_connections": 1,
+        "traffic": {
+          "packets": 16,
+          "wire_bytes": 1134,
+          "tcp_syn": {
+            "127.20.0.3:2222": 2
+          },
+          "tcp_flags": {
+            "2": 2,
+            "18": 2,
+            "16": 6,
+            "24": 4,
+            "20": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 16,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 2,
+    "variant": "pulse_reuse",
+    "seconds": 0.025653458025772125,
+    "cpu_seconds": 0.02411,
+    "accepted_connections": 6,
+    "packets": 154,
+    "wire_bytes": 12114,
+    "processes": 1,
+    "peak_rss_kib": 30456,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.025653458025772125,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.02411,
+        "peak_rss_kib": 30456,
+        "processes": 1,
+        "accepted_connections": 6,
+        "traffic": {
+          "packets": 154,
+          "wire_bytes": 12114,
+          "tcp_syn": {
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8443": 8,
+            "127.20.0.2:8999": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.3:8999": 2
+          },
+          "tcp_flags": {
+            "2": 30,
+            "20": 20,
+            "18": 12,
+            "16": 44,
+            "24": 26,
+            "17": 20,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 154,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 3,
+    "variant": "baseline_union",
+    "seconds": 1.0987800419679843,
+    "cpu_seconds": 0.106252,
+    "accepted_connections": 9,
+    "packets": 218,
+    "wire_bytes": 16680,
+    "processes": 2,
+    "peak_rss_kib": 55008,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "naabu",
+          "-host",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-s",
+          "c",
+          "-json",
+          "-silent",
+          "-duc",
+          "-no-stdin",
+          "-Pn",
+          "-rate",
+          "100",
+          "-c",
+          "16",
+          "-retries",
+          "1",
+          "-timeout",
+          "150",
+          "-warm-up-time",
+          "1"
+        ],
+        "returncode": 0,
+        "seconds": 1.0746474170009606,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.082965,
+        "peak_rss_kib": 55008,
+        "processes": 1,
+        "accepted_connections": 3,
+        "traffic": {
+          "packets": 78,
+          "wire_bytes": 5466,
+          "tcp_syn": {
+            "127.20.0.1:8080": 2,
+            "127.20.0.2:8999": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.2:8443": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.1:2222": 2,
+            "127.20.0.3:8999": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.3:2222": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 18,
+            "18": 6,
+            "16": 12,
+            "17": 6,
+            "24": 6,
+            "4": 6
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 78,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.02413262496702373,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.023287,
+        "peak_rss_kib": 30464,
+        "processes": 1,
+        "accepted_connections": 6,
+        "traffic": {
+          "packets": 140,
+          "wire_bytes": 11214,
+          "tcp_syn": {
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8443": 8,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 14,
+            "18": 12,
+            "16": 44,
+            "24": 26,
+            "17": 18,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 140,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 3,
+    "variant": "fixed_exact",
+    "seconds": 1.1551904589869082,
+    "cpu_seconds": 0.163648,
+    "accepted_connections": 9,
+    "packets": 194,
+    "wire_bytes": 15144,
+    "processes": 4,
+    "peak_rss_kib": 55008,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "naabu",
+          "-host",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-s",
+          "c",
+          "-json",
+          "-silent",
+          "-duc",
+          "-no-stdin",
+          "-Pn",
+          "-rate",
+          "100",
+          "-c",
+          "16",
+          "-retries",
+          "1",
+          "-timeout",
+          "150",
+          "-warm-up-time",
+          "1"
+        ],
+        "returncode": 0,
+        "seconds": 1.0746474170009606,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.082965,
+        "peak_rss_kib": 55008,
+        "processes": 1,
+        "accepted_connections": 3,
+        "traffic": {
+          "packets": 78,
+          "wire_bytes": 5466,
+          "tcp_syn": {
+            "127.20.0.1:8080": 2,
+            "127.20.0.2:8999": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.2:8443": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.1:2222": 2,
+            "127.20.0.3:8999": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.3:2222": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 18,
+            "18": 6,
+            "16": 12,
+            "17": 6,
+            "24": 6,
+            "4": 6
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 78,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1",
+          "-p",
+          "8080",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.02589687501313165,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.026614,
+        "peak_rss_kib": 30464,
+        "processes": 1,
+        "accepted_connections": 1,
+        "traffic": {
+          "packets": 20,
+          "wire_bytes": 1698,
+          "tcp_syn": {
+            "127.20.0.1:8080": 2
+          },
+          "tcp_flags": {
+            "2": 2,
+            "18": 2,
+            "16": 8,
+            "24": 4,
+            "17": 4
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 20,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.2",
+          "-p",
+          "8443",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.02899608400184661,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.028081999999999996,
+        "peak_rss_kib": 30464,
+        "processes": 1,
+        "accepted_connections": 4,
+        "traffic": {
+          "packets": 80,
+          "wire_bytes": 6846,
+          "tcp_syn": {
+            "127.20.0.2:8443": 8
+          },
+          "tcp_flags": {
+            "2": 8,
+            "18": 8,
+            "16": 30,
+            "24": 18,
+            "17": 14,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 80,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.3",
+          "-p",
+          "2222",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.02565008297096938,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.025987,
+        "peak_rss_kib": 30464,
+        "processes": 1,
+        "accepted_connections": 1,
+        "traffic": {
+          "packets": 16,
+          "wire_bytes": 1134,
+          "tcp_syn": {
+            "127.20.0.3:2222": 2
+          },
+          "tcp_flags": {
+            "2": 2,
+            "18": 2,
+            "16": 6,
+            "24": 4,
+            "20": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 16,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 3,
+    "variant": "pulse_reuse",
+    "seconds": 0.028758833010215312,
+    "cpu_seconds": 0.027766,
+    "accepted_connections": 6,
+    "packets": 152,
+    "wire_bytes": 11982,
+    "processes": 1,
+    "peak_rss_kib": 30464,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.028758833010215312,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.027766,
+        "peak_rss_kib": 30464,
+        "processes": 1,
+        "accepted_connections": 6,
+        "traffic": {
+          "packets": 152,
+          "wire_bytes": 11982,
+          "tcp_syn": {
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8443": 8,
+            "127.20.0.2:8999": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.3:8999": 2
+          },
+          "tcp_flags": {
+            "2": 30,
+            "20": 20,
+            "18": 12,
+            "16": 44,
+            "24": 26,
+            "17": 18,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 152,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 4,
+    "variant": "baseline_union",
+    "seconds": 1.092972501006443,
+    "cpu_seconds": 0.106687,
+    "accepted_connections": 9,
+    "packets": 218,
+    "wire_bytes": 16680,
+    "processes": 2,
+    "peak_rss_kib": 54816,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "naabu",
+          "-host",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-s",
+          "c",
+          "-json",
+          "-silent",
+          "-duc",
+          "-no-stdin",
+          "-Pn",
+          "-rate",
+          "100",
+          "-c",
+          "16",
+          "-retries",
+          "1",
+          "-timeout",
+          "150",
+          "-warm-up-time",
+          "1"
+        ],
+        "returncode": 0,
+        "seconds": 1.0683243760140613,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.082815,
+        "peak_rss_kib": 54816,
+        "processes": 1,
+        "accepted_connections": 3,
+        "traffic": {
+          "packets": 76,
+          "wire_bytes": 5334,
+          "tcp_syn": {
+            "127.20.0.1:8080": 2,
+            "127.20.0.2:8999": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.3:8999": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.2:8443": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8999": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 18,
+            "18": 6,
+            "16": 10,
+            "17": 6,
+            "24": 6,
+            "4": 6
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 76,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.02464812499238178,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.023871999999999997,
+        "peak_rss_kib": 30464,
+        "processes": 1,
+        "accepted_connections": 6,
+        "traffic": {
+          "packets": 142,
+          "wire_bytes": 11346,
+          "tcp_syn": {
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8443": 8,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 14,
+            "18": 12,
+            "16": 44,
+            "24": 26,
+            "17": 20,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 142,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 4,
+    "variant": "fixed_exact",
+    "seconds": 1.1471611690358259,
+    "cpu_seconds": 0.159877,
+    "accepted_connections": 9,
+    "packets": 192,
+    "wire_bytes": 15012,
+    "processes": 4,
+    "peak_rss_kib": 54816,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "naabu",
+          "-host",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-s",
+          "c",
+          "-json",
+          "-silent",
+          "-duc",
+          "-no-stdin",
+          "-Pn",
+          "-rate",
+          "100",
+          "-c",
+          "16",
+          "-retries",
+          "1",
+          "-timeout",
+          "150",
+          "-warm-up-time",
+          "1"
+        ],
+        "returncode": 0,
+        "seconds": 1.0683243760140613,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.082815,
+        "peak_rss_kib": 54816,
+        "processes": 1,
+        "accepted_connections": 3,
+        "traffic": {
+          "packets": 76,
+          "wire_bytes": 5334,
+          "tcp_syn": {
+            "127.20.0.1:8080": 2,
+            "127.20.0.2:8999": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.3:8999": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.2:8443": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8999": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 18,
+            "18": 6,
+            "16": 10,
+            "17": 6,
+            "24": 6,
+            "4": 6
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 76,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1",
+          "-p",
+          "8080",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.028030626010149717,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.027742,
+        "peak_rss_kib": 30464,
+        "processes": 1,
+        "accepted_connections": 1,
+        "traffic": {
+          "packets": 20,
+          "wire_bytes": 1698,
+          "tcp_syn": {
+            "127.20.0.1:8080": 2
+          },
+          "tcp_flags": {
+            "2": 2,
+            "18": 2,
+            "16": 8,
+            "24": 4,
+            "17": 4
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 20,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.2",
+          "-p",
+          "8443",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.02388037502532825,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.023018999999999998,
+        "peak_rss_kib": 30428,
+        "processes": 1,
+        "accepted_connections": 4,
+        "traffic": {
+          "packets": 80,
+          "wire_bytes": 6846,
+          "tcp_syn": {
+            "127.20.0.2:8443": 8
+          },
+          "tcp_flags": {
+            "2": 8,
+            "18": 8,
+            "16": 30,
+            "24": 18,
+            "17": 14,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 80,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.3",
+          "-p",
+          "2222",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.02692579198628664,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.026301,
+        "peak_rss_kib": 30464,
+        "processes": 1,
+        "accepted_connections": 1,
+        "traffic": {
+          "packets": 16,
+          "wire_bytes": 1134,
+          "tcp_syn": {
+            "127.20.0.3:2222": 2
+          },
+          "tcp_flags": {
+            "2": 2,
+            "18": 2,
+            "16": 6,
+            "24": 4,
+            "20": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 16,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "cold",
+    "repeat": 4,
+    "variant": "pulse_reuse",
+    "seconds": 0.024785874993540347,
+    "cpu_seconds": 0.024791,
+    "accepted_connections": 6,
+    "packets": 154,
+    "wire_bytes": 12114,
+    "processes": 1,
+    "peak_rss_kib": 30464,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.024785874993540347,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.024791,
+        "peak_rss_kib": 30464,
+        "processes": 1,
+        "accepted_connections": 6,
+        "traffic": {
+          "packets": 154,
+          "wire_bytes": 12114,
+          "tcp_syn": {
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8443": 8,
+            "127.20.0.2:8999": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.3:8999": 2
+          },
+          "tcp_flags": {
+            "2": 30,
+            "20": 20,
+            "18": 12,
+            "16": 44,
+            "24": 26,
+            "17": 20,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 154,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 0,
+    "variant": "baseline_union",
+    "seconds": 1.1021710419445299,
+    "cpu_seconds": 0.10586799999999999,
+    "accepted_connections": 9,
+    "packets": 216,
+    "wire_bytes": 16548,
+    "processes": 2,
+    "peak_rss_kib": 55644,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "naabu",
+          "-host",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-s",
+          "c",
+          "-json",
+          "-silent",
+          "-duc",
+          "-no-stdin",
+          "-Pn",
+          "-rate",
+          "100",
+          "-c",
+          "16",
+          "-retries",
+          "1",
+          "-timeout",
+          "150",
+          "-warm-up-time",
+          "1"
+        ],
+        "returncode": 0,
+        "seconds": 1.0735616259626113,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.078785,
+        "peak_rss_kib": 55644,
+        "processes": 1,
+        "accepted_connections": 3,
+        "traffic": {
+          "packets": 74,
+          "wire_bytes": 5202,
+          "tcp_syn": {
+            "127.20.0.2:8999": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:2222": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.2:8443": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.3:8999": 2,
+            "127.20.0.3:8080": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 18,
+            "18": 6,
+            "16": 8,
+            "17": 6,
+            "24": 6,
+            "4": 6
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 74,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.028609415981918573,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.027083,
+        "peak_rss_kib": 30484,
+        "processes": 1,
+        "accepted_connections": 6,
+        "traffic": {
+          "packets": 142,
+          "wire_bytes": 11346,
+          "tcp_syn": {
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8443": 8,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 14,
+            "18": 12,
+            "16": 44,
+            "24": 26,
+            "17": 20,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 142,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 0,
+    "variant": "fixed_exact",
+    "seconds": 1.151288834051229,
+    "cpu_seconds": 0.157878,
+    "accepted_connections": 9,
+    "packets": 192,
+    "wire_bytes": 15012,
+    "processes": 4,
+    "peak_rss_kib": 55644,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "naabu",
+          "-host",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-s",
+          "c",
+          "-json",
+          "-silent",
+          "-duc",
+          "-no-stdin",
+          "-Pn",
+          "-rate",
+          "100",
+          "-c",
+          "16",
+          "-retries",
+          "1",
+          "-timeout",
+          "150",
+          "-warm-up-time",
+          "1"
+        ],
+        "returncode": 0,
+        "seconds": 1.0735616259626113,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.078785,
+        "peak_rss_kib": 55644,
+        "processes": 1,
+        "accepted_connections": 3,
+        "traffic": {
+          "packets": 74,
+          "wire_bytes": 5202,
+          "tcp_syn": {
+            "127.20.0.2:8999": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:2222": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.2:8443": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.3:8999": 2,
+            "127.20.0.3:8080": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 18,
+            "18": 6,
+            "16": 8,
+            "17": 6,
+            "24": 6,
+            "4": 6
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 74,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1",
+          "-p",
+          "8080",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.026422000024467707,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.027587,
+        "peak_rss_kib": 30484,
+        "processes": 1,
+        "accepted_connections": 1,
+        "traffic": {
+          "packets": 20,
+          "wire_bytes": 1698,
+          "tcp_syn": {
+            "127.20.0.1:8080": 2
+          },
+          "tcp_flags": {
+            "2": 2,
+            "18": 2,
+            "16": 8,
+            "24": 4,
+            "17": 4
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 20,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.2",
+          "-p",
+          "8443",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.024152667028829455,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.023896999999999998,
+        "peak_rss_kib": 30484,
+        "processes": 1,
+        "accepted_connections": 4,
+        "traffic": {
+          "packets": 80,
+          "wire_bytes": 6846,
+          "tcp_syn": {
+            "127.20.0.2:8443": 8
+          },
+          "tcp_flags": {
+            "2": 8,
+            "18": 8,
+            "16": 30,
+            "24": 18,
+            "17": 14,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 80,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.3",
+          "-p",
+          "2222",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.02715254103532061,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.027609,
+        "peak_rss_kib": 30484,
+        "processes": 1,
+        "accepted_connections": 1,
+        "traffic": {
+          "packets": 18,
+          "wire_bytes": 1266,
+          "tcp_syn": {
+            "127.20.0.3:2222": 2
+          },
+          "tcp_flags": {
+            "2": 2,
+            "18": 2,
+            "16": 6,
+            "24": 4,
+            "17": 2,
+            "20": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 18,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 0,
+    "variant": "pulse_reuse",
+    "seconds": 0.024086916004307568,
+    "cpu_seconds": 0.023192,
+    "accepted_connections": 6,
+    "packets": 152,
+    "wire_bytes": 11982,
+    "processes": 1,
+    "peak_rss_kib": 30484,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.024086916004307568,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.023192,
+        "peak_rss_kib": 30484,
+        "processes": 1,
+        "accepted_connections": 6,
+        "traffic": {
+          "packets": 152,
+          "wire_bytes": 11982,
+          "tcp_syn": {
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8443": 8,
+            "127.20.0.2:8999": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.3:8999": 2
+          },
+          "tcp_flags": {
+            "2": 30,
+            "20": 20,
+            "18": 12,
+            "16": 44,
+            "24": 26,
+            "17": 18,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 152,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 1,
+    "variant": "baseline_union",
+    "seconds": 1.1031282920157537,
+    "cpu_seconds": 0.11777199999999999,
+    "accepted_connections": 9,
+    "packets": 220,
+    "wire_bytes": 16812,
+    "processes": 2,
+    "peak_rss_kib": 55144,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "naabu",
+          "-host",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-s",
+          "c",
+          "-json",
+          "-silent",
+          "-duc",
+          "-no-stdin",
+          "-Pn",
+          "-rate",
+          "100",
+          "-c",
+          "16",
+          "-retries",
+          "1",
+          "-timeout",
+          "150",
+          "-warm-up-time",
+          "1"
+        ],
+        "returncode": 0,
+        "seconds": 1.0787865840247832,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.094622,
+        "peak_rss_kib": 55144,
+        "processes": 1,
+        "accepted_connections": 3,
+        "traffic": {
+          "packets": 78,
+          "wire_bytes": 5466,
+          "tcp_syn": {
+            "127.20.0.1:8999": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.2:8999": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.3:8999": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.2:8443": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 18,
+            "18": 6,
+            "16": 12,
+            "17": 6,
+            "24": 6,
+            "4": 6
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 78,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.024341707990970463,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.023149999999999997,
+        "peak_rss_kib": 30492,
+        "processes": 1,
+        "accepted_connections": 6,
+        "traffic": {
+          "packets": 142,
+          "wire_bytes": 11346,
+          "tcp_syn": {
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8443": 8,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 14,
+            "18": 12,
+            "16": 44,
+            "24": 26,
+            "17": 20,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 142,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 1,
+    "variant": "fixed_exact",
+    "seconds": 1.1536714999820106,
+    "cpu_seconds": 0.169674,
+    "accepted_connections": 9,
+    "packets": 192,
+    "wire_bytes": 15036,
+    "processes": 4,
+    "peak_rss_kib": 55144,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "naabu",
+          "-host",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-s",
+          "c",
+          "-json",
+          "-silent",
+          "-duc",
+          "-no-stdin",
+          "-Pn",
+          "-rate",
+          "100",
+          "-c",
+          "16",
+          "-retries",
+          "1",
+          "-timeout",
+          "150",
+          "-warm-up-time",
+          "1"
+        ],
+        "returncode": 0,
+        "seconds": 1.0787865840247832,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.094622,
+        "peak_rss_kib": 55144,
+        "processes": 1,
+        "accepted_connections": 3,
+        "traffic": {
+          "packets": 78,
+          "wire_bytes": 5466,
+          "tcp_syn": {
+            "127.20.0.1:8999": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.2:8999": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.3:8999": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.2:8443": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 18,
+            "18": 6,
+            "16": 12,
+            "17": 6,
+            "24": 6,
+            "4": 6
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 78,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1",
+          "-p",
+          "8080",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.022436333005316556,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.021928,
+        "peak_rss_kib": 30524,
+        "processes": 1,
+        "accepted_connections": 1,
+        "traffic": {
+          "packets": 20,
+          "wire_bytes": 1698,
+          "tcp_syn": {
+            "127.20.0.1:8080": 2
+          },
+          "tcp_flags": {
+            "2": 2,
+            "18": 2,
+            "16": 8,
+            "24": 4,
+            "17": 4
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 20,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.2",
+          "-p",
+          "8443",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.024975957989227027,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.025014,
+        "peak_rss_kib": 30524,
+        "processes": 1,
+        "accepted_connections": 4,
+        "traffic": {
+          "packets": 78,
+          "wire_bytes": 6738,
+          "tcp_syn": {
+            "127.20.0.2:8443": 8
+          },
+          "tcp_flags": {
+            "2": 8,
+            "18": 8,
+            "16": 30,
+            "24": 18,
+            "17": 12,
+            "20": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 78,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.3",
+          "-p",
+          "2222",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.027472624962683767,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.02811,
+        "peak_rss_kib": 30524,
+        "processes": 1,
+        "accepted_connections": 1,
+        "traffic": {
+          "packets": 16,
+          "wire_bytes": 1134,
+          "tcp_syn": {
+            "127.20.0.3:2222": 2
+          },
+          "tcp_flags": {
+            "2": 2,
+            "18": 2,
+            "16": 6,
+            "24": 4,
+            "20": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 16,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 1,
+    "variant": "pulse_reuse",
+    "seconds": 0.026995708991307765,
+    "cpu_seconds": 0.026427,
+    "accepted_connections": 6,
+    "packets": 154,
+    "wire_bytes": 12114,
+    "processes": 1,
+    "peak_rss_kib": 30516,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.026995708991307765,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.026427,
+        "peak_rss_kib": 30516,
+        "processes": 1,
+        "accepted_connections": 6,
+        "traffic": {
+          "packets": 154,
+          "wire_bytes": 12114,
+          "tcp_syn": {
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8443": 8,
+            "127.20.0.2:8999": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.3:8999": 2
+          },
+          "tcp_flags": {
+            "2": 30,
+            "20": 20,
+            "18": 12,
+            "16": 44,
+            "24": 26,
+            "17": 20,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 154,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 2,
+    "variant": "baseline_union",
+    "seconds": 1.1002169589628465,
+    "cpu_seconds": 0.124622,
+    "accepted_connections": 9,
+    "packets": 220,
+    "wire_bytes": 16812,
+    "processes": 2,
+    "peak_rss_kib": 55076,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "naabu",
+          "-host",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-s",
+          "c",
+          "-json",
+          "-silent",
+          "-duc",
+          "-no-stdin",
+          "-Pn",
+          "-rate",
+          "100",
+          "-c",
+          "16",
+          "-retries",
+          "1",
+          "-timeout",
+          "150",
+          "-warm-up-time",
+          "1"
+        ],
+        "returncode": 0,
+        "seconds": 1.0785232089692727,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.103338,
+        "peak_rss_kib": 55076,
+        "processes": 1,
+        "accepted_connections": 3,
+        "traffic": {
+          "packets": 76,
+          "wire_bytes": 5334,
+          "tcp_syn": {
+            "127.20.0.1:8080": 2,
+            "127.20.0.2:8999": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8999": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8443": 2,
+            "127.20.0.1:8443": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "18": 6,
+            "20": 18,
+            "16": 10,
+            "17": 6,
+            "24": 6,
+            "4": 6
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 76,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.021693749993573874,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.021283999999999997,
+        "peak_rss_kib": 30568,
+        "processes": 1,
+        "accepted_connections": 6,
+        "traffic": {
+          "packets": 144,
+          "wire_bytes": 11478,
+          "tcp_syn": {
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8443": 8,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 16,
+            "18": 12,
+            "16": 44,
+            "24": 26,
+            "17": 20,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 144,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 2,
+    "variant": "fixed_exact",
+    "seconds": 1.1510551680112258,
+    "cpu_seconds": 0.175061,
+    "accepted_connections": 9,
+    "packets": 194,
+    "wire_bytes": 15144,
+    "processes": 4,
+    "peak_rss_kib": 55076,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "naabu",
+          "-host",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-s",
+          "c",
+          "-json",
+          "-silent",
+          "-duc",
+          "-no-stdin",
+          "-Pn",
+          "-rate",
+          "100",
+          "-c",
+          "16",
+          "-retries",
+          "1",
+          "-timeout",
+          "150",
+          "-warm-up-time",
+          "1"
+        ],
+        "returncode": 0,
+        "seconds": 1.0785232089692727,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.103338,
+        "peak_rss_kib": 55076,
+        "processes": 1,
+        "accepted_connections": 3,
+        "traffic": {
+          "packets": 76,
+          "wire_bytes": 5334,
+          "tcp_syn": {
+            "127.20.0.1:8080": 2,
+            "127.20.0.2:8999": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8999": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8443": 2,
+            "127.20.0.1:8443": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "18": 6,
+            "20": 18,
+            "16": 10,
+            "17": 6,
+            "24": 6,
+            "4": 6
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 76,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1",
+          "-p",
+          "8080",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.023824334028176963,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.025588,
+        "peak_rss_kib": 30608,
+        "processes": 1,
+        "accepted_connections": 1,
+        "traffic": {
+          "packets": 20,
+          "wire_bytes": 1698,
+          "tcp_syn": {
+            "127.20.0.1:8080": 2
+          },
+          "tcp_flags": {
+            "2": 2,
+            "18": 2,
+            "16": 8,
+            "24": 4,
+            "17": 4
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 20,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.2",
+          "-p",
+          "8443",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.026316375005990267,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.024679,
+        "peak_rss_kib": 30608,
+        "processes": 1,
+        "accepted_connections": 4,
+        "traffic": {
+          "packets": 80,
+          "wire_bytes": 6846,
+          "tcp_syn": {
+            "127.20.0.2:8443": 8
+          },
+          "tcp_flags": {
+            "2": 8,
+            "18": 8,
+            "16": 30,
+            "24": 18,
+            "17": 14,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 80,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.3",
+          "-p",
+          "2222",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.022391250007785857,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.021456,
+        "peak_rss_kib": 30616,
+        "processes": 1,
+        "accepted_connections": 1,
+        "traffic": {
+          "packets": 18,
+          "wire_bytes": 1266,
+          "tcp_syn": {
+            "127.20.0.3:2222": 2
+          },
+          "tcp_flags": {
+            "2": 2,
+            "18": 2,
+            "16": 6,
+            "24": 4,
+            "17": 2,
+            "20": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 18,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 2,
+    "variant": "pulse_reuse",
+    "seconds": 0.027792249980848283,
+    "cpu_seconds": 0.026361999999999997,
+    "accepted_connections": 6,
+    "packets": 154,
+    "wire_bytes": 12114,
+    "processes": 1,
+    "peak_rss_kib": 30624,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.027792249980848283,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.026361999999999997,
+        "peak_rss_kib": 30624,
+        "processes": 1,
+        "accepted_connections": 6,
+        "traffic": {
+          "packets": 154,
+          "wire_bytes": 12114,
+          "tcp_syn": {
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8443": 8,
+            "127.20.0.2:8999": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.3:8999": 2
+          },
+          "tcp_flags": {
+            "2": 30,
+            "20": 20,
+            "18": 12,
+            "16": 44,
+            "24": 26,
+            "17": 20,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 154,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 3,
+    "variant": "baseline_union",
+    "seconds": 1.1047788329888135,
+    "cpu_seconds": 0.114614,
+    "accepted_connections": 9,
+    "packets": 212,
+    "wire_bytes": 16284,
+    "processes": 2,
+    "peak_rss_kib": 55320,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "naabu",
+          "-host",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-s",
+          "c",
+          "-json",
+          "-silent",
+          "-duc",
+          "-no-stdin",
+          "-Pn",
+          "-rate",
+          "100",
+          "-c",
+          "16",
+          "-retries",
+          "1",
+          "-timeout",
+          "150",
+          "-warm-up-time",
+          "1"
+        ],
+        "returncode": 0,
+        "seconds": 1.076184750010725,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.08674599999999999,
+        "peak_rss_kib": 55320,
+        "processes": 1,
+        "accepted_connections": 3,
+        "traffic": {
+          "packets": 72,
+          "wire_bytes": 5070,
+          "tcp_syn": {
+            "127.20.0.2:8080": 2,
+            "127.20.0.1:2222": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.2:8999": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.3:8999": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.2:8443": 2,
+            "127.20.0.2:2222": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 18,
+            "18": 6,
+            "16": 6,
+            "17": 6,
+            "24": 6,
+            "4": 6
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 72,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.02859408297808841,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.027868,
+        "peak_rss_kib": 30656,
+        "processes": 1,
+        "accepted_connections": 6,
+        "traffic": {
+          "packets": 140,
+          "wire_bytes": 11214,
+          "tcp_syn": {
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8443": 8,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 14,
+            "18": 12,
+            "16": 44,
+            "24": 26,
+            "17": 18,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 140,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 3,
+    "variant": "fixed_exact",
+    "seconds": 1.1530317080323584,
+    "cpu_seconds": 0.162434,
+    "accepted_connections": 9,
+    "packets": 190,
+    "wire_bytes": 14880,
+    "processes": 4,
+    "peak_rss_kib": 55320,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "naabu",
+          "-host",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-s",
+          "c",
+          "-json",
+          "-silent",
+          "-duc",
+          "-no-stdin",
+          "-Pn",
+          "-rate",
+          "100",
+          "-c",
+          "16",
+          "-retries",
+          "1",
+          "-timeout",
+          "150",
+          "-warm-up-time",
+          "1"
+        ],
+        "returncode": 0,
+        "seconds": 1.076184750010725,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.08674599999999999,
+        "peak_rss_kib": 55320,
+        "processes": 1,
+        "accepted_connections": 3,
+        "traffic": {
+          "packets": 72,
+          "wire_bytes": 5070,
+          "tcp_syn": {
+            "127.20.0.2:8080": 2,
+            "127.20.0.1:2222": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.2:8999": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.3:8999": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.2:8443": 2,
+            "127.20.0.2:2222": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 18,
+            "18": 6,
+            "16": 6,
+            "17": 6,
+            "24": 6,
+            "4": 6
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 72,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1",
+          "-p",
+          "8080",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.027328375028446317,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.025806999999999997,
+        "peak_rss_kib": 30668,
+        "processes": 1,
+        "accepted_connections": 1,
+        "traffic": {
+          "packets": 20,
+          "wire_bytes": 1698,
+          "tcp_syn": {
+            "127.20.0.1:8080": 2
+          },
+          "tcp_flags": {
+            "2": 2,
+            "18": 2,
+            "16": 8,
+            "24": 4,
+            "17": 4
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 20,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.2",
+          "-p",
+          "8443",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.025796416972298175,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.025935,
+        "peak_rss_kib": 30668,
+        "processes": 1,
+        "accepted_connections": 4,
+        "traffic": {
+          "packets": 82,
+          "wire_bytes": 6978,
+          "tcp_syn": {
+            "127.20.0.2:8443": 8
+          },
+          "tcp_flags": {
+            "2": 8,
+            "18": 8,
+            "16": 32,
+            "24": 18,
+            "17": 14,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 82,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.3",
+          "-p",
+          "2222",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.023722166020888835,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.023946,
+        "peak_rss_kib": 30668,
+        "processes": 1,
+        "accepted_connections": 1,
+        "traffic": {
+          "packets": 16,
+          "wire_bytes": 1134,
+          "tcp_syn": {
+            "127.20.0.3:2222": 2
+          },
+          "tcp_flags": {
+            "2": 2,
+            "18": 2,
+            "16": 6,
+            "24": 4,
+            "20": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 16,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 3,
+    "variant": "pulse_reuse",
+    "seconds": 0.02480220899451524,
+    "cpu_seconds": 0.023995999999999996,
+    "accepted_connections": 6,
+    "packets": 154,
+    "wire_bytes": 12114,
+    "processes": 1,
+    "peak_rss_kib": 30700,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.02480220899451524,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.023995999999999996,
+        "peak_rss_kib": 30700,
+        "processes": 1,
+        "accepted_connections": 6,
+        "traffic": {
+          "packets": 154,
+          "wire_bytes": 12114,
+          "tcp_syn": {
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8443": 8,
+            "127.20.0.2:8999": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.3:8999": 2
+          },
+          "tcp_flags": {
+            "2": 30,
+            "20": 20,
+            "18": 12,
+            "16": 44,
+            "24": 26,
+            "17": 20,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 154,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 4,
+    "variant": "baseline_union",
+    "seconds": 1.1009149170131423,
+    "cpu_seconds": 0.11096099999999999,
+    "accepted_connections": 9,
+    "packets": 218,
+    "wire_bytes": 16680,
+    "processes": 2,
+    "peak_rss_kib": 55376,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "naabu",
+          "-host",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-s",
+          "c",
+          "-json",
+          "-silent",
+          "-duc",
+          "-no-stdin",
+          "-Pn",
+          "-rate",
+          "100",
+          "-c",
+          "16",
+          "-retries",
+          "1",
+          "-timeout",
+          "150",
+          "-warm-up-time",
+          "1"
+        ],
+        "returncode": 0,
+        "seconds": 1.0776521670049988,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.088929,
+        "peak_rss_kib": 55376,
+        "processes": 1,
+        "accepted_connections": 3,
+        "traffic": {
+          "packets": 78,
+          "wire_bytes": 5466,
+          "tcp_syn": {
+            "127.20.0.1:8080": 2,
+            "127.20.0.2:8999": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.1:2222": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8443": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8999": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.1:8443": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "18": 6,
+            "16": 12,
+            "20": 18,
+            "17": 6,
+            "24": 6,
+            "4": 6
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 78,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.023262750008143485,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.022031999999999996,
+        "peak_rss_kib": 30716,
+        "processes": 1,
+        "accepted_connections": 6,
+        "traffic": {
+          "packets": 140,
+          "wire_bytes": 11214,
+          "tcp_syn": {
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8443": 8,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "20": 14,
+            "18": 12,
+            "16": 44,
+            "24": 26,
+            "17": 18,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 140,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 4,
+    "variant": "fixed_exact",
+    "seconds": 1.1499109590658918,
+    "cpu_seconds": 0.158693,
+    "accepted_connections": 9,
+    "packets": 198,
+    "wire_bytes": 15432,
+    "processes": 4,
+    "peak_rss_kib": 55376,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "naabu",
+          "-host",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-s",
+          "c",
+          "-json",
+          "-silent",
+          "-duc",
+          "-no-stdin",
+          "-Pn",
+          "-rate",
+          "100",
+          "-c",
+          "16",
+          "-retries",
+          "1",
+          "-timeout",
+          "150",
+          "-warm-up-time",
+          "1"
+        ],
+        "returncode": 0,
+        "seconds": 1.0776521670049988,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.088929,
+        "peak_rss_kib": 55376,
+        "processes": 1,
+        "accepted_connections": 3,
+        "traffic": {
+          "packets": 78,
+          "wire_bytes": 5466,
+          "tcp_syn": {
+            "127.20.0.1:8080": 2,
+            "127.20.0.2:8999": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.1:2222": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8443": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8999": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.1:8443": 2
+          },
+          "tcp_flags": {
+            "2": 24,
+            "18": 6,
+            "16": 12,
+            "20": 18,
+            "17": 6,
+            "24": 6,
+            "4": 6
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 78,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1",
+          "-p",
+          "8080",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.021106500003952533,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.020515,
+        "peak_rss_kib": 30736,
+        "processes": 1,
+        "accepted_connections": 1,
+        "traffic": {
+          "packets": 22,
+          "wire_bytes": 1830,
+          "tcp_syn": {
+            "127.20.0.1:8080": 2
+          },
+          "tcp_flags": {
+            "2": 2,
+            "18": 2,
+            "16": 10,
+            "24": 4,
+            "17": 4
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 22,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.2",
+          "-p",
+          "8443",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.02752208401216194,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.026576,
+        "peak_rss_kib": 30736,
+        "processes": 1,
+        "accepted_connections": 4,
+        "traffic": {
+          "packets": 80,
+          "wire_bytes": 6870,
+          "tcp_syn": {
+            "127.20.0.2:8443": 8
+          },
+          "tcp_flags": {
+            "2": 8,
+            "18": 8,
+            "16": 30,
+            "24": 18,
+            "17": 14,
+            "20": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 80,
+        "capture_complete": true
+      },
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.3",
+          "-p",
+          "2222",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.023630208044778556,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.022673,
+        "peak_rss_kib": 30736,
+        "processes": 1,
+        "accepted_connections": 1,
+        "traffic": {
+          "packets": 18,
+          "wire_bytes": 1266,
+          "tcp_syn": {
+            "127.20.0.3:2222": 2
+          },
+          "tcp_flags": {
+            "2": 2,
+            "18": 2,
+            "16": 6,
+            "24": 4,
+            "17": 2,
+            "20": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 18,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  },
+  {
+    "profile": "unprivileged",
+    "cache": "warm",
+    "repeat": 4,
+    "variant": "pulse_reuse",
+    "seconds": 0.02852633298607543,
+    "cpu_seconds": 0.025983,
+    "accepted_connections": 6,
+    "packets": 152,
+    "wire_bytes": 11982,
+    "processes": 1,
+    "peak_rss_kib": 30744,
+    "matches_truth": true,
+    "endpoints": [
+      [
+        "127.20.0.1",
+        8080,
+        "tcp"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "tcp"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "tcp"
+      ]
+    ],
+    "services": [
+      [
+        "127.20.0.1",
+        8080,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.2",
+        8443,
+        "http",
+        "nginx",
+        "1.24.0"
+      ],
+      [
+        "127.20.0.3",
+        2222,
+        "ssh",
+        "OpenSSH",
+        "9.2"
+      ]
+    ],
+    "stages": [
+      {
+        "argv": [
+          "pulse",
+          "127.20.0.1,127.20.0.2,127.20.0.3",
+          "-p",
+          "2222,8080,8443,8999",
+          "-b",
+          "-f",
+          "json",
+          "-q",
+          "--all",
+          "--no-nmap-data",
+          "--rate",
+          "100",
+          "-c",
+          "16",
+          "-t",
+          "150",
+          "--max-retries",
+          "0"
+        ],
+        "returncode": 0,
+        "seconds": 0.02852633298607543,
+        "cancellation_requested": false,
+        "timed_out": false,
+        "deadline_seconds": 10,
+        "cpu_seconds": 0.025983,
+        "peak_rss_kib": 30744,
+        "processes": 1,
+        "accepted_connections": 6,
+        "traffic": {
+          "packets": 152,
+          "wire_bytes": 11982,
+          "tcp_syn": {
+            "127.20.0.1:2222": 2,
+            "127.20.0.1:8080": 2,
+            "127.20.0.1:8443": 2,
+            "127.20.0.1:8999": 2,
+            "127.20.0.2:2222": 2,
+            "127.20.0.2:8080": 2,
+            "127.20.0.2:8443": 8,
+            "127.20.0.2:8999": 2,
+            "127.20.0.3:2222": 2,
+            "127.20.0.3:8080": 2,
+            "127.20.0.3:8443": 2,
+            "127.20.0.3:8999": 2
+          },
+          "tcp_flags": {
+            "2": 30,
+            "20": 20,
+            "18": 12,
+            "16": 44,
+            "24": 26,
+            "17": 18,
+            "4": 2
+          }
+        },
+        "capture_dropped": 0,
+        "packet_socket_received": 152,
+        "capture_complete": true
+      }
+    ],
+    "capture_complete": true
+  }
+]

@@ -1529,6 +1529,11 @@ class Vulnerability(Base):
     # What was found. `cve` is NULL for exposure/nuclei findings, which is why
     # `script_id` is part of the identity too.
     cve: Mapped[str | None] = mapped_column(default=None)
+    non_cve: Mapped[dict | None] = mapped_column(JSON, default=None)
+    finding_type: Mapped[str | None] = mapped_column(default=None)
+    detector_source: Mapped[str | None] = mapped_column(default=None)
+    template_id: Mapped[str | None] = mapped_column(default=None)
+    remediation: Mapped[str | None] = mapped_column(Text, default=None)
     # NVD/nuclei CWE ids from the latest observation. Empty when the overlay
     # has none — never inferred from the CVE id.
     cwe: Mapped[list] = mapped_column(JSON, default=list)

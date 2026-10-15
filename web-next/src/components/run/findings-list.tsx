@@ -85,6 +85,10 @@ export function FindingsList({
                         {item.host || "unknown host"}
                         {formatLocation(item) ? ` · ${formatLocation(item)}` : ""}
                       </p>
+                      {item.finding_type && item.finding_type !== "cve" ? (
+                        <p className="mt-1 text-muted-foreground">{item.finding_type} · {item.detector_source || "scan"}</p>
+                      ) : null}
+                      {item.remediation ? <p className="mt-1 text-foreground">Remediation: {item.remediation}</p> : null}
                       {item.finding_evidence ? <FindingEvidencePanel evidence={item.finding_evidence} /> : null}
                       {item.risk_explanation ? (
                         <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from scanner.pipeline.non_cve_policy import actionable
+
 import json
 import logging
 from pathlib import Path
@@ -49,6 +51,9 @@ def _vuln_key(item: dict) -> str:
     host = str(item.get("host") or "")
     port = str(item.get("port") or "")
     cve = str(item.get("cve") or item.get("script_id") or "")
+    if actionable(item):
+        from .finding_evidence import digest, subject
+        return "non-cve:" + digest([item.get("rule_id") or item.get("script_id"), subject(item)])
     return f"{host}|{port}|{cve}"
 
 
@@ -169,7 +174,7 @@ def compute_report_diff(current_dir: Path, previous_dir: Path) -> dict:
             }
         )
     for vuln in added_vulns:
-        events.append({**vuln, "kind": "new_cve"})
+        events.append({**vuln, "kind": "new_cve" if vuln.get("cve") else "new_finding"})
     events.extend(_diff_cert_expiring(current_dir, previous_dir))
 
     has_changes = bool(events or hosts["removed"] or ports["removed"] or removed_vulns)
@@ -215,7 +220,7 @@ def _format_event_line(event: dict) -> str:
         return f"- [{kind}] {host}:{event.get('port')}/{event.get('protocol')}"
     if kind == "cert_expiring":
         return f"- [{kind}] {host}:{event.get('port')} {event.get('issue_kind')} (days={event.get('days')})"
-    if kind == "new_cve":
+    if kind in {"new_cve", "new_finding"}:
         return _format_vuln_line(event)
     return f"- [{kind}] {host}"
 

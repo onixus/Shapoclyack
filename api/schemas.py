@@ -133,6 +133,10 @@ class VulnerabilityItem(BaseModel):
     finding_evidence: dict[str, Any] | None = None
     host: str | None = None
     port: str | None = None
+    finding_type: str | None = None
+    detector_source: str | None = None
+    template_id: str | None = None
+    remediation: str | None = None
     cve: str | None = None
     cvss: float | None = None
     cvss4: float | None = None
@@ -2421,6 +2425,10 @@ class VulnerabilityInfo(BaseModel):
     # retro finding is verifiable by a re-scan.
     source: str = "scan"
     device_id: str | None = None
+    finding_type: str | None = None
+    detector_source: str | None = None
+    template_id: str | None = None
+    remediation: str | None = None
     cve: str | None = None
     bdu_ids: list[str] = Field(default_factory=list)
     bdu_source: str | None = None
@@ -2925,6 +2933,8 @@ class VulnerabilitySummary(BaseModel):
     (#135, #137). ``estate_risk`` is the worst open NIST ``risk_level``."""
 
     total: int
+    cve_findings: int = 0
+    non_cve_findings: int = 0
     open_total: int
     untriaged: int
     unassigned: int = 0

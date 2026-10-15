@@ -13,7 +13,8 @@ CVE-tagged matches (``info.classification.cve-id``) are split out as
 (``scanner/main.py``) can merge them into the same list that
 ``nmap-vulners``/``vulscan`` findings populate -- CVSS4/EPSS/KEV enrichment
 and risk scoring then treat them identically. Non-CVE matches (exposed
-panels, misconfig, tech detection) are reported only in ``nuclei.json``.
+panels, misconfig, tech detection) remain in ``nuclei.json``; operator-reviewed
+``non_cve_rules`` with actionable severity also enter the common remediation tracker.
 
 SAFETY: enabled by default since Phase 4.2 (``nuclei.enabled = true``) as the
 web-CVE companion to Pulse ``--cve``. Set ``nuclei.enabled: false`` to opt out.
@@ -285,18 +286,77 @@ def _to_finding(raw: dict[str, Any]) -> dict[str, Any]:
     cve_ids = classification.get("cve-id") or []
     if not isinstance(cve_ids, list):
         cve_ids = [cve_ids]
-    return {
+    result = {
         "host": str(raw.get("host") or ""),
         "port": str(raw.get("port") or ""),
         "matched_at": str(raw.get("matched-at") or ""),
         "template_id": str(raw.get("template-id") or ""),
         "name": str(info.get("name") or ""),
         "severity": str(info.get("severity") or "unknown").lower(),
-        "tags": [str(t) for t in (info.get("tags") or [])],
+        "tags": ([t.strip() for t in info["tags"].split(",")]
+                 if isinstance(info.get("tags"), str) else [str(t) for t in (info.get("tags") or [])]),
+        "observed_at": raw.get("timestamp"),
+        "matcher": str(raw.get("matcher-name") or ""),
+        "protocol": "udp" if raw.get("type") == "udp" else "tcp",
         "cve": [str(c) for c in cve_ids if c],
         "cvss_score": classification.get("cvss-score"),
         "cwe": classification.get("cwe-id") or [],
     }
+    binding = raw.get("shapoclyack_input")
+    if binding is not None:
+        from .finding_evidence import subject, http_authority
+        try:
+            if (not isinstance(binding, dict)
+                    or set(binding) != {"schema", "ip", "port", "authority", "sni"}
+                    or binding.get("schema") != "octo.nuclei_input.v1"):
+                raise ValueError("invalid invocation binding")
+            actual = subject(result)
+            declared = subject({"host": binding["ip"], "port": binding["port"],
+                                "protocol": "tcp", "sni": binding["sni"]})
+            if any(actual[k] != declared[k] for k in ("host", "port", "protocol")) or actual["scheme"] is None:
+                raise ValueError("conflicting invocation binding")
+            result["http_authority"] = http_authority(binding["authority"], declared["port"])
+            result["sni"] = declared["sni"]
+        except (ValueError, TypeError, KeyError):
+            result["subject_invalid"] = True
+    return result
+
+
+def _non_cve_row(finding: dict[str, Any], config: NucleiConfig) -> dict[str, Any] | None:
+    """Only reviewed rules with actionable severities create remediation work.
+
+    A panel/technology match or arbitrary tags never establish a vulnerability.
+    Raw output remains inventory; unknown non-informational matches are hypotheses.
+    """
+    from .finding_evidence import safe_text, subject
+    if finding.get("cve"):
+        finding["classification"] = "cve"
+        return None
+    severity = finding.get("severity")
+    finding["classification"] = "inventory" if severity in {"info", "unknown"} else "hypothesis"
+    rule = config.non_cve_rules.get(str(finding.get("template_id") or ""))
+    if rule is None or severity not in _SEVERITY_CVSS_FLOOR or finding.get("subject_invalid"):
+        return None
+    row = {"host": finding.get("host"), "port": finding.get("port"), "cve": None,
+           "cvss": None, "severity": severity, "source": "nuclei",
+           "script_id": "nuclei:" + finding["template_id"], "template_id": finding["template_id"],
+           "rule_id": rule.rule_id, "finding_type": rule.issue_type,
+           "non_cve_policy": "nuclei-actionable-v1",
+           "remediation": safe_text(rule.remediation, 4000), "protocol": finding.get("protocol", "tcp"),
+           "matched_at": finding.get("matched_at"), "http_authority": finding.get("http_authority"),
+           "sni": finding.get("sni"), "title": safe_text(finding.get("name"), 256),
+           "evidence_kind": "template_match", "requires_confirmation": False,
+           "matcher": finding.get("matcher"), "observed_at": finding.get("observed_at"),
+           "cwe": finding.get("cwe") or []}
+    try:
+        target = subject(row)
+    except (ValueError, TypeError):
+        return None
+    if not target["host"] or target["port"] is None:
+        return None
+    row["host"], row["port"] = target["host"], str(target["port"])
+    finding["classification"] = "actionable"
+    return row
 
 
 def _to_vulnerability_rows(finding: dict[str, Any]) -> list[dict[str, Any]]:
@@ -570,6 +630,29 @@ def _run_web_sweep(
         candidates = _candidate_endpoints(
             open_ports, set(config.http_ports), set(config.https_ports)
         )
+    exact_targets = list(config.verification_targets)
+    if exact_targets:
+        # Only a platform-pinned verification may provide an exact HTTP input.
+        # Names must be either an open endpoint or an input-forward DNS name
+        # of one. A certificate/banner hostname is never scan authorization.
+        from .non_cve_verification import validate_target
+        names = forward_names(output_dir)
+        endpoints = {(host.lower(), port) for host, port, _ in candidates}
+        endpoints |= {(name.lower(), port) for host, port, _ in candidates
+                      for name in names.get(host, [])}
+        try:
+            for target in exact_targets:
+                validate_target(target)
+                st = target['subject']
+                if (not config.template_ids or target['template_id'] not in pinned
+                        or (st['host'], st['port']) not in endpoints):
+                    raise ValueError('exact target is outside the discovered approved endpoint set')
+            candidates = [(t['subject']['host'], t['subject']['port'], t['subject']['scheme'])
+                          for t in exact_targets]
+        except (ValueError, TypeError, KeyError):
+            result['skipped_reason'] = 'verification_target_not_covered'
+            _persist(output_dir, result)
+            return result
     result["targets_considered"] = (
         plan["targets_considered"] if plan else len(candidates)
     )
@@ -587,6 +670,8 @@ def _run_web_sweep(
     targets_file = output_dir / "nuclei_targets.txt"
     jsonl_file = output_dir / "nuclei_raw.jsonl"
     urls = [_build_url(host, port, scheme) for host, port, scheme in candidates]
+    if exact_targets:
+        urls = [target['url'] for target in exact_targets]
     write_lines(targets_file, urls)
     coverage["targets"] = sorted(urls)
     jsonl_file.unlink(missing_ok=True)
@@ -613,6 +698,31 @@ def _run_web_sweep(
         str(resolvers_file),
     ]
     snapshot_dir = None
+    if exact_targets:
+        # Pin validated bytes as well as the id. Passing a matched URL to a
+        # template which appends a path can check an entirely different object.
+        from .non_cve_verification import exact_template
+        directories = [templates_dir, *([custom_dir] if custom_dir else [])]
+        try:
+            _, inventory, catalog_error = catalog(directories, config.planner_max_templates)
+            selected = [row for row in inventory if row['id'] in pinned]
+            if catalog_error or len(selected) != len(pinned):
+                raise ValueError('verification_template_inventory_incomplete')
+            for row in selected:
+                root = directories[1 if row['origin'] == 'custom' else 0]
+                content = (root / row['path']).read_bytes()
+                if hashlib.sha256(content).hexdigest() != row['sha256'] or not exact_template(content):
+                    raise ValueError('verification_template_exact_input_unproven')
+            snapshot_dir = Path(tempfile.mkdtemp(prefix='shapoclyack-exact-verification-'))
+            snapshot_catalog(directories, selected, snapshot_dir)
+            command[command.index('-templates') + 1] = str(snapshot_dir)
+        except (OSError, ValueError, TypeError, KeyError):
+            if snapshot_dir is not None:
+                shutil.rmtree(snapshot_dir, ignore_errors=True)
+            result['skipped_reason'] = 'verification_template_exact_input_unproven'
+            _persist(output_dir, result)
+            return result
+        command.extend(['-disable-redirects'])
     if plan is not None:
         try:
             snapshot_dir = Path(tempfile.mkdtemp(prefix="shapoclyack-nuclei-catalog-"))
@@ -632,7 +742,7 @@ def _run_web_sweep(
             return result
         # Never follow redirects beyond the authorized input endpoint.
         command.extend(["-disable-redirects"])
-    if plan is None and custom_dir is not None and custom_dir.exists():
+    if plan is None and not exact_targets and custom_dir is not None and custom_dir.exists():
         command.extend(["-templates", str(custom_dir)])
     if pinned and plan is None:
         # Exactly these templates, whatever their severity or tags: the run is
@@ -880,6 +990,7 @@ def _run_web_sweep(
 
     findings: list[dict[str, Any]] = []
     cve_findings: list[dict[str, Any]] = []
+    actionable: list[dict[str, Any]] = []
     if jsonl_file.is_file():
         for line in jsonl_file.read_text(
             encoding="utf-8", errors="replace"
@@ -892,6 +1003,9 @@ def _run_web_sweep(
                         plan["malformed_result"] = True
                 continue
             finding = _to_finding(raw)
+            row = _non_cve_row(finding, config)
+            if row is not None:
+                actionable.append(row)
             findings.append(finding)
             cve_findings.extend(_to_vulnerability_rows(finding))
 
@@ -907,6 +1021,17 @@ def _run_web_sweep(
         and not coverage["template_ids_ambiguous"]
         and not (plan and plan.get("artifact_truncated"))
     )
+    if exact_targets:
+        # The receipt is earned by successful execution, never configuration.
+        # It carries only digests/canonical subjects, not raw paths or queries.
+        coverage['verification_targets'] = [
+            {'subject': target['subject'], 'template_id': target['template_id'],
+             'input_contract': 'exact-baseurl-v1',
+             'template_sha256': next(row['sha256'] for row in selected if row['id'] == target['template_id']),
+             'complete': bool(complete and not truncated
+                              and not (errors_file.is_file() and errors_file.stat().st_size))}
+            for target in exact_targets
+        ]
     result["checked_count"] = len(candidates) if complete else 0
     if plan is not None:
         plan["process_returncode"] = coverage["returncode"]
@@ -920,6 +1045,7 @@ def _run_web_sweep(
         save_json(output_dir / "nuclei_plan.json", plan)
     result["findings"] = findings
     result["cve_findings"] = cve_findings
+    result["actionable_findings"] = actionable
     _persist(output_dir, result)
     LOG.info(
         "nuclei: %d endpoint(s) scanned -> %d finding(s) (%d with CVE)%s",
@@ -1331,6 +1457,6 @@ def nuclei_vulnerability_rows(nuclei_result: dict[str, Any]) -> list[dict[str, A
     before the pass has no ``network_vulnerabilities``, and a skipped stage has
     only the fallback ``{"cve_findings": []}``).
     """
-    return list(nuclei_result.get("cve_findings") or []) + list(
-        nuclei_result.get("network_vulnerabilities") or []
-    )
+    return (list(nuclei_result.get("cve_findings") or [])
+            + list(nuclei_result.get("network_vulnerabilities") or [])
+            + list(nuclei_result.get("actionable_findings") or []))

@@ -6,6 +6,8 @@ import json
 import time
 from pathlib import Path
 
+import pytest
+
 from api.services import asset_events, nats_bus
 
 
@@ -302,3 +304,44 @@ def test_decommission_id_is_transition_scoped_not_time_scoped(monkeypatch):
     # One logical transition must carry one id, so JetStream collapses a racing
     # duplicate instead of handing a consumer two tickets.
     assert sent[0]["event_id"] == sent[1]["event_id"]
+
+
+def test_non_cve_remediation_events_are_not_dropped_or_presented_as_cves():
+    events = [{"kind": "new_asset", "host": "10.0.0.1"},
+              {"kind": "new_finding", "host": "10.0.0.1", "port": "443", "cve": None,
+               "finding_type": "misconfiguration", "template_id": "public-config",
+               "remediation": "Restrict configuration access."}]
+    envelopes, dropped = asset_events.build_events(_diff(events), tenant_id="t", run_id="r", max_events=1)
+    assert dropped == 1
+    assert len(envelopes) == 1 and envelopes[0]["kind"] == "new_finding"
+    assert envelopes[0]["data"]["cve"] is None
+    assert envelopes[0]["data"]["remediation"] == "Restrict configuration access."
+    assert nats_bus.asset_event_subject("t", envelopes[0]["kind"]) == "events.asset.t.new_finding"
+
+
+def test_non_cve_event_ids_isolate_precise_objects_and_preserve_replay():
+    base = {"kind": "new_finding", "host": "10.0.0.1", "port": "443", "protocol": "tcp",
+            "matched_at": "https://10.0.0.1/config", "rule_id": "config-v1", "run_id": "r"}
+    first = asset_events.event_id("t", base)
+    assert asset_events.event_id("t", dict(base)) == first
+    for variant in [{**base, "matched_at": "https://10.0.0.1/other"},
+                    {**base, "http_authority": "other.example:443"},
+                    {**base, "rule_id": "another-rule"}]:
+        assert asset_events.event_id("t", variant) != first
+
+
+@pytest.mark.parametrize("bad", [
+    {"protocol": "sctp"},
+    {"host": "10.0.0.1:8080", "port": "80"},
+])
+def test_legacy_non_cve_row_without_canonical_subject_does_not_abort_run_events(bad):
+    # Legacy non-CVE diff rows are new_finding too, and not every one of them
+    # has a canonical subject; the rest of the run's events must still go out.
+    legacy = {"kind": "new_finding", "host": "10.0.0.1", "port": "161", "protocol": "tcp",
+              "script_id": "pulse:legacy", **bad}
+    events = [legacy, {"kind": "new_open_port", "host": "10.0.0.2", "port": "22", "protocol": "tcp"}]
+    envelopes, dropped = asset_events.build_events(_diff(events), tenant_id="t", run_id="r")
+    assert dropped == 0
+    assert [e["kind"] for e in envelopes] == ["new_finding", "new_open_port"]
+    assert asset_events.event_id("t", {**legacy, "run_id": "r"}) == envelopes[0]["event_id"]
+    assert asset_events.event_id("t", {**legacy, "run_id": "r2"}) != envelopes[0]["event_id"]

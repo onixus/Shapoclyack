@@ -1,0 +1,116 @@
+{
+  "positive": {
+    "requests": [
+      "/backup.zip"
+    ],
+    "findings": 1,
+    "actionable": 1,
+    "coverage": {
+      "ran": true,
+      "returncode": 0,
+      "targets": [
+        "http://127.0.0.1:18088/backup.zip"
+      ],
+      "template_ids_requested": [
+        "exposed-config"
+      ],
+      "template_ids_missing": [],
+      "template_ids_excluded": [],
+      "severities": null,
+      "templates_loaded": 1,
+      "templates_expected": 1,
+      "template_ids_ambiguous": [],
+      "skipped_targets": [],
+      "max_host_error": 30,
+      "errors_log_truncated": false,
+      "verification_targets": [
+        {
+          "subject": {
+            "host": "127.0.0.1",
+            "port": 18088,
+            "protocol": "tcp",
+            "scheme": "http",
+            "authority": "127.0.0.1:18088",
+            "sni": null,
+            "object_id": "url:4f649032b2a533876f7b2cf974898a651063e3b98e0aff63578c9e793b421199"
+          },
+          "template_id": "exposed-config",
+          "input_contract": "exact-baseurl-v1",
+          "template_sha256": "286d1919ae50841b6d9a9e8f17379219535dca8c0226edf5341ddcc32109e955",
+          "complete": true
+        }
+      ]
+    },
+    "skipped_reason": null
+  },
+  "remediated": {
+    "requests": [
+      "/backup.zip"
+    ],
+    "findings": 0,
+    "actionable": 0,
+    "coverage": {
+      "ran": true,
+      "returncode": 0,
+      "targets": [
+        "http://127.0.0.1:18088/backup.zip"
+      ],
+      "template_ids_requested": [
+        "exposed-config"
+      ],
+      "template_ids_missing": [],
+      "template_ids_excluded": [],
+      "severities": null,
+      "templates_loaded": 1,
+      "templates_expected": 1,
+      "template_ids_ambiguous": [],
+      "skipped_targets": [],
+      "max_host_error": 30,
+      "errors_log_truncated": false,
+      "verification_targets": [
+        {
+          "subject": {
+            "host": "127.0.0.1",
+            "port": 18088,
+            "protocol": "tcp",
+            "scheme": "http",
+            "authority": "127.0.0.1:18088",
+            "sni": null,
+            "object_id": "url:4f649032b2a533876f7b2cf974898a651063e3b98e0aff63578c9e793b421199"
+          },
+          "template_id": "exposed-config",
+          "input_contract": "exact-baseurl-v1",
+          "template_sha256": "286d1919ae50841b6d9a9e8f17379219535dca8c0226edf5341ddcc32109e955",
+          "complete": true
+        }
+      ]
+    },
+    "skipped_reason": null
+  },
+  "appended-path": {
+    "requests": [],
+    "findings": 0,
+    "actionable": 0,
+    "coverage": {
+      "ran": false,
+      "returncode": null,
+      "targets": [
+        "http://127.0.0.1:18088/backup.zip"
+      ],
+      "template_ids_requested": [
+        "exposed-config"
+      ],
+      "template_ids_missing": [],
+      "template_ids_excluded": [],
+      "severities": null,
+      "templates_loaded": null,
+      "templates_expected": 1,
+      "template_ids_ambiguous": [],
+      "skipped_targets": [],
+      "max_host_error": 30,
+      "errors_log_truncated": false
+    },
+    "skipped_reason": "verification_template_exact_input_unproven"
+  },
+  "version": "[\u001b[34mINF\u001b[0m] Nuclei Engine Version: v3.11.1\n[\u001b[34mINF\u001b[0m] Nuclei Config Directory: /root/.config/nuclei\n[\u001b[34mINF\u001b[0m] Nuclei Cache Directory: /root/.cache/nuclei\n[\u001b[34mINF\u001b[0m] PDCP Directory: /root/.pdcp\n"
+}

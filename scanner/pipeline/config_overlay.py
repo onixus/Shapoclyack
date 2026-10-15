@@ -57,7 +57,7 @@ INPUT_NAME = "config_overlay.json"
 #: * v2: ``nuclei.template_ids``. A build that applies it also writes the
 #:   coverage evidence a verification closure is judged on (``nuclei.json``'s
 #:   ``coverage`` block, ``adapter.cve`` in ``pulse/raw.json``).
-OVERLAY_VERSION = 2
+OVERLAY_VERSION = 3
 
 
 def capability(version: int) -> str:
@@ -128,6 +128,7 @@ PATHS_BY_VERSION: dict[int, frozenset[str]] = {
     # Set by the platform only, for a verification re-scan
     # (api/services/vulnerabilities.py): never a console setting.
     2: _V1_PATHS | {"nuclei.template_ids", "reachability.enabled"},
+    3: _V1_PATHS | {"nuclei.template_ids", "reachability.enabled", "nuclei.verification_targets"},
 }
 
 #: What this build accepts.

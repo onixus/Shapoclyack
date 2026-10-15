@@ -147,6 +147,22 @@ afterEach(() => {
 });
 
 describe("useTrackedVulnerabilities", () => {
+  it("does not reuse a page when the non-CVE type or detector changes", async () => {
+    vi.mocked(fetchTrackedVulnerabilities).mockResolvedValue(PAGE);
+    const client = makeClient();
+    const { result, rerender } = renderHook(
+      ({ kind, detector }: { kind: "cve" | "misconfiguration"; detector: string }) =>
+        useTrackedVulnerabilities({ finding_type: kind, detector_source: detector }),
+      { wrapper: wrapperFor(client), initialProps: { kind: "cve", detector: "" } },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    rerender({ kind: "misconfiguration", detector: "" });
+    await waitFor(() => expect(fetchTrackedVulnerabilities).toHaveBeenCalledWith({ finding_type: "misconfiguration", detector_source: "" }, undefined));
+    rerender({ kind: "misconfiguration", detector: "nuclei" });
+    await waitFor(() => expect(fetchTrackedVulnerabilities).toHaveBeenCalledWith({ finding_type: "misconfiguration", detector_source: "nuclei" }, undefined));
+    expect(client.getQueryCache().getAll()).toHaveLength(3);
+  });
+
   it("returns the fetched page", async () => {
     vi.mocked(fetchTrackedVulnerabilities).mockResolvedValueOnce(PAGE);
     const { result } = renderHook(

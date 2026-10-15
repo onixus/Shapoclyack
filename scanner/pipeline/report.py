@@ -200,6 +200,9 @@ def build_reports(
     save_json(output_dir / "report_sources.json", vulnerabilities)
     source_sha = hashlib.sha256((output_dir / "report_sources.json").read_bytes()).hexdigest()
     vulnerabilities = combine(vulnerabilities, artifact_sha=source_sha)
+    for item in vulnerabilities:
+        item.setdefault("finding_type", "cve" if item.get("cve") else "exposure")
+        item.setdefault("detector_source", item.get("source"))
     from .evidence_artifacts import EvidenceReader
     from .production_evidence import attach_raw
     projection = EvidenceReader(output_dir, "unpublished", "unpublished").build()
@@ -288,6 +291,8 @@ def build_reports(
         "os_detected_hosts": len(best_os_by_host),
         "nse_script_findings": len(script_findings),
         "potential_vulnerabilities": len(vulnerabilities),
+        "cve_findings": sum(bool(v.get("cve")) for v in vulnerabilities),
+        "non_cve_findings": sum(not v.get("cve") for v in vulnerabilities),
         # Subset of the above the scanner itself flags as unconfirmed —
         # reachable-service exposures and unverified keyword CVE hits. Counted
         # in `potential_vulnerabilities` (they are potential by definition) but
@@ -359,6 +364,12 @@ def build_reports(
                 "cvss4_vector",
                 "cve",
                 "script_id",
+                "finding_type",
+                "source",
+                "detector_source",
+                "template_id",
+                "remediation",
+                "finding_evidence",
                 "country",
                 "city",
                 "country_iso",
@@ -467,6 +478,12 @@ def build_reports(
                 md_lines.append(
                     f"- [{item['severity'].upper()}] {location}{geo} {cve}{cvss} ({item['script_id']})"
                 )
+                if not item.get("cve"):
+                    md_lines.append(f"  Type: {item.get('finding_type') or 'exposure'}; source: {item.get('source') or 'unknown'}; template: {item.get('template_id') or item.get('script_id') or 'unknown'}")
+                    if item.get("remediation"):
+                        md_lines.append("  Remediation: " + str(item["remediation"]).replace("\n", " "))
+                    evidence = item.get("finding_evidence") or {}
+                    md_lines.append(f"  Evidence: {evidence.get('observation_count', 0)} canonical observation(s); see vulnerabilities.json for artifact references.")
             if len(vulnerabilities) > 50:
                 md_lines.append(f"- ... and {len(vulnerabilities) - 50} more (see vulnerabilities.json)")
         else:

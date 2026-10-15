@@ -71,6 +71,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import re
 import shlex
 import xml.etree.ElementTree as ET  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 from dataclasses import dataclass, field
@@ -358,6 +359,47 @@ class RunCoverage:
     # The rules
     # ------------------------------------------------------------------
 
+    def non_cve_gaps(self, metadata: Any) -> list[dict[str, Any]]:
+        """An exact-object receipt supplements, never replaces detector coverage."""
+        from scanner.pipeline.non_cve_verification import validate_target
+        reason = 'precise_subject_coverage_unproven'
+        try:
+            target = validate_target({'url': metadata['verification_target'],
+                                      'subject': metadata['subject'],
+                                      'template_id': metadata['template_id']})
+            document = self.nuclei or {}
+            evidence = document.get('coverage') or {}
+            # A sensor may no longer classify this rule as actionable. The
+            # raw template match still refutes remediation, even when it never
+            # entered this run's tracker ingestion list.
+            from scanner.pipeline.finding_evidence import subject
+            for finding in document.get('findings', []):
+                if not isinstance(finding, dict):
+                    raise ValueError('malformed nuclei finding')
+                if finding.get('template_id') == target['template_id']:
+                    if subject(finding) == target['subject']:
+                        return [{'detector': 'nuclei', 'ref': target['template_id'],
+                                 'host': target['subject']['host'], 'port': target['subject']['port'],
+                                 'reason': 'exact_subject_still_observed'}]
+            if (not document.get('skipped_reason') and not document.get('truncated')
+                    and evidence.get('ran') is True and evidence.get('returncode') == 0
+                    and not evidence.get('errors_log_truncated')
+                    and not evidence.get('skipped_targets')
+                    and not self._nuclei_gap(target['template_id'],
+                                             {target['subject']['host']}, target['subject']['port'])
+                    and any(isinstance(receipt, dict) and receipt.get('complete') is True
+                            and receipt.get('template_id') == target['template_id']
+                            and receipt.get('input_contract') == 'exact-baseurl-v1'
+                            and isinstance(receipt.get('template_sha256'), str)
+                            and re.fullmatch(r'[0-9a-f]{64}', receipt['template_sha256']) is not None
+                            and receipt.get('subject') == target['subject']
+                            for receipt in evidence.get('verification_targets', []))):
+                return []
+        except (ValueError, TypeError, KeyError, AttributeError):
+            reason = 'precise_subject_invalid'
+        return [{'detector': 'nuclei', 'ref': metadata.get('template_id') if isinstance(metadata, dict) else None,
+                 'host': None, 'port': None, 'reason': reason}]
+
     def _nuclei_gap(self, ref: str, hosts: set[str], port: int | None) -> str | None:
         document = self.nuclei
         if document is None:
@@ -398,7 +440,8 @@ class RunCoverage:
         for url in coverage.get("targets") or []:
             try:
                 parts = urlsplit(str(url))
-                targets.add((normalize_host(parts.hostname), parts.port))
+                effective_port = parts.port or (443 if parts.scheme == "https" else 80 if parts.scheme == "http" else None)
+                targets.add((normalize_host(parts.hostname), effective_port))
             except ValueError:
                 continue
         if not any((host, port) in targets for host in hosts):

@@ -128,6 +128,20 @@ def _fmt_number(value: object) -> str:
     return "-" if value is None else str(value)
 
 
+def _finding_details(item: dict[str, Any]) -> list[tuple[str, str]]:
+    """Shared bounded presentation for actionable non-CVE report entries."""
+    if item.get("cve") or not item.get("finding_type"):
+        return []
+    details = [(label, str(item[key])) for key, label in (
+        ("finding_type", "Finding type"), ("detector_source", "Detector"),
+        ("template_id", "Template"), ("remediation", "Remediation"),
+    ) if item.get(key)]
+    evidence = item.get("finding_evidence")
+    if isinstance(evidence, dict):
+        details.append(("Evidence observations", str(evidence.get("observation_count", 0))))
+    return details
+
+
 def _fmt_percent(value: object) -> str:
     return "n/a" if value is None else f"{value}%"
 
@@ -324,6 +338,9 @@ def render_pdf(body: dict[str, Any]) -> bytes:
         kpis = body.get("kpis") or {}
         _title(pdf, "Executive summary")
         _kv(pdf, "Open findings", kpis.get("open_total", 0))
+        if "cve_findings" in kpis and "non_cve_findings" in kpis:
+            _kv(pdf, "CVE findings (all states)", kpis["cve_findings"])
+            _kv(pdf, "Non-CVE findings (all states)", kpis["non_cve_findings"])
         _kv(pdf, "Estate risk (worst open)", kpis.get("estate_risk") or "none")
         _kv(pdf, "Past SLA deadline", kpis.get("breached", 0))
         _kv(pdf, "Untriaged", kpis.get("untriaged", 0))
@@ -397,6 +414,12 @@ def render_pdf(body: dict[str, Any]) -> bytes:
                 ],
                 [width * 0.34, width * 0.24, width * 0.14, width * 0.12, width * 0.16],
             )
+            for item in findings:
+                details = _finding_details(item)
+                if details:
+                    _title(pdf, str(item.get("title") or item.get("template_id") or "Finding"))
+                    for label, value in details:
+                        _kv(pdf, label, value)
         else:
             _kv(pdf, "Open findings", "none")
 
@@ -511,6 +534,10 @@ def render_html(body: dict[str, Any]) -> str:
             + _rows(
                 [
                     ("Open findings", kpis.get("open_total", 0)),
+                    *([
+                        ("CVE findings (all states)", kpis["cve_findings"]),
+                        ("Non-CVE findings (all states)", kpis["non_cve_findings"]),
+                    ] if "cve_findings" in kpis and "non_cve_findings" in kpis else []),
                     ("Estate risk (worst open)", kpis.get("estate_risk") or "none"),
                     ("Past SLA deadline", kpis.get("breached", 0)),
                     ("Untriaged", kpis.get("untriaged", 0)),
@@ -573,6 +600,11 @@ def render_html(body: dict[str, Any]) -> str:
             + (rows or "<tr><td colspan=5>No open findings</td></tr>")
             + "</table>"
         )
+        for item in body.get("top_findings") or []:
+            details = _finding_details(item)
+            if details:
+                parts.append("<h3>" + html.escape(str(item.get("title") or item.get("template_id") or "Finding"))
+                             + "</h3><table>" + _rows(details) + "</table>")
     if "assets" in sections:
         assets = body.get("assets") or {}
         parts.append(

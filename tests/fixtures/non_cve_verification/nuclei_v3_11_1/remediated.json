@@ -1,0 +1,47 @@
+{
+  "targets_considered": 1,
+  "checked_count": 1,
+  "findings": [],
+  "cve_findings": [],
+  "truncated": false,
+  "skipped_reason": null,
+  "interactsh": "disabled",
+  "interactsh_registered": null,
+  "coverage": {
+    "ran": true,
+    "returncode": 0,
+    "targets": [
+      "http://127.0.0.1:18088/backup.zip"
+    ],
+    "template_ids_requested": [
+      "exposed-config"
+    ],
+    "template_ids_missing": [],
+    "template_ids_excluded": [],
+    "severities": null,
+    "templates_loaded": 1,
+    "templates_expected": 1,
+    "template_ids_ambiguous": [],
+    "skipped_targets": [],
+    "max_host_error": 30,
+    "errors_log_truncated": false,
+    "verification_targets": [
+      {
+        "subject": {
+          "host": "127.0.0.1",
+          "port": 18088,
+          "protocol": "tcp",
+          "scheme": "http",
+          "authority": "127.0.0.1:18088",
+          "sni": null,
+          "object_id": "url:4f649032b2a533876f7b2cf974898a651063e3b98e0aff63578c9e793b421199"
+        },
+        "template_id": "exposed-config",
+        "input_contract": "exact-baseurl-v1",
+        "template_sha256": "286d1919ae50841b6d9a9e8f17379219535dca8c0226edf5341ddcc32109e955",
+        "complete": true
+      }
+    ]
+  },
+  "actionable_findings": []
+}

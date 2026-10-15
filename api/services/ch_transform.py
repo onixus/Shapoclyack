@@ -122,7 +122,12 @@ def vulnerabilities_to_rows(
         host = str(item.get("host") or "").strip()
         if not host or not _is_ipv4(host):
             continue
-        cve = item.get("cve") or item.get("script_id") or ""
+        # This legacy analytics table is keyed by CVE and cannot represent
+        # object-scoped non-CVE issues. Keep those in the canonical tracker;
+        # script/template identifiers must never masquerade as CVE IDs.
+        if not item.get("cve"):
+            continue
+        cve = item["cve"]
         rows.append(
             [
                 tenant_uuid,
