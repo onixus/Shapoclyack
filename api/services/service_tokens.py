@@ -628,7 +628,9 @@ def rotate_token(
         if old is None:
             return None
         if status_of(old) != "active" or old.rotation_expires_at is not None:
-            raise ValueError("only an active, previously unrotated token can be rotated")
+            raise ValueError(
+                "only an active, previously unrotated token can be rotated; if the replacement's "
+                "secret was lost, rotate the replacement or revoke it and issue a new token")
         _refuse_escalation(old.role, issuer_role=issuer_role,
                           issuer_is_platform_admin=issuer_is_platform_admin,
                           issuer_authority=issuer_authority)
@@ -673,8 +675,18 @@ def notify_expiring(settings: Settings, *, tenant_id: str, now: datetime) -> int
             models.ServiceToken.expires_at > now,
             models.ServiceToken.expiry_notice_days > 0,
         )).scalars().all()
+        # A predecessor whose live replacement exists is expected to stop working;
+        # the replacement carries the notice for its own expiry instead.
+        replaced = set(session.scalars(select(models.ServiceToken.rotated_from_id).where(
+            models.ServiceToken.tenant_id == tenant_id,
+            models.ServiceToken.rotated_from_id.is_not(None),
+            models.ServiceToken.revoked_at.is_(None),
+            models.ServiceToken.expires_at > now,
+        )))
         candidates = []
         for row in rows:
+            if row.rotation_expires_at is not None and row.token_id in replaced:
+                continue
             deadline = effective_expiry(row)
             if now < deadline <= now + timedelta(days=row.expiry_notice_days):
                 candidates.append((_to_dict(row), deadline))

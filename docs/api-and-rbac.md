@@ -1093,6 +1093,16 @@ starts scans, writes assets and files reports, and outlives the session that
 minted it. The **scopes** need no separate cap: the role is the ceiling they
 narrow, never a way past it.
 
+**Rotation and a lost response.** `rotate` returns the replacement's secret
+exactly once and a predecessor can be rotated only once, so a second `POST` on
+it is a `422`. If the response that carried the new secret was lost, the
+secret is not re-issued (the server keeps only a hash). Recover by rotating
+the *replacement* (its `token_id` is in the predecessor's listing as
+`rotated_from_id` on the replacement), or revoke the replacement and issue a
+fresh token; the predecessor stops working at the end of its overlap either way.
+The expiry notice follows the same rule: while a live replacement exists the
+predecessor is not announced, the replacement is, at its own deadline.
+
 A token is presented on the ordinary `Authorization: Bearer` header; which
 credential it is, is decided by its own shape, never by anything the caller
 asserts. Authorization is **two independent limits and a request must pass
