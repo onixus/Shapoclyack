@@ -87,6 +87,13 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **Upgrade step behind an ingress (#323):** the client address used by the login
+  limiter and by service-token `allowed_cidrs` is now always the socket peer unless that
+  peer is listed in `OCTO_TRUSTED_PROXIES`. Without it, every caller appears as the
+  ingress controller: one shared login bucket, and `allowed_cidrs` match the ingress
+  address instead of the real client. Set `OCTO_TRUSTED_PROXIES` to the ingress
+  controller's addresses before enabling `allowed_cidrs` ([k8s/README.md](k8s/README.md)).
+  The API now logs a warning at start while the variable is empty.
 - Three Pulse timeouts in a row stop the stage with a message that says what to change
   (`PulseTimeoutLoopError`); one only leaves its chunk unresolved.
 - Every path in the Pulse command is absolute (the process no longer runs in the
