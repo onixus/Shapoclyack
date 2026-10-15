@@ -1,0 +1,16 @@
+{
+  "product_source": "703a9299d14fafee646971240197c81451b1ed2d",
+  "before": "same adapter; benchmark-only legacy union planner",
+  "after": "same adapter; shipped exact planner",
+  "runtime_image": "sha256:6dd80e482e5b3888a350a82ba474509e71d89f31ca3f0f549fecb54a432217bd",
+  "pulse_image": "ghcr.io/onixus/pulse@sha256:70ab0ef673f1b49a9a52d8648999efb711dc0fa8e8cf81bab461e02dbf751ce2",
+  "pulse_binary_sha256": "9e825d76783e5bc35ae66d8c485eb083c0725a53ac2e0d05e94c89bbdc9af529",
+  "source_hashes": {
+    "scanner/pipeline/pulse_probe.py": "f9fd2643b6b0b556e748f293888015762a018b14a8b2a411a073d28f46f3b1d7",
+    "scanner/pipeline/pulse_plan.py": "2d9c8a3c196ef83f803cae44b1504679d2c5f3260e30f508c195e142a7f3df51",
+    "requirements.lock": "ee9e9ccb7e485d9c8457a1d8364496b7b3297622739f2b66558f1e48e5954add"
+  },
+  "isolation": "docker --network none; only active lo; fixed numeric loopback targets",
+  "uid": 1000,
+  "release_tarball_install_record": null
+}

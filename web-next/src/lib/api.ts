@@ -595,7 +595,20 @@ export type ScreenshotManifest = {
   items: ScreenshotItem[];
 };
 
+export type FindingEvidence = {
+  observation_count: number;
+  finding_count: number;
+  projection_incomplete: boolean;
+  findings: { evidence_id: string; observations: {
+    observation_id: string; run_id: string; source: string; evidence_kind: string;
+    severity: string; observed_at: string | null; preview: string;
+    subject: { protocol: string; authority: string | null; sni: string | null; object_id: string | null };
+    artifact_refs: { path: string; sha256: string; locator: string }[];
+  }[] }[];
+};
+
 export type Vulnerability = {
+  finding_evidence?: FindingEvidence | null;
   host: string | null;
   port: string | null;
   cve: string | null;
@@ -2893,6 +2906,7 @@ export type VulnerabilityDetector = {
 };
 
 export type TrackedVulnerability = {
+  finding_evidence?: FindingEvidence | null;
   vuln_id: string;
   tenant_id: string;
   asset_id: string;

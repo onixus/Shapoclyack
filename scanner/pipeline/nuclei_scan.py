@@ -63,6 +63,7 @@ import hashlib
 import shutil
 import tempfile
 import time
+import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -71,7 +72,20 @@ import yaml
 
 from .config_schema import NucleiConfig
 from .dns_resolvers import host_port, scan_resolvers
-from .nuclei_network import NETWORK_RULES, NetworkRule, load_service_names, plan_network_targets, target_string
+from .nuclei_plan import (
+    build_plan,
+    catalog,
+    forward_names,
+    read_services,
+    snapshot_catalog,
+)
+from .nuclei_network import (
+    NETWORK_RULES,
+    NetworkRule,
+    load_service_names,
+    plan_network_targets,
+    target_string,
+)
 from .protocol import is_ipv6, parse_endpoint
 from .utils import run_command, save_json, write_lines
 
@@ -143,7 +157,9 @@ def _template_tags(path: Path) -> set[str]:
     return _template_facts(path)[0]
 
 
-def _index_templates(wanted: Sequence[str], dirs: Sequence[Path], read: Any) -> dict[str, list[Any]]:
+def _index_templates(
+    wanted: Sequence[str], dirs: Sequence[Path], read: Any
+) -> dict[str, list[Any]]:
     """``{template id: [read(path) of each file with that id]}`` for ``wanted`` under ``dirs``.
 
     A pinned run has to know which of its ids nuclei can load before it runs:
@@ -169,7 +185,9 @@ def _index_templates(wanted: Sequence[str], dirs: Sequence[Path], read: Any) -> 
                 path = Path(directory) / name
                 try:
                     with path.open("rb") as handle:
-                        head = handle.read(_TEMPLATE_HEAD_BYTES).decode("utf-8", errors="replace")
+                        head = handle.read(_TEMPLATE_HEAD_BYTES).decode(
+                            "utf-8", errors="replace"
+                        )
                 except OSError:
                     continue
                 match = _TEMPLATE_ID_LINE.search(head)
@@ -179,7 +197,9 @@ def _index_templates(wanted: Sequence[str], dirs: Sequence[Path], read: Any) -> 
     return found
 
 
-def index_template_ids(wanted: Sequence[str], dirs: Sequence[Path]) -> dict[str, list[set[str]]]:
+def index_template_ids(
+    wanted: Sequence[str], dirs: Sequence[Path]
+) -> dict[str, list[set[str]]]:
     """``{template id: [tags of each file with that id]}`` for ``wanted`` under ``dirs``."""
     return _index_templates(wanted, dirs, _template_tags)
 
@@ -194,7 +214,9 @@ def _template_facts_sha(path: Path) -> tuple[set[str], str, str]:
     return tags, severity, digest
 
 
-def index_template_facts(wanted: Sequence[str], dirs: Sequence[Path]) -> dict[str, list[tuple[set[str], str, str]]]:
+def index_template_facts(
+    wanted: Sequence[str], dirs: Sequence[Path]
+) -> dict[str, list[tuple[set[str], str, str]]]:
     """``{template id: [(tags, severity, sha256) of each file with that id]}`` for ``wanted`` under ``dirs``."""
     return _index_templates(wanted, dirs, _template_facts_sha)
 
@@ -255,7 +277,11 @@ def _parse_result_line(line: str) -> dict[str, Any] | None:
 
 def _to_finding(raw: dict[str, Any]) -> dict[str, Any]:
     info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
-    classification = info.get("classification") if isinstance(info.get("classification"), dict) else {}
+    classification = (
+        info.get("classification")
+        if isinstance(info.get("classification"), dict)
+        else {}
+    )
     cve_ids = classification.get("cve-id") or []
     if not isinstance(cve_ids, list):
         cve_ids = [cve_ids]
@@ -309,7 +335,10 @@ def _cap_errors_log(errors_file: Path) -> bool:
     no error where nuclei wrote one.
     """
     try:
-        if not errors_file.is_file() or errors_file.stat().st_size <= _ERRORS_LOG_MAX_BYTES:
+        if (
+            not errors_file.is_file()
+            or errors_file.stat().st_size <= _ERRORS_LOG_MAX_BYTES
+        ):
             return False
         with errors_file.open("rb") as handle:
             head = handle.read(_ERRORS_LOG_MAX_BYTES)
@@ -335,7 +364,10 @@ def _permanent_error_addresses(errors_file: Path) -> set[str]:
 
 def _persist(output_dir: Path, result: dict[str, Any]) -> None:
     save_json(output_dir / "nuclei.json", result)
-    lines = [f"{f['host']}:{f['port']}:{f['template_id']}:{f['severity']}" for f in result["findings"]]
+    lines = [
+        f"{f['host']}:{f['port']}:{f['template_id']}:{f['severity']}"
+        for f in result["findings"]
+    ]
     write_lines(output_dir / "nuclei_findings.txt", lines)
 
 
@@ -364,7 +396,10 @@ def _interactsh_args(server: str) -> tuple[list[str], Path | None]:
             # A JSON string is a valid YAML scalar, quoted and escaped.
             handle.write(f"interactsh-token: {json.dumps(token)}\n")
     except OSError as exc:
-        LOG.warning("nuclei: cannot write the interactsh token file (%s); OAST is off for this run", exc)
+        LOG.warning(
+            "nuclei: cannot write the interactsh token file (%s); OAST is off for this run",
+            exc,
+        )
         if private_dir is not None:
             shutil.rmtree(private_dir, ignore_errors=True)
         return ["-no-interactsh"], None
@@ -432,13 +467,18 @@ def _run_web_sweep(
         _persist(output_dir, result)
         return result
 
-    custom_dir = Path(config.custom_templates_dir) if config.custom_templates_dir else None
+    custom_dir = (
+        Path(config.custom_templates_dir) if config.custom_templates_dir else None
+    )
     pinned: list[str] = []
     if config.template_ids:
         # Resolved before anything is sent: an id that is not on this host,
         # or that the host's own exclusions would filter out, is recorded as
         # such rather than left for nuclei to drop without a word.
-        dirs = [templates_dir, *([custom_dir] if custom_dir and custom_dir.exists() else [])]
+        dirs = [
+            templates_dir,
+            *([custom_dir] if custom_dir and custom_dir.exists() else []),
+        ]
         index = index_template_ids(config.template_ids, dirs)
         excluded_tags = {tag.lower() for tag in config.exclude_tags}
         expected = 0
@@ -469,19 +509,78 @@ def _run_web_sweep(
             # Not run at all: nuclei given only ids it cannot load exits 1
             # with "no templates provided for scan" (v3.11.1, checked live).
             result["skipped_reason"] = (
-                "template_ids_missing" if coverage["template_ids_missing"] else "template_ids_excluded"
+                "template_ids_missing"
+                if coverage["template_ids_missing"]
+                else "template_ids_excluded"
             )
             _persist(output_dir, result)
             return result
 
-    candidates = _candidate_endpoints(open_ports, set(config.http_ports), set(config.https_ports))
-    result["targets_considered"] = len(candidates)
+    plan = None
+    # Resume must not project previous directed raw matches as this run.
+    for stale in output_dir.glob("nuclei_plan_*"):
+        if stale.is_file():
+            stale.unlink(missing_ok=True)
+    (output_dir / "nuclei_plan.json").unlink(missing_ok=True)
+    if config.planner_mode == "directed" and not config.template_ids:
+        try:
+            digest, templates, error = catalog(
+                [
+                    templates_dir,
+                    *([custom_dir] if custom_dir and custom_dir.is_dir() else []),
+                ],
+                config.planner_max_templates,
+            )
+            if error:
+                result["skipped_reason"] = error
+                coverage["plan"] = {
+                    "mode": "directed",
+                    "complete": False,
+                    "skipped_reason": error,
+                }
+                save_json(output_dir / "nuclei_plan.json", coverage["plan"])
+                _persist(output_dir, result)
+                return result
+            plan = build_plan(
+                open_ports,
+                read_services(output_dir),
+                config,
+                digest,
+                templates,
+                forward_names(output_dir),
+            )
+            coverage["plan"] = plan
+            save_json(output_dir / "nuclei_plan.json", plan)
+            pinned = plan["template_sets"]["safe_http_fallback"]
+            coverage["template_ids_requested"] = pinned
+            coverage["templates_expected"] = len(pinned) * len(plan["targets"])
+            if not pinned:
+                result["skipped_reason"] = "planner_no_eligible_templates"
+                _persist(output_dir, result)
+                return result
+            candidates = [
+                (t["ip"], t["port"], t["url"].split(":", 1)[0]) for t in plan["targets"]
+            ]
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
+            LOG.warning("nuclei planner failed: %s", exc)
+            result["skipped_reason"] = "planner_failed"
+            _persist(output_dir, result)
+            return result
+    else:
+        candidates = _candidate_endpoints(
+            open_ports, set(config.http_ports), set(config.https_ports)
+        )
+    result["targets_considered"] = (
+        plan["targets_considered"] if plan else len(candidates)
+    )
     if not candidates:
         result["skipped_reason"] = "no_web_ports"
         _persist(output_dir, result)
         return result
 
-    truncated = len(candidates) > config.max_targets
+    truncated = (
+        plan["targets_considered"] if plan else len(candidates)
+    ) > config.max_targets
     candidates = candidates[: config.max_targets]
     result["truncated"] = truncated
 
@@ -504,20 +603,43 @@ def _run_web_sweep(
         # installs templates it cannot find, which on an air-gapped network is
         # a DNS timeout per run and anywhere else a beacon (#339).
         "-disable-update-check",
-        "-list", str(targets_file),
-        "-templates", str(templates_dir),
+        "-list",
+        str(targets_file),
+        "-templates",
+        str(templates_dir),
         # Without this, nuclei's fastdialer rotates 1.1.1.1/8.8.8.8/... in
         # with the system resolver, and its DNS client asks only those.
-        "-resolvers", str(resolvers_file),
+        "-resolvers",
+        str(resolvers_file),
     ]
-    if custom_dir is not None and custom_dir.exists():
+    snapshot_dir = None
+    if plan is not None:
+        try:
+            snapshot_dir = Path(tempfile.mkdtemp(prefix="shapoclyack-nuclei-catalog-"))
+            snapshot_catalog(
+                [templates_dir, *([custom_dir] if custom_dir else [])],
+                plan["catalog"],
+                snapshot_dir,
+            )
+            command[command.index("-templates") + 1] = str(snapshot_dir)
+        except (OSError, ValueError):
+            if snapshot_dir:
+                shutil.rmtree(snapshot_dir, ignore_errors=True)
+            result["skipped_reason"] = "catalog_snapshot_failed"
+            plan["execution_status"] = "catalog_snapshot_failed"
+            save_json(output_dir / "nuclei_plan.json", plan)
+            _persist(output_dir, result)
+            return result
+        # Never follow redirects beyond the authorized input endpoint.
+        command.extend(["-disable-redirects"])
+    if plan is None and custom_dir is not None and custom_dir.exists():
         command.extend(["-templates", str(custom_dir)])
-    if pinned:
+    if pinned and plan is None:
         # Exactly these templates, whatever their severity or tags: the run is
         # re-checking what they found, and a severity floor that skips a
         # medium template would make "not observed" mean "not looked for".
         command.extend(["-id", ",".join(pinned)])
-    else:
+    elif plan is None:
         if config.severities:
             command.extend(["-severity", ",".join(config.severities)])
         if config.tags:
@@ -557,13 +679,153 @@ def _run_web_sweep(
         result["interactsh"] = "disabled"
 
     try:
-        completed = run_command(command, timeout=config.overall_timeout_seconds, retries=0, check=False)
+        if plan is None:
+            completed = run_command(
+                command, timeout=config.overall_timeout_seconds, retries=0, check=False
+            )
+        else:
+            # One authority/SNI per process: a global Host header must never
+            # leak another virtual host's authority to unrelated endpoints.
+            deadline = time.monotonic() + config.overall_timeout_seconds
+            stderr_parts = []
+            raw_parts = []
+            error_parts = []
+            codes = []
+            plan["process_results"] = []
+            attempted = 0
+            raw_bytes_left = 8 * 1024 * 1024
+            error_bytes_left = 8 * 1024 * 1024
+            for index, target in enumerate(plan["targets"]):
+                if index >= config.planner_max_processes:
+                    result["skipped_reason"] = "planner_process_limit"
+                    break
+                remaining = int(deadline - time.monotonic())
+                if remaining < _MIN_PROCESS_SECONDS:
+                    result["skipped_reason"] = "planner_budget_exhausted"
+                    break
+                write_lines(targets_file, [target["url"]])
+                target_command = list(command)
+                if target["host_header"]:
+                    target_command.extend(["-H", "Host: " + target["host_header"]])
+                if target["sni"]:
+                    target_command.extend(["-sni", target["sni"]])
+                part = output_dir / f"nuclei_plan_{index:04d}_raw.jsonl"
+                target_command[target_command.index("-jsonl-export") + 1] = str(part)
+                part.unlink(missing_ok=True)
+                part_errors = output_dir / f"nuclei_plan_{index:04d}_errors.jsonl"
+                part_errors.unlink(missing_ok=True)
+                target_command[target_command.index("-elog") + 1] = str(part_errors)
+                try:
+                    item = run_command(
+                        target_command, timeout=remaining, retries=0, check=False
+                    )
+                    codes.append(item.returncode)
+                    stderr_parts.append(item.stderr or "")
+                except Exception as exc:  # noqa: BLE001
+                    codes.append(None)
+                    stderr = getattr(exc, "stderr", "") or ""
+                    stderr_parts.append(
+                        stderr.decode(errors="replace")
+                        if isinstance(stderr, bytes)
+                        else stderr
+                    )
+                    result["skipped_reason"] = "nuclei_run_failed"
+                attempted += 1
+                invocation_loaded = _TEMPLATES_LOADED.findall(stderr_parts[-1])
+                loaded_count = int(invocation_loaded[-1]) if invocation_loaded else None
+                dropped = sorted(set(_TARGET_SKIPPED.findall(stderr_parts[-1])))
+                if part_errors.is_file():
+                    # A capped error part invalidates aggregate completion.
+                    if _cap_errors_log(part_errors):
+                        plan["artifact_truncated"] = True
+                    dropped = sorted(
+                        set(dropped) | _permanent_error_addresses(part_errors)
+                    )
+                plan["process_results"].append(
+                    {
+                        "target_index": index,
+                        "returncode": codes[-1],
+                        "templates_expected": len(pinned),
+                        "templates_loaded": loaded_count,
+                        "skipped_targets": dropped,
+                        "complete": codes[-1] == 0
+                        and loaded_count == len(pinned)
+                        and not dropped,
+                    }
+                )
+                if part_errors.is_file():
+                    if _cap_errors_log(part_errors):
+                        plan["artifact_truncated"] = True
+                    with part_errors.open("rb") as handle:
+                        error_head = handle.read(error_bytes_left + 1)
+                    if len(error_head) > error_bytes_left:
+                        plan["artifact_truncated"] = True
+                    error_head = error_head[:error_bytes_left]
+                    error_bytes_left -= len(error_head)
+                    error_parts.append(error_head.decode("utf-8", errors="replace"))
+                if part.is_file():
+                    with part.open("rb") as handle:
+                        raw = handle.read(min(1024 * 1024, raw_bytes_left) + 1)
+                    if len(raw) > min(1024 * 1024, raw_bytes_left):
+                        plan["artifact_truncated"] = True
+                        raw = raw[: min(1024 * 1024, raw_bytes_left)]
+                        raw = raw[: raw.rfind(b"\n") + 1]
+                        part.write_bytes(raw)
+                    # Per-process originals remain byte-exact engine artifacts.
+                    # The combined adapter projection binds actual Host/SNI
+                    # invocation context which nuclei omits from IP URL output.
+                    projected = []
+                    for line in raw.decode("utf-8", errors="replace").split("\n"):
+                        if not line.strip():
+                            continue
+                        record = _parse_result_line(line)
+                        if record is None:
+                            plan["malformed_result"] = True
+                            projected.append(line)
+                            continue
+                        record["shapoclyack_input"] = {
+                            "schema": "octo.nuclei_input.v1",
+                            "ip": target["ip"],
+                            "port": target["port"],
+                            "authority": target["authority"],
+                            "sni": target["sni"],
+                        }
+                        encoded = json.dumps(record, separators=(",", ":")).encode(
+                            "utf-8"
+                        )
+                        if len(encoded) + 1 > raw_bytes_left:
+                            plan["artifact_truncated"] = True
+                            break
+                        raw_bytes_left -= len(encoded) + 1
+                        projected.append(encoded.decode("utf-8"))
+                    raw_parts.append("\n".join(projected))
+                # One deadline, no automatic retry of a timed out invocation.
+                if codes[-1] is None:
+                    break
+            jsonl_file.write_text("\n".join(raw_parts), encoding="utf-8")
+            errors_file.write_text("\n".join(error_parts), encoding="utf-8")
+            write_lines(targets_file, urls)
+            plan["processes_attempted"] = attempted
+            code = (
+                0
+                if len(codes) == len(plan["targets"]) and all(c == 0 for c in codes)
+                else 1
+            )
+            completed = subprocess.CompletedProcess(
+                command, code, "", "\n".join(stderr_parts)
+            )
     except Exception as exc:  # noqa: BLE001
         LOG.warning("nuclei scan failed for %d endpoint(s): %s", len(candidates), exc)
         result["skipped_reason"] = "nuclei_run_failed"
-        _persist(output_dir, result)
-        return result
+        # Keep partial matches emitted before a deadline, never claim ran.
+        stderr = getattr(exc, "stderr", "") or ""
+        stderr = (
+            stderr.decode(errors="replace") if isinstance(stderr, bytes) else stderr
+        )
+        completed = subprocess.CompletedProcess(command, None, "", stderr)
     finally:
+        if snapshot_dir is not None:
+            shutil.rmtree(snapshot_dir, ignore_errors=True)
         if private_dir is not None:
             shutil.rmtree(private_dir, ignore_errors=True)
 
@@ -573,16 +835,30 @@ def _run_web_sweep(
     returncode = getattr(completed, "returncode", None)
     coverage["returncode"] = returncode if isinstance(returncode, int) else None
     coverage["ran"] = coverage["returncode"] == 0
+    if plan is not None:
+        receipts = plan.get("process_results", [])
+        coverage["ran"] = (
+            coverage["ran"]
+            and len(receipts) == len(plan["targets"])
+            and all(r["complete"] for r in receipts)
+        )
     if coverage["returncode"] not in (0, None):
         LOG.warning("nuclei exited %s; its run is not counted as coverage", returncode)
     stderr_text = getattr(completed, "stderr", None)
     stderr_text = stderr_text if isinstance(stderr_text, str) else ""
     loaded = _TEMPLATES_LOADED.findall(stderr_text)
-    coverage["templates_loaded"] = int(loaded[-1]) if loaded else None
-    coverage["skipped_targets"] = sorted(
-        set(_TARGET_SKIPPED.findall(stderr_text)) | _permanent_error_addresses(errors_file)
+    coverage["templates_loaded"] = (
+        (sum(map(int, loaded)) if plan else int(loaded[-1])) if loaded else None
     )
-    coverage["errors_log_truncated"] = _cap_errors_log(errors_file)
+    coverage["skipped_targets"] = sorted(
+        set(_TARGET_SKIPPED.findall(stderr_text))
+        | _permanent_error_addresses(errors_file)
+    )
+    coverage["errors_log_truncated"] = _cap_errors_log(errors_file) or bool(
+        plan and plan.get("artifact_truncated")
+    )
+    if coverage["errors_log_truncated"]:
+        coverage["ran"] = False
     if coverage["skipped_targets"]:
         LOG.warning(
             "nuclei dropped %d target(s) as unresponsive: %s",
@@ -605,15 +881,43 @@ def _run_web_sweep(
     findings: list[dict[str, Any]] = []
     cve_findings: list[dict[str, Any]] = []
     if jsonl_file.is_file():
-        for line in jsonl_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        for line in jsonl_file.read_text(
+            encoding="utf-8", errors="replace"
+        ).splitlines():
             raw = _parse_result_line(line)
             if raw is None:
+                if line.strip():
+                    coverage["ran"] = False
+                    if plan is not None:
+                        plan["malformed_result"] = True
                 continue
             finding = _to_finding(raw)
             findings.append(finding)
             cve_findings.extend(_to_vulnerability_rows(finding))
 
-    result["checked_count"] = len(candidates)
+    # A submitted target is not evidence of a completed target. Only a
+    # successful run with its pinned catalog loaded can contribute here.
+    complete = (
+        coverage["ran"]
+        and not coverage["skipped_targets"]
+        and coverage["templates_expected"] is not None
+        and coverage["templates_loaded"] == coverage["templates_expected"]
+        and not coverage["template_ids_missing"]
+        and not coverage["template_ids_excluded"]
+        and not coverage["template_ids_ambiguous"]
+        and not (plan and plan.get("artifact_truncated"))
+    )
+    result["checked_count"] = len(candidates) if complete else 0
+    if plan is not None:
+        plan["process_returncode"] = coverage["returncode"]
+        plan["templates_loaded"] = coverage["templates_loaded"]
+        plan["completed_targets"] = len(candidates) if complete else None
+        # Nuclei reports template loading, not per-request execution counts.
+        plan["complete"] = (
+            complete and not truncated and not plan.get("artifact_truncated", False)
+        )
+        plan["execution_status"] = "completed" if complete else "incomplete"
+        save_json(output_dir / "nuclei_plan.json", plan)
     result["findings"] = findings
     result["cve_findings"] = cve_findings
     _persist(output_dir, result)
@@ -630,6 +934,7 @@ def _run_web_sweep(
 # ---------------------------------------------------------------------------
 # The network pass (#547)
 # ---------------------------------------------------------------------------
+
 
 def _finding_key(finding: dict[str, Any]) -> tuple[str, str, str]:
     """``(template id, host, port)`` as one identity, whichever way nuclei wrote the host.
@@ -717,7 +1022,12 @@ def _resolve_network_templates(
     floor = {severity.lower() for severity in config.severities}
     run: list[str] = []
     expected = 0
-    skipped: dict[str, list[str]] = {"missing": [], "excluded": [], "below_floor": [], "ambiguous": []}
+    skipped: dict[str, list[str]] = {
+        "missing": [],
+        "excluded": [],
+        "below_floor": [],
+        "ambiguous": [],
+    }
     digests: dict[str, str] = {}
     for template_id in rule.template_ids:
         files = index.get(template_id, [])
@@ -763,21 +1073,30 @@ def _run_network_pass(
         block["skipped_reason"] = unavailable
         return block, findings
 
-    plan = plan_network_targets(open_ports, load_service_names(output_dir), NETWORK_RULES)
+    plan = plan_network_targets(
+        open_ports, load_service_names(output_dir), NETWORK_RULES
+    )
     block["targets_considered"] = sum(len(endpoints) for endpoints in plan.values())
     if not plan:
         block["skipped_reason"] = "no_network_targets"
         return block, findings
 
     templates_dir = Path(config.templates_dir)
-    custom_dir = Path(config.custom_templates_dir) if config.custom_templates_dir else None
-    dirs = [templates_dir, *([custom_dir] if custom_dir and custom_dir.exists() else [])]
+    custom_dir = (
+        Path(config.custom_templates_dir) if config.custom_templates_dir else None
+    )
+    dirs = [
+        templates_dir,
+        *([custom_dir] if custom_dir and custom_dir.exists() else []),
+    ]
     resolvers_file = output_dir / "nuclei_resolvers.txt"
     resolver_lines = [host_port(resolver) for resolver in scan_resolvers(resolvers)]
     resolvers_file.write_text("\n".join(resolver_lines) + "\n", encoding="utf-8")
 
     for rule_name, endpoints in plan.items():
-        rule = next(candidate for candidate in NETWORK_RULES if candidate.name == rule_name)
+        rule = next(
+            candidate for candidate in NETWORK_RULES if candidate.name == rule_name
+        )
         truncated = len(endpoints) > config.max_targets
         endpoints = endpoints[: config.max_targets]
         block["truncated"] = block["truncated"] or truncated
@@ -854,13 +1173,21 @@ def _run_network_pass(
         completed = None
         try:
             completed = run_command(
-                command, timeout=min(config.overall_timeout_seconds, int(remaining)), retries=0, check=False
+                command,
+                timeout=min(config.overall_timeout_seconds, int(remaining)),
+                retries=0,
+                check=False,
             )
         except Exception as exc:  # noqa: BLE001
             # A timeout or a crash is not a look (``ran`` stays false), but what
             # nuclei had already written to its JSONL is real observation and is
             # kept, as the sweep keeps the findings of a run that exited non-zero.
-            LOG.warning("nuclei network pass %s failed for %d endpoint(s): %s", rule.name, len(targets), exc)
+            LOG.warning(
+                "nuclei network pass %s failed for %d endpoint(s): %s",
+                rule.name,
+                len(targets),
+                exc,
+            )
             entry["skipped_reason"] = "nuclei_run_failed"
 
         if completed is not None:
@@ -868,22 +1195,33 @@ def _run_network_pass(
             entry["returncode"] = returncode if isinstance(returncode, int) else None
             entry["ran"] = entry["returncode"] == 0
             if entry["returncode"] not in (0, None):
-                LOG.warning("nuclei network pass %s exited %s; not counted as coverage", rule.name, returncode)
+                LOG.warning(
+                    "nuclei network pass %s exited %s; not counted as coverage",
+                    rule.name,
+                    returncode,
+                )
             stderr_text = getattr(completed, "stderr", None)
             stderr_text = stderr_text if isinstance(stderr_text, str) else ""
             loaded = _TEMPLATES_LOADED.findall(stderr_text)
             entry["templates_loaded"] = int(loaded[-1]) if loaded else None
             entry["skipped_targets"] = sorted(
-                set(_TARGET_SKIPPED.findall(stderr_text)) | _permanent_error_addresses(errors_file)
+                set(_TARGET_SKIPPED.findall(stderr_text))
+                | _permanent_error_addresses(errors_file)
             )
             entry["errors_log_truncated"] = _cap_errors_log(errors_file)
         if jsonl_file.is_file():
-            for line in jsonl_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            for line in jsonl_file.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines():
                 raw = _parse_result_line(line)
                 if raw is not None:
-                    findings.append({**_to_finding(raw), "pass": "network", "rule": rule.name})
+                    findings.append(
+                        {**_to_finding(raw), "pass": "network", "rule": rule.name}
+                    )
 
-    block["ran"] = bool(block["passes"]) and all(entry["ran"] for entry in block["passes"])
+    block["ran"] = bool(block["passes"]) and all(
+        entry["ran"] for entry in block["passes"]
+    )
     if not block["ran"]:
         # Every pass has its own reason; the block says in one word that the
         # network side as a whole did not complete.
@@ -925,13 +1263,22 @@ def run_nuclei_scan(
     except OSError:
         # Fail-soft like the rest of the stage: a stale file we cannot remove is
         # logged, and nuclei.json still says whether the pass ran.
-        LOG.warning("could not remove stale nuclei_network_* files in %s", output_dir, exc_info=True)
+        LOG.warning(
+            "could not remove stale nuclei_network_* files in %s",
+            output_dir,
+            exc_info=True,
+        )
     if config.template_ids:
         return result
     deadline = started + config.overall_timeout_seconds + NETWORK_GRACE_SECONDS
     try:
         block, network_findings = _run_network_pass(
-            open_ports, config, output_dir, resolvers, result.get("skipped_reason"), deadline
+            open_ports,
+            config,
+            output_dir,
+            resolvers,
+            result.get("skipped_reason"),
+            deadline,
         )
     except Exception:  # noqa: BLE001
         # Fail-soft like the sweep: a planning bug must not fail the scan, and
@@ -984,4 +1331,6 @@ def nuclei_vulnerability_rows(nuclei_result: dict[str, Any]) -> list[dict[str, A
     before the pass has no ``network_vulnerabilities``, and a skipped stage has
     only the fallback ``{"cve_findings": []}``).
     """
-    return list(nuclei_result.get("cve_findings") or []) + list(nuclei_result.get("network_vulnerabilities") or [])
+    return list(nuclei_result.get("cve_findings") or []) + list(
+        nuclei_result.get("network_vulnerabilities") or []
+    )

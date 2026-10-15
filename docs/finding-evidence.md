@@ -1,11 +1,60 @@
 # Finding evidence: shadow contract (#449, stage 1)
 
-This is an **offline, explicitly invoked projection**, not a change to the
-production tracker. `build_reports()` and the existing first-wins
-`vulnerabilities.json` path are unchanged. Do not mark #449 complete on the
-strength of this stage: API/tracker/UI integration and identity compatibility
-are still required. This implementation can be reviewed and exercised without
-merging #491 or waiting for a live-engine benchmark.
+Production reports now retain observations in additive `finding_evidence` fields
+inside each legacy remediation container. `finding_key` remains unchanged:
+asset/CVE-or-script/port. A container may contain multiple **distinct** precise
+subjects; they are not a claim that TCP/UDP, vhosts/SNI or HTTP objects are the
+same confirmed object. Counts in reports, run API, tracker and ClickHouse remain
+container counts. Evidence counts and subject counts are separate.
+
+The offline sidecar command below remains available for historical artifacts.
+
+## Production compatibility, enablement and rollback
+
+Deploy migration `0087_finding_evidence` before the new API. New reports enable
+the additive contract by default; there is no bulk identity migration/backfill
+and old `vulnerabilities.json` files remain readable. Existing keys, owners,
+SLA deadlines, exceptions and events are preserved. Observations are rebound to
+authenticated tenant/run ownership at run API, tracker and analytics boundaries;
+uploader group IDs and context cannot assert ownership. A self-consistent hash
+is not an authorization or sanitization check: ingestion enforces the exact
+observation field allowlist, bounded/redacted text, scalar semantics, canonical
+time and subject fields, and at most eight incoming artifact references before
+aggregation. Unknown extra fields and unsafe supplied values make evidence
+incomplete rather than copying attacker-controlled bodies into API/analytics.
+
+`report_sources.json` preserves the exact input rows and its actual file SHA-256
+and JSON pointers are referenced by fallback observations. Available bounded raw
+readers add original Pulse/NSE/Nuclei artifact references, matcher, object and
+engine evidence. A matching coarse report representation is replaced by its
+authoritative raw observation, retaining both exact raw and report-source
+references without increasing observation counts. Unmatched rules and conflicting
+known transport/SNI/object/time observations remain separate. New source snapshots and sidecars require operator permissions;
+raw downloads use the existing run-scoped artifact endpoint and its access rules.
+The UI shows observations in run findings and tracker detectors. ClickHouse keeps
+one row per container, adding evidence to the existing JSON assessment envelope;
+all captured risk receipt fields remain unchanged.
+
+The report chooses a deterministic representative from the latest dated cohort
+(or a deterministic undated representative), without source ranking or a
+strongest-forever rule. All conflicting/undated observations remain available.
+The tracker unions evidence across runs, idempotently by observation ID, up to
+10,000 observations. Invalid supplied evidence and exhausted history bounds set
+an explicit incomplete marker; they do not fall back to legacy absence.
+
+Precise HTTP object/SNI/authority, multiple distinct endpoints, or incomplete
+evidence blocks negative closure through legacy endpoint coverage. These
+containers require operator triage until verification can prove every precise
+subject was checked. A new positive observation remains positive even when
+another source is partial. Nuclei never implies machine verification.
+
+Rollback: deploy the older report/API code; existing workflow keys and history
+are unchanged. Leaving the additive nullable column is safe. Downgrading 0087
+drops only evidence history; export it first if required. Historical artifacts
+are not automatically regenerated. The real local Nuclei v3.11.1 capture under
+`tests/fixtures/finding_evidence` exercises output shape with a fabricated local
+CVE template, not real-world detection acceptance. Full release/device/runtime
+acceptance and precise-subject negative verification remain separate gates.
 
 ## Run against existing artifacts
 
@@ -60,6 +109,18 @@ separate. Sorting and duplicates do not change the union.
 Subjects retain transport, optional HTTP scheme/authority, explicit SNI and an
 object digest. Literal IP spelling, host case and numeric ports normalize.
 HTTP default ports normalize, but conflicting explicit ports are rejected.
+Directed Nuclei invocations may carry an adapter-owned `shapoclyack_input`
+(`octo.nuclei_input.v1`) note because the pinned engine's IP-URL JSONL does not
+record per-process Host/SNI flags. The reader requires its literal IP and port to
+match the raw observed endpoint; canonical HTTP authority and explicit SNI are
+retained separately from transport IP. Authority changes also change the HTTP
+object digest, so two virtual hosts on one IP/path remain distinct. Credentials,
+URLs/control characters, mismatched endpoints/ports/SNI, and unknown note fields
+make the projection incomplete instead of silently falling back to one IP object.
+The per-process original raw file remains unchanged; enriched merged JSONL records
+contain the adapter assertion. Neither the note nor its hash authenticates an
+upload: the existing authenticated publication boundary still owns tenant/run
+scope, and archive authenticity validation remains a separate gate.
 DNS names are never mapped to IPs from an unverified `ip` field or reverse lookup.
 Unknown transport/authority/object is **not** a wildcard: a service-level Pulse
 finding cannot automatically absorb a path-specific Nuclei match. Both may be
@@ -147,7 +208,7 @@ keys. The schema is still the unreleased stage-1 v1 contract, not a migration of
 production findings. Re-aggregation alone cannot recover already discarded
 objects, records or references.
 
-## Remaining stages of #449
+## Historical stage-1 scope (superseded by production integration above)
 
 Before switching the default result, agree on a compatibility/migration policy
 for protocol/vhost/object distinctions currently absent from `finding_key`.

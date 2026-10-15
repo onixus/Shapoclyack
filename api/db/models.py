@@ -1702,6 +1702,7 @@ class Vulnerability(Base):
     # date, the advisory. Kept after a scan takes the row over, because it is
     # the record of why the finding existed before the scan confirmed it.
     match_evidence: Mapped[dict | None] = mapped_column(JSON, default=None)
+    finding_evidence: Mapped[dict | None] = mapped_column(JSON, default=None)
     # When the retro matcher announced this finding as a ``new_cve`` event.
     # NULL on a retro finding means "committed, not yet announced" — the
     # durable half of at-least-once delivery (retro_findings.announce_pending).

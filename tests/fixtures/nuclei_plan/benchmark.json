@@ -1,0 +1,203 @@
+{
+  "fixture": "synthetic HTTP response; no real CVE acceptance",
+  "network": "container --network none, loopback only",
+  "interfaces_observed": [
+    "erspan0",
+    "gre0",
+    "gretap0",
+    "ip6_vti0",
+    "ip6gre0",
+    "ip6tnl0",
+    "ip_vti0",
+    "lo",
+    "sit0",
+    "tunl0"
+  ],
+  "active_interfaces_observed": [
+    "lo"
+  ],
+  "instrumentation_sha256": "09169faa265d3fa0d13ab6baaf0174fac1200af0cca74b184074f21b0f60ca52",
+  "engine_binary_sha256": "7a2fb8a51e4aa0e0aefc57bf8865ea32c4e307de8f44e125e532884d6129156d",
+  "architecture": "aarch64",
+  "source_snapshot_sha256": "b46cc890b8e410b243cface6bc85159a8b4dcf3452469603463b910bd5db106f",
+  "engine": "[\u001b[34mINF\u001b[0m] Nuclei Engine Version: v3.11.1\n[\u001b[34mINF\u001b[0m] Nuclei Config Directory: /root/.config/nuclei\n[\u001b[34mINF\u001b[0m] Nuclei Cache Directory: /root/.cache/nuclei\n[\u001b[34mINF\u001b[0m] PDCP Directory: /root/.pdcp",
+  "modes": {
+    "legacy": {
+      "duration_seconds": 0.070987791987136,
+      "cpu_seconds": 0.088393,
+      "peak_rss_kib": 105364,
+      "processes": 1,
+      "connections": 2,
+      "requests": 1,
+      "selected_templates": 1,
+      "expected_problem_matches": 1,
+      "checked_count": 0,
+      "coverage": {
+        "ran": true,
+        "returncode": 0,
+        "targets": [
+          "http://127.0.0.1:45187/",
+          "https://127.0.0.1:45187/"
+        ],
+        "template_ids_requested": [],
+        "template_ids_missing": [],
+        "template_ids_excluded": [],
+        "severities": [
+          "critical",
+          "high",
+          "medium"
+        ],
+        "templates_loaded": null,
+        "templates_expected": null,
+        "template_ids_ambiguous": [],
+        "skipped_targets": [],
+        "max_host_error": 30,
+        "errors_log_truncated": false,
+        "network": {
+          "enabled": false,
+          "ran": false,
+          "skipped_reason": "network_templates_disabled",
+          "targets_considered": 0,
+          "truncated": false,
+          "severities": [
+            "critical",
+            "high",
+            "medium"
+          ],
+          "duplicates_of_sweep": 0,
+          "passes": []
+        }
+      }
+    },
+    "directed": {
+      "duration_seconds": 0.07349045900627971,
+      "cpu_seconds": 0.105158,
+      "peak_rss_kib": 104364,
+      "processes": 1,
+      "connections": 1,
+      "requests": 1,
+      "selected_templates": 1,
+      "expected_problem_matches": 1,
+      "checked_count": 1,
+      "coverage": {
+        "ran": true,
+        "returncode": 0,
+        "targets": [
+          "http://127.0.0.1:45187/"
+        ],
+        "template_ids_requested": [
+          "local-fixture-cve"
+        ],
+        "template_ids_missing": [],
+        "template_ids_excluded": [],
+        "severities": [
+          "critical",
+          "high",
+          "medium"
+        ],
+        "templates_loaded": 1,
+        "templates_expected": 1,
+        "template_ids_ambiguous": [],
+        "skipped_targets": [],
+        "max_host_error": 30,
+        "errors_log_truncated": false,
+        "plan": {
+          "schema_version": "octo.nuclei_plan.v1",
+          "mode": "directed",
+          "catalog_sha256": "5d9108943e6b6ee38e5e164e5c6f8e7253c1434ebe26e4a39c85b415d6dc5087",
+          "template_policy": "safe_http_fallback_preserves_all_eligible_http_templates",
+          "template_sets": {
+            "safe_http_fallback": [
+              "local-fixture-cve"
+            ]
+          },
+          "catalog": [
+            {
+              "id": "local-fixture-cve",
+              "path": "fixture.yaml",
+              "origin": "pinned",
+              "sha256": "3aaf808dd2ff4f4bbc32e16bff25fe64cdd10ec8bfcaa7ae74581e7507eff8c1",
+              "scope_safe": true,
+              "tags": [
+                "cve",
+                "fixture"
+              ],
+              "severity": "high",
+              "http": true,
+              "cve": true
+            }
+          ],
+          "targets": [
+            {
+              "url": "http://127.0.0.1:45187/",
+              "ip": "127.0.0.1",
+              "port": 45187,
+              "authority": "127.0.0.1:45187",
+              "sni": null,
+              "host_header": null,
+              "reason": "reliable_protocol",
+              "technologies": [],
+              "protocol_observations": [],
+              "template_set": "safe_http_fallback"
+            }
+          ],
+          "targets_considered": 1,
+          "skipped": [],
+          "excluded_templates": [],
+          "planned_checks": 1,
+          "executed_checks": null,
+          "completed_targets": 1,
+          "complete": true,
+          "versions": {
+            "products": [
+              ""
+            ],
+            "service_versions": [
+              ""
+            ]
+          },
+          "process_results": [
+            {
+              "target_index": 0,
+              "returncode": 0,
+              "templates_expected": 1,
+              "templates_loaded": 1,
+              "skipped_targets": [],
+              "complete": true
+            }
+          ],
+          "processes_attempted": 1,
+          "process_returncode": 0,
+          "templates_loaded": 1,
+          "execution_status": "completed"
+        },
+        "network": {
+          "enabled": false,
+          "ran": false,
+          "skipped_reason": "network_templates_disabled",
+          "targets_considered": 0,
+          "truncated": false,
+          "severities": [
+            "critical",
+            "high",
+            "medium"
+          ],
+          "duplicates_of_sweep": 0,
+          "passes": []
+        }
+      }
+    }
+  },
+  "expected_matches_preserved": true,
+  "scope_override_fixture": {
+    "connections": 0,
+    "requests": 0,
+    "excluded_templates": [
+      {
+        "id": "local-scope-override",
+        "reason": "scope_unproven"
+      }
+    ],
+    "expected_problem_matches": 1
+  }
+}

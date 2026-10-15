@@ -222,7 +222,7 @@ def test_run_nuclei_scan_truncates_over_max_targets(tmp_path: Path, monkeypatch)
     config = NucleiConfig(enabled=True, templates_dir=str(templates_dir), max_targets=2)
     result = run_nuclei_scan(open_ports, config, tmp_path)
     assert result["targets_considered"] == 5
-    assert result["checked_count"] == 2
+    assert result["checked_count"] == 0  # submission is not completed coverage
     assert result["truncated"] is True
 
 

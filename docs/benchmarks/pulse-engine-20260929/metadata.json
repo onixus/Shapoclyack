@@ -1,0 +1,10 @@
+{
+  "platform": "Linux-7.2.6-arch2-1-x86_64-with-glibc2.41",
+  "pulse_version": "pulse 1.1.0",
+  "binary_sha256": "f2446440b84a7bcbe29e31c5cfbe1901fa84a4a4401774becf91f39669ad5e46",
+  "repeats": 5,
+  "capture_settle_seconds": 1.0,
+  "network": "none; numeric loopback only",
+  "uid": 1000,
+  "pulse_install_record": "# Pulse install record, written by scripts/install-pulse.sh (#340).\n# Checked by scripts/verify-pulse-image.py; see docs/release-contract.md.\nversion=v1.1.0\nplatform=linux-amd64\nverified=pin\ntarball=pulse-v1.1.0-linux-amd64.tar.gz\ntarball_sha256=25f2f24ecd77d62640776fdcab23ff8cfd2faf2b04ed621f4695da988bf5b2c9\nbinary_sha256=f2446440b84a7bcbe29e31c5cfbe1901fa84a4a4401774becf91f39669ad5e46\n"
+}

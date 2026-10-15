@@ -114,6 +114,20 @@ def _port(value: Any) -> int | None:
     return port
 
 
+def http_authority(value: Any, port: int) -> str:
+    """Canonical Host authority, separate from the transport endpoint host."""
+    if not isinstance(value, str) or not value or len(value) > 270 or any(ord(c) < 33 for c in value):
+        raise ValueError('invalid HTTP authority')
+    parsed = urlsplit('//' + value)
+    if parsed.path or parsed.query or parsed.fragment or parsed.username is not None or parsed.password is not None:
+        raise ValueError('invalid HTTP authority')
+    name = _host(parsed.hostname or '')
+    declared_port = _port(parsed.port)
+    if declared_port is not None and declared_port != port:
+        raise ValueError('conflicting HTTP authority port')
+    return f'[{name}]:{port}' if ':' in name else f'{name}:{port}'
+
+
 def subject(row: dict[str, Any]) -> dict[str, Any]:
     """Normalize a declared subject without inferring a DNS/IP relationship.
 
@@ -147,9 +161,13 @@ def subject(row: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("conflicting HTTP transport")
         port, protocol, scheme = _port(url_port), "tcp", parsed.scheme.lower()
         authority = f"[{name}]:{port}" if ":" in name else f"{name}:{port}"
+        if row.get("http_authority") is not None:
+            authority = http_authority(row["http_authority"], port)
         object_id = "url:" + digest([scheme, authority, parsed.path or "/", parsed.query])
         host = name
     else:
+        if row.get("http_authority") is not None:
+            raise ValueError("HTTP authority without HTTP subject")
         try:
             host = _host(host)
         except ValueError:

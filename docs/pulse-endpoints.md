@@ -152,11 +152,57 @@ Python process startups instead of one. These timings are specific to the
 helper/environment, not evidence about Pulse performance. No CPU/RSS,
 packet/byte, OS/TLS coverage or cold/warm engine-cache results were collected.
 
-**Remaining acceptance evidence for #448:** run the controlled comparison
-with the actual pinned Pulse binary and record service/OS/TLS coverage,
-connections/packets, duration, process overhead and partial failures. This
-fixture does not satisfy that full-engine criterion or the backend decision
-in #452. No backend replacement or profile-default change is included.
+**Real-engine evidence:** the [recovered Pulse 1.1.0 package](benchmarks/pulse-engine-20260929/README.md)
+contains all 30 historical samples, original fixture/config, metadata and
+recomputable summaries. It is distinct from the Python fixture above.
+Historical Jenkins PCAPs/per-pass raw stdout are unavailable in the surviving
+export; packet aggregates remain available. The current release pin is
+**v1.4.0** (`scripts/pulse-pinned.sha256`), so 1.1.0 results alone cannot establish
+current-engine acceptance. See the package for exact source/binary identities.
+
+### Cost acceptance and supported comparison profile
+
+Correctness acceptance requires exact approved pairs, unchanged service/TLS
+coverage, and unresolved unavailable endpoints. The closed-service regression
+(9.571 → 14.815 s, +54.8%, 236 → 249 packets) is accepted as a **historical
+correctness tradeoff**, not a promise that 55% is a production latency ceiling.
+It must not be hidden by marking a missing host complete or reducing coverage.
+
+For N pending hosts with signatures s and chunk size H, nominal processes are
+`C = sum(ceil(hosts_with_signature_s / H))`, at most N. In the three-host
+fixture, different signatures cost 3 processes and 3 command pairs; identical
+signatures cost 1 process and 3 pairs. No runtime flag expands exact endpoints.
+At most three logical calls per chunk can arise from the initial call, OS
+fallback, and one crash **or** settle repeat; command retries multiply process
+attempts by at most `R + 1`. Thus `3*C*(R+1)` bounds adapter probe subprocess
+attempts, excluding binary/plugin capability checks and other stages. Each
+call has its configured process deadline plus any plugin allowance; settling
+adds its configured delay once per eligible chunk; lower-level retries also
+back off by `min(2 * attempt, 10)` seconds per failed attempt. Three consecutive crashed
+or timed-out chunks trigger their respective breakers. These are invocation
+bounds, not a global stage deadline, packet cap or bound over repeated resumes.
+
+OS inference may contact additional ports; TLS/JARM may create multiple
+connections; optional plugins and cipher enumeration have their own budgets.
+Planner pairs and accepted connections are not total packets. Production
+profiles with plugins, TLS enumeration, SYN, command retries, larger input,
+packet loss, or unavailable remote endpoints need separate measurements.
+The controlled profile is Linux isolated loopback, 3 hosts, concurrency 16,
+rate 100, host parallel 3, timeout 300 ms, process deadline 90 s, retries 0,
+settle 0, adaptive/SYN/CVE/online CVE/explicit plugins/TLS enumeration off,
+banners and OS requested. No profile defaults are changed here.
+
+**Current-engine acceptance:** [30 Pulse v1.4.0 arm64 samples](benchmarks/pulse-engine-20261015/README.md)
+compare union versus exact planning in the same integrated adapter, with full
+raw outputs/PCAP and immutable source/image/binary identities. Known service,
+OS-family and TLS endpoint evidence remained identical across each scenario.
+This is separate from replaying historical source revisions.
+
+**Remaining acceptance for #448:** full integrated-main CI and release-tarball
+provenance/installed-sensor acceptance. Historical and current
+engine results are separate evidence. Full Python 3.11/3.12 and one terminal
+successful required Jenkins gate are required; targeted tests and old per-stage
+rechecks do not replace that gate. The backend decision remains #452.
 
 Rollback is a reviewed revert of the code change. It restores the previous
 overscan/resume limitations; there is deliberately no runtime switch that
