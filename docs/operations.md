@@ -1,5 +1,46 @@
 # Operations
 
+## Credentialed scanning: scope and coverage (#368)
+
+The product decision is **Not doing general-purpose SSH/WinRM/SNMP credentialed
+scanning**, recorded in [ROADMAP](../ROADMAP.md#not-doing-and-why). Sensors observe
+network exposure; installed Lariska Agents submit host inventory through the
+[endpoint-inventory contract](../Agent_plan.md). Prefer that inventory path for
+managed-host software and patch-gap assessment: collection runs locally and its
+versioned snapshots track changes and, for schema v2, completeness per source.
+That avoids distributing host login credentials to scanning sensors. It is not a
+claim that Lariska performs arbitrary host configuration audits.
+
+| Surface | Evidence available | Coverage boundary |
+|---|---|---|
+| Managed host with Lariska | Accepted software inventory, source status and advisory/patch-gap matching | Check source completeness and age; a recent receipt with a failed collector is not a fresh complete inventory. Follow [inventory v2](endpoint-inventory-v2.md) |
+| Host without Lariska | Network ports, service observations and the checks actually executed in its scan | No authenticated installed-package inventory or proof of patch completeness |
+| Network appliance unable to run Lariska | Network observations and explicitly supported protocol checks | No authenticated firmware inventory, configuration audit or SNMPv3 collection; a silent or unmatched probe leaves coverage unknown |
+
+Do not treat these existing credential-related features as a host-login scanner:
+
+- [SSH push deployment](api-and-rbac.md#sensor-fleet-deployment-and-upgrade) uses
+  `AgentDeploySSHRequest` in [api/schemas.py](../api/schemas.py) and
+  [agent_deployer.py](../api/services/agent_deployer.py) to install a **sensor**.
+  Its SSH credentials do not configure scanning target accounts.
+- [Credential-leak checks](../scanner/pipeline/credential_leaks.py) query a breach
+  provider for organization domains; the provider API key is not a host password.
+- The [SNMP information plugin](pulse-plugins.md#binary-negotiation-probes-gendec-binary-sandbox-api)
+  `shapo_snmp_info` performs one read-only SNMPv2c `public` GET for `sysDescr.0`
+  and `sysName.0`. It is standalone/native UDP functionality, outside production
+  adapter enrichment. Its INFO observation is neither a vulnerability nor an
+  authenticated asset identity. It provides no SNMPv3, community guessing, SET,
+  firmware/patch validation or device-configuration collection.
+
+If network-equipment inventory is required, record the missing device models and
+required facts as a coverage gap. Reconsider a separate SNMPv3 read-only feature
+only after specifying allowed OIDs/device versions, least-privilege device
+accounts, per-tenant secret storage/rotation/revocation and sensor authorization,
+redacted logs, rate/time/lockout bounds, cancellation and incomplete-result
+semantics. Require device-backed tests of those limits and observed data before
+promising coverage. This decision adds no runtime options, permissions or secret
+fields, and does not remove an existing probe or deployment feature.
+
 ## Run directories
 
 Every scan writes to:
