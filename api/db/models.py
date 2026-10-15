@@ -3434,3 +3434,5 @@ class AssetImportConnector(Base):
     last_run_at: Mapped[datetime | None] = mapped_column(default=None)
     last_error: Mapped[str | None] = mapped_column(default=None)
     last_counts: Mapped[dict | None] = mapped_column(JSON, default=None)
+    # Expiring claim held while a run fetches without an open transaction.
+    run_lease_until: Mapped[datetime | None] = mapped_column(default=None)
