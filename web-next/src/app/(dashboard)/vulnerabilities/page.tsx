@@ -391,8 +391,8 @@ function VulnerabilitiesInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-auto min-w-[11rem]" aria-label={"Finding type"}>
-                <SelectValue placeholder="Finding type" />
+              <SelectTrigger className="w-auto min-w-[11rem]" aria-label={t("vuln.findingType")}>
+                <SelectValue placeholder={t("vuln.findingType")} />
               </SelectTrigger>
               <SelectContent className="bg-card border-border text-foreground">
                 <SelectItem value={FILTER_ALL}>Any finding type</SelectItem>
@@ -408,8 +408,8 @@ function VulnerabilitiesInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-auto min-w-[11rem]" aria-label={"Detector"}>
-                <SelectValue placeholder="Detector" />
+              <SelectTrigger className="w-auto min-w-[11rem]" aria-label={t("vuln.detector")}>
+                <SelectValue placeholder={t("vuln.detector")} />
               </SelectTrigger>
               <SelectContent className="bg-card border-border text-foreground">
                 <SelectItem value={FILTER_ALL}>Any detector</SelectItem>
@@ -423,7 +423,7 @@ function VulnerabilitiesInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-auto min-w-[11rem]" >
+              <SelectTrigger className="w-auto min-w-[11rem]" aria-label={t("vuln.exposure")}>
                 <SelectValue placeholder={t("vuln.exposure")} />
               </SelectTrigger>
               <SelectContent className="bg-card border-border text-foreground">

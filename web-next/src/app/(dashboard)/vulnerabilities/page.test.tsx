@@ -130,6 +130,7 @@ describe("Vulnerability Center", () => {
     expect(fetchSpy.mock.calls[0][0]).toMatchObject({ finding_type: "misconfiguration", detector_source: "nuclei" });
     expect(screen.getByRole("combobox", { name: "Finding type" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Detector" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Network exposure" })).toBeInTheDocument();
   });
 
   beforeEach(() => {

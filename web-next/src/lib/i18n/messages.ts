@@ -1755,6 +1755,8 @@ export const en = {
   "users.account.mismatch": "The new password and its confirmation differ.",
   // --- vulnerability exposure filter, schedule surface ---
   "vuln.exposure": "Network exposure",
+  "vuln.findingType": "Finding type",
+  "vuln.detector": "Detector",
   "vuln.exposure.any": "Any exposure",
   "vuln.exposure.external": "External — reachable from the internet",
   "vuln.exposure.internal": "Internal — private address space",
@@ -3651,6 +3653,8 @@ export const ru: Record<MsgKey, string> = {
   "users.account.mismatch": "Новый пароль и его повтор различаются.",
   // --- vulnerability exposure filter, schedule surface ---
   "vuln.exposure": "Сетевая экспозиция",
+  "vuln.findingType": "Тип находки",
+  "vuln.detector": "Детектор",
   "vuln.exposure.any": "Любая экспозиция",
   "vuln.exposure.external": "Внешняя — достижимо из интернета",
   "vuln.exposure.internal": "Внутренняя — частное адресное пространство",

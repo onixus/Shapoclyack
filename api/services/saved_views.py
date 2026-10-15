@@ -160,8 +160,12 @@ def list_views(settings: Settings, tenant_id: str, username: str, page: Page):
 def create_view(settings: Settings, tenant_id: str, username: str, payload: ViewInput):
     with get_session(settings.postgres_url) as session:
         # Serialize admissions across replicas, so parallel requests cannot evade the cap.
+        # FOR NO KEY UPDATE: a plain FOR UPDATE would also block the FOR KEY SHARE
+        # every insert referencing this tenant takes, stalling the tenant's ingest.
         session.scalar(
-            select(Tenant).where(Tenant.tenant_id == tenant_id).with_for_update()
+            select(Tenant)
+            .where(Tenant.tenant_id == tenant_id)
+            .with_for_update(key_share=True)
         )
         count = session.scalar(
             select(func.count()).select_from(owned(tenant_id, username).subquery())
