@@ -13,6 +13,8 @@ if [[ -e "$output_root/run" ]]; then
   exit 2
 fi
 runtime='shapo-issue452-benchmark:local'
+# The Pulse build the committed benchmark ran (run-provenance.json).
+PULSE_IMAGE="${PULSE_IMAGE:-ghcr.io/onixus/pulse:v1.4.0@sha256:70ab0ef673f1b49a9a52d8648999efb711dc0fa8e8cf81bab461e02dbf751ce2}"
 if ! docker image inspect "$runtime" >/dev/null 2>&1; then
   build_root="$(mktemp -d)"
   naabu_input=''
@@ -32,7 +34,7 @@ if ! docker image inspect "$runtime" >/dev/null 2>&1; then
   docker cp "$naabu_input:/out/naabu" "$build_root/naabu"
   docker rm "$naabu_input" >/dev/null
   naabu_input=''
-  pulse_input="$(docker create --network none ghcr.io/onixus/pulse@sha256:70ab0ef673f1b49a9a52d8648999efb711dc0fa8e8cf81bab461e02dbf751ce2)"
+  pulse_input="$(docker create --network none "$PULSE_IMAGE")"
   docker cp "$pulse_input:/pulse" "$build_root/pulse"
   docker rm "$pulse_input" >/dev/null
   pulse_input=''
