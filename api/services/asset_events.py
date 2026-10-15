@@ -125,8 +125,14 @@ def event_id(tenant_id: str, event: dict[str, Any]) -> str:
     """
     if event.get("kind") == "new_finding":
         from scanner.pipeline.finding_evidence import digest, subject
-        return digest(["asset-non-cve-v1", tenant_id, event.get("run_id"),
-                       event.get("rule_id") or event.get("script_id"), subject(event)])[:48]
+        # Every non-CVE diff row is a new_finding, legacy ones included, and
+        # not all of them have a canonical subject. One such row must not
+        # abort the whole run's events: it keeps the field-based identity.
+        try:
+            return digest(["asset-non-cve-v1", tenant_id, event.get("run_id"),
+                           event.get("rule_id") or event.get("script_id"), subject(event)])[:48]
+        except (ValueError, TypeError):
+            pass
     parts = [
         tenant_id,
         str(event.get("run_id") or ""),

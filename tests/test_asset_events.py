@@ -6,6 +6,8 @@ import json
 import time
 from pathlib import Path
 
+import pytest
+
 from api.services import asset_events, nats_bus
 
 
@@ -326,3 +328,20 @@ def test_non_cve_event_ids_isolate_precise_objects_and_preserve_replay():
                     {**base, "http_authority": "other.example:443"},
                     {**base, "rule_id": "another-rule"}]:
         assert asset_events.event_id("t", variant) != first
+
+
+@pytest.mark.parametrize("bad", [
+    {"protocol": "sctp"},
+    {"host": "10.0.0.1:8080", "port": "80"},
+])
+def test_legacy_non_cve_row_without_canonical_subject_does_not_abort_run_events(bad):
+    # Legacy non-CVE diff rows are new_finding too, and not every one of them
+    # has a canonical subject; the rest of the run's events must still go out.
+    legacy = {"kind": "new_finding", "host": "10.0.0.1", "port": "161", "protocol": "tcp",
+              "script_id": "pulse:legacy", **bad}
+    events = [legacy, {"kind": "new_open_port", "host": "10.0.0.2", "port": "22", "protocol": "tcp"}]
+    envelopes, dropped = asset_events.build_events(_diff(events), tenant_id="t", run_id="r")
+    assert dropped == 0
+    assert [e["kind"] for e in envelopes] == ["new_finding", "new_open_port"]
+    assert asset_events.event_id("t", {**legacy, "run_id": "r"}) == envelopes[0]["event_id"]
+    assert asset_events.event_id("t", {**legacy, "run_id": "r2"}) != envelopes[0]["event_id"]
