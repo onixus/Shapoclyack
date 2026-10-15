@@ -1,13 +1,15 @@
 """Saved preferences cannot disclose or mutate another user or tenant's view."""
 
+import time
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -15,6 +17,7 @@ from api.auth import TenantPrincipal, get_settings
 from api.db.models import ConsoleSavedView, Tenant
 from api.routes import saved_views as routes
 from api.services import saved_views as store
+from tests.conftest import POSTGRES_URL, requires_postgres
 
 
 @pytest.fixture
@@ -179,3 +182,93 @@ def test_saved_views_are_classified_for_privacy_and_tenant_purge():
         == data_subject.DELETED
     )
     assert "console_saved_views" in POSTGRES_TABLES
+
+
+def test_duplicate_names_are_refused_per_account_and_page(env):
+    client, principal, *_ = env
+    first = client.post("/api/saved-views", json=body(name="Edge")).json()
+    dup = client.post("/api/saved-views", json=body(name="  edge "))
+    assert dup.status_code == 409
+    assert "already exists" in dup.json()["detail"]
+    # Same name on another page, or for another account, is a different view.
+    other_page = body(
+        page="vulnerabilities",
+        name="Edge",
+        state={"version": 1, "filters": {"severity": "high"}},
+    )
+    assert client.post("/api/saved-views", json=other_page).status_code == 201
+    second = client.post("/api/saved-views", json=body(name="Core")).json()
+    renamed = client.patch(
+        f"/api/saved-views/{second['view_id']}", json={"name": "EDGE"}
+    )
+    assert renamed.status_code == 409
+    # Renaming a view to its own name (or changing only the case) is not a clash.
+    same = client.patch(f"/api/saved-views/{first['view_id']}", json={"name": "EDGE"})
+    assert same.status_code == 200
+    principal["username"] = "bob"
+    assert client.post("/api/saved-views", json=body(name="Edge")).status_code == 201
+
+
+@requires_postgres
+def test_concurrent_creates_cannot_exceed_the_cap(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from sqlalchemy import delete, select
+
+    from api.db.engine import get_session
+    from api.settings import Settings
+
+    settings = Settings(postgres_url=POSTGRES_URL)
+    tenant = "cap-" + uuid4().hex[:10]
+    now = datetime.now(UTC)
+    with get_session(POSTGRES_URL) as session:
+        session.add(Tenant(tenant_id=tenant, name=tenant, created_at=now))
+        session.flush()
+        for index in range(49):
+            session.add(
+                ConsoleSavedView(
+                    view_id=uuid4().hex,
+                    tenant_id=tenant,
+                    username="alice",
+                    page="assets",
+                    name=f"Seed {index}",
+                    state={},
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+    # Widen the window between the count and the insert so that, without the
+    # tenant lock, every racer reads 49 before any of them commits.
+    check = store.ensure_unique_name
+
+    def slow_check(*args, **kwargs):
+        time.sleep(0.3)
+        return check(*args, **kwargs)
+
+    monkeypatch.setattr(store, "ensure_unique_name", slow_check)
+    racers = 8
+    gate = Barrier(racers)
+
+    def attempt(index):
+        gate.wait(timeout=10)
+        try:
+            payload = store.ViewInput.model_validate(body(name=f"Racer {index}"))
+            store.create_view(settings, tenant, "alice", payload)
+            return True
+        except ValueError:
+            return False
+
+    try:
+        with ThreadPoolExecutor(racers) as pool:
+            admitted = sum(pool.map(attempt, range(racers)))
+        with get_session(POSTGRES_URL) as session:
+            total = session.scalar(
+                select(func.count())
+                .select_from(ConsoleSavedView)
+                .where(ConsoleSavedView.tenant_id == tenant)
+            )
+        assert (admitted, total) == (1, 50)
+    finally:
+        with get_session(POSTGRES_URL) as session:
+            session.execute(delete(Tenant).where(Tenant.tenant_id == tenant))

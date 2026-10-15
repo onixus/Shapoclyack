@@ -50,6 +50,10 @@ SORTS = {
 }
 
 
+class DuplicateViewName(ValueError):
+    """The account already has a view with this name on this page."""
+
+
 class ViewState(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     version: Literal[1] = 1
@@ -145,6 +149,35 @@ def owned(tenant_id, username):
     )
 
 
+def lock_tenant(session, tenant_id):
+    # Serialize admissions across replicas, so parallel requests cannot evade the cap
+    # or the unique-name check.
+    # FOR NO KEY UPDATE: a plain FOR UPDATE would also block the FOR KEY SHARE
+    # every insert referencing this tenant takes, stalling the tenant's ingest.
+    session.scalar(
+        select(Tenant)
+        .where(Tenant.tenant_id == tenant_id)
+        .with_for_update(key_share=True)
+    )
+
+
+def ensure_unique_name(session, tenant_id, username, page, name, except_id=None):
+    query = (
+        select(func.count())
+        .select_from(ConsoleSavedView)
+        .where(
+            ConsoleSavedView.tenant_id == tenant_id,
+            ConsoleSavedView.username == username,
+            ConsoleSavedView.page == page,
+            func.lower(ConsoleSavedView.name) == name.lower(),
+        )
+    )
+    if except_id is not None:
+        query = query.where(ConsoleSavedView.view_id != except_id)
+    if session.scalar(query):
+        raise DuplicateViewName("A saved view with this name already exists on this page")
+
+
 def list_views(settings: Settings, tenant_id: str, username: str, page: Page):
     with get_session(settings.postgres_url) as session:
         return [
@@ -159,19 +192,15 @@ def list_views(settings: Settings, tenant_id: str, username: str, page: Page):
 
 def create_view(settings: Settings, tenant_id: str, username: str, payload: ViewInput):
     with get_session(settings.postgres_url) as session:
-        # Serialize admissions across replicas, so parallel requests cannot evade the cap.
-        # FOR NO KEY UPDATE: a plain FOR UPDATE would also block the FOR KEY SHARE
-        # every insert referencing this tenant takes, stalling the tenant's ingest.
-        session.scalar(
-            select(Tenant)
-            .where(Tenant.tenant_id == tenant_id)
-            .with_for_update(key_share=True)
-        )
+        lock_tenant(session, tenant_id)
         count = session.scalar(
             select(func.count()).select_from(owned(tenant_id, username).subquery())
         )
         if count >= 50:
             raise ValueError("Delete a saved view before creating another (maximum 50)")
+        ensure_unique_name(
+            session, tenant_id, username, payload.page, payload.name
+        )
         now = datetime.now(UTC)
         row = ConsoleSavedView(
             view_id=uuid4().hex,
@@ -196,6 +225,8 @@ def change_view(
     payload: ViewUpdate | None,
 ):
     with get_session(settings.postgres_url) as session:
+        if payload is not None:
+            lock_tenant(session, tenant_id)
         row = session.scalar(
             owned(tenant_id, username)
             .where(ConsoleSavedView.view_id == view_id)
@@ -206,6 +237,9 @@ def change_view(
         if payload is None:
             session.delete(row)
             return True
+        ensure_unique_name(
+            session, tenant_id, username, row.page, payload.name, except_id=view_id
+        )
         row.name = payload.name
         row.updated_at = datetime.now(UTC)
         return as_dict(row)

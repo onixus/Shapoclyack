@@ -24,6 +24,8 @@ def create_view(payload: store.ViewInput, principal: Principal, settings: Settin
         return store.create_view(
             settings, principal.tenant_id, principal.username, payload
         )
+    except store.DuplicateViewName as exc:
+        raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -32,9 +34,12 @@ def create_view(payload: store.ViewInput, principal: Principal, settings: Settin
 def rename_view(
     view_id: str, payload: store.ViewUpdate, principal: Principal, settings: SettingsDep
 ):
-    result = store.change_view(
-        settings, principal.tenant_id, principal.username, view_id, payload
-    )
+    try:
+        result = store.change_view(
+            settings, principal.tenant_id, principal.username, view_id, payload
+        )
+    except store.DuplicateViewName as exc:
+        raise HTTPException(409, str(exc)) from exc
     if result is None:
         raise HTTPException(404, "Saved view not found")
     return result
