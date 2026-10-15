@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AssetImportButton } from "@/components/asset/import-dialog";
@@ -100,6 +101,20 @@ describe("AssetImportButton", () => {
     vi.restoreAllMocks();
     useAuthStore.setState({ user: null });
     useAppearanceStore.setState({ locale: "en" });
+  });
+
+  it("restores the real import trigger after keyboard Escape", async () => {
+    useAuthStore.setState({ user: member("admin", ["asset.import"]) });
+    vi.spyOn(apiModule.api, "get").mockResolvedValue({ data: { servicenow: null } });
+    const user = userEvent.setup();
+    renderButton();
+    const trigger = screen.getByRole("button", { name: /Import/ });
+    trigger.focus();
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("dialog")).toContainElement(document.activeElement as HTMLElement);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("offers neither button while a newly picked file is still being read", async () => {

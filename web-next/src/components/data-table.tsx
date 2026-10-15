@@ -92,6 +92,8 @@ export type ServerPagination = {
   onOffsetChange: (offset: number) => void;
   /** Wire up when the endpoint supports `q`; omit to hide the search input. */
   search?: string;
+  /** Cancels pending debounced edits when a view reapplies the same search. */
+  searchRevision?: number;
   onSearchChange?: (value: string) => void;
   /** Whitelist of server-sortable column ids; others render unsorted. */
   sortableColumns?: string[];
@@ -123,6 +125,14 @@ export function DataTable<TData>({
   const [globalFilter, setGlobalFilter] = useState("");
   // Debounced so typing doesn't fire a request per keystroke.
   const [searchDraft, setSearchDraft] = useState(server?.search ?? "");
+
+  // Applying a saved view changes controlled search/sort without typing.
+  useEffect(() => { setSearchDraft(server?.search ?? ""); }, [server?.search, server?.searchRevision]);
+  const serverSort = server?.sort;
+  const serverOrder = server?.order;
+  useEffect(() => {
+    if (serverOrder) setSorting(serverSort ? [{ id: serverSort, desc: serverOrder !== "asc" }] : []);
+  }, [serverSort, serverOrder]);
 
   useEffect(() => {
     if (!server?.onSearchChange) return;
@@ -276,9 +286,10 @@ export function DataTable<TData>({
           <div className="flex flex-1 flex-wrap items-center gap-3">
             {showSearch ? (
               <div className="relative min-w-[240px] max-w-sm">
-                <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Search aria-hidden className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
                 <Input
                   className="pl-9 h-9"
+                  aria-label={searchPlaceholder || t("common.search")}
                   placeholder={searchPlaceholder}
                   value={searchValue}
                   onChange={(event) => onSearch(event.target.value)}
@@ -300,12 +311,12 @@ export function DataTable<TData>({
       ) : null}
 
       <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
-        <Table>
+        <Table aria-busy={!!isLoading}>
           <TableHeader className="bg-muted/50 border-b border-border">
             {table.getHeaderGroups().map((headerGroup) => (
               <TableRow key={headerGroup.id} className="hover:bg-transparent border-border">
                 {headerGroup.headers.map((header) => (
-                  <TableHead key={header.id} className="text-xs font-bold uppercase tracking-wider text-muted-foreground py-3">
+                  <TableHead aria-sort={header.column.getIsSorted() === "asc" ? "ascending" : header.column.getIsSorted() === "desc" ? "descending" : undefined} key={header.id} className="text-xs font-bold uppercase tracking-wider text-muted-foreground py-3">
                     {header.isPlaceholder ? null : header.column.getCanSort() &&
                       canSortColumn(header.column.id) ? (
                       <Button
@@ -332,7 +343,7 @@ export function DataTable<TData>({
                 <TableCell colSpan={tableColumns.length} className="py-10 text-center text-sm text-muted-foreground">
                   <div className="flex items-center justify-center gap-2">
                     <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                    <span>{resolvedLoading}</span>
+                    <span role="status">{resolvedLoading}</span>
                   </div>
                 </TableCell>
               </TableRow>

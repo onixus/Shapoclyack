@@ -16,6 +16,21 @@ export const en = {
   "assetConnector.saved": "Connector saved. Preview fetches current source data; Apply fetches it again.",
   "assetConnector.error": "Could not configure or run connector. Check endpoint, credential, mapping and source limits.",
   "integrations.event.service_token_expiring": "Service token expiring",
+
+
+  "a11y.skipContent": "Skip to main content",
+  "savedViews.title": "Saved views",
+  "savedViews.choose": "Choose a view",
+  "savedViews.name": "View name",
+  "savedViews.save": "Save current filters",
+  "savedViews.rename": "Rename",
+  "savedViews.apply": "Apply",
+  "savedViews.delete": "Delete",
+  "savedViews.updated": "Saved views updated.",
+  "savedViews.applied": "View applied. Selection cleared.",
+  "savedViews.failed": "Could not update saved views. Try again.",
+  "savedViews.incompatible": "This view uses an incompatible filter schema. Delete it and save current filters.",
+
   "nav.dashboard": "Dashboard",
   "nav.vulnerabilities": "Vulnerabilities",
   "nav.remediation": "Remediation",
@@ -1906,6 +1921,21 @@ export const ru: Record<MsgKey, string> = {
   "assetConnector.saved": "Коннектор сохранён. Применение повторно загружает актуальные данные источника.",
   "assetConnector.error": "Не удалось настроить или запустить коннектор. Проверьте адрес, токен, поля и ограничения источника.",
   "integrations.event.service_token_expiring": "Истекает сервисный токен",
+
+
+  "a11y.skipContent": "Перейти к основному содержимому",
+  "savedViews.title": "Сохранённые представления",
+  "savedViews.choose": "Выберите представление",
+  "savedViews.name": "Название представления",
+  "savedViews.save": "Сохранить текущие фильтры",
+  "savedViews.rename": "Переименовать",
+  "savedViews.apply": "Применить",
+  "savedViews.delete": "Удалить",
+  "savedViews.updated": "Представления обновлены.",
+  "savedViews.applied": "Представление применено. Выделение очищено.",
+  "savedViews.failed": "Не удалось обновить представления. Повторите попытку.",
+  "savedViews.incompatible": "Схема фильтров представления несовместима. Удалите его и сохраните текущие фильтры.",
+
   "nav.dashboard": "Обзор",
   "nav.vulnerabilities": "Уязвимости",
   "nav.remediation": "Устранение",

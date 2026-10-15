@@ -3434,3 +3434,19 @@ class AssetImportConnector(Base):
     last_run_at: Mapped[datetime | None] = mapped_column(default=None)
     last_error: Mapped[str | None] = mapped_column(default=None)
     last_counts: Mapped[dict | None] = mapped_column(JSON, default=None)
+
+
+class ConsoleSavedView(Base):
+    """Personal console preferences, scoped to the resolved tenant and account."""
+
+    __tablename__ = "console_saved_views"
+    __table_args__ = (Index("ix_console_saved_views_owner", "tenant_id", "username", "page"),)
+
+    view_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id", ondelete="CASCADE"))
+    username: Mapped[str]
+    page: Mapped[str]
+    name: Mapped[str]
+    state: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]

@@ -508,3 +508,20 @@ def test_an_export_that_runs_too_long_is_stopped_and_says_so(env, monkeypatch):
     assert refused.status_code == 503, refused.text
     assert "statement timeout" in refused.json()["detail"]
 
+
+
+def test_saved_views_are_exported_for_the_owner_and_erased(env):
+    from api.services import saved_views
+    client, settings, admin = env
+    _dana(client, admin)
+    payload = saved_views.ViewInput(page="assets", name="Private preference", state=saved_views.ViewState(search="router"))
+    own = saved_views.create_view(settings, "default", "dana", payload)
+    other = saved_views.create_view(settings, "default", "admin", payload)
+    exported = client.get("/api/users/dana/export", headers=admin)
+    assert exported.status_code == 200, exported.text
+    assert exported.json()["saved_views"] == [{"tenant_id": "default", "page": "assets", "name": "Private preference", "state": payload.state.model_dump()}]
+    erased = client.post("/api/users/dana/erase", headers=admin)
+    assert erased.status_code == 200, erased.text
+    with get_session(settings.postgres_url) as session:
+        assert session.get(models.ConsoleSavedView, own["view_id"]) is None
+        assert session.get(models.ConsoleSavedView, other["view_id"]) is not None

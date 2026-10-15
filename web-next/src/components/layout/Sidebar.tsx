@@ -82,16 +82,18 @@ export function Sidebar() {
           size="icon"
           className="text-muted-foreground hover:bg-muted hover:text-foreground"
           aria-label={open ? t("sidebar.closeNav") : t("sidebar.openNav")}
+          aria-expanded={open}
+          aria-controls="primary-sidebar"
           onClick={() => setOpen((prev) => !prev)}
         >
           {open ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </Button>
       </div>
 
-      <aside
+      <aside id="primary-sidebar"
         className={cn(
-          "fixed inset-y-0 left-0 z-40 w-64 border-r border-border bg-card text-card-foreground backdrop-blur transition-transform lg:static lg:translate-x-0",
-          open ? "translate-x-0" : "-translate-x-full",
+          "lg:visible fixed inset-y-0 left-0 z-40 w-64 border-r border-border bg-card text-card-foreground backdrop-blur transition-transform lg:static lg:translate-x-0",
+          open ? "visible translate-x-0" : "invisible -translate-x-full",
         )}
       >
         <div className="flex h-full flex-col">
