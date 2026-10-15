@@ -40,6 +40,7 @@ ADDED_LATER = {
     "agent_client_certs",
     "agent_cert_enrolments",
     "run_risk_assessments",  # Created by 0086, with its own tenant RLS policy.
+    "asset_import_connectors",  # Created by 0090 with its own tenant policy.
 }
 
 
