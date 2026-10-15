@@ -6,7 +6,8 @@ permissions, MFA, rate limits and request-size checks. Version normalization
 runs before those checks. Nested version prefixes are refused. SCIM remains
 `/scim/v2`; probes, metrics and documentation keep their own addresses.
 The existing `/api/health` also has its v1 alias.
-Responses identify `API-Version: 1`.
+Responses identify `API-Version: 1`. A trailing-slash redirect issued for a
+`/api/v1/...` request keeps the `/v1` in its `Location`.
 
 ## Compatibility policy
 
@@ -19,7 +20,7 @@ No removal is scheduled merely by installing this release.
 
 Operators announcing retirement of the unversioned alias configure both
 `OCTO_API_DEPRECATED_AT` and `OCTO_API_SUNSET_AT` as timezone-qualified ISO 8601
-instants. The middleware refuses a partial schedule or a sunset less than
+instants (surrounding whitespace is ignored; a malformed value stops startup with a message naming the variable). The middleware refuses a partial schedule or a sunset less than
 twelve calendar months after the announcement. Configured legacy responses
 include `Deprecation: @<unix-seconds>` and an HTTP-date `Sunset` header;
 versioned responses do not. The alias also links to `/api/v1/` with
@@ -77,7 +78,7 @@ The dependency-free Python package lives in `sdk/`; installing that package
 provides the `shapoclyack` command. `Client` exposes one generated method per
 v1 OpenAPI operation, and `Client.request(operation, ...)` is the common
 transport. `shapoclyack --help` lists the generated operation names. The checked-in
-manifest was generated with all shipped feature routers enabled; a disabled
+manifest was generated with the five optional routers (reports, webhooks, notification channels, endpoint inventory, service tokens) enabled, which is the default configuration and what the parity test builds; a disabled
 feature still returns the server's usual 404.
 
 ```python
@@ -125,5 +126,7 @@ python scripts/generate-api-client.py openapi.json
 
 The generator only reads the supplied schema: it does not start the API,
 load secrets, contact a server or install packages. Output is deterministic;
-empty v1 schemas and duplicate/invalid operation IDs are refused. Regeneration
+empty v1 schemas and duplicate/invalid operation IDs are refused. `scripts/ci-sdk.sh` (run by CI) fails when the checked-in manifest differs from
+the generator's output for a default-configured app, and builds the `sdk/` wheel
+with `--no-deps` when setuptools and wheel are installed. Regeneration
 should accompany changes to v1 operation IDs, parameters or request media.

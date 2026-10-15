@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from email.utils import format_datetime
+from urllib.parse import urlsplit, urlunsplit
 
 from starlette.datastructures import MutableHeaders
 from starlette.responses import JSONResponse
@@ -11,17 +12,43 @@ def canonical_path(path: str) -> str:
     return "/api/" + path[len("/api/v1/") :] if path.startswith("/api/v1/") else path
 
 
+def versioned_location(location: str) -> str:
+    """Put ``/v1`` back into a same-site redirect target the router built from
+    the canonical path (e.g. the ``redirect_slashes`` 307)."""
+    parts = urlsplit(location)
+    if parts.path.startswith("/api/") and not parts.path.startswith("/api/v1/"):
+        parts = parts._replace(path="/api/v1/" + parts.path[len("/api/") :])
+    return urlunsplit(parts)
+
+
+def _parse_instant(name: str, value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError(
+            f"{name} must be an ISO 8601 timestamp with a timezone, "
+            f"e.g. 2026-10-15T00:00:00Z (got {value!r})"
+        ) from None
+    if parsed.tzinfo is None:
+        raise ValueError(
+            f"{name} must include a timezone, e.g. 2026-10-15T00:00:00Z (got {value!r})"
+        )
+    return parsed
+
+
 class ApiVersionMiddleware:
     def __init__(self, app, *, deprecated_at="", sunset_at=""):
         self.app = app
         self.headers = {}
+        deprecated_at = (deprecated_at or "").strip()
+        sunset_at = (sunset_at or "").strip()
         if bool(deprecated_at) != bool(sunset_at):
-            raise ValueError("API deprecation and sunset must be configured together")
+            raise ValueError(
+                "OCTO_API_DEPRECATED_AT and OCTO_API_SUNSET_AT must be configured together"
+            )
         if deprecated_at:
-            start = datetime.fromisoformat(deprecated_at.replace("Z", "+00:00"))
-            end = datetime.fromisoformat(sunset_at.replace("Z", "+00:00"))
-            if start.tzinfo is None or end.tzinfo is None:
-                raise ValueError("API deprecation dates must include a timezone")
+            start = _parse_instant("OCTO_API_DEPRECATED_AT", deprecated_at)
+            end = _parse_instant("OCTO_API_SUNSET_AT", sunset_at)
             # At least twelve calendar months, including leap-day announcements.
             anniversary = (
                 start.replace(year=start.year + 1, day=min(start.day, 28))
@@ -29,7 +56,9 @@ class ApiVersionMiddleware:
                 else start.replace(year=start.year + 1)
             )
             if end < anniversary:
-                raise ValueError("API sunset must allow at least twelve months")
+                raise ValueError(
+                    "OCTO_API_SUNSET_AT must be at least twelve months after OCTO_API_DEPRECATED_AT"
+                )
             self.headers = {
                 "Deprecation": f"@{int(start.timestamp())}",
                 "Sunset": format_datetime(end.astimezone(UTC), usegmt=True),
@@ -56,6 +85,10 @@ class ApiVersionMiddleware:
             ):
                 headers = MutableHeaders(scope=message)
                 headers["API-Version"] = "1"
+                if versioned and 300 <= message["status"] < 400:
+                    location = headers.get("location")
+                    if location:
+                        headers["location"] = versioned_location(location)
                 if not versioned:
                     headers.update(self.headers)
                     headers.append("Link", '</api/v1/>; rel="successor-version"')

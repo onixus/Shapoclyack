@@ -3,6 +3,7 @@ import csv
 import io
 import json
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 from fastapi import FastAPI, Request
@@ -180,6 +181,53 @@ def test_alias_normalizes_before_every_inner_middleware():
     assert TestClient(app).get("/api/v1/assets").status_code == 200
 
 
+def test_cursor_from_one_tenant_rejected_for_another_principal(setup):
+    settings, client, headers = setup
+    from api.services import service_tokens
+
+    page = client.get("/api/v1/assets/export?limit=1", headers=headers)
+    cursor = page.headers["X-Next-Cursor"]
+    issued = service_tokens.create_token(
+        settings,
+        tenant_id="other",
+        name="other-reader",
+        scopes=["assets:read"],
+        role="viewer",
+        issuer_role="admin",
+        issuer_is_platform_admin=True,
+    )
+    other = {"Authorization": "Bearer " + issued["token"]}
+    own = client.get("/api/v1/assets/export", headers=other)
+    assert own.status_code == 200, own.text
+    assert [json.loads(row)["asset_id"] for row in own.text.splitlines()] == ["z"]
+    stolen = client.get("/api/v1/assets/export", params={"cursor": cursor}, headers=other)
+    assert stolen.status_code == 422
+
+
+def test_trailing_slash_redirect_keeps_version_prefix(setup):
+    _, client, headers = setup
+    for prefix, expected in (("/api/v1", "/api/v1/assets/export"), ("/api", "/api/assets/export")):
+        response = client.get(
+            prefix + "/assets/export/", headers=headers, follow_redirects=False
+        )
+        assert response.status_code == 307
+        assert urlsplit(response.headers["location"]).path == expected
+        assert client.get(response.headers["location"], headers=headers).status_code == 200
+
+
+def test_schedule_dates_are_trimmed_and_errors_name_the_variable():
+    middleware = ApiVersionMiddleware(
+        None, deprecated_at=" 2026-01-01T00:00:00Z\n", sunset_at=" 2027-01-01T00:00:00Z "
+    )
+    assert middleware.headers["Sunset"].endswith("GMT")
+    with pytest.raises(ValueError, match="OCTO_API_DEPRECATED_AT.*ISO 8601"):
+        ApiVersionMiddleware(None, deprecated_at="next friday", sunset_at="2027-01-01T00:00:00Z")
+    with pytest.raises(ValueError, match="OCTO_API_SUNSET_AT.*timezone"):
+        ApiVersionMiddleware(None, deprecated_at="2026-01-01T00:00:00Z", sunset_at="2027-01-01")
+    with pytest.raises(ValueError, match="OCTO_API_SUNSET_AT.*OCTO_API_DEPRECATED_AT"):
+        ApiVersionMiddleware(None, deprecated_at="2026-01-01T00:00:00Z", sunset_at="2026-06-01T00:00:00Z")
+
+
 def test_schedule_requires_twelve_months_and_timezone():
     with pytest.raises(ValueError):
         ApiVersionMiddleware(
@@ -207,23 +255,29 @@ def test_expired_cursor_and_spreadsheet_whitespace():
         assert next(csv.DictReader(io.StringIO(text)))["asset_id"] == "'" + value
 
 
-def test_sdk_generated_methods_and_redirect_protection(monkeypatch):
+def test_sdk_generated_methods_and_redirect_protection(setup, monkeypatch):
+    client_app_paths = setup[1].app.openapi()["paths"]
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "sdk"))
     from shapoclyack import Client
     from shapoclyack.client import _NoRedirect
     from shapoclyack.operations import OPERATIONS
 
-    assert len(OPERATIONS) > 100
+    schema_paths = {
+        path
+        for path in client_app_paths
+        if path.startswith("/api/v1/")
+    }
+    assert {spec["path"] for spec in OPERATIONS.values()} == schema_paths
     for name in OPERATIONS:
         assert callable(getattr(Client, name))
-    client = Client("https://api.example", "secret", tenant_id="a")
+    sdk_client = Client("https://api.example", "secret", tenant_id="a")
     operation = next(
         name
         for name, spec in OPERATIONS.items()
         if spec["path"] == "/api/v1/assets/export"
     )
     with pytest.raises(ValueError):
-        client.request(operation, query={"tenant_id": "b"})
+        sdk_client.request(operation, query={"tenant_id": "b"})
     assert (
         _NoRedirect().redirect_request(
             None, None, None, None, None, "https://elsewhere"
@@ -250,10 +304,10 @@ def test_service_scope_and_nested_alias_guards(setup):
     for path in ["users", "auth/me", "tenants"]:
         assert client.get("/api/v1/" + path, headers=headers).status_code == 403
         assert client.get("/api/v1/v1/" + path, headers=headers).status_code == 404
-    assert client.patch("/api/v1/config", json={}, headers=headers).status_code in {
-        403,
-        405,
-    }
+    # PUT /config exists; a "*" token is refused by the write scope itself.
+    response = client.put("/api/v1/config", json={}, headers=headers)
+    assert response.status_code == 403
+    assert "not scoped for 'config:write'" in response.json()["detail"]
     issued = service_tokens.create_token(
         settings,
         tenant_id="default",
@@ -276,7 +330,16 @@ def test_generator_deterministic_and_rejects_empty_or_duplicate_ids(setup):
     spec = importlib.util.spec_from_file_location("generate_api_client", script)
     generator = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(generator)
-    _, client, _ = setup
+    settings, client, _ = setup
+    # The checked-in manifest covers every optional router (docs/api-versioning.md).
+    for flag in (
+        "reports_enabled",
+        "webhooks_enabled",
+        "notification_channels_enabled",
+        "endpoint_inventory_enabled",
+        "service_tokens_enabled",
+    ):
+        assert getattr(settings, flag) is True
     output = script.parents[1] / "sdk/shapoclyack/operations.py"
     assert generator.generate(client.app.openapi()) == output.read_text()
     operation = {"operationId": "read_asset", "parameters": []}

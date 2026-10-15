@@ -67,8 +67,21 @@ def main():
     parser.add_argument(
         "--output", type=Path, default=Path("sdk/shapoclyack/operations.py")
     )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="exit 1 instead of writing when the output would change",
+    )
     args = parser.parse_args()
-    args.output.write_text(generate(json.loads(args.schema.read_text())))
+    text = generate(json.loads(args.schema.read_text()))
+    if args.check:
+        if not args.output.exists() or args.output.read_text() != text:
+            raise SystemExit(
+                f"{args.output} is out of date; regenerate it with "
+                "scripts/generate-api-client.py (docs/api-versioning.md)"
+            )
+        return
+    args.output.write_text(text)
 
 
 if __name__ == "__main__":
