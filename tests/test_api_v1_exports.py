@@ -328,14 +328,17 @@ def test_sdk_builds_encoded_requests_and_preserves_stream_ownership(monkeypatch)
     client = Client("https://api.example", "test-token")
 
     class Response(io.BytesIO):
-        headers = {}
+        def __init__(self, content, content_type):
+            super().__init__(content)
+            self.headers = {"Content-Type": content_type}
 
     responses = []
     requests = []
+    served = [(b'{"ok":true}', "application/json")]
 
     def open_request(request, timeout):
         requests.append(request)
-        response = Response(b'{"ok":true}')
+        response = Response(*served[-1])
         responses.append(response)
         return response
 
@@ -352,6 +355,15 @@ def test_sdk_builds_encoded_requests_and_preserves_stream_ownership(monkeypatch)
     assert requests[-1].headers["Authorization"] == "Bearer test-token"
     assert client.request(read) == {"ok": True}
     assert responses[-1].closed
+    # A multi-line NDJSON export page is not one JSON document: without
+    # raw=True the transport hands back the bytes instead of failing to parse.
+    ndjson = b'{"asset_id":"a"}\n{"asset_id":"b"}\n'
+    served.append((ndjson, "application/x-ndjson"))
+    assert client.request(read, query={"format": "ndjson"}) == ndjson
+    assert responses[-1].closed
+    served.append((b"asset_id\r\na\r\n", "text/csv; charset=utf-8"))
+    assert client.request(read, query={"format": "csv"}) == b"asset_id\r\na\r\n"
+    served.append((b'{"ok":true}', "application/json"))
     upload = next(
         name
         for name, spec in OPERATIONS.items()

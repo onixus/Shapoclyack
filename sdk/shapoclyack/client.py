@@ -92,6 +92,11 @@ class Client:
             return response  # Context-managed streaming response; caller closes it.
         with response:
             content = response.read()
+            media = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            if media != "application/json" and not media.endswith("+json"):
+                # NDJSON/CSV exports, files and other bodies are returned as
+                # bytes; use raw=True to stream them and read X-Next-Cursor.
+                return content
             return json.loads(content) if content else None
 
 

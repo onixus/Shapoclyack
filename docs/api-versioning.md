@@ -93,8 +93,9 @@ with client.export_assets_api_v1_assets_export_get(
 ```
 
 Methods accept `path` and `query` dictionaries, JSON `body`, additional
-`headers`, and `raw=True` for a context-managed streaming response. Normal
-responses decode JSON. Multipart/form/binary operations accept already encoded
+`headers`, and `raw=True` for a context-managed streaming response. Without `raw=True`, JSON
+responses are decoded and any other body (NDJSON/CSV exports, files) is
+returned as bytes; read export pages with `raw=True` to get `X-Next-Cursor`. Multipart/form/binary operations accept already encoded
 `data` bytes and `content_type` (including a boundary for multipart); the
 transport validates the declared request media type against OpenAPI. It does
 not construct multipart encodings or typed model objects. Close raw responses
