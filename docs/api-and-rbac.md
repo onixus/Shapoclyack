@@ -679,7 +679,7 @@ One row per administrative change, with the resource before and after it:
 | `user.webauthn_register`, `user.webauthn_revoke` | `POST /api/auth/mfa/webauthn/register/verify`, `DELETE /api/auth/mfa/webauthn/credentials/{id}` — a security key added to or removed from one's own account (key id, name, AAGUID; no key material) |
 | `membership.grant`, `membership.revoke` | `PUT`/`DELETE /api/tenants/{id}/members/{u}`. A `membership.grant` is also written per holder when a tenant role is deleted with `reassign_to`, `after.reason` naming the role that went |
 | `role.create`, `role.update`, `role.delete` | `POST`/`PATCH`/`DELETE /api/tenants/{id}/roles[/{role}]` ([#318](https://github.com/onixus/Shapoclyack/issues/318)) — the definition (`role_id`, `description`, `rank`, `permissions`) before and after. A rename's `after` carries `memberships_renamed`; a delete's carries where its holders went |
-| `service_token.create`, `service_token.revoke` | `POST /api/tenants/{id}/service-tokens[…/revoke]` |
+| `service_token.create`, `service_token.rotate`, `service_token.revoke` | `POST /api/tenants/{id}/service-tokens[…/revoke]` |
 | `provisioning_key.create`, `provisioning_key.revoke` | `POST /api/tenants/{id}/provisioning-keys[…/revoke]` |
 | `agent.register` | `POST /api/agent/register`, **first registration only** — a restart re-registers, and that is uptime rather than an administrative change |
 | `agent.certificate_issue`, `agent.certificate_pin`, `agent.certificate_revoke` | `POST /api/agent/certificate` (the agent is the actor; `after` carries the fingerprint, serial, SPIFFE id, expiry and the fingerprints it superseded), `POST /api/agents/{id}/certificates`, `POST /api/agents/{id}/certificates/revoke` ([#309](https://github.com/onixus/Shapoclyack/issues/309)) |
@@ -1079,6 +1079,7 @@ be read back.
 | `POST /api/tenants/{tenant_id}/service-tokens` | `tenant.credential.manage` | Issue. Returns `token` — the only time it exists |
 | `GET /api/tenants/{tenant_id}/service-tokens` | `tenant.credential.manage` | List, without secrets. Revoked and expired ones stay listed |
 | `POST /api/tenants/{tenant_id}/service-tokens/{token_id}/revoke` | `tenant.credential.manage` | Kill immediately. Idempotent |
+| `POST /api/tenants/{tenant_id}/service-tokens/{token_id}/rotate` | `tenant.credential.manage` + step-up | Return a linked replacement once; keep the predecessor working for a bounded overlap |
 
 **A token is never stronger than the hand that issued it.** `role` in the
 create request is capped at the caller's own role in that tenant, and both the
@@ -1125,6 +1126,42 @@ token's scopes is accepted at creation and refused at request time.
 rotates. `last_used_at` is written at most once per
 `OCTO_SERVICE_TOKEN_LAST_USED_INTERVAL_SECONDS` so a busy integration does not
 turn every request into a write.
+
+Issuance accepts `allowed_cidrs` (up to 64 IPv4/IPv6 networks; empty allows
+all sources) and `expiry_notice_days` (default 7; 0 disables notices). Networks
+are canonicalized and inherited by replacements. A restricted token is refused
+with 401 before recording use when its resolved source falls outside the policy,
+including when the source cannot be parsed. The source uses the same
+`OCTO_TRUSTED_PROXIES` boundary as login/audit: untrusted peers cannot select
+their address through `X-Forwarded-For`. Configure ingress trust narrowly and
+ensure it appends the real client address.
+
+Rotation accepts `{ "grace_seconds": 3600, "expires_in_days": 90 }`; the latter
+is optional and uses the configured default lifetime. Grace ranges from 0 to
+604800 seconds (7 days), never beyond the predecessor's existing expiry. The
+replacement preserves role, scopes, source policy and notice period; the caller
+must still hold enough authority to delegate that role. `rotated_from_id` links
+the replacement; `rotation_expires_at` on the predecessor is its overlap deadline.
+The predecessor can be rotated only once; concurrent requests produce one
+replacement. Revoked, expired or already rotated predecessors return 422.
+Zero grace ends the old credential immediately. Revoke either credential to end
+that credential's access during overlap. The rotation response contains the new
+secret once; listing and audit never contain it. `service_token.rotate` records
+both public credential snapshots atomically with the change.
+
+Subscribe a tenant webhook to `service_token_expiring` for advance notices.
+The existing SLA worker checks active tenants on its normal interval and emits
+one durable workflow occurrence per token/deadline, with public metadata only;
+its usual webhook retries and broker delivery apply. Both
+`OCTO_SLA_ESCALATION_ENABLED` and `OCTO_WORKFLOW_EVENTS_ENABLED` must be enabled.
+No subscription or broker means no external notice. Notifications do not alter
+expiry. Rotation overlap uses the earlier deadline for its notice.
+
+Rolling back migration `0089` preserves the predecessor overlap deadline by
+shortening `expires_at`, and revokes every source-restricted token before
+dropping its network policy. Older versions cannot enforce that policy, so
+those integrations require new credentials after rollback. Re-upgrading keeps
+these revocations and deadlines; it does not reactivate credentials.
 
 ## Roles
 
@@ -2807,7 +2844,8 @@ process's filesystem or object storage. Two consequences for a client:
 Two artifact classes are not covered by the viewer's blanket artifact access,
 because they carry data about people rather than about open ports.
 
-**Screenshot PNGs** under `screenshots/` (ROADMAP P4.4).
+**Historical screenshot PNGs** under `screenshots/`. Capture is withdrawn from
+the supported product (#367); these access rules remain for existing artifacts.
 They can still hold personal data after DOM redaction, so:
 
 - `GET /api/runs/{id}` omits those paths from `artifacts`;

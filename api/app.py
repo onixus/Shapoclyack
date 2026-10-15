@@ -79,6 +79,7 @@ from api.services import run_publisher
 from api.services.compliance import definitions as compliance_definitions
 from api.services.crypto import startup as crypto_startup
 from api.services.integrations import ticket_sync_worker
+from api.services import asset_connector
 from api.services.integrations import webhook_worker
 from api.services.integrations import channels as channels_service
 from api.services.integrations import webhooks as webhooks_service
@@ -158,6 +159,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # back takes no per-row claim, so every replica would poll the same tenant's
     # tickets and write the same lifecycle events (#347).
     ticket_sync_worker.start_worker(settings)
+    asset_connector.start_worker(settings)
     # Every replica, like the run publisher: an approved deletion is claimed
     # with FOR UPDATE SKIP LOCKED and held on a lease its batches renew (#325).
     tenant_purge.start_worker(settings)
@@ -182,6 +184,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ch_ingest_worker.stop_worker()
         nats_outbox.stop_worker()
         nats_bus.shutdown_bus()
+        asset_connector.stop_worker()
 
 
 def _bearer_matches(request: Request, expected: str) -> bool:

@@ -6,6 +6,14 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- Service tokens support linked rotation with a bounded overlap, inherited source CIDR
+  restrictions and deduplicated advance expiry notifications through workflow subscriptions (#323).
+- Tenant ServiceNow CMDB connectors feed the existing CSV/JSON import planner with
+  encrypted credentials, field mapping, preview and scheduled synchronization (#350).
+  LDAP/AD computer synchronization remains dependent on directory integration #317.
+- Unsupported browser screenshot capture is withdrawn from the console, editable
+  configuration and deployment instructions (#367). Historical screenshot artifacts
+  keep their existing access controls and retention.
 - TLS posture on the Pulse path
   ([#545](https://github.com/onixus/Shapoclyack/issues/545), [Pulse backend](docs/pulse-backend.md)):
   an A-F grade per cipher suite computed by Shapoclyack (`scanner/pipeline/tls_grading.py`,

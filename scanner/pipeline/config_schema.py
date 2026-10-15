@@ -919,7 +919,10 @@ class ReachabilityConfig(BaseModel):
 
 
 class ScreenshotConfig(BaseModel):
-    """Web screenshots (P4.4 / Phase 9.3). Opt-in.
+    """Legacy screenshot settings retained for compatibility (#367).
+
+    Capture is withdrawn from the supported product; no browser runtime or
+    isolated worker ships in published images.
 
     Same already-open web ports as ``fingerprint.py`` — no new scan. Disabled
     by default. Capture needs Playwright; without it the stage skips. Images

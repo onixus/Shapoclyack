@@ -13,12 +13,10 @@ import { EntityList } from "@/components/run/entity-list";
 import { FindingsList } from "@/components/run/findings-list";
 import { RunDiffPanel } from "@/components/run/run-diff-panel";
 import { RunMetrics } from "@/components/run/run-metrics";
-import { ScreenshotsPanel } from "@/components/run/screenshots-panel";
 import { ControlsMatrix } from "@/components/run/controls-matrix";
 import { RelatedDomainsPanel } from "@/components/run/related-domains";
 import { SeverityFilter } from "@/components/run/severity-filter";
 import { useRunReport } from "@/hooks/use-run-report";
-import { useAuthStore } from "@/lib/auth-store";
 import { formatLocation } from "@/lib/run-data";
 
 export default function RunDetailPage() {
@@ -50,9 +48,11 @@ function RunDetailInner() {
   const t = useT();
   const searchParams = useSearchParams();
   const runId = (searchParams.get("runId") || "").trim();
-  const initialTab = searchParams.get("tab") || "vulns";
+  const requestedTab = searchParams.get("tab") || "vulns";
+  const initialTab = ["vulns", "hosts", "ports", "controls", "org-profile", "reports"].includes(requestedTab)
+    ? requestedTab
+    : "vulns";
   const report = useRunReport(runId);
-  const { canOperate } = useAuthStore();
   const { filters } = report;
 
   if (!runId) {
@@ -136,11 +136,6 @@ function RunDetailInner() {
           <TabsTrigger value="controls" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">{t("ui.controls")}</TabsTrigger>
           <TabsTrigger value="org-profile" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">{t("ui.orgProfile")}</TabsTrigger>
           <TabsTrigger value="reports" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">Artifacts ({report.detail.artifacts.length})</TabsTrigger>
-          {canOperate ? (
-            <TabsTrigger value="screenshots" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">
-              Screenshots
-            </TabsTrigger>
-          ) : null}
         </TabsList>
 
         <TabsContent value="vulns" className="space-y-4">
@@ -204,11 +199,6 @@ function RunDetailInner() {
           <ArtifactsPanel runId={report.detail.run_id} artifacts={report.detail.artifacts} />
         </TabsContent>
 
-        {canOperate ? (
-          <TabsContent value="screenshots">
-            <ScreenshotsPanel runId={report.detail.run_id} enabled={canOperate} />
-          </TabsContent>
-        ) : null}
       </Tabs>
     </div>
   );

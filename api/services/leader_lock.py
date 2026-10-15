@@ -68,6 +68,7 @@ TICKET_SYNC_LOCK_ID = 6
 # software matcher, and for one more reason: besides writing lifecycle events
 # it publishes ``new_cve`` events, which a second replica would send again.
 RETRO_MATCH_LOCK_ID = 7
+ASSET_IMPORT_LOCK_ID = 8
 
 
 class LeaderLock:

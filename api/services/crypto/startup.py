@@ -117,6 +117,11 @@ def _has_stored_channel_secrets(settings: Settings) -> bool:
     return found is not None
 
 
+def _has_stored_asset_connector_secrets(settings: Settings) -> bool:
+    with get_session(settings.postgres_url) as session:
+        return session.scalar(select(models.AssetImportConnector.tenant_id).limit(1)) is not None
+
+
 def bootstrap(settings: Settings) -> None:
     """Resolve the KEK provider and decide whether this install may run without one.
 
@@ -139,6 +144,7 @@ def bootstrap(settings: Settings) -> None:
         _has_stored_integration_secrets(settings)
         or _has_stored_mfa_secrets(settings)
         or _has_stored_channel_secrets(settings)
+        or _has_stored_asset_connector_secrets(settings)
     ):
         logger.warning(
             "%s is unset: integration secrets and TOTP seeds would be stored in "

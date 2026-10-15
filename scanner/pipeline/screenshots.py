@@ -1,4 +1,7 @@
-"""Web screenshots with DOM redaction (P4.4 / Phase 9.3).
+"""Legacy screenshot adapter, retained for compatibility (#367).
+
+Capture is withdrawn from the supported product. Published images have no
+browser runtime or isolated worker; this module is not a deployment recipe.
 
 Reuses already-open web ports — the same candidate selection as
 ``fingerprint.py``. No new port scan, no extra GET that expands scope.

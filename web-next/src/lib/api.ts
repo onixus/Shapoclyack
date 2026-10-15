@@ -3619,6 +3619,10 @@ export type ServiceTokenInfo = {
   tenant_id: string;
   name: string;
   token_prefix: string;
+  allowed_cidrs?: string[];
+  rotated_from_id?: string | null;
+  rotation_expires_at?: string | null;
+  expiry_notice_days?: number;
   scopes: string[];
   role: Role;
   status: "active" | "expired" | "revoked";
@@ -3643,12 +3647,24 @@ export async function fetchServiceTokens(tenantId: string) {
 
 export async function createServiceToken(
   tenantId: string,
-  body: { name: string; scopes: string[]; role: Role; expires_in_days?: number },
+  body: { name: string; scopes: string[]; role: Role; expires_in_days?: number; allowed_cidrs?: string[]; expiry_notice_days?: number },
 ) {
   try {
     const { data } = await api.post<ServiceTokenInfo>(
       `/tenants/${encodeURIComponent(tenantId)}/service-tokens`,
       body,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function rotateServiceToken(tenantId: string, tokenId: string, graceSeconds: number) {
+  try {
+    const { data } = await api.post<ServiceTokenInfo>(
+      `/tenants/${encodeURIComponent(tenantId)}/service-tokens/${encodeURIComponent(tokenId)}/rotate`,
+      { grace_seconds: graceSeconds },
     );
     return data;
   } catch (error) {
@@ -4608,6 +4624,7 @@ export const WEBHOOK_EVENT_KINDS = [
   "scan_failed",
   "report_generated",
   "agent_offline",
+  "service_token_expiring",
   "audit.*",
 ] as const;
 

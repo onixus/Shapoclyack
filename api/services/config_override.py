@@ -114,7 +114,6 @@ SECRET_PATHS: frozenset[str] = frozenset({"enrichment.cvss4.nvd_api_key"})
 # NucleiConfig pydantic bounds in scanner/pipeline/config_schema.py.
 _STATIC_SPEC: dict[str, Callable[[Any], Any]] = {
     "fingerprint.enabled": _as_bool,
-    "screenshots.enabled": _as_bool,
     "tls_posture.enabled": _as_bool,
     "tls_posture.hostname_mismatch": _as_bool,
     "nuclei.enabled": _as_bool,
@@ -180,7 +179,7 @@ def _validator_for(path: str) -> Callable[[Any], Any] | None:
 
 
 def _removed_hint(path: str) -> str | None:
-    """What replaced a setting of the removed Nmap stage (#548), if ``path`` was one."""
+    """Explain settings withdrawn from the supported configurator."""
     if path == "service_probe.shadow":
         return "removed with the Nmap stage; there is nothing to compare Pulse against (docs/nmap-migration.md)"
     if path.startswith("profiles.") and path.endswith(".nmap_timing"):
@@ -200,7 +199,11 @@ def validate_overrides(data: dict[str, Any]) -> dict[str, Any]:
     for path, value in _flatten(data).items():
         validator = _validator_for(path)
         if validator is None:
-            hint = _removed_hint(path)
+            hint = (
+                "screenshot capture is unsupported in published images and withdrawn from the UI (#367)"
+                if path == "screenshots.enabled"
+                else _removed_hint(path)
+            )
             errors.append(f"{path}: {hint}" if hint else f"{path}: not an editable setting")
             continue
         try:

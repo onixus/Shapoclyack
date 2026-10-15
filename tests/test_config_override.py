@@ -17,7 +17,6 @@ def test_validate_accepts_whitelisted():
     data = cfg.unflatten(
         {
             "fingerprint.enabled": True,
-            "screenshots.enabled": True,
             "nuclei.severities": ["critical", "high"],
             "profiles.balanced.top_ports": 100,
             "profiles.fast.top_ports": 1000,
@@ -164,3 +163,25 @@ def test_profile_nuclei_override_merges_and_is_scoped():
 
     untouched = merge_nuclei_config(cfg.nuclei, cfg.profiles["balanced"].nuclei)
     assert untouched.model_dump() == cfg.nuclei.model_dump()
+
+
+def test_screenshot_capture_is_not_an_editable_product_feature():
+    assert "screenshots.enabled" not in cfg.EDITABLE_PATHS
+    with pytest.raises(ValueError, match="screenshot capture is unsupported"):
+        cfg.validate_overrides({"screenshots": {"enabled": True}})
+
+
+def test_system_summary_does_not_advertise_legacy_screenshot_setting():
+    from api.services.system_status import scan_config_summary
+
+    summary = scan_config_summary(
+        {"screenshots": {"enabled": True}}, {"screenshots.enabled": True}
+    )
+    assert "screenshots" not in summary["stages"]
+
+
+def test_legacy_screenshot_override_does_not_block_unrelated_runs(monkeypatch):
+    # Withdrawal of a UI control must not turn old saved overrides (including
+    # false) into the removed-Nmap failure that stops every scan.
+    monkeypatch.setattr(cfg, "get_overrides", lambda _settings: {"screenshots": {"enabled": False}})
+    cfg.assert_runnable(None)
