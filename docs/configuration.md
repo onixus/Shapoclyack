@@ -679,7 +679,9 @@ OCTO_AGENT_STALE_SECONDS
 OCTO_AGENT_TOKEN
 OCTO_ALLOW_SCAN_START
 OCTO_API_CORS
+OCTO_API_DEPRECATED_AT
 OCTO_API_DOCS
+OCTO_API_SUNSET_AT
 OCTO_API_TLS_CERT
 OCTO_API_USERS
 OCTO_ARTIFACT_BACKEND
@@ -963,6 +965,7 @@ Core deployment variables:
 | `OCTO_CA_BUNDLE` | PEM file **added to** the system trust store — for outgoing HTTPS, the SMTP relay and the NATS connection alike. This is what a TLS-inspecting proxy's internal root goes in; verification is never turned off, and public receivers reached without the inspector keep verifying. A path that does not exist, or a file that is not a PEM bundle, is a hard error rather than a silent fallback to the system store. Read by API and sensor |
 | `OCTO_HSTS_ENABLED` | Send `Strict-Transport-Security` on every response. Defaults to on under `OCTO_ENV=prod` and off under `dev`, since a browser that picks the header up from `http://localhost` pins itself to HTTPS for a year |
 | `OCTO_API_DOCS` | `enabled` or `disabled` — whether `/docs`, `/redoc` and `/openapi.json` are mounted ([#319](https://github.com/onixus/Shapoclyack/issues/319)). Defaults to `disabled` under `OCTO_ENV=prod` and `enabled` under `dev`: the schema names every route, its parameters and every field an answer carries, which is a map of the installation for anyone who can reach it. Disabled means the routes do not exist, so they answer `404` — or, where the console bundle is served from the same process, its own 404 page. An unrecognised value warns and reads as `disabled` |
+| `OCTO_API_DEPRECATED_AT` / `OCTO_API_SUNSET_AT` | Optional `/api/v1` deprecation schedule, set together as ISO 8601 timestamps with a timezone (e.g. `2026-10-15T00:00:00Z`), the sunset at least twelve months after the deprecation. When set, unversioned `/api` responses carry `Deprecation` and `Sunset` headers ([API versioning](api-versioning.md)). An invalid value refuses startup with an error naming the variable |
 | `OCTO_METRICS_TENANT_TOP_N` | Per-tenant series on `/metrics` (`octo_tenant_open_findings`, `octo_tenant_sla_breached_findings`, `octo_tenant_scans_finished_24h`), default `0` = none. The N active tenants with the most open findings when the hour began keep their id as the `tenant` label — so every replica names the same ones and the set changes only on the hour; all others are summed into `_other`. Capped at 50 (a larger value is clamped, with a warning), which bounds the label at 51 values. Under `prod` it requires `OCTO_METRICS_TOKEN` — the series name tenants — and the start is refused without it. See [observability.md](observability.md#per-tenant-series) |
 | `OCTO_METRICS_TOKEN` | Bearer token `GET /metrics` demands when set; unset leaves the endpoint open. The series name every route, the queue depth and login outcomes, so an installation whose `/metrics` is reachable from outside the cluster should set it — a `prod` start without it logs a warning rather than refusing, since most scrapers run inside. The scraper sends `Authorization: Bearer <token>`; for the Prometheus Operator that is `bearerTokenSecret` in `k8s/shapoclyack/examples/servicemonitor.example.yaml`. The comparison is constant-time |
 | `OCTO_INSTANCE_ID` | Identity of this API replica in the shared job queue; defaults to the hostname. Only local-mode jobs owned by this identity are failed as orphans on startup |
