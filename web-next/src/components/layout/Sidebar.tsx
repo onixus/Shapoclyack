@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ChevronDown, Globe2, Layers, Menu, ShieldAlert, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { activeNavHref, NAV, visibleNavGroups } from "@/lib/config/nav";
@@ -35,6 +35,9 @@ export function Sidebar() {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<string[]>([]);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const drawerRef = useRef<HTMLElement>(null);
+  const wasOpen = useRef(false);
   const t = useT();
   const { user, canOperate } = useAuthStore();
   const { data: system } = useSystemStatus();
@@ -62,6 +65,27 @@ export function Sidebar() {
 
   const close = () => setOpen(false);
 
+  // Mobile drawer keyboard contract: opening moves focus inside, Escape closes,
+  // and closing hands focus back to the button that opened it. The drawer is
+  // `invisible` while closed, so focus can never be left behind in it.
+  useEffect(() => {
+    if (open) {
+      wasOpen.current = true;
+      drawerRef.current
+        ?.querySelector<HTMLElement>("a[href], button:not([disabled])")
+        ?.focus();
+      const onKey = (event: KeyboardEvent) => {
+        if (event.key === "Escape") setOpen(false);
+      };
+      document.addEventListener("keydown", onKey);
+      return () => document.removeEventListener("keydown", onKey);
+    }
+    if (wasOpen.current) {
+      wasOpen.current = false;
+      toggleRef.current?.focus();
+    }
+  }, [open]);
+
   return (
     <>
       <div className="flex items-center justify-between border-b border-border bg-card px-4 py-3 backdrop-blur lg:hidden">
@@ -77,6 +101,7 @@ export function Sidebar() {
           </div>
         </div>
         <Button
+          ref={toggleRef}
           type="button"
           variant="ghost"
           size="icon"
@@ -91,6 +116,7 @@ export function Sidebar() {
       </div>
 
       <aside id="primary-sidebar"
+        ref={drawerRef}
         className={cn(
           "lg:visible fixed inset-y-0 left-0 z-40 w-64 border-r border-border bg-card text-card-foreground backdrop-blur transition-transform lg:static lg:translate-x-0",
           open ? "visible translate-x-0" : "invisible -translate-x-full",

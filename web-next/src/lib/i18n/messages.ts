@@ -29,6 +29,10 @@ export const en = {
   "savedViews.updated": "Saved views updated.",
   "savedViews.applied": "View applied. Selection cleared.",
   "savedViews.failed": "Could not update saved views. Try again.",
+  "savedViews.limit": "You already have 50 saved views. Delete one before saving another.",
+  "savedViews.duplicate": "You already have a view with this name on this page. Choose another name.",
+  "savedViews.invalid": "These filters cannot be saved. Reset the filters and try again.",
+  "savedViews.gone": "This view no longer exists; it was probably deleted elsewhere. The list has been refreshed.",
   "savedViews.incompatible": "This view uses an incompatible filter schema. Delete it and save current filters.",
 
   "nav.dashboard": "Dashboard",
@@ -1936,6 +1940,10 @@ export const ru: Record<MsgKey, string> = {
   "savedViews.updated": "Представления обновлены.",
   "savedViews.applied": "Представление применено. Выделение очищено.",
   "savedViews.failed": "Не удалось обновить представления. Повторите попытку.",
+  "savedViews.limit": "У вас уже 50 сохранённых представлений. Удалите одно, прежде чем сохранять новое.",
+  "savedViews.duplicate": "Представление с таким названием на этой странице уже есть. Выберите другое название.",
+  "savedViews.invalid": "Эти фильтры нельзя сохранить. Сбросьте фильтры и повторите попытку.",
+  "savedViews.gone": "Этого представления больше нет: возможно, его удалили в другом месте. Список обновлён.",
   "savedViews.incompatible": "Схема фильтров представления несовместима. Удалите его и сохраните текущие фильтры.",
 
   "nav.dashboard": "Обзор",

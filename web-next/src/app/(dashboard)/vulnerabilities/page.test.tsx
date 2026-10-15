@@ -133,6 +133,36 @@ describe("Vulnerability Center", () => {
     expect(screen.getByRole("combobox", { name: "Network exposure" })).toBeInTheDocument();
   });
 
+  it("normalises deep-link filters to values a saved view accepts", async () => {
+    searchParams = new URLSearchParams({
+      severity: " HIGH ",
+      state: "open",
+      finding_type: "Misconfiguration",
+      detector_source: "Not-A-Detector",
+      exposure: "EXTERNAL",
+      sla: "bogus",
+    });
+    const fetchSpy = vi.spyOn(apiModule, "fetchTrackedVulnerabilities").mockResolvedValue({
+      items: [], total: 0, offset: 0, limit: 25, has_more: false,
+    });
+    vi.spyOn(apiModule, "fetchVulnerabilitySummary").mockResolvedValue({
+      total: 0, open_total: 0, untriaged: 0, unassigned: 0, estate_risk: "low",
+      by_state: {}, by_severity_open: {}, by_risk_level_open: {},
+      by_sla: {}, breached: 0, worst_breached_severity: null, generated_at: null,
+    });
+    renderPage();
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    const filters = fetchSpy.mock.calls[0][0]!;
+    expect(filters).toMatchObject({
+      severity: "high",
+      state: "OPEN",
+      finding_type: "misconfiguration",
+      network_exposure: "external",
+    });
+    expect(filters.detector_source || "").toBe("");
+    expect(filters.sla || "").toBe("");
+  });
+
   beforeEach(() => {
     vi.restoreAllMocks();
     searchParams = new URLSearchParams();

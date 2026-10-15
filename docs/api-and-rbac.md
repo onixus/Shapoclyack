@@ -60,6 +60,17 @@ turn one into the other. A sensor holds its provisioning credential and short-li
 API's JWT signing secret. Never distribute `OCTO_AGENT_JWT_SECRET` to sensors; see
 [configuration.md](configuration.md#environment-variables) for rotating it.
 
+## Personal saved views
+
+Viewer-level, scoped to the resolved tenant and the signed-in account (the owner
+is never read from the payload). `GET /api/saved-views?page=assets|vulnerabilities`,
+`POST /api/saved-views`, `PATCH`/`DELETE /api/saved-views/{view_id}`. Refusals:
+`422` for an unknown filter, sort or value; `400` at the cap of 50 views per
+account; `409` when the account already has a view of that name (compared
+case-insensitively) on the same page, on create and on rename; `404` for a view
+that is not the caller's. Admissions are serialized per tenant, so parallel
+requests cannot exceed the cap.
+
 ## Sessions, logout and revocation
 
 A console token is no longer believed on its own

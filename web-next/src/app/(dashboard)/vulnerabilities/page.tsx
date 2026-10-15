@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { SavedViews } from "@/components/saved-views";
+import { pickFilter } from "@/lib/saved-views";
 import { DataTable } from "@/components/data-table";
 import { VulnerabilityBulkActions } from "@/components/vulnerability/bulk-actions";
 import { RetroMatchCard } from "@/components/vulnerability/retro-match-card";
@@ -60,24 +61,24 @@ function VulnerabilitiesInner() {
   const { canOperate } = useAuthStore();
   const searchParams = useSearchParams();
   const initialAssetId = (searchParams.get("assetId") || "").trim();
-  const initialSla = (searchParams.get("sla") || "") as SlaState | "";
-  const initialState = (searchParams.get("state") || "") as VulnLifecycleState | "";
-  const initialSeverity = (searchParams.get("severity") || "").trim();
+  const initialSla = pickFilter("sla", searchParams.get("sla")) as SlaState | "";
+  const initialState = pickFilter("state", searchParams.get("state")) as VulnLifecycleState | "";
+  const initialSeverity = pickFilter("severity", searchParams.get("severity"));
   const initialUnassigned = searchParams.get("unassigned") === "1";
-  const initialSource = (searchParams.get("source") || "") as VulnerabilitySource | "";
-  const initialFindingType = (searchParams.get("finding_type") || "") as FindingType | "";
-  const initialDetector = (searchParams.get("detector_source") || "").trim();
-  const initialExposure = (searchParams.get("exposure") || "") as NetworkExposure | "";
+  const initialSource = pickFilter("source", searchParams.get("source")) as VulnerabilitySource | "";
+  const initialFindingType = pickFilter("findingType", searchParams.get("finding_type")) as FindingType | "";
+  const initialDetector = pickFilter("detector", searchParams.get("detector_source"));
+  const initialExposure = pickFilter("exposure", searchParams.get("exposure")) as NetworkExposure | "";
 
   const [scope, setScope] = useState<"open" | "all">(initialState ? "all" : OPEN_WORKING_SET);
   const [state, setState] = useState<VulnLifecycleState | "">(initialState);
-  const [severity, setSeverity] = useState(initialSeverity);
+  const [severity, setSeverity] = useState<string>(initialSeverity);
   const [sla, setSla] = useState<SlaState | "">(initialSla);
   const [staleDays, setStaleDays] = useState("");
   const [unassigned, setUnassigned] = useState(initialUnassigned);
   const [source, setSource] = useState<VulnerabilitySource | "">(initialSource);
   const [findingType, setFindingType] = useState<FindingType | "">(initialFindingType);
-  const [detector, setDetector] = useState(initialDetector);
+  const [detector, setDetector] = useState<string>(initialDetector);
   const [exposure, setExposure] = useState<NetworkExposure | "">(initialExposure);
   // Selected finding ids (#346). Held here rather than in the table so paging,
   // the poll and a filter change do not drop a selection somebody is still

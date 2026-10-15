@@ -6,6 +6,8 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- Personal saved views in the console refuse duplicate names (409), explain every refusal,
+  normalise deep-link filters, and the mobile drawer is keyboard-operable (#357).
 - Service tokens support linked rotation with a bounded overlap, inherited source CIDR
   restrictions and deduplicated advance expiry notifications through workflow subscriptions (#323).
 - Tenant ServiceNow CMDB connectors feed the existing CSV/JSON import planner with

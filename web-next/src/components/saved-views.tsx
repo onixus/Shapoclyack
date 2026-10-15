@@ -9,11 +9,20 @@ import {
   deleteView,
   fetchViews,
   renameView,
+  viewFailure,
   type ViewPage,
   type ViewState,
 } from "@/lib/saved-views";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+
+const FAILURE_KEYS = {
+  limit: "savedViews.limit",
+  duplicate: "savedViews.duplicate",
+  invalid: "savedViews.invalid",
+  gone: "savedViews.gone",
+  generic: "savedViews.failed",
+} as const;
 
 export function SavedViews(props: {
   page: ViewPage;
@@ -91,8 +100,15 @@ function PersonalViews({
       }
       await client.invalidateQueries({ queryKey: key });
       setMessage(t("savedViews.updated"));
-    } catch {
-      setError(t("savedViews.failed"));
+    } catch (caught) {
+      const failure = viewFailure(caught);
+      setError(t(FAILURE_KEYS[failure]));
+      if (failure === "gone") {
+        // Deleted elsewhere: drop the stale selection and show the live list.
+        setSelected("");
+        setName("");
+        await client.invalidateQueries({ queryKey: key });
+      }
     } finally {
       setBusy(false);
     }

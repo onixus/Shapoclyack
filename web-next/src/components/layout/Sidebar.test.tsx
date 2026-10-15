@@ -160,4 +160,26 @@ describe("Sidebar", () => {
     expect(await screen.findByText("v0.45")).toBeInTheDocument();
     expect(screen.getByText("Sensor execution")).toBeInTheDocument();
   });
+
+  it("moves focus into the mobile drawer, closes on Escape and returns focus to the toggle", async () => {
+    signIn({ role: "viewer" });
+    renderSidebar();
+    const user = userEvent.setup();
+    const toggle = screen.getByRole("button", { name: "Open navigation" });
+    await user.click(toggle);
+    const drawer = document.getElementById("primary-sidebar") as HTMLElement;
+    expect(drawer.contains(document.activeElement)).toBe(true);
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("button", { name: "Open navigation" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Open navigation" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+  });
+
+  it("does not steal focus on first render", () => {
+    signIn({ role: "viewer" });
+    renderSidebar();
+    expect(document.body).toHaveFocus();
+  });
 });
