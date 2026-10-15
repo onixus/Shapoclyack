@@ -75,6 +75,7 @@ POSTGRES_TABLES = (
     # Integrations.
     "webhook_deliveries",
     "webhook_subscriptions",
+    "asset_import_connectors",
     "notification_channels",
     # Reports; the objects themselves went in the artifact step.
     "report_schedules",

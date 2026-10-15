@@ -204,10 +204,10 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         self.sock = self._context.wrap_socket(self.sock, server_hostname=self.host)
 
 
-def _read_error_excerpt(response: http.client.HTTPResponse, *, deadline: float) -> str:
+def _read_error_excerpt(response: http.client.HTTPResponse, *, deadline: float, response_limit_bytes: int | None = None) -> str:
     """Read at most a few KiB while respecting the delivery wall-clock budget."""
     chunks: list[bytes] = []
-    remaining_bytes = _MAX_ERROR_BODY_BYTES
+    remaining_bytes = response_limit_bytes + 1 if response_limit_bytes else _MAX_ERROR_BODY_BYTES
     while remaining_bytes > 0:
         remaining_time = deadline - time.perf_counter()
         if remaining_time <= 0:
@@ -222,7 +222,12 @@ def _read_error_excerpt(response: http.client.HTTPResponse, *, deadline: float) 
             break
         chunks.append(chunk)
         remaining_bytes -= len(chunk)
-    return b"".join(chunks).decode("utf-8", errors="replace").strip()[:_ERROR_EXCERPT_CHARS]
+    raw_body = b"".join(chunks)
+    if response_limit_bytes:
+        if len(raw_body) > response_limit_bytes:
+            raise ValueError("response body exceeds configured byte limit")
+        return raw_body.decode("utf-8", errors="strict")
+    return raw_body.decode("utf-8", errors="replace").strip()[:_ERROR_EXCERPT_CHARS]
 
 
 def _send_to_address(
@@ -234,6 +239,7 @@ def _send_to_address(
     method: str = "POST",
     deadline: float,
     capture_body: bool = False,
+    response_limit_bytes: int | None = None,
 ) -> tuple[int, str]:
     """Send to one already-approved IP without performing DNS resolution."""
     remaining = deadline - time.perf_counter()
@@ -265,7 +271,7 @@ def _send_to_address(
             # Successful webhook bodies are irrelevant; do not read them at all.
             excerpt = ""
         else:
-            excerpt = _read_error_excerpt(response, deadline=deadline)
+            excerpt = _read_error_excerpt(response, deadline=deadline, response_limit_bytes=response_limit_bytes if 200 <= code < 300 else None)
         return code, excerpt
     finally:
         connection.close()
@@ -280,6 +286,7 @@ def _send_via_proxy(
     method: str,
     deadline: float,
     capture_body: bool = False,
+    response_limit_bytes: int | None = None,
 ) -> tuple[int, str]:
     """Send through an HTTP proxy, which resolves the name for the second time.
 
@@ -334,7 +341,7 @@ def _send_via_proxy(
         code = response.status
         excerpt = (
             "" if 200 <= code < 300 and not capture_body
-            else _read_error_excerpt(response, deadline=deadline)
+            else _read_error_excerpt(response, deadline=deadline, response_limit_bytes=response_limit_bytes if 200 <= code < 300 else None)
         )
         return code, excerpt
     finally:
@@ -350,6 +357,7 @@ def request(
     timeout_seconds: int = 10,
     allow_private: bool = False,
     capture_body: bool = False,
+    response_limit_bytes: int | None = None,
 ) -> DeliveryResult:
     """One request over the pinned, SSRF-validated wire.
 
@@ -417,6 +425,7 @@ def request(
                 method=method,
                 deadline=deadline,
                 capture_body=capture_body,
+                **({"response_limit_bytes": response_limit_bytes} if response_limit_bytes is not None else {}),
             )
         ]
     else:
@@ -430,6 +439,7 @@ def request(
                     method=method,
                     deadline=deadline,
                     capture_body=capture_body,
+                    **({"response_limit_bytes": response_limit_bytes} if response_limit_bytes is not None else {}),
                 )
             )
             for address in target.addresses

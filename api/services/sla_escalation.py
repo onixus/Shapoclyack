@@ -253,6 +253,9 @@ class SlaEscalationWorker:
         return dict(self._stats)
 
     def _tenant_tick(self, tenant_id: str, now: datetime) -> None:
+        from api.services import service_tokens
+
+        service_tokens.notify_expiring(self._settings, tenant_id=tenant_id, now=now)
         policy = vulns_service.get_escalation_policy(self._settings, tenant_id=tenant_id)
         candidates = self._due_findings(tenant_id, now)
         # ``enabled`` is the policy's one off switch and covers the mail as well

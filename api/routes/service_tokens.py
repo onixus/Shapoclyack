@@ -35,7 +35,7 @@ from api.auth import (
 )
 from api.core import permissions as permission_catalog
 from api.routes._audit import AuditDep
-from api.schemas import CreateServiceTokenRequest, ServiceTokenInfo
+from api.schemas import CreateServiceTokenRequest, RotateServiceTokenRequest, ServiceTokenInfo
 from api.services import service_tokens as service_tokens_service
 from api.services import tenants as tenants_service
 from api.settings import Settings
@@ -83,6 +83,8 @@ def create_service_token(
             role=body.role,
             created_by=admin.username,
             expires_in_days=body.expires_in_days,
+            allowed_cidrs=body.allowed_cidrs,
+            expiry_notice_days=body.expiry_notice_days,
             issuer_role=admin.role,
             issuer_is_platform_admin=admin.is_platform_admin,
             issuer_authority=admin.authority,
@@ -143,3 +145,28 @@ def revoke_service_token(
     if revoked is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="token not found")
     return ServiceTokenInfo.model_validate(revoked)
+
+
+@router.post("/tenants/{tenant_id}/service-tokens/{token_id}/rotate",
+             response_model=ServiceTokenInfo, status_code=status.HTTP_201_CREATED)
+def rotate_service_token(
+    tenant_id: str, token_id: str, body: RotateServiceTokenRequest,
+    admin: Annotated[TenantPrincipal, Depends(
+        require_path_tenant_permission(permission_catalog.TENANT_CREDENTIAL_MANAGE))],
+    _: StepUpDep, settings: Annotated[Settings, Depends(get_settings)], audit: AuditDep,
+) -> ServiceTokenInfo:
+    _require_tenant(tenant_id)
+    try:
+        result = service_tokens_service.rotate_token(
+            settings, token_id=token_id, tenant_id=tenant_id,
+            grace_seconds=body.grace_seconds, expires_in_days=body.expires_in_days,
+            issuer_role=admin.role, issuer_is_platform_admin=admin.is_platform_admin,
+            issuer_authority=admin.authority, created_by=admin.username, audit=audit,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="token not found")
+    return ServiceTokenInfo.model_validate(result)

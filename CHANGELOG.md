@@ -6,6 +6,14 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- Service tokens support linked rotation with a bounded overlap, inherited source CIDR
+  restrictions and deduplicated advance expiry notifications through workflow subscriptions (#323).
+- Tenant ServiceNow CMDB connectors feed the existing CSV/JSON import planner with
+  encrypted credentials, field mapping, preview and scheduled synchronization (#350).
+  LDAP/AD computer synchronization remains dependent on directory integration #317.
+- Unsupported browser screenshot capture is withdrawn from the console, editable
+  configuration and deployment instructions (#367). Historical screenshot artifacts
+  keep their existing access controls and retention.
 - TLS posture on the Pulse path
   ([#545](https://github.com/onixus/Shapoclyack/issues/545), [Pulse backend](docs/pulse-backend.md)):
   an A-F grade per cipher suite computed by Shapoclyack (`scanner/pipeline/tls_grading.py`,
@@ -79,6 +87,13 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **Upgrade step behind an ingress (#323):** the client address used by the login
+  limiter and by service-token `allowed_cidrs` is now always the socket peer unless that
+  peer is listed in `OCTO_TRUSTED_PROXIES`. Without it, every caller appears as the
+  ingress controller: one shared login bucket, and `allowed_cidrs` match the ingress
+  address instead of the real client. Set `OCTO_TRUSTED_PROXIES` to the ingress
+  controller's addresses before enabling `allowed_cidrs` ([k8s/README.md](k8s/README.md)).
+  The API now logs a warning at start while the variable is empty.
 - Three Pulse timeouts in a row stop the stage with a message that says what to change
   (`PulseTimeoutLoopError`); one only leaves its chunk unresolved.
 - Every path in the Pulse command is absolute (the process no longer runs in the
