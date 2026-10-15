@@ -3,8 +3,8 @@
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0091_console_saved_views"
-down_revision = "0090_asset_import_connector"
+revision = "0092_console_saved_views"
+down_revision = "0091_asset_connector_run_lease"
 branch_labels = None
 depends_on = None
 

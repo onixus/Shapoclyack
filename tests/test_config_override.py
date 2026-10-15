@@ -185,3 +185,40 @@ def test_legacy_screenshot_override_does_not_block_unrelated_runs(monkeypatch):
     # false) into the removed-Nmap failure that stops every scan.
     monkeypatch.setattr(cfg, "get_overrides", lambda _settings: {"screenshots": {"enabled": False}})
     cfg.assert_runnable(None)
+
+
+def _stored_row(monkeypatch, data: dict) -> None:
+    """Serve ``data`` as the saved override row, as a pre-#367 install may hold it."""
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    class _Session:
+        def get(self, _model, _scope):
+            return SimpleNamespace(data=data)
+
+    @contextmanager
+    def _get_session(_url):
+        yield _Session()
+
+    monkeypatch.setattr(cfg, "get_session", _get_session)
+
+
+def test_stored_legacy_screenshot_enable_is_ignored_on_read(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    import yaml
+
+    _stored_row(
+        monkeypatch,
+        {"screenshots": {"enabled": True, "concurrency": 2}, "fingerprint": {"enabled": False}},
+    )
+    base = tmp_path / "base.yaml"
+    base.write_text(yaml.safe_dump({"screenshots": {"enabled": False}}), encoding="utf-8")
+    settings = SimpleNamespace(postgres_url="unused", config_path=base, state_dir=tmp_path)
+
+    overrides = cfg.get_overrides(settings)
+    assert overrides == {"screenshots": {"concurrency": 2}, "fingerprint": {"enabled": False}}
+    # Neither the local scan config nor a remote sensor's overlay re-enables capture.
+    merged = yaml.safe_load(open(cfg.effective_config_path(settings, "job-1"), encoding="utf-8"))
+    assert merged["screenshots"]["enabled"] is False
+    assert "screenshots.enabled" not in cfg._flatten(cfg.agent_overlay(settings, None) or {})

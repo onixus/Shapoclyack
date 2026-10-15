@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import hmac
 import time
 from contextlib import asynccontextmanager
@@ -104,9 +105,28 @@ from api.services import users as users_service
 from api.services import wordlists as wordlists_service
 
 
+def warn_if_trusted_proxies_unset(settings) -> bool:
+    """Log once at start that client addresses are the socket peer (#323).
+
+    The login limiter and service-token ``allowed_cidrs`` both use that
+    address; behind an ingress without ``OCTO_TRUSTED_PROXIES`` it is the
+    ingress for every caller. Returns whether the warning was emitted.
+    """
+    if settings.trusted_proxies:
+        return False
+    logging.getLogger("shapoclyack.api").warning(
+        "OCTO_TRUSTED_PROXIES is empty: client addresses are taken from the socket peer. "
+        "Behind an ingress that is the ingress itself, so the login rate limiter shares one "
+        "bucket and service-token allowed_cidrs see the ingress address. Set it to the "
+        "ingress controller's addresses (docs/configuration.md)."
+    )
+    return True
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    warn_if_trusted_proxies_unset(settings)
     if settings.nats_url:
         nats_bus.startup_bus(settings.nats_url)
     if settings.ch_ingest_enabled and settings.nats_url and settings.clickhouse_url:

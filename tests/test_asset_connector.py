@@ -219,3 +219,118 @@ def test_schedule_failure_is_delayed_and_error_is_credential_free(tmp_path, monk
     assert len(calls) == 1 and calls[0]["scheduled"] is True
     connector.tick(settings)
     assert len(calls) == 1
+
+
+def _seed(settings, **extra):
+    with get_session(settings.postgres_url) as session:
+        session.add(models.AssetImportConnector(
+            tenant_id="default", base_url="https://snow.example", table="cmdb_ci",
+            field_mapping={"ip": "ip_address"}, token_encrypted="test", **extra))
+
+
+@requires_postgres
+def test_run_holds_no_row_lock_during_fetch_and_rejects_overlap(tmp_path, monkeypatch):
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+    settings = make_settings(tmp_path)
+    configured_client(tmp_path, monkeypatch, settings=settings)
+    _seed(settings)
+    seen = {}
+
+    def slow_fetch(snapshot, **kw):
+        # Fetch must run without an open row lock, yet a second run is fenced.
+        with get_session(settings.postgres_url) as session:
+            try:
+                session.execute(text("SET LOCAL lock_timeout = '300ms'"))
+                session.get(models.AssetImportConnector, "default", with_for_update=True)
+                seen["locked"] = False
+            except OperationalError:
+                seen["locked"] = True
+        with pytest.raises(ValueError, match="already running"):
+            connector.run(settings, "default", dry_run=True)
+        return "[]"
+
+    monkeypatch.setattr(connector, "fetch", slow_fetch)
+    monkeypatch.setattr(connector.asset_import, "run_import", lambda *a, **kw: {"counts": {}})
+    connector.run(settings, "default", dry_run=True)
+    assert seen["locked"] is False
+    with get_session(settings.postgres_url) as session:
+        assert session.get(models.AssetImportConnector, "default").run_lease_until is None
+    # Lease is dropped even when the fetch fails, so the next run is not blocked.
+    monkeypatch.setattr(connector, "fetch", lambda *a, **kw: (_ for _ in ()).throw(ValueError("boom")))
+    with pytest.raises(ValueError, match="boom"):
+        connector.run(settings, "default", dry_run=True)
+    monkeypatch.setattr(connector, "fetch", lambda *a, **kw: "[]")
+    connector.run(settings, "default", dry_run=True)
+
+
+@requires_postgres
+def test_expired_lease_does_not_block_run(tmp_path, monkeypatch):
+    settings = make_settings(tmp_path)
+    configured_client(tmp_path, monkeypatch, settings=settings)
+    _seed(settings, run_lease_until=connector.now() - timedelta(seconds=1))
+    monkeypatch.setattr(connector, "fetch", lambda *a, **kw: "[]")
+    monkeypatch.setattr(connector.asset_import, "run_import", lambda *a, **kw: {"counts": {"create": 0}})
+    assert connector.run(settings, "default", dry_run=False) == {"counts": {"create": 0}}
+    assert connector.get(settings, "default")["last_counts"] == {"create": 0}
+
+
+@requires_postgres
+def test_edit_without_schedule_change_keeps_next_run(tmp_path, monkeypatch):
+    client = configured_client(tmp_path, monkeypatch)
+    monkeypatch.setenv("OCTO_MASTER_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+    crypto.configure()
+    headers = auth_headers(client, "admin")
+    payload = {"base_url": "https://snow.example", "field_mapping": {"ip": "ip_address"},
+               "token": "local-test-token", "enabled": True, "interval_seconds": 3600}
+    monkeypatch.setattr(delivery, "validate_url", lambda url, **kw: url)
+    first = client.put("/api/assets/import/connector", headers=headers, json=payload).json()
+    payload["field_mapping"] = {"ip": "ip_address", "fqdn": "fqdn"}
+    second = client.put("/api/assets/import/connector", headers=headers, json=payload).json()
+    assert second["next_run_at"] == first["next_run_at"]
+    payload["interval_seconds"] = 7200
+    third = client.put("/api/assets/import/connector", headers=headers, json=payload).json()
+    assert third["next_run_at"] > first["next_run_at"]
+
+
+def test_stop_worker_logs_instead_of_raising(monkeypatch, caplog):
+    import threading
+    release = threading.Event()
+    stuck = threading.Thread(target=release.wait, daemon=True)
+    stuck.start()
+    monkeypatch.setattr(connector, "_thread", stuck)
+    real_join = stuck.join
+    monkeypatch.setattr(stuck, "join", lambda timeout=None: real_join(0.01))
+    try:
+        connector.stop_worker()
+    finally:
+        release.set()
+        connector._stop.clear()
+    assert "did not stop" in caplog.text
+
+
+@requires_postgres
+def test_worker_loop_logs_tick_failure_and_continues(tmp_path, monkeypatch, caplog):
+    import threading
+    settings = make_settings(tmp_path)
+    monkeypatch.setattr(connector, "_stop", threading.Event())
+    calls = threading.Semaphore(0)
+
+    class Lock:
+        def __init__(self, *a, **kw): pass
+        def acquire(self): return True
+        def release(self): pass
+
+    def boom(_settings):
+        calls.release()
+        raise RuntimeError("tick exploded")
+
+    monkeypatch.setattr(connector, "LeaderLock", Lock)
+    monkeypatch.setattr(connector, "tick", boom)
+    waits = iter([False, False])
+    monkeypatch.setattr(connector._stop, "wait", lambda t: next(waits, True))
+    monkeypatch.setattr(connector, "_thread", None)
+    with caplog.at_level("ERROR"):
+        connector.start_worker(settings)
+        connector._thread.join(5)
+    assert "tick failed" in caplog.text and "tick exploded" in caplog.text

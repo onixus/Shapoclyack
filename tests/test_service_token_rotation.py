@@ -195,3 +195,32 @@ def test_listener_recorded_socket_peer_wins_over_rewritten_asgi_client(env):
     with pytest.raises(HTTPException) as error:
         _authenticate_service_token(request, settings, token)
     assert error.value.status_code == 401
+
+
+@requires_postgres
+def test_rotated_predecessor_is_not_announced_while_replacement_lives(env, monkeypatch):
+    client, settings, admin = env
+    old = issue(env, expires_in_days=5, expiry_notice_days=7)
+    emitted = []
+    monkeypatch.setattr(workflow_events, "_emit", lambda _s, kind, **kw: emitted.append(kw) or (True, False))
+    rotated = client.post(f"/api/tenants/default/service-tokens/{old['token_id']}/rotate", headers=admin,
+                          json={"grace_seconds": 3600, "expires_in_days": 30})
+    assert rotated.status_code == 201, rotated.text
+    now = datetime.now(UTC)
+    assert service_tokens.notify_expiring(settings, tenant_id="default", now=now) == 0
+    assert emitted == []
+    # Lose the replacement: the predecessor is the only credential left, so warn.
+    client.post(f"/api/tenants/default/service-tokens/{rotated.json()['token_id']}/revoke", headers=admin)
+    assert service_tokens.notify_expiring(settings, tenant_id="default", now=now) == 1
+    assert emitted[0]["subject_id"] == old["token_id"]
+
+
+@requires_postgres
+def test_second_rotation_error_names_recovery_path(env):
+    client, settings, admin = env
+    old = issue(env)
+    path = f"/api/tenants/default/service-tokens/{old['token_id']}/rotate"
+    assert client.post(path, headers=admin, json={}).status_code == 201
+    again = client.post(path, headers=admin, json={})
+    assert again.status_code == 422
+    assert "rotate the replacement" in again.text and "revoke" in again.text

@@ -234,11 +234,26 @@ def base_config_dict(settings: Settings) -> dict[str, Any]:
         return {}
 
 
+#: Settings withdrawn from the product whose stored values are ignored on read.
+#: A row saved before the withdrawal may still carry them; dropping them here
+#: keeps them out of every consumer (scan config file, sensor overlay,
+#: configurator snapshot), so an old ``screenshots.enabled: true`` neither
+#: re-enables capture nor makes the next console save fail validation (#367).
+_WITHDRAWN_PATHS: frozenset[str] = frozenset({"screenshots.enabled"})
+
+
+def _drop_withdrawn(data: dict[str, Any]) -> dict[str, Any]:
+    flat = _flatten(data)
+    if not _WITHDRAWN_PATHS.intersection(flat):
+        return data
+    return unflatten({path: value for path, value in flat.items() if path not in _WITHDRAWN_PATHS})
+
+
 def get_overrides(settings: Settings) -> dict[str, Any]:
     try:
         with get_session(settings.postgres_url) as session:
             row = session.get(models.ConfigOverride, _SCOPE)
-            return dict(row.data) if row and isinstance(row.data, dict) else {}
+            return _drop_withdrawn(dict(row.data)) if row and isinstance(row.data, dict) else {}
     except Exception:  # noqa: BLE001 — fail-soft: no overrides on any DB error
         LOG.warning("config_override: get_overrides failed", exc_info=True)
         return {}

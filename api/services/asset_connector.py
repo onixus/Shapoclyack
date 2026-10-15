@@ -7,10 +7,12 @@ operator overrides or automatic identifier linking are permitted.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 import time
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from urllib.parse import urlencode, urlsplit
 
 from sqlalchemy import select
@@ -23,7 +25,10 @@ from api.services.leader_lock import ASSET_IMPORT_LOCK_ID, LeaderLock
 
 _FIELD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 _TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+LOG = logging.getLogger("shapoclyack.asset_connector")
 PAGE_SIZE = 200
+# Covers the 60 s fetch budget plus the import; a crashed run frees itself.
+RUN_LEASE_SECONDS = 180
 MAX_PAGE_BYTES = 1024 * 1024
 
 
@@ -79,11 +84,18 @@ def save(settings, tenant_id, body, *, audit=None):
             session.add(row)
         if row.base_url and row.base_url.rstrip("/").lower() != body.base_url.rstrip("/").lower() and not body.token:
             raise ValueError("A replacement token is required when changing the ServiceNow origin")
+        # Only a schedule-relevant change moves the next slot; otherwise frequent
+        # edits (mapping, token) would postpone synchronisation indefinitely.
+        reschedule = (
+            row.next_run_at is None or row.interval_seconds != body.interval_seconds
+            or (body.enabled and not row.enabled)
+        )
         for name in ("base_url", "table", "field_mapping", "enabled", "interval_seconds"):
             setattr(row, name, getattr(body, name))
         if body.token:
             row.token_encrypted = crypto.encrypt_secret(body.token, context=f"asset-import:{tenant_id}")
-        row.next_run_at = now() + timedelta(seconds=row.interval_seconds)
+        if reschedule:
+            row.next_run_at = now() + timedelta(seconds=row.interval_seconds)
         row.last_error = None
         audit_service.record(session, audit, action="asset.connector.configure", resource_type="asset_connector", resource_id="servicenow", tenant_id=tenant_id,
             after={"enabled": body.enabled, "interval_seconds": body.interval_seconds, "credential_changed": bool(body.token)})
@@ -149,9 +161,13 @@ def fetch(row, *, scheduled=False):
     return content
 
 
-def run(settings, tenant_id, *, dry_run=True, scheduled=False, expected_next_run=None, actor="servicenow-scheduler", audit=None):
-    # Lock the configuration while reading/applying, fencing edits and concurrent
-    # manual/scheduled runs. The tenant advisory import lock still fences files.
+def _claim(settings, tenant_id, *, scheduled, expected_next_run):
+    """Take the run lease in a short transaction; return a detached snapshot.
+
+    The row lock lives only for this claim, so edits and reads are not blocked
+    for the duration of the network fetch. ``None`` means a scheduled run that
+    is no longer due.
+    """
     with get_session(settings.postgres_url) as session:
         row = session.get(models.AssetImportConnector, tenant_id, with_for_update=True)
         if row is None:
@@ -163,20 +179,59 @@ def run(settings, tenant_id, *, dry_run=True, scheduled=False, expected_next_run
             models.Tenant.tenant_id.in_(tenants.active_tenant_ids()),
         )):
             raise ValueError("tenant is not active")
-        content = fetch(row, scheduled=scheduled)
+        if row.run_lease_until is not None and row.run_lease_until > now():
+            raise ValueError("A ServiceNow import is already running for this tenant")
+        row.run_lease_until = now() + timedelta(seconds=RUN_LEASE_SECONDS)
+        return SimpleNamespace(**{name: getattr(row, name) for name in (
+            "tenant_id", "base_url", "table", "field_mapping", "token_encrypted")})
+
+
+def _release(settings, tenant_id, *, counts=None):
+    """Drop the lease and, for an applied run, record its outcome."""
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.AssetImportConnector, tenant_id, with_for_update=True)
+        if row is None:
+            return
+        row.run_lease_until = None
+        if counts is not None:
+            row.last_run_at = now()
+            row.next_run_at = now() + timedelta(seconds=row.interval_seconds)
+            row.last_counts = counts
+            row.last_error = None
+
+
+def _unchanged(settings, snapshot):
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.AssetImportConnector, snapshot.tenant_id)
+        return row is not None and all(
+            getattr(row, name) == getattr(snapshot, name)
+            for name in ("base_url", "table", "field_mapping", "token_encrypted"))
+
+
+def run(settings, tenant_id, *, dry_run=True, scheduled=False, expected_next_run=None, actor="servicenow-scheduler", audit=None):
+    # Claim (lease, short transaction) -> fetch with no session open -> apply and
+    # record in a fresh transaction. Two runs cannot overlap: the second sees an
+    # unexpired lease. The tenant advisory import lock still fences file imports.
+    snapshot = _claim(settings, tenant_id, scheduled=scheduled, expected_next_run=expected_next_run)
+    if snapshot is None:
+        return None
+    counts = None
+    try:
+        content = fetch(snapshot, scheduled=scheduled)
         if scheduled and _stop.is_set():
             raise ValueError("ServiceNow worker is stopping")
+        if not _unchanged(settings, snapshot):
+            raise ValueError("ServiceNow connector was reconfigured during the import; run it again")
         report = asset_import.run_import(
             settings, tenant_id=tenant_id, content=content, format="json", dry_run=dry_run,
             context_source="cmdb", overwrite_operator_edits=False,
             link_new_identifiers=False, actor=actor, audit=audit or audit_service.system_context(actor),
         )
         if not dry_run:
-            row.last_run_at = now()
-            row.next_run_at = now() + timedelta(seconds=row.interval_seconds)
-            row.last_counts = report["counts"]
-            row.last_error = None
+            counts = report["counts"]
         return report
+    finally:
+        _release(settings, tenant_id, counts=counts)
 
 
 def tick(settings):
@@ -202,6 +257,7 @@ def tick(settings):
                 reserved = row.next_run_at
             run(settings, tenant_id, dry_run=False, scheduled=True, expected_next_run=reserved)
         except Exception:
+            LOG.exception("ServiceNow scheduled import failed for tenant %s", tenant_id)
             with get_session(settings.postgres_url) as session:
                 row = session.get(models.AssetImportConnector, tenant_id)
                 if row and reserved is not None and row.next_run_at == reserved:
@@ -227,9 +283,9 @@ def start_worker(settings):
                     if lock.acquire():
                         tick(settings)
                 except Exception:
-                    # A failed tick must not kill future schedules. Diagnostics
-                    # are deliberately credential-free in the per-tenant state.
-                    continue
+                    # A failed tick must not kill future schedules; per-tenant
+                    # state stays credential-free, the log carries the traceback.
+                    LOG.exception("ServiceNow connector tick failed")
         finally:
             lock.release()
 
@@ -242,4 +298,6 @@ def stop_worker():
     if _thread:
         _thread.join(timeout=12)
         if _thread.is_alive():
-            raise RuntimeError("ServiceNow worker did not stop within its network deadline")
+            # Shutdown path: raising here would skip the remaining lifespan
+            # cleanup. The thread is a daemon and its lease expires on its own.
+            LOG.error("ServiceNow worker did not stop within its network deadline")
