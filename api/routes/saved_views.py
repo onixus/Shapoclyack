@@ -13,6 +13,11 @@ Principal = Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
+def _duplicate(exc: Exception) -> HTTPException:
+    # Both 409 refusals carry a code: the console maps by code, never by status.
+    return HTTPException(409, {"code": "saved_view_duplicate_name", "message": str(exc)})
+
+
 @router.get("")
 def list_views(page: store.Page, principal: Principal, settings: SettingsDep):
     return store.list_views(settings, principal.tenant_id, principal.username, page)
@@ -25,9 +30,11 @@ def create_view(payload: store.ViewInput, principal: Principal, settings: Settin
             settings, principal.tenant_id, principal.username, payload
         )
     except store.DuplicateViewName as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise _duplicate(exc) from exc
+    except store.ViewLimitReached as exc:
+        raise HTTPException(
+            409, {"code": "saved_view_limit", "message": str(exc)}
+        ) from exc
 
 
 @router.patch("/{view_id}")
@@ -39,7 +46,7 @@ def rename_view(
             settings, principal.tenant_id, principal.username, view_id, payload
         )
     except store.DuplicateViewName as exc:
-        raise HTTPException(409, str(exc)) from exc
+        raise _duplicate(exc) from exc
     if result is None:
         raise HTTPException(404, "Saved view not found")
     return result

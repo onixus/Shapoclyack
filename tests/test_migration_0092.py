@@ -27,11 +27,20 @@ def test_console_saved_views_migration_upgrade_rollback_and_rls(monkeypatch):
         inspector = inspect(database)
         assert "console_saved_views" in inspector.get_table_names()
         assert {c["name"] for c in inspector.get_columns("console_saved_views")} == {
-            "view_id", "tenant_id", "username", "page", "name", "state", "created_at", "updated_at",
+            "view_id", "tenant_id", "username", "page", "name", "name_key", "state", "created_at", "updated_at",
         }
-        assert [i["column_names"] for i in inspector.get_indexes("console_saved_views")] == [
-            ["tenant_id", "username", "page"]
-        ]
+        assert [
+            i["column_names"]
+            for i in inspector.get_indexes("console_saved_views")
+            if not i.get("duplicates_constraint")
+        ] == [["tenant_id", "username", "page"]]
+        assert [
+            (u["name"], u["column_names"])
+            for u in inspector.get_unique_constraints("console_saved_views")
+        ] == [(
+            "uq_console_saved_views_name_key",
+            ["tenant_id", "username", "page", "name_key"],
+        )]
         with database.begin() as connection:
             assert connection.execute(text(
                 "SELECT relrowsecurity FROM pg_class WHERE relname='console_saved_views'"
@@ -49,8 +58,8 @@ def test_console_saved_views_migration_upgrade_rollback_and_rls(monkeypatch):
                 ), {"t": tenant})
                 connection.execute(text(
                     """INSERT INTO console_saved_views
-                    (view_id, tenant_id, username, page, name, state, created_at, updated_at)
-                    VALUES (:t, :t, 'alice', 'assets', 'v', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"""
+                    (view_id, tenant_id, username, page, name, name_key, state, created_at, updated_at)
+                    VALUES (:t, :t, 'alice', 'assets', 'v', 'v', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"""
                 ), {"t": tenant})
             # The tenant role only sees rows of the tenant bound to the session.
             connection.execute(text("SET LOCAL ROLE shapoclyack_tenant"))

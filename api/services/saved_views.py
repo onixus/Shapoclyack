@@ -1,14 +1,17 @@
 """Durable personal views. Ownership always comes from the authenticated principal."""
 
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, get_args
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import IntegrityError
 
 from api.db.engine import get_session
-from api.db.models import ConsoleSavedView, Tenant
+from api.db.models import ConsoleSavedView
+from api.services import vuln_states
+from api.services import vulnerabilities as vulns_service
 from api.settings import Settings
 
 Page = Literal["assets", "vulnerabilities"]
@@ -50,8 +53,16 @@ SORTS = {
 }
 
 
+MAX_VIEWS_PER_ACCOUNT = 50
+NAME_KEY_CONSTRAINT = "uq_console_saved_views_name_key"
+
+
 class DuplicateViewName(ValueError):
     """The account already has a view with this name on this page."""
+
+
+class ViewLimitReached(ValueError):
+    """The account is at the cap of saved views."""
 
 
 class ViewState(BaseModel):
@@ -90,33 +101,30 @@ class ViewUpdate(BaseModel):
         return self
 
 
+# Allow-lists for the closed filters. Lifecycle states, SLA readings, sources and
+# the three findings vocabularies come from the findings list itself; severities
+# and asset statuses have no shared constant to derive from.
+CHOICES = {
+    "status": {"", "active", "stale", "decommissioned"},
+    "scope": {"open", "all"},
+    "state": {"", *vuln_states.ORDER},
+    "severity": {"", "critical", "high", "medium", "low", "unknown"},
+    "sla": {"", *vulns_service.SLA_STATES},
+    "source": {"", *vulns_service.SOURCES},
+    "findingType": {"", *get_args(vulns_service.FindingType)},
+    "detector": {"", *get_args(vulns_service.DetectorSource)},
+    "exposure": {"", *get_args(vulns_service.NetworkExposure)},
+    "staleDays": {"", "14", "30", "90"},
+}
+
+
 def validate_state(page: str, state: ViewState):
     if state.sort is not None and state.sort not in SORTS[page]:
         raise ValueError("Unknown sort column")
     if set(state.filters) - FILTERS[page]:
         raise ValueError("Unknown filter; recreate this view with current filters")
-    choices = {
-        "status": {"", "active", "stale", "decommissioned"},
-        "scope": {"open", "all"},
-        "state": {
-            "",
-            "OPEN",
-            "ACKNOWLEDGED",
-            "PLANNED",
-            "FIXING",
-            "VERIFYING",
-            "CLOSED",
-        },
-        "severity": {"", "critical", "high", "medium", "low", "unknown"},
-        "sla": {"", "on_track", "due_soon", "breached", "accepted", "none"},
-        "source": {"", "scan", "endpoint_software", "retro_match"},
-        "findingType": {"", "cve", "misconfiguration", "exposure"},
-        "detector": {"", "nuclei", "pulse", "pulse-plugin", "nmap-nse"},
-        "exposure": {"", "external", "internal", "unknown"},
-        "staleDays": {"", "14", "30", "90"},
-    }
     for key, value in state.filters.items():
-        if key in choices and value not in choices[key]:
+        if key in CHOICES and value not in CHOICES[key]:
             raise ValueError("Unknown filter value")
         if key in {"unowned", "unassigned"}:
             if not isinstance(value, bool):
@@ -149,33 +157,38 @@ def owned(tenant_id, username):
     )
 
 
-def lock_tenant(session, tenant_id):
-    # Serialize admissions across replicas, so parallel requests cannot evade the cap
-    # or the unique-name check.
-    # FOR NO KEY UPDATE: a plain FOR UPDATE would also block the FOR KEY SHARE
-    # every insert referencing this tenant takes, stalling the tenant's ingest.
-    session.scalar(
-        select(Tenant)
-        .where(Tenant.tenant_id == tenant_id)
-        .with_for_update(key_share=True)
+def name_key(name: str) -> str:
+    """Case-insensitive identity of a name, computed here and not by the database.
+
+    SQL ``lower()`` follows the database locale (SQLite and C-ctype Postgres
+    leave Cyrillic untouched), so uniqueness rests on this stored key instead.
+    """
+    return name.casefold()
+
+
+def lock_owner(session, tenant_id, username):
+    """Serialize one account's admissions across replicas so the cap holds.
+
+    A transaction-scoped advisory lock on the owner, not a lock on the tenant
+    row: other accounts and the tenant's ingest are not made to wait. Name
+    uniqueness does not depend on it - the unique constraint does.
+    """
+    if session.get_bind().dialect.name != "postgresql":
+        return
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"console_saved_views:{tenant_id}:{username}"},
     )
 
 
-def ensure_unique_name(session, tenant_id, username, page, name, except_id=None):
-    query = (
-        select(func.count())
-        .select_from(ConsoleSavedView)
-        .where(
-            ConsoleSavedView.tenant_id == tenant_id,
-            ConsoleSavedView.username == username,
-            ConsoleSavedView.page == page,
-            func.lower(ConsoleSavedView.name) == name.lower(),
-        )
-    )
-    if except_id is not None:
-        query = query.where(ConsoleSavedView.view_id != except_id)
-    if session.scalar(query):
-        raise DuplicateViewName("A saved view with this name already exists on this page")
+def refuse_duplicate(session, exc: IntegrityError):
+    """Turn the name-key violation into the domain error; re-raise anything else."""
+    session.rollback()
+    if "name_key" in str(exc.orig):
+        raise DuplicateViewName(
+            "A saved view with this name already exists on this page"
+        ) from exc
+    raise exc
 
 
 def list_views(settings: Settings, tenant_id: str, username: str, page: Page):
@@ -190,17 +203,33 @@ def list_views(settings: Settings, tenant_id: str, username: str, page: Page):
         ]
 
 
+def enforce_cap(session, tenant_id, username):
+    count = session.scalar(
+        select(func.count()).select_from(owned(tenant_id, username).subquery())
+    )
+    if count >= MAX_VIEWS_PER_ACCOUNT:
+        raise ViewLimitReached(
+            f"Delete a saved view before creating another (maximum {MAX_VIEWS_PER_ACCOUNT})"
+        )
+
+
+def delete_owner_views(session, username, tenant_id=None):
+    """Drop an account's views (in one tenant, or everywhere).
+
+    ``username`` has no foreign key (an SSO principal need not own a ``users``
+    row), so account deletion and membership revocation call this explicitly;
+    otherwise a re-created account of the same name would inherit the views.
+    """
+    stmt = delete(ConsoleSavedView).where(ConsoleSavedView.username == username)
+    if tenant_id is not None:
+        stmt = stmt.where(ConsoleSavedView.tenant_id == tenant_id)
+    return session.execute(stmt).rowcount
+
+
 def create_view(settings: Settings, tenant_id: str, username: str, payload: ViewInput):
     with get_session(settings.postgres_url) as session:
-        lock_tenant(session, tenant_id)
-        count = session.scalar(
-            select(func.count()).select_from(owned(tenant_id, username).subquery())
-        )
-        if count >= 50:
-            raise ValueError("Delete a saved view before creating another (maximum 50)")
-        ensure_unique_name(
-            session, tenant_id, username, payload.page, payload.name
-        )
+        lock_owner(session, tenant_id, username)
+        enforce_cap(session, tenant_id, username)
         now = datetime.now(UTC)
         row = ConsoleSavedView(
             view_id=uuid4().hex,
@@ -208,12 +237,16 @@ def create_view(settings: Settings, tenant_id: str, username: str, payload: View
             username=username,
             page=payload.page,
             name=payload.name,
+            name_key=name_key(payload.name),
             state=payload.state.model_dump(),
             created_at=now,
             updated_at=now,
         )
         session.add(row)
-        session.flush()
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            refuse_duplicate(session, exc)
         return as_dict(row)
 
 
@@ -225,8 +258,6 @@ def change_view(
     payload: ViewUpdate | None,
 ):
     with get_session(settings.postgres_url) as session:
-        if payload is not None:
-            lock_tenant(session, tenant_id)
         row = session.scalar(
             owned(tenant_id, username)
             .where(ConsoleSavedView.view_id == view_id)
@@ -237,9 +268,11 @@ def change_view(
         if payload is None:
             session.delete(row)
             return True
-        ensure_unique_name(
-            session, tenant_id, username, row.page, payload.name, except_id=view_id
-        )
         row.name = payload.name
+        row.name_key = name_key(payload.name)
         row.updated_at = datetime.now(UTC)
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            refuse_duplicate(session, exc)
         return as_dict(row)

@@ -65,11 +65,16 @@ API's JWT signing secret. Never distribute `OCTO_AGENT_JWT_SECRET` to sensors; s
 Viewer-level, scoped to the resolved tenant and the signed-in account (the owner
 is never read from the payload). `GET /api/saved-views?page=assets|vulnerabilities`,
 `POST /api/saved-views`, `PATCH`/`DELETE /api/saved-views/{view_id}`. Refusals:
-`422` for an unknown filter, sort or value; `400` at the cap of 50 views per
-account; `409` when the account already has a view of that name (compared
-case-insensitively) on the same page, on create and on rename; `404` for a view
-that is not the caller's. Admissions are serialized per tenant, so parallel
-requests cannot exceed the cap.
+`422` for an unknown filter, sort or value; `409` with
+`detail.code = "saved_view_limit"` at the cap of 50 views per account; `409` with
+`detail.code = "saved_view_duplicate_name"` when the account already has a view of
+that name on the same page, on create and on rename (compared by Unicode
+case-folding, so `Критичные` and `критичные` clash); `404` for a view that is not
+the caller's. Clients tell the two 409s apart by `detail.code`, never by status.
+Name uniqueness is a database constraint on `(tenant_id, username, page, name_key)`;
+the cap is serialized per account by a transaction-scoped advisory lock on
+Postgres. A view is deleted with the account, and with the account's membership
+in its tenant, so a re-created or re-granted account never inherits it.
 
 ## Sessions, logout and revocation
 

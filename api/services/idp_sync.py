@@ -65,6 +65,7 @@ from sqlalchemy import select
 
 from api.db import models
 from api.services import audit as audit_service
+from api.services import saved_views as saved_views_service
 from api.services import rbac as rbac_service
 from api.services import sessions as sessions_service
 from api.settings import Settings
@@ -367,6 +368,9 @@ def reconcile(
         if want is None:
             before = {"role": membership.role, "source": SOURCE_IDP}
             session.delete(membership)
+            saved_views_service.delete_owner_views(
+                session, username, membership.tenant_id
+            )
             result.revoked.append(membership.tenant_id)
             audit_service.record(
                 session,

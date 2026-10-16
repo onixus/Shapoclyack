@@ -156,7 +156,9 @@ def test_admission_limit_is_per_account_not_per_page(env):
             client.post("/api/saved-views", json=body(name=f"View {index}")).status_code
             == 201
         )
-    assert client.post("/api/saved-views", json=body()).status_code == 400
+    capped = client.post("/api/saved-views", json=body())
+    assert capped.status_code == 409
+    assert capped.json()["detail"]["code"] == "saved_view_limit"
     principal["username"] = "bob"
     assert client.post("/api/saved-views", json=body()).status_code == 201
 
@@ -189,7 +191,8 @@ def test_duplicate_names_are_refused_per_account_and_page(env):
     first = client.post("/api/saved-views", json=body(name="Edge")).json()
     dup = client.post("/api/saved-views", json=body(name="  edge "))
     assert dup.status_code == 409
-    assert "already exists" in dup.json()["detail"]
+    assert dup.json()["detail"]["code"] == "saved_view_duplicate_name"
+    assert "already exists" in dup.json()["detail"]["message"]
     # Same name on another page, or for another account, is a different view.
     other_page = body(
         page="vulnerabilities",
@@ -207,6 +210,49 @@ def test_duplicate_names_are_refused_per_account_and_page(env):
     assert same.status_code == 200
     principal["username"] = "bob"
     assert client.post("/api/saved-views", json=body(name="Edge")).status_code == 201
+
+
+def test_duplicate_names_are_compared_with_unicode_casefolding(env):
+    client, _principal, *_ = env
+    assert client.post("/api/saved-views", json=body(name="Критичные")).status_code == 201
+    dup = client.post("/api/saved-views", json=body(name="критичные"))
+    assert dup.status_code == 409
+    assert dup.json()["detail"]["code"] == "saved_view_duplicate_name"
+    other = client.post("/api/saved-views", json=body(name="Straße")).json()
+    assert client.post("/api/saved-views", json=body(name="STRASSE")).status_code == 409
+    renamed = client.patch(f"/api/saved-views/{other['view_id']}", json={"name": "КРИТИЧНЫЕ"})
+    assert renamed.status_code == 409
+
+
+def test_unique_constraint_not_the_app_check_enforces_names(env):
+    """A racer that passes any app-level check still cannot insert a twin."""
+    from sqlalchemy.exc import IntegrityError
+
+    _client, _principal, _settings, get_session = env
+    now = datetime.now(UTC)
+
+    def twin(name):
+        return ConsoleSavedView(
+            view_id=uuid4().hex, tenant_id="alpha", username="alice", page="assets",
+            name=name, name_key=store.name_key(name), state={}, created_at=now, updated_at=now,
+        )
+
+    with pytest.raises(IntegrityError):
+        with get_session("") as session:
+            session.add(twin("Edge"))
+            session.add(twin("EDGE"))
+
+
+def test_filter_allow_lists_follow_the_findings_list_vocabularies():
+    from typing import get_args
+
+    from api.services import vuln_states
+    from api.services import vulnerabilities as vulns
+
+    assert store.CHOICES["state"] - {""} == set(vuln_states.ORDER)
+    assert store.CHOICES["sla"] - {""} == set(vulns.SLA_STATES)
+    assert store.CHOICES["source"] - {""} == set(vulns.SOURCES)
+    assert store.CHOICES["detector"] - {""} == set(get_args(vulns.DetectorSource))
 
 
 @requires_postgres
@@ -233,20 +279,22 @@ def test_concurrent_creates_cannot_exceed_the_cap(monkeypatch):
                     username="alice",
                     page="assets",
                     name=f"Seed {index}",
+                    name_key=f"seed {index}",
                     state={},
                     created_at=now,
                     updated_at=now,
                 )
             )
     # Widen the window between the count and the insert so that, without the
-    # tenant lock, every racer reads 49 before any of them commits.
-    check = store.ensure_unique_name
+    # owner lock, every racer reads 49 before any of them commits.
+    check = store.enforce_cap
 
     def slow_check(*args, **kwargs):
+        result = check(*args, **kwargs)
         time.sleep(0.3)
-        return check(*args, **kwargs)
+        return result
 
-    monkeypatch.setattr(store, "ensure_unique_name", slow_check)
+    monkeypatch.setattr(store, "enforce_cap", slow_check)
     racers = 8
     gate = Barrier(racers)
 

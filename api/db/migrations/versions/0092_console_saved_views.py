@@ -22,9 +22,14 @@ def upgrade():
         sa.Column("username", sa.String(), nullable=False),
         sa.Column("page", sa.String(), nullable=False),
         sa.Column("name", sa.String(), nullable=False),
+        # name.casefold(), computed in Python: SQL lower() is locale-dependent.
+        sa.Column("name_key", sa.String(), nullable=False),
         sa.Column("state", sa.JSON(), nullable=False),
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.Column("updated_at", sa.DateTime(), nullable=False),
+        sa.UniqueConstraint(
+            "tenant_id", "username", "page", "name_key", name="uq_console_saved_views_name_key"
+        ),
     )
     op.create_index(
         "ix_console_saved_views_owner",
