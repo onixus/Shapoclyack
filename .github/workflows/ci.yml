@@ -127,6 +127,9 @@ jobs:
         env:
           OCTO_POSTGRES_URL: postgresql+psycopg://octo:octo-ci-secret@127.0.0.1:5432/shapoclyack
         run: alembic -c api/db/alembic.ini upgrade head
+      - name: Generated SDK is current
+        run: ./scripts/ci-sdk.sh
+
       # scripts/ci-pytest.sh, shared with the Jenkinsfile. It sets
       # OCTO_REQUIRE_INTEGRATION=1, so tests/integration_gate.py fails the run
       # if the Postgres- or NATS-gated suites were skipped, deselected or never

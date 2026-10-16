@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shapoclyack-client"
+version = "1.0.0"
+requires-python = ">=3.10"
+description = "Generated Shapoclyack API v1 client and CLI"
+dependencies = []
+
+[project.scripts]
+shapoclyack = "shapoclyack.cli:main"
