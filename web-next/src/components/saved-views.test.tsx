@@ -43,10 +43,10 @@ function renderViews() {
 // A server-side list the mocked endpoints really mutate, so a test only passes
 // when the component refetches after a mutation.
 let server: (typeof saved)[] = [];
-function refused(status: number) {
+function refused(status: number, code?: string) {
   return new AxiosError("refused", "ERR_BAD_REQUEST", undefined, undefined, {
     status,
-    data: {},
+    data: code ? { detail: { code, message: "refused" } } : {},
     statusText: "",
     headers: {},
     config: {} as never,
@@ -140,12 +140,13 @@ describe("personal saved views", () => {
     expect(result.violations).toEqual([]);
   });
   it.each([
-    [400, "already have 50 saved views"],
-    [409, "view with this name on this page"],
-    [422, "filters cannot be saved"],
-    [500, "Could not update saved views"],
-  ])("explains a %i refusal of the save", async (status, text) => {
-    vi.mocked(views.createView).mockRejectedValue(refused(status));
+    [409, "saved_view_limit", "already have 50 saved views"],
+    [409, "saved_view_duplicate_name", "view with this name on this page"],
+    [422, undefined, "filters cannot be saved"],
+    [400, undefined, "Could not update saved views"],
+    [500, undefined, "Could not update saved views"],
+  ])("explains a %i %s refusal of the save", async (status, code, text) => {
+    vi.mocked(views.createView).mockRejectedValue(refused(status, code));
     const user = userEvent.setup();
     renderViews();
     await screen.findByRole("option", { name: saved.name });

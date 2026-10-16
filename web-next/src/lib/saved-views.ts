@@ -1,5 +1,6 @@
 import axios from "axios";
 import { api } from "@/lib/api";
+import { SEVERITIES } from "@/lib/run-data";
 
 export type ViewPage = "assets" | "vulnerabilities";
 export type ViewState = {
@@ -47,7 +48,7 @@ export async function deleteView(id: string, tenant: string) {
 /** Filter values the API accepts in a saved view (api/services/saved_views.py). */
 export const VIEW_FILTER_CHOICES = {
   state: ["OPEN", "ACKNOWLEDGED", "PLANNED", "FIXING", "VERIFYING", "CLOSED"],
-  severity: ["critical", "high", "medium", "low", "unknown"],
+  severity: SEVERITIES,
   sla: ["on_track", "due_soon", "breached", "accepted", "none"],
   source: ["scan", "endpoint_software", "retro_match"],
   findingType: ["cve", "misconfiguration", "exposure"],
@@ -74,8 +75,11 @@ export type ViewFailure = "limit" | "duplicate" | "invalid" | "gone" | "generic"
 /** Which refusal the API gave, so the console can say why instead of "try again". */
 export function viewFailure(error: unknown): ViewFailure {
   const status = axios.isAxiosError(error) ? error.response?.status : undefined;
-  if (status === 400) return "limit";
-  if (status === 409) return "duplicate";
+  // Both 409s are told apart by the API's machine-readable code, never by status.
+  const detail = axios.isAxiosError(error) ? error.response?.data?.detail : undefined;
+  const code = detail && typeof detail === "object" ? detail.code : undefined;
+  if (code === "saved_view_limit") return "limit";
+  if (code === "saved_view_duplicate_name") return "duplicate";
   if (status === 422) return "invalid";
   if (status === 404) return "gone";
   return "generic";

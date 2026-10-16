@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { Suspense, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { type ColumnDef } from "@tanstack/react-table";
 import { ArrowUpRight, Filter, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -60,6 +60,8 @@ function VulnerabilitiesInner() {
   const ago = useRelativeTime();
   const { canOperate } = useAuthStore();
   const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
   const initialAssetId = (searchParams.get("assetId") || "").trim();
   const initialSla = pickFilter("sla", searchParams.get("sla")) as SlaState | "";
   const initialState = pickFilter("state", searchParams.get("state")) as VulnLifecycleState | "";
@@ -320,6 +322,12 @@ function VulnerabilitiesInner() {
         const f = view.filters;
         setScope(f.scope === "all" ? "all" : "open"); setState((f.state || "") as VulnLifecycleState | ""); setSeverity(String(f.severity || "")); setSla((f.sla || "") as SlaState | "");
         setStaleDays(String(f.staleDays || "")); setUnassigned(f.unassigned === true); setSource((f.source || "") as VulnerabilitySource | ""); setFindingType((f.findingType || "") as FindingType | ""); setDetector(String(f.detector || "")); setExposure((f.exposure || "") as NetworkExposure | ""); setAssetId(String(f.assetId || "")); setSelected([]); pagination.reset();
+        // Keep ?assetId= in step with the applied view, so a reload or a shared link
+        // does not bring back the previous asset filter.
+        const params = new URLSearchParams(searchParams.toString());
+        if (f.assetId) params.set("assetId", String(f.assetId)); else params.delete("assetId");
+        const query = params.toString();
+        router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
       }} />
       <DataTable
         columns={columns}

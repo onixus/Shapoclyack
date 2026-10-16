@@ -1,14 +1,19 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import VulnerabilitiesPage from "@/app/(dashboard)/vulnerabilities/page";
 import * as apiModule from "@/lib/api";
-import type { TrackedVulnerability } from "@/lib/api";
+import type { Me, TrackedVulnerability } from "@/lib/api";
+import { useAuthStore } from "@/lib/auth-store";
 
 let searchParams = new URLSearchParams();
+const replace = vi.fn();
 
 vi.mock("next/navigation", () => ({
   useSearchParams: () => searchParams,
+  useRouter: () => ({ replace }),
+  usePathname: () => "/vulnerabilities",
 }));
 
 function vuln(overrides: Partial<TrackedVulnerability> = {}): TrackedVulnerability {
@@ -207,6 +212,35 @@ describe("Vulnerability Center", () => {
       last_stats: {},
       refresh_requested_at: null,
       refresh_requested_by: null,
+    });
+  });
+
+  it("rewrites ?assetId= when a saved view is applied, keeping the other parameters", async () => {
+    searchParams = new URLSearchParams({ assetId: "ast_old", severity: "high" });
+    useAuthStore.setState({
+      user: { username: "u", default_tenant: "default", tenants: [] } as unknown as Me,
+      activeTenant: "default",
+    });
+    vi.spyOn(apiModule, "fetchTrackedVulnerabilities").mockResolvedValue({
+      items: [], total: 0, offset: 0, limit: 25, has_more: false,
+    });
+    const view = {
+      view_id: "v1",
+      name: "Other asset",
+      page: "vulnerabilities",
+      compatible: true,
+      state: { version: 1, search: "", sort: null, order: "desc", filters: { assetId: "ast_new" } },
+    };
+    vi.spyOn(apiModule.api, "get").mockImplementation(async (url: string) => ({
+      data: url === "/saved-views" ? [view] : [],
+    }));
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole("option", { name: "Other asset" });
+    await user.selectOptions(screen.getByRole("combobox", { name: "Saved views" }), "v1");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    expect(replace).toHaveBeenLastCalledWith("/vulnerabilities?assetId=ast_new&severity=high", {
+      scroll: false,
     });
   });
 

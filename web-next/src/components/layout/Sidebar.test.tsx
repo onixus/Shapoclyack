@@ -177,6 +177,28 @@ describe("Sidebar", () => {
     );
   });
 
+  it("sends focus to the main region, not the toggle, after a nav link closes the drawer", async () => {
+    signIn({ role: "viewer" });
+    const main = document.createElement("main");
+    main.id = "main-content";
+    main.tabIndex = -1;
+    document.body.appendChild(main);
+    renderSidebar();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Open navigation" }));
+    await user.click(screen.getByRole("link", { name: "Vulnerabilities" }));
+    expect(screen.getByRole("button", { name: "Open navigation" })).not.toHaveFocus();
+    expect(main).toHaveFocus();
+    main.remove();
+  });
+
+  it("keeps the slide-out animation by transitioning visibility with the transform", () => {
+    signIn({ role: "viewer" });
+    renderSidebar();
+    const drawer = document.getElementById("primary-sidebar") as HTMLElement;
+    expect(drawer.className).toContain("transition-[transform,visibility]");
+  });
+
   it("does not steal focus on first render", () => {
     signIn({ role: "viewer" });
     renderSidebar();

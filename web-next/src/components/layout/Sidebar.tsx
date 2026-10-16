@@ -38,6 +38,10 @@ export function Sidebar() {
   const toggleRef = useRef<HTMLButtonElement>(null);
   const drawerRef = useRef<HTMLElement>(null);
   const wasOpen = useRef(false);
+  // Whether closing should hand focus back to the toggle. True for Escape, the
+  // toggle and the overlay (the user is still "at" the toggle); false after a
+  // nav link, where the navigation owns where focus goes next.
+  const restoreFocus = useRef(true);
   const t = useT();
   const { user, canOperate } = useAuthStore();
   const { data: system } = useSystemStatus();
@@ -63,11 +67,21 @@ export function Sidebar() {
     });
   }, []);
 
-  const close = () => setOpen(false);
+  // Close from a nav link: the page changes, so focus goes to the new page's
+  // main region rather than back to the hamburger.
+  const close = () => {
+    restoreFocus.current = false;
+    setOpen(false);
+  };
+  const dismiss = () => {
+    restoreFocus.current = true;
+    setOpen(false);
+  };
 
   // Mobile drawer keyboard contract: opening moves focus inside, Escape closes,
-  // and closing hands focus back to the button that opened it. The drawer is
-  // `invisible` while closed, so focus can never be left behind in it.
+  // and dismissing it (Escape, toggle, overlay) hands focus back to the button
+  // that opened it. Following a nav link moves focus to #main-content instead.
+  // The drawer is `invisible` while closed, so focus can never be left in it.
   useEffect(() => {
     if (open) {
       wasOpen.current = true;
@@ -75,14 +89,15 @@ export function Sidebar() {
         ?.querySelector<HTMLElement>("a[href], button:not([disabled])")
         ?.focus();
       const onKey = (event: KeyboardEvent) => {
-        if (event.key === "Escape") setOpen(false);
+        if (event.key === "Escape") dismiss();
       };
       document.addEventListener("keydown", onKey);
       return () => document.removeEventListener("keydown", onKey);
     }
     if (wasOpen.current) {
       wasOpen.current = false;
-      toggleRef.current?.focus();
+      if (restoreFocus.current) toggleRef.current?.focus();
+      else document.getElementById("main-content")?.focus();
     }
   }, [open]);
 
@@ -109,7 +124,10 @@ export function Sidebar() {
           aria-label={open ? t("sidebar.closeNav") : t("sidebar.openNav")}
           aria-expanded={open}
           aria-controls="primary-sidebar"
-          onClick={() => setOpen((prev) => !prev)}
+          onClick={() => {
+            restoreFocus.current = true;
+            setOpen((prev) => !prev);
+          }}
         >
           {open ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </Button>
@@ -118,7 +136,7 @@ export function Sidebar() {
       <aside id="primary-sidebar"
         ref={drawerRef}
         className={cn(
-          "lg:visible fixed inset-y-0 left-0 z-40 w-64 border-r border-border bg-card text-card-foreground backdrop-blur transition-transform lg:static lg:translate-x-0",
+          "lg:visible fixed inset-y-0 left-0 z-40 w-64 border-r border-border bg-card text-card-foreground backdrop-blur transition-[transform,visibility] lg:static lg:translate-x-0",
           open ? "visible translate-x-0" : "invisible -translate-x-full",
         )}
       >
@@ -260,7 +278,7 @@ export function Sidebar() {
           type="button"
           aria-label={t("sidebar.closeOverlay")}
           className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm lg:hidden"
-          onClick={close}
+          onClick={dismiss}
         />
       ) : null}
     </>
