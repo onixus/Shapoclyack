@@ -482,7 +482,10 @@ schema no longer accepts, or a view deleted elsewhere (the list refreshes and
 the selection clears). Deep-link filters (`?severity=HIGH`) are normalised to
 the canonical values, and unknown ones are dropped, so the current filters can
 always be saved. The mobile navigation drawer closes on Escape, takes focus when
-it opens and returns it to the menu button when it closes.
+it opens and returns it to the menu button when it is dismissed (Escape, the
+button, the overlay); following a navigation link moves focus to the main region
+instead. Applying a saved view on the findings page also rewrites `?assetId=` in
+the URL.
 
 ### Retro CVE matches
 
