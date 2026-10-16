@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { Suspense, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { type ColumnDef } from "@tanstack/react-table";
 import { ArrowUpRight, Filter, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { SavedViews } from "@/components/saved-views";
+import { pickFilter } from "@/lib/saved-views";
 import { DataTable } from "@/components/data-table";
 import { VulnerabilityBulkActions } from "@/components/vulnerability/bulk-actions";
 import { RetroMatchCard } from "@/components/vulnerability/retro-match-card";
@@ -58,32 +60,34 @@ function VulnerabilitiesInner() {
   const ago = useRelativeTime();
   const { canOperate } = useAuthStore();
   const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
   const initialAssetId = (searchParams.get("assetId") || "").trim();
-  const initialSla = (searchParams.get("sla") || "") as SlaState | "";
-  const initialState = (searchParams.get("state") || "") as VulnLifecycleState | "";
-  const initialSeverity = (searchParams.get("severity") || "").trim();
+  const initialSla = pickFilter("sla", searchParams.get("sla")) as SlaState | "";
+  const initialState = pickFilter("state", searchParams.get("state")) as VulnLifecycleState | "";
+  const initialSeverity = pickFilter("severity", searchParams.get("severity"));
   const initialUnassigned = searchParams.get("unassigned") === "1";
-  const initialSource = (searchParams.get("source") || "") as VulnerabilitySource | "";
-  const initialFindingType = (searchParams.get("finding_type") || "") as FindingType | "";
-  const initialDetector = (searchParams.get("detector_source") || "").trim();
-  const initialExposure = (searchParams.get("exposure") || "") as NetworkExposure | "";
+  const initialSource = pickFilter("source", searchParams.get("source")) as VulnerabilitySource | "";
+  const initialFindingType = pickFilter("findingType", searchParams.get("finding_type")) as FindingType | "";
+  const initialDetector = pickFilter("detector", searchParams.get("detector_source"));
+  const initialExposure = pickFilter("exposure", searchParams.get("exposure")) as NetworkExposure | "";
 
   const [scope, setScope] = useState<"open" | "all">(initialState ? "all" : OPEN_WORKING_SET);
   const [state, setState] = useState<VulnLifecycleState | "">(initialState);
-  const [severity, setSeverity] = useState(initialSeverity);
+  const [severity, setSeverity] = useState<string>(initialSeverity);
   const [sla, setSla] = useState<SlaState | "">(initialSla);
   const [staleDays, setStaleDays] = useState("");
   const [unassigned, setUnassigned] = useState(initialUnassigned);
   const [source, setSource] = useState<VulnerabilitySource | "">(initialSource);
   const [findingType, setFindingType] = useState<FindingType | "">(initialFindingType);
-  const [detector, setDetector] = useState(initialDetector);
+  const [detector, setDetector] = useState<string>(initialDetector);
   const [exposure, setExposure] = useState<NetworkExposure | "">(initialExposure);
   // Selected finding ids (#346). Held here rather than in the table so paging,
   // the poll and a filter change do not drop a selection somebody is still
   // building — a tenant switch does, since the ids belong to the tenant they
   // were ticked in. ``useAuthStore``-gated verbs live in the bulk bar itself.
   const [selected, setSelected] = useBulkSelection();
-  const assetId = initialAssetId;
+  const [assetId, setAssetId] = useState(initialAssetId);
 
   const pagination = usePagination({
     sort: "contextual_score",
@@ -313,6 +317,18 @@ function VulnerabilitiesInner() {
 
       <RetroMatchCard canOperate={canOperate} />
 
+      <SavedViews page="vulnerabilities" state={{ version: 1, search: pagination.search, sort: pagination.sort ?? null, order: pagination.order, filters: { scope, state, severity, sla, staleDays, unassigned, source, findingType, detector, exposure, assetId } }} onApply={(view) => {
+        pagination.setSearch(view.search); pagination.setSort(view.sort ?? undefined, view.order);
+        const f = view.filters;
+        setScope(f.scope === "all" ? "all" : "open"); setState((f.state || "") as VulnLifecycleState | ""); setSeverity(String(f.severity || "")); setSla((f.sla || "") as SlaState | "");
+        setStaleDays(String(f.staleDays || "")); setUnassigned(f.unassigned === true); setSource((f.source || "") as VulnerabilitySource | ""); setFindingType((f.findingType || "") as FindingType | ""); setDetector(String(f.detector || "")); setExposure((f.exposure || "") as NetworkExposure | ""); setAssetId(String(f.assetId || "")); setSelected([]); pagination.reset();
+        // Keep ?assetId= in step with the applied view, so a reload or a shared link
+        // does not bring back the previous asset filter.
+        const params = new URLSearchParams(searchParams.toString());
+        if (f.assetId) params.set("assetId", String(f.assetId)); else params.delete("assetId");
+        const query = params.toString();
+        router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+      }} />
       <DataTable
         columns={columns}
         data={data}
@@ -331,7 +347,7 @@ function VulnerabilitiesInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-auto min-w-[10rem]">
+              <SelectTrigger aria-label={t("vulns.filter.openOnly")} className="w-auto min-w-[10rem]">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent className="bg-card border-border text-foreground">
@@ -346,7 +362,7 @@ function VulnerabilitiesInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-auto min-w-[11rem]">
+              <SelectTrigger aria-label={t("select.anyState")} className="w-auto min-w-[11rem]">
                 <SelectValue placeholder={t("select.anyState")} />
               </SelectTrigger>
               <SelectContent className="bg-card border-border text-foreground">
@@ -365,7 +381,7 @@ function VulnerabilitiesInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-auto min-w-[11rem]">
+              <SelectTrigger aria-label={t("vuln.source")} className="w-auto min-w-[11rem]">
                 <SelectValue placeholder={t("vuln.source")} />
               </SelectTrigger>
               <SelectContent className="bg-card border-border text-foreground">
@@ -384,8 +400,8 @@ function VulnerabilitiesInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-auto min-w-[11rem]" aria-label="Finding type">
-                <SelectValue placeholder="Finding type" />
+              <SelectTrigger className="w-auto min-w-[11rem]" aria-label={t("vuln.findingType")}>
+                <SelectValue placeholder={t("vuln.findingType")} />
               </SelectTrigger>
               <SelectContent className="bg-card border-border text-foreground">
                 <SelectItem value={FILTER_ALL}>Any finding type</SelectItem>
@@ -401,8 +417,8 @@ function VulnerabilitiesInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-auto min-w-[11rem]" aria-label="Detector">
-                <SelectValue placeholder="Detector" />
+              <SelectTrigger className="w-auto min-w-[11rem]" aria-label={t("vuln.detector")}>
+                <SelectValue placeholder={t("vuln.detector")} />
               </SelectTrigger>
               <SelectContent className="bg-card border-border text-foreground">
                 <SelectItem value={FILTER_ALL}>Any detector</SelectItem>
@@ -433,7 +449,7 @@ function VulnerabilitiesInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-auto min-w-[9rem]">
+              <SelectTrigger aria-label={t("select.severity")} className="w-auto min-w-[9rem]">
                 <SelectValue placeholder={t("select.severity")} />
               </SelectTrigger>
               <SelectContent className="bg-card border-border text-foreground">
@@ -452,7 +468,7 @@ function VulnerabilitiesInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-auto min-w-[10rem]">
+              <SelectTrigger aria-label={t("select.sla")} className="w-auto min-w-[10rem]">
                 <SelectValue placeholder={t("select.sla")} />
               </SelectTrigger>
               <SelectContent className="bg-card border-border text-foreground">
@@ -471,7 +487,7 @@ function VulnerabilitiesInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-auto min-w-[10rem]">
+              <SelectTrigger aria-label={t("select.owner")} className="w-auto min-w-[10rem]">
                 <SelectValue placeholder={t("select.owner")} />
               </SelectTrigger>
               <SelectContent className="bg-card border-border text-foreground">
@@ -486,7 +502,7 @@ function VulnerabilitiesInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-auto min-w-[10rem]">
+              <SelectTrigger aria-label={t("select.stale")} className="w-auto min-w-[10rem]">
                 <SelectValue placeholder={t("select.stale")} />
               </SelectTrigger>
               <SelectContent className="bg-card border-border text-foreground">
@@ -522,6 +538,7 @@ function VulnerabilitiesInner() {
           total,
           onOffsetChange: pagination.setOffset,
           search: pagination.search,
+          searchRevision: pagination.searchRevision,
           onSearchChange: pagination.setSearch,
           sortableColumns: [
             "cve",

@@ -42,7 +42,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from sqlalchemy import case, func, or_, select
@@ -203,6 +203,14 @@ ENDPOINT_UNREACHABLE_SLA_WINDOW_MIN_DAYS = 30
 #: Derived SLA readings. ``none`` is a finding with no deadline at all, which
 #: happens only for a CLOSED row.
 SLA_STATES = ("on_track", "due_soon", "breached", "accepted", "none")
+
+#: Closed filter vocabularies of the findings list. The route declares them as
+#: ``Literal`` query types and saved views derive their allow-lists from the
+#: same aliases (``typing.get_args``), so a new value cannot be accepted by one
+#: and refused by the other.
+FindingType = Literal["cve", "misconfiguration", "exposure"]
+DetectorSource = Literal["nuclei", "pulse", "pulse-plugin", "nmap-nse"]
+NetworkExposure = Literal["external", "internal", "unknown"]
 
 
 @dataclass(frozen=True)

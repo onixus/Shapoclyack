@@ -102,12 +102,22 @@ def test_a_login_without_the_group_loses_the_membership_and_its_sessions(
     assert _memberships("dana") == {acme: ("operator", "idp")}
     old_token = first.json()["access_token"]
     assert client.get("/api/auth/me", headers=bearer(old_token)).status_code == 200
+    from api.db import models
+    from api.db.engine import get_session
+    from api.services import saved_views
+
+    view = saved_views.create_view(
+        settings, acme, "dana",
+        saved_views.ViewInput(page="assets", name="Mine", state=saved_views.ViewState()),
+    )
 
     # Taken out of acme-ops at the IdP. Still in vm-ops, but that places her
     # in no tenant: the login is refused rather than let into `default`.
     second = _login(client, provider, groups=["vm-ops"])
     assert second.status_code == 403, second.text
     assert _memberships("dana") == {}
+    with get_session(settings.postgres_url) as session:
+        assert session.get(models.ConsoleSavedView, view["view_id"]) is None
     # The session issued while the membership existed is over (#314): a token
     # that still carried it would make the removal take effect at its expiry.
     assert client.get("/api/auth/me", headers=bearer(old_token)).status_code == 401

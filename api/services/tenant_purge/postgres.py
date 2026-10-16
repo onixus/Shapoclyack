@@ -81,6 +81,7 @@ POSTGRES_TABLES = (
     "report_schedules",
     "generated_reports",
     "report_templates",
+    "console_saved_views",
     # The fleet: agents are a NO ACTION key to provisioning_keys, below.
     "agent_deployments",
     "agent_ssh_host_keys",

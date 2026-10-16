@@ -474,6 +474,19 @@ its row shows the installed package and the version that closes it
 (`curl 7.68.0-1ubuntu2.1 → 7.68.0-1ubuntu2.20`) where a scan finding shows
 `port 443`.
 
+### Saved views
+
+Assets and Vulnerability Center share a personal "Saved views" bar. A refused
+save says why: the 50-view limit, a name already used on that page, filters the
+schema no longer accepts, or a view deleted elsewhere (the list refreshes and
+the selection clears). Deep-link filters (`?severity=HIGH`) are normalised to
+the canonical values, and unknown ones are dropped, so the current filters can
+always be saved. The mobile navigation drawer closes on Escape, takes focus when
+it opens and returns it to the menu button when it is dismissed (Escape, the
+button, the overlay); following a navigation link moves focus to the main region
+instead. Applying a saved view on the findings page also rewrites `?assetId=` in
+the URL.
+
 ### Retro CVE matches
 
 A third source, **retro match** (`?source=retro_match`), is a finding the retro

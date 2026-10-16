@@ -29,6 +29,7 @@ from api.auth import hash_password, verify_password
 from api.db import models
 from api.db.engine import get_session, insert_if_absent
 from api.services import audit as audit_service
+from api.services import saved_views as saved_views_service
 from api.services import metrics as metrics_service
 from api.settings import ENV_PROD, InsecureConfigurationError, Settings
 
@@ -830,6 +831,9 @@ def delete_user(username: str, *, audit: "audit_service.AuditContext | None" = N
         # Memberships cascade (FK from migration 0013), so no orphan grant
         # survives to be silently re-attached if the name is recreated later.
         session.delete(row)
+        # console_saved_views.username has no FK (an SSO principal need not own a
+        # users row), so a re-created account would inherit them: drop them here.
+        saved_views_service.delete_owner_views(session, username)
         # The tokens it minted do not cascade — they belong to a tenant — but a
         # credential nobody can answer for any more is a leaver's key (#332).
         from api.services import service_tokens as service_tokens_service

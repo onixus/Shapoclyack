@@ -41,6 +41,7 @@ ADDED_LATER = {
     "agent_cert_enrolments",
     "run_risk_assessments",  # Created by 0086, with its own tenant RLS policy.
     "asset_import_connectors",  # Created by 0090 with its own tenant policy.
+    "console_saved_views",  # Created by 0092 with its own tenant policy.
 }
 
 

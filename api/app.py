@@ -41,6 +41,7 @@ from api.routes import usage as usage_routes
 from api.routes import compliance as compliance_routes
 from api.routes import config as config_routes
 from api.routes import reports as reports_routes
+from api.routes import saved_views as saved_views_routes
 from api.routes import retention as retention_routes
 from api.routes import tenant_lifecycle as tenant_lifecycle_routes
 from api.routes import runs as runs_routes
@@ -571,6 +572,7 @@ def create_app() -> FastAPI:
     app.include_router(compliance_routes.router, prefix="/api")
     app.include_router(adoption_routes.router, prefix="/api")
     app.include_router(usage_routes.router, prefix="/api")
+    app.include_router(saved_views_routes.router, prefix="/api")
     app.include_router(promoted_domains_routes.router, prefix="/api")
     if settings.reports_enabled:
         app.include_router(reports_routes.router, prefix="/api")

@@ -99,6 +99,8 @@ SUBJECT_COLUMNS: dict[tuple[str, str], tuple[str, str]] = {
     ("user_tenants", "username"): (DELETED, "memberships; each revocation is audited"),
     ("user_tenants", "created_by"): (PSEUDONYM, "who granted a membership"),
     ("revoked_tokens", "username"): (DELETED, "logout denylist; token_version refuses all"),
+    ("console_saved_views", "username"): (DELETED, "personal saved console views"),
+    ("console_saved_views", "state"): (DELETED, "personal search and filter preferences deleted with the owner"),
     ("session_families", "username"): (DELETED, "sign-in sessions and refresh tokens"),
     ("auth_events", "username"): (
         RETAINED,
@@ -354,6 +356,10 @@ def _export(
             "generated_at": _iso(_now()),
             "subject": username,
             "account": _account(row),
+            "saved_views": [
+                {"tenant_id": view.tenant_id, "page": view.page, "name": view.name, "state": view.state}
+                for view in session.scalars(select(models.ConsoleSavedView).where(models.ConsoleSavedView.username == username))
+            ],
             "memberships": _memberships(session, username),
             "security_keys": _security_keys(session, username),
             "sessions": _sessions(session, username),
@@ -740,6 +746,7 @@ def _erase(
             models.WebAuthnCredential,
             models.WebAuthnChallenge,
             models.SessionFamily,
+            models.ConsoleSavedView,
             models.RevokedToken,
             # A SCIM push after the erasure must not re-attach the pseudonym
             # to a group, and through it to a tenant (#316).

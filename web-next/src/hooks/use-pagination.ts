@@ -12,6 +12,8 @@ export type PaginationState = {
   setOffset: (offset: number) => void;
   /** Search text; changing it rewinds to the first page. */
   search: string;
+  /** Changes even when reapplying the same search, cancelling pending table edits. */
+  searchRevision: number;
   setSearch: (value: string) => void;
   /** Sort field/direction; changing either rewinds to the first page. */
   sort?: string;
@@ -37,12 +39,14 @@ export function usePagination(options?: {
 }): PaginationState {
   const limit = options?.limit ?? DEFAULT_PAGE_SIZE;
   const [offset, setOffset] = useState(0);
+  const [searchRevision, setSearchRevision] = useState(0);
   const [search, setSearchValue] = useState(options?.search ?? "");
   const [sort, setSortValue] = useState<string | undefined>(options?.sort);
   const [order, setOrder] = useState<"asc" | "desc">(options?.order ?? "desc");
 
   const setSearch = useCallback((value: string) => {
     setSearchValue(value);
+    setSearchRevision((revision) => revision + 1);
     setOffset(0);
   }, []);
 
@@ -65,5 +69,17 @@ export function usePagination(options?: {
     [offset, limit, search, sort, order],
   );
 
-  return { params, offset, limit, setOffset, search, setSearch, sort, order, setSort, reset };
+  return {
+    params,
+    offset,
+    limit,
+    setOffset,
+    search,
+    searchRevision,
+    setSearch,
+    sort,
+    order,
+    setSort,
+    reset,
+  };
 }

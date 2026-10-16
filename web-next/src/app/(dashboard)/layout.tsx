@@ -1,3 +1,4 @@
+import { SkipLink } from "@/components/skip-link";
 import { AuthGate } from "@/components/auth-gate";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { MfaPendingBanner } from "@/components/mfa/mfa-pending-banner";
@@ -10,12 +11,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   return (
     <AuthGate>
       <div className="min-h-screen bg-background lg:flex">
+        <SkipLink />
         <Sidebar />
         <div className="flex min-h-screen min-w-0 flex-1 flex-col">
           <MfaPendingBanner />
           <SessionExpiryBanner />
           <TopHeader />
-          <main className="flex-1 px-4 py-6 md:px-6">{children}</main>
+          <main id="main-content" tabIndex={-1} className="flex-1 px-4 py-6 md:px-6">{children}</main>
         </div>
       </div>
       <StepUpDialog />

@@ -37,6 +37,7 @@ const pagination: PaginationState = {
   limit: 15,
   setOffset: vi.fn(),
   search: "",
+  searchRevision: 0,
   setSearch: vi.fn(),
   sort: "started_at",
   order: "desc",

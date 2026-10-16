@@ -1,14 +1,19 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import VulnerabilitiesPage from "@/app/(dashboard)/vulnerabilities/page";
 import * as apiModule from "@/lib/api";
-import type { TrackedVulnerability } from "@/lib/api";
+import type { Me, TrackedVulnerability } from "@/lib/api";
+import { useAuthStore } from "@/lib/auth-store";
 
 let searchParams = new URLSearchParams();
+const replace = vi.fn();
 
 vi.mock("next/navigation", () => ({
   useSearchParams: () => searchParams,
+  useRouter: () => ({ replace }),
+  usePathname: () => "/vulnerabilities",
 }));
 
 function vuln(overrides: Partial<TrackedVulnerability> = {}): TrackedVulnerability {
@@ -130,6 +135,37 @@ describe("Vulnerability Center", () => {
     expect(fetchSpy.mock.calls[0][0]).toMatchObject({ finding_type: "misconfiguration", detector_source: "nuclei" });
     expect(screen.getByRole("combobox", { name: "Finding type" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Detector" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Network exposure" })).toBeInTheDocument();
+  });
+
+  it("normalises deep-link filters to values a saved view accepts", async () => {
+    searchParams = new URLSearchParams({
+      severity: " HIGH ",
+      state: "open",
+      finding_type: "Misconfiguration",
+      detector_source: "Not-A-Detector",
+      exposure: "EXTERNAL",
+      sla: "bogus",
+    });
+    const fetchSpy = vi.spyOn(apiModule, "fetchTrackedVulnerabilities").mockResolvedValue({
+      items: [], total: 0, offset: 0, limit: 25, has_more: false,
+    });
+    vi.spyOn(apiModule, "fetchVulnerabilitySummary").mockResolvedValue({
+      total: 0, open_total: 0, untriaged: 0, unassigned: 0, estate_risk: "low",
+      by_state: {}, by_severity_open: {}, by_risk_level_open: {},
+      by_sla: {}, breached: 0, worst_breached_severity: null, generated_at: null,
+    });
+    renderPage();
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    const filters = fetchSpy.mock.calls[0][0]!;
+    expect(filters).toMatchObject({
+      severity: "high",
+      state: "OPEN",
+      finding_type: "misconfiguration",
+      network_exposure: "external",
+    });
+    expect(filters.detector_source || "").toBe("");
+    expect(filters.sla || "").toBe("");
   });
 
   beforeEach(() => {
@@ -176,6 +212,35 @@ describe("Vulnerability Center", () => {
       last_stats: {},
       refresh_requested_at: null,
       refresh_requested_by: null,
+    });
+  });
+
+  it("rewrites ?assetId= when a saved view is applied, keeping the other parameters", async () => {
+    searchParams = new URLSearchParams({ assetId: "ast_old", severity: "high" });
+    useAuthStore.setState({
+      user: { username: "u", default_tenant: "default", tenants: [] } as unknown as Me,
+      activeTenant: "default",
+    });
+    vi.spyOn(apiModule, "fetchTrackedVulnerabilities").mockResolvedValue({
+      items: [], total: 0, offset: 0, limit: 25, has_more: false,
+    });
+    const view = {
+      view_id: "v1",
+      name: "Other asset",
+      page: "vulnerabilities",
+      compatible: true,
+      state: { version: 1, search: "", sort: null, order: "desc", filters: { assetId: "ast_new" } },
+    };
+    vi.spyOn(apiModule.api, "get").mockImplementation(async (url: string) => ({
+      data: url === "/saved-views" ? [view] : [],
+    }));
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole("option", { name: "Other asset" });
+    await user.selectOptions(screen.getByRole("combobox", { name: "Saved views" }), "v1");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    expect(replace).toHaveBeenLastCalledWith("/vulnerabilities?assetId=ast_new&severity=high", {
+      scroll: false,
     });
   });
 
