@@ -32,7 +32,7 @@ from api.services import audit as audit_service
 from api.services import bulk_actions
 from api.services import endpoint_inventory as endpoint_inventory_service
 from api.settings import Settings
-from api.services import api_exports
+from api.routes._export import export_response
 from fastapi.responses import StreamingResponse
 
 router = APIRouter(prefix="/assets", tags=["assets"])
@@ -51,14 +51,14 @@ def export_assets(
     Continue with X-Next-Cursor until that header is absent. Cursors expire
     after 24 hours. Concurrent changes are visible; this is not a snapshot.
     """
-    try:
-        rows, next_cursor = api_exports.export_page(settings, tenant_id=principal.tenant_id, resource="assets", cursor=cursor, limit=limit)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    headers = {"Content-Disposition": f'attachment; filename="assets.{format}"', "Cache-Control": "no-store"}
-    if next_cursor:
-        headers["X-Next-Cursor"] = next_cursor
-    return StreamingResponse(api_exports.stream_rows("assets", rows, format), media_type="text/csv" if format == "csv" else "application/x-ndjson", headers=headers)
+    return export_response(
+        settings,
+        tenant_id=principal.tenant_id,
+        resource="assets",
+        format=format,
+        cursor=cursor,
+        limit=limit,
+    )
 
 
 @router.get("", response_model=Page[AssetSummary])

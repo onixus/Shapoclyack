@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy as copy_module
 import hmac
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -10,9 +12,10 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.routing import APIRoute
 from starlette.routing import Mount
 
-from api.versioning import ApiVersionMiddleware
+from api.versioning import ApiVersionMiddleware, deprecation_headers
 
 from api import __version__
 from api.auth import get_settings
@@ -313,6 +316,47 @@ def _check_flag(report: health_service.Readiness, name: str) -> bool | None:
     return None if reported is None else reported == health_service.STATUS_OK
 
 
+def _operation_id(route: APIRoute) -> str:
+    """Stable operation ID (``<first tag>_<handler name>``).
+
+    FastAPI's default embeds the URL shape and HTTP method, so renaming a path
+    parameter would silently rename every generated SDK method.
+    """
+    if not route.tags:
+        return route.name
+    return re.sub(r"\W+", "_", f"{route.tags[0]}_{route.name}")
+
+
+def _publish_v1_schema(app: FastAPI) -> None:
+    """Describe every ``/api/...`` route a second time as ``/api/v1/...``.
+
+    The legacy paths stay in the schema (their operation IDs get a ``_legacy``
+    suffix so IDs remain unique); the generated SDK reads only the v1 copies.
+    Paths that already exist under ``/api/v1`` are left alone.
+    """
+    build = app.openapi
+
+    def openapi() -> dict:
+        if app.openapi_schema is not None:
+            return app.openapi_schema
+        schema = build()
+        paths = schema["paths"]
+        for path in list(paths):
+            if not path.startswith("/api/") or path.startswith("/api/v1/"):
+                continue
+            versioned = "/api/v1/" + path[len("/api/") :]
+            if versioned in paths:
+                continue
+            copy = copy_module.deepcopy(paths[path])
+            for operation in paths[path].values():
+                if isinstance(operation, dict) and "operationId" in operation:
+                    operation["operationId"] += "_legacy"
+            paths[versioned] = copy
+        return schema
+
+    app.openapi = openapi  # type: ignore[method-assign]
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     # Before anything else: a retention floor the operator configured and the
@@ -373,6 +417,7 @@ def create_app() -> FastAPI:
         docs_url="/docs" if docs_enabled else None,
         redoc_url="/redoc" if docs_enabled else None,
         openapi_url="/openapi.json" if docs_enabled else None,
+        generate_unique_id_function=_operation_id,
     )
     tracing_service.configure(app, settings)
     if settings.endpoint_inventory_enabled:
@@ -485,9 +530,6 @@ def create_app() -> FastAPI:
         )
 
     @app.get(
-        "/api/v1/health", response_model=HealthResponse, tags=["health"], dependencies=probe_scope
-    )
-    @app.get(
         "/api/health", response_model=HealthResponse, tags=["health"], dependencies=probe_scope
     )
     def health() -> HealthResponse:
@@ -510,10 +552,11 @@ def create_app() -> FastAPI:
             sso=SsoStatus.model_validate(oidc_service.public_config(settings)),
         )
 
-    # Legacy /api routes remain for deployed agents and console clients.
+    # Routers are mounted once, under /api. ApiVersionMiddleware rewrites
+    # /api/v1/* to /api/* before routing, so a second mount under /api/v1 would
+    # be dead code; the v1 paths exist in the OpenAPI schema only (see below).
     def include_api_router(router):
         app.include_router(router, prefix="/api")
-        app.include_router(router, prefix="/api/v1")
 
     include_api_router(auth_routes.router)
     include_api_router(runs_routes.router)
@@ -565,9 +608,10 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         ApiVersionMiddleware,
-        deprecated_at=settings.api_deprecated_at,
-        sunset_at=settings.api_sunset_at,
+        headers=deprecation_headers(settings.api_deprecated_at, settings.api_sunset_at),
     )
+
+    _publish_v1_schema(app)
 
     web_dist = settings.web_dist
     if web_dist.is_dir() and (web_dist / "index.html").exists():

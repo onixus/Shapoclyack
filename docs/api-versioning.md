@@ -20,11 +20,11 @@ No removal is scheduled merely by installing this release.
 
 Operators announcing retirement of the unversioned alias configure both
 `OCTO_API_DEPRECATED_AT` and `OCTO_API_SUNSET_AT` as timezone-qualified ISO 8601
-instants (surrounding whitespace is ignored; a malformed value stops startup with a message naming the variable). The middleware refuses a partial schedule or a sunset less than
+instants (surrounding whitespace is ignored; a malformed value stops startup with a message naming the variable). `load_settings` refuses a partial schedule or a sunset less than
 twelve calendar months after the announcement. Configured legacy responses
 include `Deprecation: @<unix-seconds>` and an HTTP-date `Sunset` header;
-versioned responses do not. The alias also links to `/api/v1/` with
-`rel="successor-version"`. These headers communicate the published schedule;
+versioned responses do not. The alias also sends a `Link` header with
+`rel="successor-version"` pointing at the `/api/v1` equivalent of the requested path. These headers communicate the published schedule;
 they do not automatically remove routes. A later major release must retain
 its N-1 implementation for the policy window. API changes are recorded in
 [the API changelog](api-changelog.md).
@@ -53,8 +53,9 @@ attachments with `Cache-Control: no-store`. No total-count query is required.
 Pagination uses the unique ID in ascending order, not offsets. Cursors bind
 the tenant, resource, last ID, format version and 24-hour expiry under an HMAC;
 invalid, tampered, expired and cross-tenant/resource cursors return 422. The
-format and page size may change between pages. Rotating the JWT secret
-invalidates cursors. There are no export filters or alternate sorts in v1.
+format and page size may change between pages. Cursors are signed with a key derived from the JWT secret (not the raw secret);
+secrets listed in `OCTO_JWT_SECRET_PREVIOUS` stay valid for in-flight cursors
+during a rotation, and cursors expire after 24 hours anyway. There are no export filters or alternate sorts in v1.
 
 These are live pages, not a transaction-wide snapshot. A concurrent insert
 whose ID sorts before the cursor will not be included; changed rows may reflect
@@ -85,7 +86,7 @@ feature still returns the server's usual 404.
 from shapoclyack import Client
 
 client = Client("https://scanner.example", token, tenant_id="default")
-with client.export_assets_api_v1_assets_export_get(
+with client.assets_export_assets(
     query={"format": "ndjson", "limit": 1000}, raw=True
 ) as response:
     for line in response:
@@ -101,12 +102,15 @@ returned as bytes; read export pages with `raw=True` to get `X-Next-Cursor`. Mul
 transport validates the declared request media type against OpenAPI. It does
 not construct multipart encodings or typed model objects. Close raw responses
 with a `with` block. Redirects are refused so bearer credentials cannot be
-forwarded to another origin. A client bound to a tenant rejects conflicting
+forwarded to another origin. `base_url` may carry a path prefix (a reverse
+proxy mount such as `https://host/shapoclyack`) but no credentials, query or fragment.
+Method names are stable operation IDs (`<first tag>_<handler name>`), not URL-derived.
+The CLI prints the response body (up to 4 KB) of HTTP errors to stderr. A client bound to a tenant rejects conflicting
 query parameters.
 
 ```sh
 # Set SHAPOCLYACK_TOKEN through your existing secret-management environment.
-shapoclyack export_assets_api_v1_assets_export_get \
+shapoclyack assets_export_assets \
   --url https://scanner.example --tenant default \
   --query '{"format":"csv","limit":1000}' > assets.csv
 ```

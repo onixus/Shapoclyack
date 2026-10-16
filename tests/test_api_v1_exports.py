@@ -12,7 +12,8 @@ from fastapi.testclient import TestClient
 from api.db import models
 from api.db.engine import get_session
 from api.services import api_exports
-from api.versioning import ApiVersionMiddleware
+from api.settings import load_settings
+from api.versioning import ApiVersionMiddleware, deprecation_headers
 from tests.conftest import configured_client, login, make_settings
 
 
@@ -224,39 +225,50 @@ def test_versioned_location_leaves_other_hosts_alone():
 
 
 def test_schedule_dates_are_trimmed_and_errors_name_the_variable():
-    middleware = ApiVersionMiddleware(
-        None, deprecated_at=" 2026-01-01T00:00:00Z\n", sunset_at=" 2027-01-01T00:00:00Z "
-    )
-    assert middleware.headers["Sunset"].endswith("GMT")
+    headers = deprecation_headers(" 2026-01-01T00:00:00Z\n", " 2027-01-01T00:00:00Z ")
+    assert headers["Sunset"].endswith("GMT")
     with pytest.raises(ValueError, match="OCTO_API_DEPRECATED_AT.*ISO 8601"):
-        ApiVersionMiddleware(None, deprecated_at="next friday", sunset_at="2027-01-01T00:00:00Z")
+        deprecation_headers("next friday", "2027-01-01T00:00:00Z")
     with pytest.raises(ValueError, match="OCTO_API_SUNSET_AT.*timezone"):
-        ApiVersionMiddleware(None, deprecated_at="2026-01-01T00:00:00Z", sunset_at="2027-01-01")
+        deprecation_headers("2026-01-01T00:00:00Z", "2027-01-01")
     with pytest.raises(ValueError, match="OCTO_API_SUNSET_AT.*OCTO_API_DEPRECATED_AT"):
-        ApiVersionMiddleware(None, deprecated_at="2026-01-01T00:00:00Z", sunset_at="2026-06-01T00:00:00Z")
+        deprecation_headers("2026-01-01T00:00:00Z", "2026-06-01T00:00:00Z")
 
 
 def test_schedule_requires_twelve_months_and_timezone():
     with pytest.raises(ValueError):
-        ApiVersionMiddleware(
-            None, deprecated_at="2026-01-01T00:00:00Z", sunset_at="2026-12-31T00:00:00Z"
-        )
+        deprecation_headers("2026-01-01T00:00:00Z", "2026-12-31T00:00:00Z")
     with pytest.raises(ValueError):
-        ApiVersionMiddleware(
-            None, deprecated_at="2026-01-01T00:00:00", sunset_at="2027-01-01T00:00:00"
-        )
+        deprecation_headers("2026-01-01T00:00:00", "2027-01-01T00:00:00")
     with pytest.raises(ValueError):
-        ApiVersionMiddleware(None, deprecated_at="2026-01-01T00:00:00Z")
+        deprecation_headers("2026-01-01T00:00:00Z")
+    # Leap-day announcement: one calendar year later is 28 Feb.
+    assert deprecation_headers("2028-02-29T00:00:00Z", "2029-02-28T00:00:00Z")
+
+
+@pytest.mark.parametrize(
+    "deprecated, sunset",
+    [
+        ("2026-01-01T00:00:00Z", ""),
+        ("next friday", "2027-01-01T00:00:00Z"),
+        ("2026-01-01T00:00:00Z", "2026-06-01T00:00:00Z"),
+    ],
+)
+def test_load_settings_rejects_bad_schedule_at_startup(monkeypatch, deprecated, sunset):
+    monkeypatch.setenv("OCTO_API_DEPRECATED_AT", deprecated)
+    monkeypatch.setenv("OCTO_API_SUNSET_AT", sunset)
+    with pytest.raises(ValueError, match="OCTO_API_"):
+        load_settings()
 
 
 def test_expired_cursor_and_spreadsheet_whitespace():
     cursor = api_exports._encode(
         {"v": 1, "tenant": "default", "resource": "assets", "after": "a", "expires": 0},
-        "secret",
+        api_exports.derive_cursor_key("secret"),
     )
     with pytest.raises(ValueError):
         api_exports._decode(
-            cursor, tenant_id="default", resource="assets", secret="secret"
+            cursor, tenant_id="default", resource="assets", keys=[api_exports.derive_cursor_key("secret")]
         )
     for value in ["=1", "+1", "-1", "@SUM(1)", "  =1", "\ttext", "\rtext", "\ntext"]:
         text = "".join(api_exports.stream_rows("assets", [{"asset_id": value}], "csv"))
@@ -465,3 +477,112 @@ def test_existing_v1_provisioning_exchange_stays_reachable(setup):
     for path in ("/api/auth/exchange", "/api/v1/auth/exchange"):
         response = client.post(path, json={"provisioning_key": "invalid-key"})
         assert response.status_code == 401, response.text
+
+
+def _cursor(secret_key):
+    return api_exports._encode(
+        {
+            "v": 1,
+            "tenant": "default",
+            "resource": "assets",
+            "after": "a",
+            "expires": 4_000_000_000,
+        },
+        secret_key,
+    )
+
+
+def test_cursor_key_is_domain_separated_and_survives_rotation():
+    new, old = "new-secret", "old-secret"
+    settings = make_settings(Path("."), jwt_secret=new, jwt_secret_previous=[old])
+    keys = api_exports._cursor_keys(settings)
+    decode = lambda cursor, keys=keys: api_exports._decode(  # noqa: E731
+        cursor, tenant_id="default", resource="assets", keys=keys
+    )
+    assert decode(_cursor(api_exports.derive_cursor_key(new))) == "a"
+    # Issued under the retired secret before rotation: still accepted.
+    assert decode(_cursor(api_exports.derive_cursor_key(old))) == "a"
+    # Signed with the raw secret (the old scheme) or an unrelated one: refused.
+    for forged in (_cursor(new), _cursor(old), _cursor(api_exports.derive_cursor_key("x"))):
+        with pytest.raises(ValueError):
+            decode(forged)
+    # Once the old secret is dropped from the window its cursors stop working.
+    with pytest.raises(ValueError):
+        decode(_cursor(api_exports.derive_cursor_key(old)), keys=keys[:1])
+
+
+def test_versioned_request_keeps_encoded_raw_path_and_link_points_at_v1():
+    seen = {}
+    app = FastAPI()
+
+    @app.get("/api/assets/{asset_id}")
+    def asset(asset_id: str, request: Request):
+        seen["raw_path"] = request.scope["raw_path"]
+        return {"asset_id": asset_id}
+
+    app.add_middleware(ApiVersionMiddleware)
+    http = TestClient(app)
+    response = http.get("/api/v1/assets/a%3Fb%25c")
+    assert response.json() == {"asset_id": "a?b%c"}
+    assert seen["raw_path"] == b"/api/assets/a%3Fb%25c"
+    legacy = http.get("/api/assets/a%3Fb%25c")
+    assert legacy.headers["link"] == '</api/v1/assets/a%3Fb%25c>; rel="successor-version"'
+
+
+def test_sdk_base_url_accepts_path_prefix_but_not_credentials_or_query(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "sdk"))
+    from shapoclyack import Client
+    from shapoclyack.operations import OPERATIONS
+
+    for bad in (
+        "https://u:p@api.example/prefix",
+        "https://api.example/prefix?x=1",
+        "https://api.example/prefix#frag",
+        "ftp://api.example",
+    ):
+        with pytest.raises(ValueError):
+            Client(bad, "t")
+    client = Client("https://api.example/shapoclyack/", "t")
+    seen = []
+
+    def open_request(request, timeout):
+        seen.append(request.full_url)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(client._opener, "open", open_request)
+    operation = next(
+        name for name, spec in OPERATIONS.items() if spec["path"] == "/api/v1/assets/export"
+    )
+    with pytest.raises(RuntimeError):
+        client.request(operation, query={"limit": 1})
+    assert seen == ["https://api.example/shapoclyack/api/v1/assets/export?limit=1"]
+
+
+def test_sdk_cli_prints_bounded_http_error_body(monkeypatch, capsys):
+    import urllib.error
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "sdk"))
+    from shapoclyack import cli
+    from shapoclyack.client import Client
+    from shapoclyack.operations import OPERATIONS
+
+    operation = next(iter(OPERATIONS))
+
+    def refuse(self, *args, **kwargs):
+        raise urllib.error.HTTPError(
+            "https://api.example/x",
+            422,
+            "Unprocessable",
+            {},
+            io.BytesIO(b'{"detail":"bad cursor"}' + b"x" * 10000),
+        )
+
+    monkeypatch.setattr(Client, "request", refuse)
+    monkeypatch.setenv("SHAPOCLYACK_TOKEN", "t")
+    monkeypatch.setattr("sys.argv", ["shapoclyack", operation])
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+    assert exit_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "422" in err and '{"detail":"bad cursor"}' in err
+    assert len(err) < 4096 + 200

@@ -81,6 +81,7 @@ from api.db import models
 from api.db.engine import get_session
 from api.services import audit as audit_service
 from api.services import quotas
+from api.services.csv_safety import FORMULA_PREFIXES
 from api.services.assets import (
     DATA_CLASSIFICATIONS,
     ENVIRONMENTS,
@@ -138,10 +139,10 @@ _TAG_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}$")
 _TAG_VALUE_MAX = 256
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+$")
 #: Leading characters a spreadsheet evaluates instead of displaying — the set
-#: ``routes/audit.py`` neutralises on export. Refused on the way *in*: none of
+#: ``services/csv_safety.py`` neutralises on export. Refused on the way *in*: none of
 #: these fields has a legitimate value that starts with one, and a value that
 #: is stored is a value some later export hands to Excel.
-_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+_FORMULA_PREFIXES = FORMULA_PREFIXES
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 #: ``IN`` lists are chunked to stay far from Postgres' bind-parameter limit.

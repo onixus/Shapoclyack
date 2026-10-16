@@ -25,9 +25,11 @@ class Client:
             or url.query
             or url.fragment
         ):
-            raise ValueError("base_url must be an HTTP(S) origin without credentials")
-        if url.path not in {"", "/"}:
-            raise ValueError("base_url must be an origin, without a path")
+            raise ValueError(
+                "base_url must be an HTTP(S) URL without credentials, query or fragment"
+            )
+        # A path prefix (e.g. https://host/shapoclyack behind a reverse proxy)
+        # is allowed; operation paths are appended to it.
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.tenant_id = tenant_id

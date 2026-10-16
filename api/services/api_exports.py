@@ -16,6 +16,7 @@ from sqlalchemy import select
 
 from api.db import models
 from api.db.engine import get_session
+from api.services.csv_safety import drain, neutralize_cell
 
 # Explicit public export contract: no raw evidence, credentials or ORM internals.
 COLUMNS = {
@@ -47,7 +48,27 @@ COLUMNS = {
         "due_at",
     ),
 }
+CURSOR_KEY_INFO = b"shapoclyack-export-cursor-v1"
 MODELS = {"assets": models.Asset, "vulnerabilities": models.Vulnerability}
+
+
+def derive_cursor_key(operator_secret: str) -> str:
+    """Cursor signing key, domain-separated from the operator's JWT secret.
+
+    The cursor MAC must not be computable with (or reusable as) the raw
+    ``jwt_secret``, so a cursor never verifies under any other use of that key.
+    """
+    return hmac.new(
+        operator_secret.encode(), CURSOR_KEY_INFO, hashlib.sha256
+    ).hexdigest()
+
+
+def _cursor_keys(settings) -> list[str]:
+    """Current key first, then keys of the retired secrets (rotation window)."""
+    return [
+        derive_cursor_key(secret)
+        for secret in (settings.jwt_secret, *settings.jwt_secret_previous)
+    ]
 
 
 def _encode(document: dict, secret: str) -> str:
@@ -62,13 +83,18 @@ def _encode(document: dict, secret: str) -> str:
     return payload + "." + signature
 
 
-def _decode(cursor: str, *, tenant_id: str, resource: str, secret: str) -> str:
+def _decode(cursor: str, *, tenant_id: str, resource: str, keys: list[str]) -> str:
     try:
         payload, signature = cursor.split(".")
-        expected = hmac.new(
-            secret.encode(), payload.encode(), hashlib.sha256
-        ).hexdigest()
-        if not hmac.compare_digest(signature, expected):
+        # Every key is tried so a match does not depend on which one signed it.
+        matches = [
+            hmac.compare_digest(
+                signature,
+                hmac.new(key.encode(), payload.encode(), hashlib.sha256).hexdigest(),
+            )
+            for key in keys
+        ]
+        if not any(matches):
             raise ValueError
         data = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
         if (
@@ -90,7 +116,7 @@ def export_page(
 ):
     after = (
         _decode(
-            cursor, tenant_id=tenant_id, resource=resource, secret=settings.jwt_secret
+            cursor, tenant_id=tenant_id, resource=resource, keys=_cursor_keys(settings)
         )
         if cursor
         else ""
@@ -120,7 +146,7 @@ def export_page(
                 "after": rows[-1][columns[0]],
                 "expires": int(time.time()) + 86400,
             },
-            settings.jwt_secret,
+            derive_cursor_key(settings.jwt_secret),
         )
     return rows, next_cursor
 
@@ -133,23 +159,8 @@ def stream_rows(resource: str, rows: list[dict], format: str) -> Iterator[str]:
     buffer = io.StringIO(newline="")
     writer = csv.DictWriter(buffer, fieldnames=COLUMNS[resource])
     writer.writeheader()
-    yield buffer.getvalue()
-    buffer.seek(0)
-    buffer.truncate()
+    yield drain(buffer)
     for row in rows:
-        # Spreadsheet formulas may hide behind whitespace/control characters.
-        writer.writerow(
-            {
-                key: "'" + value
-                if isinstance(value, str)
-                and (
-                    value.startswith(("\t", "\r", "\n"))
-                    or value.lstrip().startswith(("=", "+", "-", "@"))
-                )
-                else value
-                for key, value in row.items()
-            }
-        )
-        yield buffer.getvalue()
-        buffer.seek(0)
-        buffer.truncate()
+        writer.writerow({key: neutralize_cell(value) for key, value in row.items()})
+        yield drain(buffer)
+

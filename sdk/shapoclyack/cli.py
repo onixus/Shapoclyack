@@ -5,9 +5,12 @@ import json
 import os
 import shutil
 import sys
+import urllib.error
 
 from .client import Client
 from .operations import OPERATIONS
+
+_ERROR_BODY_LIMIT = 4096
 
 
 def main():
@@ -58,7 +61,17 @@ def main():
                 print("X-Next-Cursor: " + cursor, file=sys.stderr)
     except Exception as exc:
         # urllib errors do not print headers or the bearer credential.
-        parser.exit(1, str(exc) + "\n")
+        message = str(exc)
+        if isinstance(exc, urllib.error.HTTPError):
+            # The server's explanation (validation detail, 403 reason) lives in
+            # the body; bound it so a hostile or broken server cannot flood us.
+            try:
+                body = exc.read(_ERROR_BODY_LIMIT).decode("utf-8", "replace").strip()
+            except Exception:  # the status line alone is still a useful error
+                body = ""
+            if body:
+                message += "\n" + body
+        parser.exit(1, message + "\n")
 
 
 if __name__ == "__main__":

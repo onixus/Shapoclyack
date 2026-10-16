@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from email.utils import format_datetime
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.responses import JSONResponse
@@ -39,33 +39,56 @@ def _parse_instant(name: str, value: str) -> datetime:
     return parsed
 
 
+def deprecation_headers(deprecated_at: str = "", sunset_at: str = "") -> dict[str, str]:
+    """Validate the deprecation schedule and return its response headers.
+
+    Raises ``ValueError`` naming the variable; ``api.settings.load_settings``
+    calls this so a bad schedule stops the process at startup instead of
+    failing on the first request (Starlette builds middleware lazily).
+    """
+    deprecated_at = (deprecated_at or "").strip()
+    sunset_at = (sunset_at or "").strip()
+    if bool(deprecated_at) != bool(sunset_at):
+        raise ValueError(
+            "OCTO_API_DEPRECATED_AT and OCTO_API_SUNSET_AT must be configured together"
+        )
+    if not deprecated_at:
+        return {}
+    start = _parse_instant("OCTO_API_DEPRECATED_AT", deprecated_at)
+    end = _parse_instant("OCTO_API_SUNSET_AT", sunset_at)
+    # At least twelve calendar months, including leap-day announcements.
+    anniversary = (
+        start.replace(year=start.year + 1, day=min(start.day, 28))
+        if start.month == 2 and start.day == 29
+        else start.replace(year=start.year + 1)
+    )
+    if end < anniversary:
+        raise ValueError(
+            "OCTO_API_SUNSET_AT must be at least twelve months after OCTO_API_DEPRECATED_AT"
+        )
+    return {
+        "Deprecation": f"@{int(start.timestamp())}",
+        "Sunset": format_datetime(end.astimezone(UTC), usegmt=True),
+    }
+
+
+def versioned_path(path: str) -> str:
+    """The ``/api/v1`` equivalent of a legacy ``/api`` path."""
+    return "/api/v1/" + path[len("/api/") :] if path.startswith("/api/") else path
+
+
+def _strip_version(raw_path: bytes, root_path: str) -> bytes | None:
+    """Drop the ``/v1`` segment from the client's original (still encoded) path."""
+    marker = root_path.encode("utf-8") + b"/api/v1/"
+    if raw_path.startswith(marker):
+        return raw_path[: len(marker) - len(b"v1/")] + raw_path[len(marker) :]
+    return None
+
+
 class ApiVersionMiddleware:
-    def __init__(self, app, *, deprecated_at="", sunset_at=""):
+    def __init__(self, app, *, headers=None):
         self.app = app
-        self.headers = {}
-        deprecated_at = (deprecated_at or "").strip()
-        sunset_at = (sunset_at or "").strip()
-        if bool(deprecated_at) != bool(sunset_at):
-            raise ValueError(
-                "OCTO_API_DEPRECATED_AT and OCTO_API_SUNSET_AT must be configured together"
-            )
-        if deprecated_at:
-            start = _parse_instant("OCTO_API_DEPRECATED_AT", deprecated_at)
-            end = _parse_instant("OCTO_API_SUNSET_AT", sunset_at)
-            # At least twelve calendar months, including leap-day announcements.
-            anniversary = (
-                start.replace(year=start.year + 1, day=min(start.day, 28))
-                if start.month == 2 and start.day == 29
-                else start.replace(year=start.year + 1)
-            )
-            if end < anniversary:
-                raise ValueError(
-                    "OCTO_API_SUNSET_AT must be at least twelve months after OCTO_API_DEPRECATED_AT"
-                )
-            self.headers = {
-                "Deprecation": f"@{int(start.timestamp())}",
-                "Sunset": format_datetime(end.astimezone(UTC), usegmt=True),
-            }
+        self.headers = dict(headers or {})
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -79,8 +102,19 @@ class ApiVersionMiddleware:
                 scope, receive, send
             )
         versioned = path != canonical
+        successor = versioned_path(path)
         if versioned:
-            scope = dict(scope, path=canonical, raw_path=canonical.encode("utf-8"))
+            raw_path = scope.get("raw_path")
+            stripped = (
+                _strip_version(raw_path, scope.get("root_path", "")) if raw_path else None
+            )
+            scope = dict(
+                scope,
+                path=canonical,
+                raw_path=stripped
+                if stripped is not None
+                else (scope.get("root_path", "") + canonical).encode("utf-8"),
+            )
 
         async def send_version(message):
             if message["type"] == "http.response.start" and (
@@ -95,7 +129,10 @@ class ApiVersionMiddleware:
                         headers["location"] = versioned_location(location, host)
                 if not versioned:
                     headers.update(self.headers)
-                    headers.append("Link", '</api/v1/>; rel="successor-version"')
+                    headers.append(
+                        "Link",
+                        f'<{quote(scope.get("root_path", "") + successor)}>; rel="successor-version"',
+                    )
             await send(message)
 
         await self.app(scope, receive, send_version)

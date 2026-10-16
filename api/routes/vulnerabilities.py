@@ -82,7 +82,8 @@ from api.services import risk_snapshots
 from api.services import vuln_states
 from api.services import vulnerabilities as vulns_service
 from api.settings import Settings
-from api.services import api_exports
+from api.routes._export import export_response
+from api.services.csv_safety import drain, neutralize_cell
 
 router = APIRouter(prefix="/vulnerabilities", tags=["vulnerabilities"])
 
@@ -124,14 +125,14 @@ def export_vulnerabilities(
     Continue with X-Next-Cursor until that header is absent. Cursors expire
     after 24 hours. Concurrent changes are visible; this is not a snapshot.
     """
-    try:
-        rows, next_cursor = api_exports.export_page(settings, tenant_id=principal.tenant_id, resource="vulnerabilities", cursor=cursor, limit=limit)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    headers = {"Content-Disposition": f'attachment; filename="vulnerabilities.{format}"', "Cache-Control": "no-store"}
-    if next_cursor:
-        headers["X-Next-Cursor"] = next_cursor
-    return StreamingResponse(api_exports.stream_rows("vulnerabilities", rows, format), media_type="text/csv" if format == "csv" else "application/x-ndjson", headers=headers)
+    return export_response(
+        settings,
+        tenant_id=principal.tenant_id,
+        resource="vulnerabilities",
+        format=format,
+        cursor=cursor,
+        limit=limit,
+    )
 
 
 # Declared before /{vuln_id} so these paths are not read as ids.
@@ -286,12 +287,6 @@ def list_all_events(
     return build_page(items, total, page)
 
 
-# Leading characters a spreadsheet evaluates rather than displays. Same list
-# and same reason as ``api/routes/audit.py``: the register's cells carry a
-# finding's title and somebody's free-text justification, and the file exists
-# to be opened in Excel by whoever is reviewing the acceptances.
-_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
-
 #: Columns of the CSV, in the order an auditor reads them: what was accepted,
 #: on whose word, until when, and who owns it now.
 _REGISTER_CSV_COLUMNS = (
@@ -322,24 +317,15 @@ def _register_csv(entries: list[dict[str, Any]]) -> Iterator[str]:
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=_REGISTER_CSV_COLUMNS, extrasaction="ignore")
     writer.writeheader()
-    yield _drain(buffer)
+    yield drain(buffer)
     for entry in entries:
         writer.writerow(
             {
-                key: ("'" + value if isinstance(value, str) and value.startswith(
-                    _FORMULA_PREFIXES
-                ) else value)
+                key: neutralize_cell(value)
                 for key, value in entry.items()
             }
         )
-        yield _drain(buffer)
-
-
-def _drain(buffer: io.StringIO) -> str:
-    value = buffer.getvalue()
-    buffer.seek(0)
-    buffer.truncate(0)
-    return value
+        yield drain(buffer)
 
 
 @router.get("/risk-register", response_model=None)

@@ -1947,6 +1947,14 @@ def _agent_mtls_settings() -> dict[str, Any]:
 def load_settings() -> Settings:
     env = _resolve_env()
 
+    # Fail fast: Starlette builds middleware on the first request, so a bad
+    # schedule checked there would pass startup and then 500 every request.
+    from api.versioning import deprecation_headers
+
+    deprecation_headers(
+        os.environ.get("OCTO_API_DEPRECATED_AT", ""), os.environ.get("OCTO_API_SUNSET_AT", "")
+    )
+
     # Since #156 this is a one-time bootstrap input, not the account store:
     # api/services/users.py imports it into Postgres on a first start and stops
     # consulting it afterwards. The built-in list is kept as the marker for
