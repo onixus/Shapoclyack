@@ -13,7 +13,8 @@ can resolve to link-local by the time it fires.
 
 **S3** writes the report -- and its manifest and signature, so the bucket holds
 the whole evidence package -- through the artifact store's own S3 client, to
-``s3://<bucket>/<prefix>`` with the tenant id and the file name appended. The
+``s3://<bucket>/<tenant id>/<folder>/<file>``: the tenant id always leads, the
+folder is the tenant's own choice inside it. The
 bucket must be on ``OCTO_REPORT_S3_BUCKETS`` and is never the artifact bucket:
 the credentials are the platform's, and a tenant admin who could name any bucket
 they reach would be writing into other tenants' data with them.
@@ -60,11 +61,14 @@ _S3_TARGET_RE = re.compile(r"^s3://([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])(?:/(.*))?$
 
 
 def parse_s3_target(target: str, settings: Settings | None = None) -> tuple[str, str]:
-    """``(bucket, prefix)`` for ``s3://bucket[/prefix]``; ``ValueError`` if unusable.
+    """``(bucket, folder)`` for ``s3://bucket[/folder]``; ``ValueError`` if unusable.
 
-    With ``settings`` the bucket is also checked against the allowlist. The
-    prefix goes through the artifact store's key normaliser, which refuses
-    ``..`` and absolute segments."""
+    The folder is only a sub-folder of the owning tenant's own area: the object
+    key is always ``<tenant id>/<folder>/<file>`` (see ``_send_s3``), so a
+    target cannot point at another tenant's subtree. It goes through the
+    artifact store's key normaliser, which refuses ``..`` and absolute segments.
+    With ``settings`` the bucket is also checked against the allowlist and the
+    platform must have S3 credentials to use."""
 
     match = _S3_TARGET_RE.match(target.strip())
     if not match:
@@ -83,6 +87,16 @@ def parse_s3_target(target: str, settings: Settings | None = None) -> tuple[str,
             )
         if bucket == settings.artifact_s3_bucket.strip().lower():
             raise ValueError("reports cannot be delivered to the artifact store's own bucket")
+        # Without this the client would fall through to boto3's ambient
+        # credential chain (an instance role, ~/.aws) on an installation that
+        # keeps its artifacts on disk -- credentials nobody configured for this.
+        if settings.artifact_backend != "s3" and not (
+            settings.artifact_s3_access_key_id and settings.artifact_s3_secret_access_key
+        ):
+            raise ValueError(
+                "S3 delivery needs OCTO_ARTIFACT_BACKEND=s3 or explicit "
+                "OCTO_ARTIFACT_S3_ACCESS_KEY_ID / OCTO_ARTIFACT_S3_SECRET_ACCESS_KEY"
+            )
     return bucket, prefix
 
 
@@ -271,11 +285,17 @@ def _send_s3(
 ) -> dict[str, Any]:
     # Re-validated on every send, like a webhook: the allowlist may have changed
     # since the schedule was written.
-    bucket, prefix = parse_s3_target(str(recipient["target"]), settings)
+    bucket, folder = parse_s3_target(str(recipient["target"]), settings)
+    tenant = str(report.get("tenant_id") or "")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", tenant) or tenant in {".", ".."}:
+        return _entry(recipient, "failed", "report has no usable tenant id")
+    # The tenant id leads the key whatever the target says, so the folder a
+    # tenant admin chose can only ever be inside that tenant's own subtree of a
+    # bucket shared with others.
     destination = S3ArtifactStore(
         S3Config(
             bucket=bucket,
-            prefix=prefix,
+            prefix=tenant,
             endpoint_url=settings.artifact_s3_endpoint_url,
             region=settings.artifact_s3_region,
             access_key_id=settings.artifact_s3_access_key_id,
@@ -285,15 +305,18 @@ def _send_s3(
             verify_tls=settings.artifact_s3_verify_tls,
         )
     )
-    tenant = str(report.get("tenant_id") or "")
-    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", tenant):
-        return _entry(recipient, "failed", "report has no usable tenant id")
+    base = f"{folder}/" if folder else ""
     media = _MIME.get(str(report.get("format")), ("application", "octet-stream"))
     # The report first: if the manifest write fails the recipient has the file and
     # the entry says what is missing, rather than the reverse.
-    destination.put_bytes(f"{tenant}/{filename}", payload, content_type="/".join(media))
+    destination.put_bytes(f"{base}{filename}", payload, content_type="/".join(media))
     for name, data in extras.items():
-        destination.put_bytes(f"{tenant}/{name}", data, content_type="application/json")
+        destination.put_bytes(f"{base}{name}", data, content_type="application/json")
+    if not extras:
+        # Delivered, but not as the documented package: say so on the entry.
+        return _entry(
+            recipient, "delivered", "delivered without a manifest: none could be produced"
+        )
     return _entry(recipient, "delivered")
 
 

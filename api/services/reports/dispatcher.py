@@ -177,7 +177,7 @@ class ReportDispatcher:
             payload=payload,
             filename=filename,
             recipients=schedule.get("recipients") or [],
-            extras=store.read_package_extras(self._settings, key),
+            extras=store.read_package_extras(self._settings, report, key, payload),
         )
         if entries:
             store.record_delivery(self._settings, report["report_id"], entries)

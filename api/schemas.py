@@ -3363,7 +3363,7 @@ class ReportVerifyInfo(BaseModel):
     """Result of re-checking a stored report against its signed manifest (#355)."""
 
     report_id: str
-    #: valid | unsigned | untrusted | tampered | missing -- see ``reports.manifest.verify``.
+    #: valid | valid_with_supplied_key | unsigned | untrusted | tampered | missing -- see ``reports.manifest.verify``.
     status: str
     signed: bool = False
     signature_valid: bool | None = None

@@ -289,14 +289,23 @@ month.
   whole vulnerability report on the wire in cleartext. An installation whose
   relay genuinely cannot do TLS sets the flag to `false` and owns that.
 
-**S3** (`{"transport": "s3", "target": "s3://bucket/prefix"}`) writes the report
-and its manifest to `<prefix>/<tenant_id>/<report_id>.<ext>` and
+**S3** (`{"transport": "s3", "target": "s3://bucket/folder"}`) writes the report
+and its manifest to `<tenant_id>/<folder>/<report_id>.<ext>` and
 `.manifest.json` through the artifact store's S3 client: the same endpoint and
-credentials (`OCTO_ARTIFACT_S3_*`), a different bucket. Because those are the
-platform's credentials, the bucket must be listed in `OCTO_REPORT_S3_BUCKETS`
-(empty, the default, switches the transport off) and can never be the artifact
-store's own bucket; a schedule naming anything else is refused when written and
-again when it fires. **SFTP is not implemented**: it needs an SSH client library
+credentials (`OCTO_ARTIFACT_S3_*`), a different bucket. The **tenant id always
+leads the key**: the folder in the target is only a sub-folder of the owning
+tenant's own area, so a target such as `s3://shared/other-tenant` writes to
+`<tenant>/other-tenant/...`, never into the other tenant's subtree. Because the
+credentials are the platform's, the bucket must be listed in
+`OCTO_REPORT_S3_BUCKETS` (empty, the default, switches the transport off) and can
+never be the artifact store's own bucket, and the platform must have credentials
+for it: `OCTO_ARTIFACT_BACKEND=s3`, or explicit `OCTO_ARTIFACT_S3_ACCESS_KEY_ID` /
+`OCTO_ARTIFACT_S3_SECRET_ACCESS_KEY` -- on a local artifact backend without them
+the transport is refused rather than falling back to whatever ambient AWS
+credentials the pod has. A schedule naming anything else is refused when written
+and again when it fires. A missing manifest is rewritten just before delivery; if
+that fails too the recipient's entry is `delivered` with an error text saying it
+went without one. **SFTP is not implemented**: it needs an SSH client library
 the platform does not ship, and is tracked on #355.
 
 In a `PATCH`, a `null` field means "leave it alone". Clearing recipients is
@@ -357,19 +366,36 @@ feature stores nothing secret. Signing is fail-soft:
   answers `missing`.
 
 `GET /api/reports/{id}/verify` re-reads the report from the store, re-hashes it
-and checks the signature. `status` is `valid` (signed, signature good, every
-file matches), `unsigned`, `untrusted` (intact, but signed by a key other than
-`?expected_key_id=`), `tampered` (a file or the manifest changed) or `missing`.
-`key_matches_installation` says whether the signing key is the one this
-installation signs with now (it reads `false` after a rotation). Without
-`expected_key_id` the check proves integrity, not authorship: pin the key id
-from a trusted record, as for evidence packages. Offline, without the platform:
+and checks the signature. The key embedded in a manifest is whatever its signer
+put there, so the signature alone proves nothing: someone who can write to the
+store could swap the report and sign a matching manifest with their own key.
+`valid` therefore requires the signer to be **this installation's current key**.
+`status` is:
+
+* `valid` -- signed by this installation's key, every file matches, and the
+  manifest names this report and tenant;
+* `valid_with_supplied_key` -- as above, but signed by an older key the caller
+  named with `?expected_key_id=` (after a rotation). A supplied id never yields
+  plain `valid`;
+* `unsigned` -- hashes match, nothing vouches for the manifest (no key was
+  configured at generation);
+* `untrusted` -- intact but signed by a key nobody here vouches for, or no key
+  is configured on this installation to compare with;
+* `tampered` -- a file, the manifest or the signature changed, the manifest lists
+  no files, or it belongs to another report or tenant. Wins over `untrusted`;
+* `missing` -- no manifest, or the report object is gone.
+
+`key_matches_installation` says whether the signing key is the current one.
+The manifest's `payload.kind` (`report-manifest`) is part of the signed bytes and
+is checked by the verifier: a manifest is not accepted as a compliance evidence
+package or the other way round. Offline, without the platform:
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" -o rpt.manifest.json \
   "$API/api/reports/$RID/manifest"
-python3 scripts/verify-compliance-evidence.py rpt.manifest.json --key-id "$TRUSTED_KEY_ID"
-sha256sum rpt_*.pdf   # compare with payload.files[].sha256
+python3 scripts/verify-compliance-evidence.py rpt.manifest.json \
+  --kind report-manifest --key-id "$TRUSTED_KEY_ID"
+sha256sum "$RID".pdf   # compare with payload.files[].sha256
 ```
 
 Delivery to S3 carries the manifest with the report; email and webhook deliver
@@ -389,7 +415,7 @@ detached PGP/cosign signature.
 | `GET /api/reports`, `GET /{id}` | viewer | Generated reports and their delivery trail |
 | `GET /api/reports/{id}/download` | viewer | The bytes |
 | `GET /api/reports/{id}/manifest` | viewer | The signed hash manifest (JSON) |
-| `GET /api/reports/{id}/verify` | viewer | Re-hash the stored report and check the manifest signature; optional `?expected_key_id=` pins the signer |
+| `GET /api/reports/{id}/verify` | viewer | Re-hash the stored report and check the manifest signature against this installation's key; optional `?expected_key_id=` names an older key |
 | `DELETE /api/reports/{id}` | operator | Remove a report and its file |
 
 ### Configuration
@@ -406,7 +432,7 @@ detached PGP/cosign signature.
 | `OCTO_REPORT_SMTP_USERNAME` / `OCTO_REPORT_SMTP_PASSWORD` | *(empty)* | Relay credentials; login is attempted only when a username is set |
 | `OCTO_REPORT_SMTP_STARTTLS` | `true` | Require an encrypted connection. A relay that refuses fails that recipient rather than downgrading to cleartext |
 | `OCTO_REPORT_SMTP_TIMEOUT_SECONDS` | `20` | Per-message budget |
-| `OCTO_REPORT_S3_BUCKETS` | *(empty)* | Comma-separated buckets a schedule may deliver to with `s3://bucket/prefix`. Empty switches the S3 transport off. The artifact store's own bucket is always refused |
+| `OCTO_REPORT_S3_BUCKETS` | *(empty)* | Comma-separated buckets a schedule may deliver to with `s3://bucket/folder` (keys are `<tenant>/<folder>/...`). Empty switches the S3 transport off. The artifact store's own bucket is always refused; needs `OCTO_ARTIFACT_BACKEND=s3` or explicit `OCTO_ARTIFACT_S3_ACCESS_KEY_ID`/`..._SECRET_ACCESS_KEY` |
 | `OCTO_EVIDENCE_SIGNING_KEY` | *(unset)* | Dedicated 32-byte Ed25519 private seed (base64/hex) required only to create signed compliance evidence packages |
 
 The report relay is deliberately separate from the scanner's alert SMTP
@@ -436,6 +462,9 @@ the `cryptography` package, not the platform:
 TRUSTED_KEY_ID="REPLACE_WITH_INDEPENDENTLY_VERIFIED_KEY_ID"
 python3 scripts/verify-compliance-evidence.py evidence.json --key-id "$TRUSTED_KEY_ID"
 ```
+
+The same script verifies a report manifest with `--kind report-manifest`; the
+kind is inside the signed payload and each side refuses the other's documents.
 
 ---
 

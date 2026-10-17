@@ -47,7 +47,9 @@ def canonical_bytes(value: Any) -> bytes:
     ).encode("utf-8")
 
 
-def verify(package: Any, *, expected_key_id: str | None = None) -> dict[str, Any]:
+def verify(
+    package: Any, *, expected_key_id: str | None = None, expected_kind: str | None = None
+) -> dict[str, Any]:
     if (
         not isinstance(package, dict)
         or package.get("format") != FORMAT
@@ -58,6 +60,10 @@ def verify(package: Any, *, expected_key_id: str | None = None) -> dict[str, Any
     signature = package.get("signature")
     if not isinstance(payload, dict) or not isinstance(signature, dict):
         raise InvalidEvidencePackage("evidence package is missing payload or signature")
+    if payload.get("kind") != expected_kind:
+        raise InvalidEvidencePackage(
+            f"document kind is {payload.get('kind')!r}, expected {expected_kind!r}"
+        )
     if signature.get("algorithm") != SIGNATURE_ALGORITHM:
         raise InvalidEvidencePackage("unsupported evidence signature algorithm")
     try:
@@ -91,13 +97,19 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="expected trusted signing-key fingerprint",
     )
+    parser.add_argument(
+        "--kind",
+        default=None,
+        help="document kind to accept: omit for a compliance evidence package, "
+        "'report-manifest' for a generated report's manifest",
+    )
     args = parser.parse_args(argv)
     try:
         raw = args.package.read_bytes()
         if len(raw) > MAX_PACKAGE_BYTES:
             raise InvalidEvidencePackage("package exceeds 256 MiB")
         document = json.loads(raw)
-        payload = verify(document, expected_key_id=args.key_id)
+        payload = verify(document, expected_key_id=args.key_id, expected_kind=args.kind)
     except (OSError, ValueError, RecursionError) as exc:
         print(f"invalid evidence package: {exc}", file=sys.stderr)
         return 1

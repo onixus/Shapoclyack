@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from typing import Any
 
 from api.services import artifact_store
@@ -71,7 +72,12 @@ def seal(payload: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
     try:
         document = evidence.sign_payload(payload)
     except evidence.SigningUnavailable as exc:
-        LOG.info("Report manifest written unsigned: %s", exc)
+        # A key that is set but unusable (wrong length, bad base64) is an
+        # operator mistake that otherwise reads as "signing is off": say so loudly.
+        if os.environ.get(evidence.SIGNING_KEY_ENV, "").strip():
+            LOG.warning("Report manifest written UNSIGNED, the signing key is unusable: %s", exc)
+        else:
+            LOG.info("Report manifest written unsigned: %s", exc)
         body = evidence.canonical_bytes(payload)
         return (
             {
@@ -117,16 +123,33 @@ def verify(
     settings: Settings,
     *,
     report_key: str,
+    report_id: str,
+    tenant_id: str,
     expected_key_id: str | None = None,
 ) -> dict[str, Any]:
     """Re-check a stored report against its manifest.
 
-    ``status`` is one of ``valid`` (signed, signature good, every file matches),
-    ``unsigned`` (hashes match but nothing vouches for the manifest), ``tampered``
-    (a file differs from the manifest, or the signature does not verify) and
-    ``untrusted`` (intact, but signed by a key other than ``expected_key_id``)
-    and ``missing`` (no manifest, or the report object is gone). The files are
-    re-read from the store rather than trusted from the row: that is the point.
+    ``status`` is one of
+
+    * ``valid`` -- signed by **this installation's** key, signature good, every
+      file matches, and the manifest is about this very report;
+    * ``valid_with_supplied_key`` -- the same, but the signer is a key other than
+      the installation's current one that the *caller* named in
+      ``expected_key_id`` (an old key after a rotation). Deliberately a
+      different word: it proves the manifest is intact and signed by the key the
+      caller trusts, not that this installation signed it;
+    * ``unsigned`` -- hashes match but nothing vouches for the manifest;
+    * ``untrusted`` -- intact, but signed by a key nobody here vouches for: the
+      key embedded in the manifest is the attacker's to choose, so a signature
+      by an unpinned key proves nothing, and with no key configured and none
+      supplied there is nothing to pin;
+    * ``tampered`` -- a file, the manifest or its signature changed, the
+      manifest lists no files, or it names a different report or tenant. Beats
+      ``untrusted``: the louder signal wins;
+    * ``missing`` -- no manifest, or the report object is gone.
+
+    The files are re-read from the store rather than trusted from the row: that
+    is the point.
     """
     from api.services.compliance import evidence_package as evidence
 
@@ -154,61 +177,75 @@ def verify(
         result.update(status="tampered", detail="the stored manifest is not a report manifest")
         return result
 
+    problems: list[str] = []
+    if payload.get("report_id") != report_id or payload.get("tenant_id") != tenant_id:
+        problems.append("the manifest names a different report or tenant")
+    entries = payload.get("files")
+    if not isinstance(entries, list) or not entries:
+        problems.append("the manifest lists no files")
+        entries = []
+
     signature = document.get("signature")
     if signature:
         result["signed"] = True
         try:
-            # The pin is checked by the caller's intent, not folded into the
-            # signature result: a manifest signed by somebody else is intact but
-            # not trusted, which is a different answer from "altered".
-            evidence.verify(document)
+            evidence.verify(document, expected_kind=KIND)
             result["signature_valid"] = True
         except evidence.InvalidEvidencePackage as exc:
             result["signature_valid"] = False
-            result["detail"] = str(exc)
-        result["key_id"] = signature.get("key_id")
-        current = evidence.current_key_id()
-        result["key_matches_installation"] = None if current is None else result["key_id"] == current
+            problems.append(str(exc))
+        result["key_id"] = signature.get("key_id") if isinstance(signature, dict) else None
     else:
         # Unsigned: the payload digest still catches an edit that forgot to fix it.
         if document.get("payload_sha256") != _sha256(evidence.canonical_bytes(payload)):
-            result["detail"] = "the manifest was modified"
             result["signature_valid"] = False
+            problems.append("the manifest was modified")
+    current = evidence.current_key_id()
+    if result["key_id"] is not None and current is not None:
+        result["key_matches_installation"] = result["key_id"] == current
 
-    files_ok = True
-    for entry in payload.get("files") or []:
+    object_missing = False
+    for entry in entries:
+        if not isinstance(entry, dict):
+            problems.append("the manifest has a malformed file entry")
+            continue
         name = str(entry.get("name"))
+        expected = entry.get("sha256")
+        actual: str | None = None
         # The entry names a file beside the manifest; it is never joined onto a
         # path, only matched against the one report this manifest belongs to.
-        expected = entry.get("sha256")
-        actual: str | None
         if report_key.rsplit("/", 1)[-1] == name:
             try:
                 actual = _sha256(store.get_bytes(report_key))
             except artifact_store.ArtifactNotFound:
                 actual = None
-        else:
-            actual = None
         state = "ok" if actual == expected else ("missing" if actual is None else "modified")
-        files_ok = files_ok and state == "ok"
+        object_missing = object_missing or state == "missing"
+        if state == "modified":
+            problems.append("a file does not match its manifest")
         result["files"].append(
             {"name": name, "sha256": expected, "actual_sha256": actual, "status": state}
         )
 
-    if (
-        expected_key_id is not None
-        and result["signature_valid"]
-        and result["key_id"] != expected_key_id
-    ):
-        result["status"] = "untrusted"
-        result["detail"] = f"signed by {result['key_id']}, not the expected {expected_key_id}"
-    elif result["signature_valid"] is False or not files_ok:
-        if any(f["status"] == "missing" for f in result["files"]) and result["signature_valid"] is not False:
-            result["status"] = "missing"
-            result["detail"] = result["detail"] or "the report object is no longer in the store"
-        else:
-            result["status"] = "tampered"
-            result["detail"] = result["detail"] or "a file does not match its manifest"
+    if problems or result["signature_valid"] is False:
+        result["status"] = "tampered"
+        result["detail"] = "; ".join(dict.fromkeys(problems)) or "the manifest does not verify"
+    elif object_missing:
+        result["status"] = "missing"
+        result["detail"] = "the report object is no longer in the store"
+    elif not result["signed"]:
+        result["status"] = "unsigned"
+    elif current is not None and result["key_id"] == current:
+        result["status"] = "valid"
+    elif expected_key_id is not None and result["key_id"] == expected_key_id:
+        result["status"] = "valid_with_supplied_key"
     else:
-        result["status"] = "valid" if result["signed"] else "unsigned"
+        result["status"] = "untrusted"
+        result["detail"] = (
+            "signed by a key this installation does not sign with"
+            if current is not None
+            else "no signing key is configured here to vouch for the signature"
+        )
+        if expected_key_id is not None:
+            result["detail"] += f"; it is not the supplied {expected_key_id}"
     return result

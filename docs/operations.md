@@ -5261,11 +5261,13 @@ delivered, or to answer "is this the file we sent them?":
 
 1. Fetch the manifest: `GET /api/reports/{id}/manifest`.
 2. Verify the signature offline with the key id from your trusted record:
-   `python3 scripts/verify-compliance-evidence.py rpt.manifest.json --key-id <id>`.
+   `python3 scripts/verify-compliance-evidence.py rpt.manifest.json --kind report-manifest --key-id <id>`.
 3. Compare `sha256sum <report file>` with `payload.files[].sha256`.
 
 Or let the platform do all three against what it stores:
-`GET /api/reports/{id}/verify?expected_key_id=<id>`. `unsigned` means
+`GET /api/reports/{id}/verify`; it answers `valid` only for this installation's
+current key, and after a key rotation `?expected_key_id=<old id>` gives
+`valid_with_supplied_key`. `unsigned` means
 `OCTO_EVIDENCE_SIGNING_KEY` was not set when the report was generated; set it
 (see [configuration.md](configuration.md#signed-compliance-evidence)) and
 regenerate -- an existing manifest is never re-signed. Record the key id

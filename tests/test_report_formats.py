@@ -116,13 +116,6 @@ def test_same_body_renders_to_the_same_xlsx_bytes():
     assert renderer.render(_body(), "xlsx") == renderer.render(_body(), "xlsx")
 
 
-def test_xlsx_opens_in_a_spreadsheet_library():
-    openpyxl = pytest.importorskip("openpyxl")
-    workbook = openpyxl.load_workbook(io.BytesIO(renderer.render(_body(), "xlsx")))
-    assert "Findings" in workbook.sheetnames
-    assert workbook["Findings"]["B2"].value.startswith("'")
-
-
 # ------------------------------------------------------------------- manifest
 
 
@@ -175,6 +168,150 @@ def test_a_rewritten_manifest_does_not_verify(tmp_path, monkeypatch):
 
 
 @requires_postgres
+def test_a_report_resigned_with_someone_elses_key_is_not_valid(tmp_path, monkeypatch):
+    """Whoever can write to the store can swap the report, make a key pair, and
+    sign a matching manifest. The embedded key must not be what is trusted."""
+    configured_client(tmp_path, monkeypatch)
+    monkeypatch.setenv("OCTO_EVIDENCE_SIGNING_KEY", _signing_key())
+    settings, tenant_id = _seed(tmp_path)
+    report = _generate(settings, tenant_id)
+    key, _m, _n = store.resolve_report_object(settings, report["report_id"], tenant_id=tenant_id)
+    backend = artifact_store.get_store(settings)
+    forged = b'{"kpis": {"open_total": 0}}'
+    backend.put_bytes(key, forged)
+
+    attacker = base64.b64encode(bytes(range(1, 33))).decode()
+    monkeypatch.setenv("OCTO_EVIDENCE_SIGNING_KEY", attacker)
+    backend.put_bytes(
+        report_manifest.manifest_key(key),
+        json.dumps(
+            report_manifest.seal(
+                report_manifest.build_payload(
+                    report_id=report["report_id"], tenant_id=tenant_id,
+                    generated_at=report["generated_at"], files={key.rsplit("/", 1)[-1]: forged},
+                )
+            )[0]
+        ).encode(),
+    )
+    monkeypatch.setenv("OCTO_EVIDENCE_SIGNING_KEY", _signing_key())
+
+    result = store.verify_report(settings, report["report_id"], tenant_id=tenant_id)
+    assert result["signature_valid"] is True and result["files"][0]["status"] == "ok"
+    assert result["status"] == "untrusted"
+    assert result["key_matches_installation"] is False
+    # Naming the attacker's key makes it a different word, never "valid".
+    pinned = store.verify_report(
+        settings, report["report_id"], tenant_id=tenant_id, expected_key_id=result["key_id"]
+    )
+    assert pinned["status"] == "valid_with_supplied_key"
+
+
+@requires_postgres
+def test_signed_manifest_with_no_installation_key_is_untrusted(tmp_path, monkeypatch):
+    configured_client(tmp_path, monkeypatch)
+    monkeypatch.setenv("OCTO_EVIDENCE_SIGNING_KEY", _signing_key())
+    settings, tenant_id = _seed(tmp_path)
+    report = _generate(settings, tenant_id)
+    monkeypatch.delenv("OCTO_EVIDENCE_SIGNING_KEY")
+    result = store.verify_report(settings, report["report_id"], tenant_id=tenant_id)
+    assert result["status"] == "untrusted"
+
+
+@requires_postgres
+def test_a_rotated_key_needs_the_old_key_id_to_verify(tmp_path, monkeypatch):
+    configured_client(tmp_path, monkeypatch)
+    monkeypatch.setenv("OCTO_EVIDENCE_SIGNING_KEY", _signing_key())
+    settings, tenant_id = _seed(tmp_path)
+    report = _generate(settings, tenant_id)
+    old_id = store.verify_report(settings, report["report_id"], tenant_id=tenant_id)["key_id"]
+    monkeypatch.setenv("OCTO_EVIDENCE_SIGNING_KEY", base64.b64encode(bytes(range(9, 41))).decode())
+    assert store.verify_report(settings, report["report_id"], tenant_id=tenant_id)["status"] == "untrusted"
+    assert store.verify_report(
+        settings, report["report_id"], tenant_id=tenant_id, expected_key_id=old_id
+    )["status"] == "valid_with_supplied_key"
+
+
+@requires_postgres
+def test_an_empty_or_foreign_manifest_is_tampered_and_beats_untrusted(tmp_path, monkeypatch):
+    configured_client(tmp_path, monkeypatch)
+    monkeypatch.setenv("OCTO_EVIDENCE_SIGNING_KEY", _signing_key())
+    settings, tenant_id = _seed(tmp_path)
+    first = _generate(settings, tenant_id)
+    second = _generate(settings, tenant_id)
+    backend = artifact_store.get_store(settings)
+    key1, _m, _n = store.resolve_report_object(settings, first["report_id"], tenant_id=tenant_id)
+    key2, _m, _n = store.resolve_report_object(settings, second["report_id"], tenant_id=tenant_id)
+
+    # A validly signed manifest listing no files must not pass vacuously.
+    empty = report_manifest.seal(
+        report_manifest.build_payload(
+            report_id=first["report_id"], tenant_id=tenant_id, generated_at=None, files={}
+        )
+    )[0]
+    backend.put_bytes(report_manifest.manifest_key(key1), json.dumps(empty).encode())
+    assert store.verify_report(settings, first["report_id"], tenant_id=tenant_id)["status"] == "tampered"
+
+    # The other report's (genuine, signed) manifest dropped in place.
+    backend.put_bytes(
+        report_manifest.manifest_key(key1), backend.get_bytes(report_manifest.manifest_key(key2))
+    )
+    swapped = store.verify_report(settings, first["report_id"], tenant_id=tenant_id)
+    assert swapped["status"] == "tampered"
+    assert "different report" in swapped["detail"]
+
+    # A changed file under a foreign signer reads as tampered, not untrusted.
+    monkeypatch.setenv("OCTO_EVIDENCE_SIGNING_KEY", base64.b64encode(bytes(range(9, 41))).decode())
+    backend.put_bytes(key2, b"changed")
+    assert store.verify_report(settings, second["report_id"], tenant_id=tenant_id)["status"] == "tampered"
+
+
+def test_manifests_and_evidence_packages_are_not_interchangeable(monkeypatch, tmp_path):
+    import importlib.util
+
+    from api.services.compliance import evidence_package as evidence
+
+    monkeypatch.setenv("OCTO_EVIDENCE_SIGNING_KEY", _signing_key())
+    manifest, _ = report_manifest.seal(
+        report_manifest.build_payload(
+            report_id="rpt_0000000000000000", tenant_id="t", generated_at=None, files={"a": b"x"}
+        )
+    )
+    package = evidence.sign_payload({"tenant_id": "t", "framework_id": "f"})
+
+    with pytest.raises(evidence.InvalidEvidencePackage, match="kind"):
+        evidence.verify(manifest)
+    with pytest.raises(evidence.InvalidEvidencePackage, match="kind"):
+        evidence.verify(package, expected_kind=report_manifest.KIND)
+    assert evidence.verify(manifest, expected_kind=report_manifest.KIND)["kind"] == "report-manifest"
+    assert evidence.verify(package)["framework_id"] == "f"
+
+    spec = importlib.util.spec_from_file_location(
+        "verify_script", Path(__file__).resolve().parent.parent / "scripts" / "verify-compliance-evidence.py"
+    )
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    with pytest.raises(script.InvalidEvidencePackage, match="kind"):
+        script.verify(manifest)
+    with pytest.raises(script.InvalidEvidencePackage, match="kind"):
+        script.verify(package, expected_kind=report_manifest.KIND)
+    assert script.verify(manifest, expected_kind=report_manifest.KIND)["kind"] == "report-manifest"
+    assert script.verify(package)["framework_id"] == "f"
+
+
+def test_an_unusable_signing_key_is_warned_about(monkeypatch, caplog):
+    monkeypatch.setenv("OCTO_EVIDENCE_SIGNING_KEY", "not-a-key")
+    with caplog.at_level("INFO", logger="shapoclyack.reports.manifest"):
+        document, key_id = report_manifest.seal({"kind": "report-manifest", "files": []})
+    assert key_id is None and document["signature"] is None
+    assert [r.levelname for r in caplog.records] == ["WARNING"]
+    caplog.clear()
+    monkeypatch.delenv("OCTO_EVIDENCE_SIGNING_KEY")
+    with caplog.at_level("INFO", logger="shapoclyack.reports.manifest"):
+        report_manifest.seal({"kind": "report-manifest", "files": []})
+    assert [r.levelname for r in caplog.records] == ["INFO"]
+
+
+@requires_postgres
 def test_without_a_key_the_manifest_is_unsigned_and_says_so(tmp_path, monkeypatch):
     configured_client(tmp_path, monkeypatch)
     monkeypatch.delenv("OCTO_EVIDENCE_SIGNING_KEY", raising=False)
@@ -182,18 +319,6 @@ def test_without_a_key_the_manifest_is_unsigned_and_says_so(tmp_path, monkeypatc
     report = _generate(settings, tenant_id)
     result = store.verify_report(settings, report["report_id"], tenant_id=tenant_id)
     assert result["status"] == "unsigned" and result["signed"] is False
-
-
-@requires_postgres
-def test_pinning_a_different_key_id_is_untrusted_not_tampered(tmp_path, monkeypatch):
-    configured_client(tmp_path, monkeypatch)
-    monkeypatch.setenv("OCTO_EVIDENCE_SIGNING_KEY", _signing_key())
-    settings, tenant_id = _seed(tmp_path)
-    report = _generate(settings, tenant_id)
-    result = store.verify_report(
-        settings, report["report_id"], tenant_id=tenant_id, expected_key_id="f" * 64
-    )
-    assert result["status"] == "untrusted"
 
 
 @requires_postgres
@@ -259,7 +384,10 @@ def test_api_formats_manifest_and_verify(tmp_path, monkeypatch):
 def test_schedule_rejects_unlisted_s3_bucket_and_accepts_listed(tmp_path, monkeypatch):
     configured_client(tmp_path, monkeypatch)
     settings, tenant_id = _seed(tmp_path)
-    settings = make_settings(tmp_path, report_s3_buckets=("customer-reports",))
+    settings = make_settings(
+        tmp_path, report_s3_buckets=("customer-reports",),
+        artifact_s3_access_key_id="k", artifact_s3_secret_access_key="s",
+    )
     template = store.create_template(settings, tenant_id=tenant_id, name="T")
 
     def make(target):
@@ -279,7 +407,8 @@ def test_schedule_rejects_unlisted_s3_bucket_and_accepts_listed(tmp_path, monkey
 
 def test_s3_target_parsing(tmp_path):
     settings = make_settings(
-        tmp_path, report_s3_buckets=("customer-reports", "shared"), artifact_s3_bucket="shared"
+        tmp_path, report_s3_buckets=("customer-reports", "shared"), artifact_s3_bucket="shared",
+        artifact_backend="s3",
     )
     assert report_delivery.parse_s3_target("s3://customer-reports/a/b/", settings) == (
         "customer-reports", "a/b",
@@ -295,7 +424,10 @@ def test_s3_target_parsing(tmp_path):
 
 
 def test_s3_delivery_writes_report_and_manifest_under_the_tenant(tmp_path, monkeypatch):
-    settings = make_settings(tmp_path, report_s3_buckets=("customer-reports",))
+    settings = make_settings(
+        tmp_path, report_s3_buckets=("shared",),
+        artifact_s3_access_key_id="k", artifact_s3_secret_access_key="s",
+    )
     written: list[tuple[str, str, bytes]] = []
 
     class FakeStore:
@@ -313,19 +445,132 @@ def test_s3_delivery_writes_report_and_manifest_under_the_tenant(tmp_path, monke
         payload=b"PK",
         filename="rpt_1.xlsx",
         recipients=[
-            {"transport": "s3", "target": "s3://customer-reports/monthly"},
+            {"transport": "s3", "target": "s3://shared/monthly"},
             {"transport": "s3", "target": "s3://elsewhere/monthly"},
+            # Tenant "acme" aiming at tenant "globex"'s area of the shared bucket.
+            {"transport": "s3", "target": "s3://shared/globex"},
+            {"transport": "s3", "target": "s3://shared"},
         ],
         extras={"rpt_1.manifest.json": b"{}"},
     )
-    assert [e["status"] for e in entries] == ["delivered", "failed"]
+    assert [e["status"] for e in entries] == ["delivered", "failed", "delivered", "delivered"]
     assert "not allowed" in entries[1]["error"]
     assert written == [
-        ("customer-reports/monthly", "acme/rpt_1.xlsx", b"PK"),
-        ("customer-reports/monthly", "acme/rpt_1.manifest.json", b"{}"),
+        ("shared/acme", "monthly/rpt_1.xlsx", b"PK"),
+        ("shared/acme", "monthly/rpt_1.manifest.json", b"{}"),
+        # The chosen folder is *inside* acme's own prefix, never beside it.
+        ("shared/acme", "globex/rpt_1.xlsx", b"PK"),
+        ("shared/acme", "globex/rpt_1.manifest.json", b"{}"),
+        ("shared/acme", "rpt_1.xlsx", b"PK"),
+        ("shared/acme", "rpt_1.manifest.json", b"{}"),
     ]
+    assert not any(not prefix.startswith("shared/acme") for prefix, _k, _d in written)
+
+
+def test_s3_delivery_without_a_manifest_says_so(tmp_path, monkeypatch):
+    settings = make_settings(
+        tmp_path, report_s3_buckets=("shared",),
+        artifact_s3_access_key_id="k", artifact_s3_secret_access_key="s",
+    )
+
+    class FakeStore:
+        def __init__(self, config):
+            pass
+
+        def put_bytes(self, key, data, *, content_type=None):
+            pass
+
+    monkeypatch.setattr(report_delivery, "S3ArtifactStore", FakeStore)
+    entries = report_delivery.deliver(
+        settings,
+        report={"report_id": "rpt_1", "tenant_id": "acme", "format": "csv"},
+        payload=b"x", filename="rpt_1.csv",
+        recipients=[{"transport": "s3", "target": "s3://shared"}],
+    )
+    assert entries[0]["status"] == "delivered"
+    assert "without a manifest" in entries[0]["error"]
+
+
+def test_s3_needs_explicit_credentials_on_a_local_artifact_backend(tmp_path):
+    settings = make_settings(tmp_path, report_s3_buckets=("shared",))
+    with pytest.raises(ValueError, match="OCTO_ARTIFACT_BACKEND=s3"):
+        report_delivery.parse_s3_target("s3://shared", settings)
+    entries = report_delivery.deliver(
+        settings,
+        report={"report_id": "rpt_1", "tenant_id": "acme", "format": "csv"},
+        payload=b"x", filename="rpt_1.csv",
+        recipients=[{"transport": "s3", "target": "s3://shared"}],
+    )
+    assert entries[0]["status"] == "failed"
+
+
+@requires_postgres
+def test_a_missing_manifest_is_regenerated_before_delivery(tmp_path, monkeypatch):
+    configured_client(tmp_path, monkeypatch)
+    monkeypatch.setenv("OCTO_EVIDENCE_SIGNING_KEY", _signing_key())
+    settings, tenant_id = _seed(tmp_path)
+    report = _generate(settings, tenant_id)
+    key, _m, _n = store.resolve_report_object(settings, report["report_id"], tenant_id=tenant_id)
+    backend = artifact_store.get_store(settings)
+    backend.delete(report_manifest.manifest_key(key))
+
+    extras = store.read_package_extras(settings, report, key, store.read_report_bytes(settings, key))
+    assert list(extras) == [f"{report['report_id']}.manifest.json"]
+    assert store.verify_report(settings, report["report_id"], tenant_id=tenant_id)["status"] == "valid"
 
 
 def test_manifest_key_swaps_the_extension():
     assert report_manifest.manifest_key("reports/t/rpt_1.pdf") == "reports/t/rpt_1.manifest.json"
     assert Path(report_manifest.manifest_key("reports/t/rpt_1.xlsx")).name == "rpt_1.manifest.json"
+
+
+# ------------------------------------------------------- workbook well-formedness
+
+
+def _all_parts_parse(raw: bytes) -> dict[str, ElementTree.Element]:
+    """Every XML part of the archive, parsed -- what Excel does before it opens."""
+    parsed = {}
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        assert archive.testzip() is None
+        for name in archive.namelist():
+            parsed[name] = ElementTree.fromstring(archive.read(name))
+    return parsed
+
+
+def test_hostile_sheet_names_still_give_a_well_formed_workbook():
+    body = _body()
+    body["compliance"] = [
+        {"name": "FW\x01x\x0b" + "y" * 60, "version": "1:2/3", "controls": []},
+        {"name": "FW\x01x\x0b" + "y" * 60, "version": "1:2/3", "controls": []},
+        {"name": "[a]\ufffe'", "version": "", "controls": []},
+    ]
+    parts = _all_parts_parse(renderer.render(body, "xlsx"))
+    assert {"[Content_Types].xml", "_rels/.rels", "xl/workbook.xml", "xl/_rels/workbook.xml.rels",
+            "xl/styles.xml"} <= set(parts)
+    names = [s.get("name") for s in parts["xl/workbook.xml"].findall(".//m:sheet", _NS)]
+    assert len({n.lower() for n in names}) == len(names)
+    for name in names:
+        assert 0 < len(name) <= 31
+        assert not set("[]:*?/\\") & set(name)
+        assert all(ord(c) >= 32 for c in name)
+
+
+def test_non_finite_numbers_and_huge_cells_do_not_corrupt_the_workbook():
+    body = _body()
+    body["top_findings"][0]["contextual_score"] = float("nan")
+    body["top_findings"][1]["contextual_score"] = float("inf")
+    body["top_findings"][2]["remediation"] = "x" * 40000
+    raw = renderer.render(body, "xlsx")
+    parts = _all_parts_parse(raw)
+    xml = b"".join(
+        zipfile.ZipFile(io.BytesIO(raw)).read(n) for n in parts if n.startswith("xl/worksheets/")
+    ).decode()
+    assert "<v>nan</v>" not in xml and "<v>inf</v>" not in xml
+    for sheet in (p for n, p in parts.items() if n.startswith("xl/worksheets/")):
+        for text in sheet.findall(".//m:t", _NS):
+            assert len(text.text or "") <= spreadsheet.MAX_CELL_CHARS
+    assert spreadsheet.cell("x" * 40000).endswith(spreadsheet.TRUNCATION_MARKER)
+    assert len(spreadsheet.cell("=" + "x" * 40000)) == spreadsheet.MAX_CELL_CHARS
+    assert spreadsheet.cell(float("nan")) == "" and spreadsheet.cell(float("-inf")) == ""
+    cells = [c for row in csv.reader(io.StringIO(renderer.render(body, "csv").decode("utf-8-sig"))) for c in row]
+    assert "nan" not in cells and "inf" not in cells

@@ -327,8 +327,10 @@ def verify_report(
 ) -> dict[str, Any]:
     """Re-hash the stored report and check the manifest signature (#355).
 
-    ``expected_key_id`` pins the signing key; without it the signature proves
-    integrity (the manifest was not altered after signing) but not who signed."""
+    The signer must be this installation's own key for ``valid``.
+    ``expected_key_id`` names an *older* key (after a rotation) the caller
+    trusts; a manifest signed by it answers ``valid_with_supplied_key``, never
+    ``valid``, so a supplied id cannot turn "any key" back into a pass."""
     result = store.verify_report(
         settings, report_id, tenant_id=principal.tenant_id, expected_key_id=expected_key_id
     )

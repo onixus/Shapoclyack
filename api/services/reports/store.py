@@ -764,14 +764,41 @@ def verify_report(
         key = _report_key(settings, row["tenant_id"], row["report_id"], row["format"])
     except ReportError:
         return None
-    return result | report_manifest.verify(settings, report_key=key, expected_key_id=expected_key_id)
+    return result | report_manifest.verify(
+        settings,
+        report_key=key,
+        report_id=row["report_id"],
+        tenant_id=row["tenant_id"],
+        expected_key_id=expected_key_id,
+    )
 
 
-def read_package_extras(settings: Settings, key: str) -> dict[str, bytes]:
-    """The evidence files that travel with a report: its manifest, when present."""
+def read_package_extras(
+    settings: Settings, report: dict[str, Any], key: str, payload: bytes
+) -> dict[str, bytes]:
+    """The evidence files that travel with a report: its manifest.
+
+    A manifest that is missing (its write failed at generation time) is written
+    now from the bytes about to be sent, so delivery does not quietly ship a
+    package without one. If that fails too the result is empty and the delivery
+    entry says so."""
     manifest_key = report_manifest.manifest_key(key)
+    backend = artifact_store.get_store(settings)
+    if not backend.exists(manifest_key):
+        generated = report.get("generated_at")
+        try:
+            report_manifest.write(
+                settings,
+                report_key=key,
+                report_id=report["report_id"],
+                tenant_id=report["tenant_id"],
+                generated_at=generated if isinstance(generated, str) else None,
+                files={key.rsplit("/", 1)[-1]: payload},
+            )
+        except Exception:  # noqa: BLE001 - delivery goes on, flagged
+            LOG.exception("Could not write the missing manifest for report %s", report.get("report_id"))
     try:
-        data = artifact_store.get_store(settings).get_bytes(manifest_key)
+        data = backend.get_bytes(manifest_key)
     except artifact_store.ArtifactNotFound:
         return {}
     return {manifest_key.rsplit("/", 1)[-1]: data}

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import re
 import zipfile
 from collections.abc import Sequence
@@ -46,6 +47,10 @@ _SLA_LABELS = {
 }
 # Characters XML 1.0 cannot carry at all; an escaped entity is still invalid.
 _XML_ILLEGAL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f￾￿]")
+#: Excel's hard limit on one cell. A longer string is cut, with a marker, rather
+#: than left for Excel to truncate silently or to "repair" the file over.
+MAX_CELL_CHARS = 32767
+TRUNCATION_MARKER = "...[truncated]"
 _SHEET_NAME_ILLEGAL = re.compile(r"[\[\]:*?/\\]")
 
 
@@ -56,6 +61,10 @@ def cell(value: Any) -> Any:
     if isinstance(value, bool):
         return "yes" if value else "no"
     if isinstance(value, (int, float)):
+        # nan and inf are not numbers in the XLSX schema (``<v>nan</v>`` makes
+        # Excel offer to repair the file) and mean nothing in a CSV either.
+        if isinstance(value, float) and not math.isfinite(value):
+            return ""
         return value
     if isinstance(value, (list, tuple)):
         value = ", ".join(str(item) for item in value)
@@ -63,7 +72,9 @@ def cell(value: Any) -> Any:
         value = ", ".join(f"{key}={val}" for key, val in value.items())
     text = str(value)
     if text.startswith(FORMULA_PREFIXES):
-        return "'" + text
+        text = "'" + text
+    if len(text) > MAX_CELL_CHARS:
+        text = text[: MAX_CELL_CHARS - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
     return text
 
 
@@ -197,7 +208,11 @@ def _sheet_names(names: Sequence[str]) -> list[str]:
     used: set[str] = set()
     out: list[str] = []
     for raw in names:
-        base = (_SHEET_NAME_ILLEGAL.sub(" ", raw).strip().strip("'") or "Sheet")[:31]
+        # Both filters matter: Excel's forbidden characters, and the control
+        # characters XML 1.0 cannot carry at all -- a framework name is tenant
+        # supplied, and one such character makes workbook.xml unparseable.
+        cleaned = _XML_ILLEGAL.sub("", _SHEET_NAME_ILLEGAL.sub(" ", str(raw)))
+        base = (cleaned.strip().strip("'").strip() or "Sheet")[:31]
         name, n = base, 1
         while name.lower() in used:
             n += 1
