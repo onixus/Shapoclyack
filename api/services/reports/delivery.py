@@ -305,6 +305,13 @@ def _send_s3(
             verify_tls=settings.artifact_s3_verify_tls,
         )
     )
+    if not extras:
+        # The S3 package is report + manifest. Without the manifest nothing
+        # vouches for the file, and it is never re-signed after the fact (see
+        # ``store.read_package_extras``), so nothing is written.
+        return _entry(
+            recipient, "failed", "no manifest exists for this report; refusing to deliver it unsigned"
+        )
     base = f"{folder}/" if folder else ""
     media = _MIME.get(str(report.get("format")), ("application", "octet-stream"))
     # The report first: if the manifest write fails the recipient has the file and
@@ -312,11 +319,6 @@ def _send_s3(
     destination.put_bytes(f"{base}{filename}", payload, content_type="/".join(media))
     for name, data in extras.items():
         destination.put_bytes(f"{base}{name}", data, content_type="application/json")
-    if not extras:
-        # Delivered, but not as the documented package: say so on the entry.
-        return _entry(
-            recipient, "delivered", "delivered without a manifest: none could be produced"
-        )
     return _entry(recipient, "delivered")
 
 

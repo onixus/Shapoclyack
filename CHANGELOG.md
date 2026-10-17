@@ -13,7 +13,7 @@ All notable changes to Shapoclyack are documented in this file.
   with the evidence Ed25519 key (`GET /api/reports/{id}/manifest`, `/verify`;
   unsigned without `OCTO_EVIDENCE_SIGNING_KEY`, and says so; `valid` only for
   the installation's own key), and schedules can deliver to `s3://bucket/folder`
-  (stored under the tenant's own `<tenant>/` prefix) for buckets listed in
+  (stored under the tenant's own `<tenant>/` prefix, and only together with the manifest) for buckets listed in
   `OCTO_REPORT_S3_BUCKETS`.
   SFTP delivery, key rotation and group distribution in the console are not done.
 - TLS posture on the Pulse path

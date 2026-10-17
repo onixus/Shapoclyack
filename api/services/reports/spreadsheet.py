@@ -205,7 +205,8 @@ def render_csv(body: dict[str, Any]) -> bytes:
 
 def _sheet_names(names: Sequence[str]) -> list[str]:
     """Names Excel accepts: <= 31 characters, none of ``[]:*?/\\``, unique."""
-    used: set[str] = set()
+    # "History" is reserved by Excel (its change-tracking sheet).
+    used: set[str] = {"history"}
     out: list[str] = []
     for raw in names:
         # Both filters matter: Excel's forbidden characters, and the control

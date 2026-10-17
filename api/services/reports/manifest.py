@@ -234,7 +234,18 @@ def verify(
         result["status"] = "missing"
         result["detail"] = "the report object is no longer in the store"
     elif not result["signed"]:
-        result["status"] = "unsigned"
+        if current is not None:
+            # This installation signs, so an unsigned manifest is not "signing
+            # was off": it was stripped, or written before a key was set. Either
+            # way nothing vouches for it, and saying `unsigned` would let a
+            # downgrade pass for an old report.
+            result["status"] = "untrusted"
+            result["detail"] = (
+                "the manifest is unsigned but this installation signs reports: it was "
+                "written before a key was configured, or its signature was removed"
+            )
+        else:
+            result["status"] = "unsigned"
     elif current is not None and result["key_id"] == current:
         result["status"] = "valid"
     elif expected_key_id is not None and result["key_id"] == expected_key_id:

@@ -303,9 +303,10 @@ for it: `OCTO_ARTIFACT_BACKEND=s3`, or explicit `OCTO_ARTIFACT_S3_ACCESS_KEY_ID`
 `OCTO_ARTIFACT_S3_SECRET_ACCESS_KEY` -- on a local artifact backend without them
 the transport is refused rather than falling back to whatever ambient AWS
 credentials the pod has. A schedule naming anything else is refused when written
-and again when it fires. A missing manifest is rewritten just before delivery; if
-that fails too the recipient's entry is `delivered` with an error text saying it
-went without one. **SFTP is not implemented**: it needs an SSH client library
+and again when it fires. The S3 package is report plus manifest: if the manifest is missing the
+recipient's entry is `failed` and nothing is written. A manifest is signed once,
+when the report is generated, and never regenerated afterwards -- re-signing
+whatever is in the store at delivery time would vouch for a swapped report. **SFTP is not implemented**: it needs an SSH client library
 the platform does not ship, and is tracked on #355.
 
 In a `PATCH`, a `null` field means "leave it alone". Clearing recipients is
@@ -377,8 +378,10 @@ store could swap the report and sign a matching manifest with their own key.
 * `valid_with_supplied_key` -- as above, but signed by an older key the caller
   named with `?expected_key_id=` (after a rotation). A supplied id never yields
   plain `valid`;
-* `unsigned` -- hashes match, nothing vouches for the manifest (no key was
-  configured at generation);
+* `unsigned` -- hashes match, nothing vouches for the manifest, and this
+  installation has no signing key either. On an installation that *does* have a
+  key, an unsigned manifest is `untrusted` (written before the key was set, or
+  its signature was removed);
 * `untrusted` -- intact but signed by a key nobody here vouches for, or no key
   is configured on this installation to compare with;
 * `tampered` -- a file, the manifest or the signature changed, the manifest lists
@@ -399,9 +402,10 @@ sha256sum "$RID".pdf   # compare with payload.files[].sha256
 ```
 
 Delivery to S3 carries the manifest with the report; email and webhook deliver
-the report alone (the manifest is one `GET` away). Not done: key rotation (a
-report signed with a retired key reads `key_matches_installation: false`, and the
-old key id has to be kept in the trusted record), per-tenant keys, and a
+the report alone (the manifest is one `GET` away). Not done: key rotation tooling (a
+report signed with a retired key reads `key_matches_installation: false`; there
+is no list of previous keys, so `?expected_key_id=` names one old key per request
+and the old key ids have to be kept in the trusted record), per-tenant keys, and a
 detached PGP/cosign signature.
 
 ### API

@@ -467,18 +467,19 @@ def test_s3_delivery_writes_report_and_manifest_under_the_tenant(tmp_path, monke
     assert not any(not prefix.startswith("shared/acme") for prefix, _k, _d in written)
 
 
-def test_s3_delivery_without_a_manifest_says_so(tmp_path, monkeypatch):
+def test_s3_delivery_without_a_manifest_is_refused(tmp_path, monkeypatch):
     settings = make_settings(
         tmp_path, report_s3_buckets=("shared",),
         artifact_s3_access_key_id="k", artifact_s3_secret_access_key="s",
     )
+    written: list = []
 
     class FakeStore:
         def __init__(self, config):
             pass
 
         def put_bytes(self, key, data, *, content_type=None):
-            pass
+            written.append(key)
 
     monkeypatch.setattr(report_delivery, "S3ArtifactStore", FakeStore)
     entries = report_delivery.deliver(
@@ -487,8 +488,9 @@ def test_s3_delivery_without_a_manifest_says_so(tmp_path, monkeypatch):
         payload=b"x", filename="rpt_1.csv",
         recipients=[{"transport": "s3", "target": "s3://shared"}],
     )
-    assert entries[0]["status"] == "delivered"
-    assert "without a manifest" in entries[0]["error"]
+    assert entries[0]["status"] == "failed"
+    assert "no manifest" in entries[0]["error"]
+    assert written == []
 
 
 def test_s3_needs_explicit_credentials_on_a_local_artifact_backend(tmp_path):
@@ -505,23 +507,79 @@ def test_s3_needs_explicit_credentials_on_a_local_artifact_backend(tmp_path):
 
 
 @requires_postgres
-def test_a_missing_manifest_is_regenerated_before_delivery(tmp_path, monkeypatch):
+def test_a_swapped_report_with_a_deleted_manifest_is_never_re_signed(tmp_path, monkeypatch):
+    """Delete the manifest, swap the report, wait for the next delivery: the
+    dispatcher must not sign the new bytes with the installation's key."""
     configured_client(tmp_path, monkeypatch)
     monkeypatch.setenv("OCTO_EVIDENCE_SIGNING_KEY", _signing_key())
     settings, tenant_id = _seed(tmp_path)
     report = _generate(settings, tenant_id)
     key, _m, _n = store.resolve_report_object(settings, report["report_id"], tenant_id=tenant_id)
     backend = artifact_store.get_store(settings)
+    backend.put_bytes(key, b'{"kpis": {"open_total": 0}}')
     backend.delete(report_manifest.manifest_key(key))
 
-    extras = store.read_package_extras(settings, report, key, store.read_report_bytes(settings, key))
-    assert list(extras) == [f"{report['report_id']}.manifest.json"]
-    assert store.verify_report(settings, report["report_id"], tenant_id=tenant_id)["status"] == "valid"
+    assert store.read_package_extras(settings, key) == {}
+    assert not backend.exists(report_manifest.manifest_key(key))
+    result = store.verify_report(settings, report["report_id"], tenant_id=tenant_id)
+    assert result["status"] == "missing"
 
 
-def test_manifest_key_swaps_the_extension():
-    assert report_manifest.manifest_key("reports/t/rpt_1.pdf") == "reports/t/rpt_1.manifest.json"
-    assert Path(report_manifest.manifest_key("reports/t/rpt_1.xlsx")).name == "rpt_1.manifest.json"
+@requires_postgres
+def test_dispatcher_does_not_send_a_report_without_its_manifest_to_s3(tmp_path, monkeypatch):
+    from api.services.reports import dispatcher as report_dispatcher
+
+    configured_client(tmp_path, monkeypatch)
+    monkeypatch.setenv("OCTO_EVIDENCE_SIGNING_KEY", _signing_key())
+    seeded, tenant_id = _seed(tmp_path)
+    settings = make_settings(
+        tmp_path, report_s3_buckets=("shared",),
+        artifact_s3_access_key_id="k", artifact_s3_secret_access_key="s",
+    )
+    template = store.create_template(settings, tenant_id=tenant_id, name="T")
+    store.create_schedule(
+        settings, tenant_id=tenant_id, template_id=template["template_id"], name="S",
+        cron="0 6 1 * *", fmt="json", recipients=[{"transport": "s3", "target": "s3://shared"}],
+    )
+    written: list = []
+
+    class FakeStore:
+        def __init__(self, config):
+            pass
+
+        def put_bytes(self, key, data, *, content_type=None):
+            written.append(key)
+
+    monkeypatch.setattr(report_delivery, "S3ArtifactStore", FakeStore)
+    real_write = report_manifest.write
+    monkeypatch.setattr(report_manifest, "write", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    from datetime import UTC, datetime, timedelta
+
+    report_dispatcher.ReportDispatcher(settings=settings).tick(
+        now=datetime.now(UTC) + timedelta(days=40)
+    )
+    monkeypatch.setattr(report_manifest, "write", real_write)
+    reports = store.list_reports(settings, tenant_id=tenant_id)
+    assert reports and reports[0]["delivery"][0]["status"] == "failed"
+    assert written == []
+
+
+@requires_postgres
+def test_an_unsigned_manifest_on_a_signing_installation_is_untrusted(tmp_path, monkeypatch):
+    configured_client(tmp_path, monkeypatch)
+    monkeypatch.delenv("OCTO_EVIDENCE_SIGNING_KEY", raising=False)
+    settings, tenant_id = _seed(tmp_path)
+    report = _generate(settings, tenant_id)  # written unsigned: no key yet
+    monkeypatch.setenv("OCTO_EVIDENCE_SIGNING_KEY", _signing_key())
+    result = store.verify_report(settings, report["report_id"], tenant_id=tenant_id)
+    assert result["status"] == "untrusted"
+    assert "unsigned" in result["detail"]
+
+
+def test_excel_reserved_sheet_name_is_renamed():
+    names = spreadsheet._sheet_names(["History", "history", "Other"])
+    assert "history" not in {n.lower() for n in names}
+    assert len(set(n.lower() for n in names)) == 3
 
 
 # ------------------------------------------------------- workbook well-formedness
