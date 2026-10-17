@@ -5253,3 +5253,22 @@ exists is the interface (`KeyProvider` in `api/services/crypto/envelope.py`):
 two methods, wrap and unwrap, which a Transit or KMS client fills in without
 any call site changing. Do not plan a deployment around them until an issue
 says they ship.
+
+## Verifying a delivered report
+
+Each generated report has a signed hash manifest ([#355](https://github.com/onixus/Shapoclyack/issues/355)). To check one that was
+delivered, or to answer "is this the file we sent them?":
+
+1. Fetch the manifest: `GET /api/reports/{id}/manifest`.
+2. Verify the signature offline with the key id from your trusted record:
+   `python3 scripts/verify-compliance-evidence.py rpt.manifest.json --key-id <id>`.
+3. Compare `sha256sum <report file>` with `payload.files[].sha256`.
+
+Or let the platform do all three against what it stores:
+`GET /api/reports/{id}/verify?expected_key_id=<id>`. `unsigned` means
+`OCTO_EVIDENCE_SIGNING_KEY` was not set when the report was generated; set it
+(see [configuration.md](configuration.md#signed-compliance-evidence)) and
+regenerate -- an existing manifest is never re-signed. Record the key id
+(`key_id` in the manifest) out of band when you set the key: a verifier that
+trusts the key embedded in the file proves the file is intact, not who made it.
+To deliver reports to a bucket, list it in `OCTO_REPORT_S3_BUCKETS`.

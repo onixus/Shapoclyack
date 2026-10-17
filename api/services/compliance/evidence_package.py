@@ -109,6 +109,14 @@ def key_id(key: Ed25519PrivateKey | Ed25519PublicKey) -> str:
     return hashlib.sha256(_KEY_ID_DOMAIN + _raw_public(key)).hexdigest()
 
 
+def current_key_id(environ: dict[str, str] | None = None) -> str | None:
+    """The id of the configured signing key, or ``None`` when there is none."""
+    try:
+        return key_id(_private_key(environ))
+    except SigningUnavailable:
+        return None
+
+
 def sign_payload(
     payload: dict[str, Any],
     *,

@@ -6,6 +6,14 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- Report formats, evidence signatures and S3 delivery
+  ([#355](https://github.com/onixus/Shapoclyack/issues/355), [Reports](docs/reports-and-compliance.md)):
+  reports render as CSV and XLSX (spreadsheet cells that would run as formulas
+  are escaped; no new dependency), every report gets a SHA-256 manifest signed
+  with the evidence Ed25519 key (`GET /api/reports/{id}/manifest`, `/verify`;
+  unsigned without `OCTO_EVIDENCE_SIGNING_KEY`, and says so), and schedules can
+  deliver to `s3://bucket/prefix` for buckets listed in `OCTO_REPORT_S3_BUCKETS`.
+  SFTP delivery, key rotation and group distribution in the console are not done.
 - TLS posture on the Pulse path
   ([#545](https://github.com/onixus/Shapoclyack/issues/545), [Pulse backend](docs/pulse-backend.md)):
   an A-F grade per cipher suite computed by Shapoclyack (`scanner/pipeline/tls_grading.py`,

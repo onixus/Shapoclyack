@@ -807,6 +807,7 @@ OCTO_REPORTS_ENABLED
 OCTO_REPORT_DISPATCH_ENABLED
 OCTO_REPORT_DISPATCH_INTERVAL_SECONDS
 OCTO_REPORT_RETENTION_DAYS
+OCTO_REPORT_S3_BUCKETS
 OCTO_REPORT_SMTP_FROM
 OCTO_REPORT_SMTP_HOST
 OCTO_REPORT_SMTP_PASSWORD
@@ -1178,6 +1179,7 @@ goes to an operations channel and a report goes to a customer.
 | `OCTO_REPORT_SMTP_STARTTLS` | `true` | Require an encrypted connection. A relay that refuses fails that recipient rather than sending the report and the relay password in cleartext; set `false` only for a relay that genuinely cannot do TLS |
 | `OCTO_REPORT_SMTP_VERIFY_TLS` | `true` | Verify the relay's certificate and hostname during STARTTLS. `smtplib`'s own default verifies neither, so `false` buys encryption against a passive listener and nothing against a relay that is not the one you meant. Prefer trusting the internal CA system-wide; a `prod` process warns while this is off |
 | `OCTO_REPORT_SMTP_TIMEOUT_SECONDS` | `20` | Per-message budget |
+| `OCTO_REPORT_S3_BUCKETS` | *(empty)* | Buckets a report schedule may deliver to (`s3://bucket/prefix`, [#355](https://github.com/onixus/Shapoclyack/issues/355)); uses the `OCTO_ARTIFACT_S3_*` endpoint and credentials. Empty switches the S3 transport off; the artifact bucket is always refused |
 
 Per-tenant usage quotas (ROADMAP Track E, MSSP operations; see
 [api-and-rbac.md](api-and-rbac.md#usage-metering-and-quotas)). These are the
@@ -1579,7 +1581,10 @@ base64 or hex. Generate one with `openssl rand -base64 32`. It is deliberately
 separate from JWT and `OCTO_MASTER_KEY`; losing it prevents new signatures
 but does not make archived packages unverifiable because they embed the public
 key. Pin the package `key_id` through an independent trusted record when
-authenticity, rather than integrity alone, is required.
+authenticity, rather than integrity alone, is required. The same key signs the
+hash manifest of every generated report
+([reports-and-compliance.md](reports-and-compliance.md#hash-manifest-and-signature));
+without it manifests are written unsigned.
 ## Sensor and Agent client certificates (mTLS)
 
 A sensor or an endpoint Agent (Lariska) authenticates with a bearer token —

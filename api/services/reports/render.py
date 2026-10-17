@@ -1,6 +1,6 @@
-"""Rendering a report body to PDF, HTML or JSON (Sprint 4).
+"""Rendering a report body to PDF, HTML, JSON, CSV or XLSX (Sprint 4, #355).
 
-Three renderers over the one body ``content.build`` produced. None of them
+The renderers over the one body ``content.build`` produced. None of them
 queries anything: a renderer that reached back into the database could produce
 a PDF whose numbers disagree with the JSON export taken a second earlier, and
 "the report says 41, the API says 40" is the kind of discrepancy that costs an
@@ -36,15 +36,18 @@ from typing import Any
 from fpdf import FPDF
 
 from api.services.reports import branding as branding_service
+from api.services.reports import spreadsheet
 
 logger = logging.getLogger(__name__)
 
-FORMATS = ("pdf", "html", "json")
+FORMATS = ("pdf", "html", "json", "csv", "xlsx")
 
 MEDIA_TYPES = {
     "pdf": "application/pdf",
     "html": "text/html; charset=utf-8",
     "json": "application/json",
+    "csv": "text/csv; charset=utf-8",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
 
 _SEVERITIES = ("critical", "high", "medium", "low", "unknown")
@@ -747,4 +750,8 @@ def render(body: dict[str, Any], fmt: str) -> bytes:
         return render_html(body).encode("utf-8")
     if fmt == "json":
         return render_json(body).encode("utf-8")
+    if fmt == "csv":
+        return spreadsheet.render_csv(body)
+    if fmt == "xlsx":
+        return spreadsheet.render_xlsx(body)
     raise ValueError(f"unknown report format {fmt!r}; expected one of {', '.join(FORMATS)}")
