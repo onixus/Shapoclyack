@@ -51,7 +51,7 @@ from pathlib import Path
 from typing import Any
 
 from agent import __version__, egress, mtls
-from agent import logging_setup, run_retention
+from agent import logging_setup, observability, result_signing, run_retention
 from agent.runtime.invocation import INPUT_FLAGS, ScanInvocation, input_arguments
 from agent.runtime.process import run_process, terminate_process
 
@@ -601,6 +601,10 @@ class AgentClient:
         # only when the client certificate changes (#309).
         self.client_cert = client_cert
         self._opener = self._build_opener()
+        # Signs run archives (#366). Set by run_loop once the key is loaded; None
+        # means uploads go unsigned, which the API accepts or refuses according
+        # to OCTO_REQUIRE_SIGNED_RESULTS.
+        self.result_signer: result_signing.ResultSigner | None = None
 
     def _build_opener(self, *, with_certificate: bool = True) -> urllib.request.OpenerDirector:
         if self.client_cert is None or not with_certificate:
@@ -839,6 +843,10 @@ class AgentClient:
             # its first beat.
             "capabilities": list(CAPABILITIES),
         }
+        if self.result_signer is not None:
+            # The public half only. The API pins it on first use and refuses a
+            # different one later, so re-sending it on every start is harmless.
+            payload["result_signing_key"] = self.result_signer.public_key_b64
         return self._request(
             "POST",
             "/api/agent/register",
@@ -865,11 +873,17 @@ class AgentClient:
             # agent's capabilities and cost it the jobs that need one (#362).
             "capabilities": list(CAPABILITIES),
         }
-        return self._request(
-            "POST",
-            "/api/agent/heartbeat",
-            body=json.dumps(payload).encode("utf-8"),
-        )
+        try:
+            answer = self._request(
+                "POST",
+                "/api/agent/heartbeat",
+                body=json.dumps(payload).encode("utf-8"),
+            )
+        except Exception:
+            observability.TELEMETRY.heartbeat_failed()
+            raise
+        observability.TELEMETRY.heartbeat_ok()
+        return answer
 
     def bundle_info(self) -> dict[str, Any]:
         """``GET /api/agent/bundle``: the signed manifest, as transport (#363).
@@ -963,6 +977,22 @@ class AgentClient:
             add_field("error", error[:2000])
 
         archive = archive_path if archive_path is not None and archive_path.is_file() else None
+        if archive is not None and self.result_signer is not None:
+            try:
+                add_field(
+                    "result_signature",
+                    self.result_signer.sign_upload(
+                        agent_id=agent_id,
+                        job_id=job_id,
+                        run_id=run_id,
+                        exit_code=exit_code,
+                        attempt=attempt,
+                        archive_path=archive,
+                    ),
+                )
+                add_field("result_key_id", self.result_signer.key_id)
+            except OSError as exc:
+                LOG.warning("Could not sign the archive of job %s; uploading unsigned: %s", job_id, exc)
         if archive is not None:
             parts.append(
                 (
@@ -983,7 +1013,7 @@ class AgentClient:
             bucket=TokenBucket(self.upload_rate_limit_kbps),
         )
         try:
-            return self._request(
+            answer = self._request(
                 "POST",
                 f"/api/agent/jobs/{job_id}/results",
                 body=body,
@@ -993,8 +1023,18 @@ class AgentClient:
                 timeout=self.upload_timeout,
                 rate_limit_wait=UPLOAD_RATE_LIMIT_WAIT_SECONDS,
             )
+        except AgentResultRejected:
+            observability.TELEMETRY.upload_finished("rejected")
+            raise
+        except Exception:
+            observability.TELEMETRY.upload_finished("error")
+            raise
         finally:
             body.close()
+        observability.TELEMETRY.upload_finished(
+            "ok", archive.stat().st_size if archive is not None else 0
+        )
+        return answer
 
 
 def _uses_provisioning_key(args: argparse.Namespace) -> bool:
@@ -1290,6 +1330,7 @@ def _execute_job(
     retention: run_retention.RunRetention | None = None,
 ) -> None:
     LOG.info("Claimed job %s run_id=%s", job["job_id"], job["run_id"])
+    observability.TELEMETRY.job_started()
     cancel_event = threading.Event()
     beat = client.heartbeat(
         agent_id,
@@ -1333,6 +1374,9 @@ def _execute_job(
                     cancel_event=cancel_event,
                 )
         cancelled = cancel_event.is_set() and exit_code != 0
+        observability.TELEMETRY.job_finished(
+            "cancelled" if cancelled else ("succeeded" if exit_code == 0 else "failed")
+        )
         if retention is not None and cancelled and archive is not None:
             # Before the upload, not after it fails: a sensor killed while
             # sending the partial results still knows on restart that the API
@@ -1803,6 +1847,17 @@ def run_loop(args: argparse.Namespace) -> int:
 
     hostname = args.hostname or socket.gethostname()
 
+    # The key this sensor signs its run archives with (#366). Loaded after the
+    # agent id file is known, because the key lives next to it by default.
+    client.result_signer = result_signing.load_signer(
+        str(getattr(args, "agent_id_file", "") or "") or None
+    )
+    observability.TELEMETRY.configure(
+        version=__version__,
+        poll_interval=float(getattr(args, "poll_interval", 5.0) or 5.0),
+        signing_enabled=client.result_signer is not None,
+    )
+
     # The identity this process keeps for the rest of its life. Seeded from
     # OCTO_AGENT_ID when the installer wrote one, adopted from the first
     # exchange when it did not, and from then on sent with *every* exchange —
@@ -2008,6 +2063,20 @@ def run_loop(args: argparse.Namespace) -> int:
         tenant_id = tenant_id or str(info.get("tenant_id") or DEFAULT_TENANT_ID)
         agent_group = str(info.get("agent_group") or "") or None
         registered = True
+        observability.TELEMETRY.mark_registered()
+        pinned = info.get("result_key_fingerprint")
+        if client.result_signer is not None and pinned and pinned != client.result_signer.key_id:
+            # The API keeps the first key it was given and refused ours. Logged
+            # as an error because every archive this sensor uploads will be
+            # refused until an operator resets the key (DELETE
+            # /api/agents/{id}/result-key) or the old key file is restored.
+            LOG.error(
+                "The API has a different result-signing key pinned for this sensor "
+                "(%s, ours is %s); its uploads will be refused until an operator "
+                "resets the key or the original key file is restored",
+                pinned,
+                client.result_signer.key_id,
+            )
         LOG.info(
             "Registered agent %s (%s) tenant=%s group=%s",
             agent_id,
@@ -2016,6 +2085,9 @@ def run_loop(args: argparse.Namespace) -> int:
             agent_group or "-",
         )
 
+    # Started last, after every early return above, so a sensor that refuses to
+    # run never leaves a listener behind. Off unless OCTO_AGENT_METRICS_ADDR.
+    metrics_server = observability.start_from_env()
     try:
         while not shutdown_event.is_set():
             try:
@@ -2188,6 +2260,8 @@ def run_loop(args: argparse.Namespace) -> int:
     finally:
         if nats_session is not None:
             nats_session.close()
+        if metrics_server is not None:
+            metrics_server.stop()
     return 0
 
 

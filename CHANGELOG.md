@@ -6,6 +6,20 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- Result integrity ([#366](https://github.com/onixus/Shapoclyack/issues/366),
+  [operations](docs/operations.md#sensor-result-integrity-schemas-and-signatures)):
+  the API validates a run archive's core artifacts against JSON schemas before
+  extracting it (fail-closed with the file and path in the job's error; unknown
+  fields allowed, `OCTO_RESULT_SCHEMA_MODE=warn|off` to relax), and verifies an
+  ed25519 signature made by the sensor over the archive plus agent, job, run,
+  exit code and attempt. The sensor generates its key, registers the public half
+  (pinned on first use, replaced only by `DELETE /api/agents/{id}/result-key`),
+  and signs. `OCTO_REQUIRE_SIGNED_RESULTS` (default off) turns an unsigned upload
+  from a warning, metric (`octo_result_integrity_total`) and `results.unsigned`
+  audit row into a refusal; a wrong signature is always refused. Migration `0095`
+  adds two columns to `agents`. The sensor can also serve `/healthz` and
+  `/metrics` on `OCTO_AGENT_METRICS_ADDR` (off by default; see
+  [observability](docs/observability.md#sensor-healthz-and-metrics)).
 - TLS posture on the Pulse path
   ([#545](https://github.com/onixus/Shapoclyack/issues/545), [Pulse backend](docs/pulse-backend.md)):
   an A-F grade per cipher suite computed by Shapoclyack (`scanner/pipeline/tls_grading.py`,

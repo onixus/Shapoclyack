@@ -2190,6 +2190,61 @@ should register as a new sensor under the new key. The SSH push handles this
 order itself, and refuses where revoking would stop other sensors; see
 [SSH push deployment](#ssh-push-deployment).
 
+### Sensor result integrity: schemas and signatures
+
+Two checks sit between a sensor's upload and the run becoming visible
+([#366](https://github.com/onixus/Shapoclyack/issues/366)).
+
+**Schemas.** The core artifacts in the archive are parsed and checked before
+anything is extracted (`api/services/result_integrity.py`). Compatibility
+rules, so an older or newer sensor is not refused for being different:
+unknown properties and unknown files are allowed; a missing file is
+allowed (a failed or cancelled run is partial by nature, and the console already
+shows a run without `summary.json` as having none); a file that is present must
+be valid JSON of the right shape (`summary.json` an object with integer counts,
+`vulnerabilities.json`, `findings.json`, `alive_hosts.json` and the other row
+files arrays of objects each carrying a `host`); `run_meta.json`, when present,
+must name the run the upload is for. A refusal closes the job `failed` with
+`results rejected (schema): <file>: <what>` in its error (it does not leave the
+job for the reaper, which would re-run a scan whose output would be refused
+again) and writes `results.rejected` to the audit trail. Roll back with
+`OCTO_RESULT_SCHEMA_MODE=warn`.
+
+**Signatures.** A sensor creates an ed25519 key on first start
+(`OCTO_AGENT_RESULT_KEY_FILE`), sends the public half when it registers, and
+signs every archive: the signature covers the archive's SHA-256 *and* the
+agent id, job id, run id, exit code and attempt, so an archive cannot be moved
+to another job, attempt or sensor, nor its reported outcome flipped. The API
+pins the first key per sensor; a registration that later presents a different
+key still succeeds but the key is not replaced (`agent.result_key_refused`,
+and the sensor logs an error), so holding the bearer token is not enough to
+forge results.
+
+Rolling it out without stopping the fleet:
+
+1. Upgrade the sensors. With `OCTO_REQUIRE_SIGNED_RESULTS=false` (the default)
+   an unsigned upload is accepted and counted.
+2. Watch `octo_result_integrity_total{check="signature",outcome=~"unsigned|unverifiable"}`
+   (and `results.unsigned` in the audit trail) fall to zero. `verified` is the
+   share that is signed and good.
+3. Set `OCTO_REQUIRE_SIGNED_RESULTS=true`. Unsigned uploads are now refused and
+   the job closed `failed`. Rolling back is setting it to `false`. A replica
+   still on the previous release ignores the setting: finish the rollout first.
+
+A **wrong** signature is refused in both modes. After a sensor is reinstalled
+without its key file it registers a new key, the API keeps the old one, and its
+archives are refused until an operator resets it:
+
+```bash
+curl -X DELETE "$API/api/agents/edge-01/result-key?reason=reinstalled" -H "$AUTH"
+```
+
+The next registration pins the new key. Treat an `agent.result_key_refused`
+row you did not expect as what it says: something other than the original
+sensor knows its token. Trust is on first use: a token holder who registers
+before the real sensor ever sends a key pins its own, so register keys at
+install time and rotate the provisioning key if in doubt.
+
 ### Sensor client certificates
 
 A sensor (or a Lariska Agent) can present a client certificate next to its

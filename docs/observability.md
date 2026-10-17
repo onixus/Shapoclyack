@@ -202,6 +202,7 @@ counted where they happen (use `sum()`).
 | `octo_job_duration_seconds` | histogram, 30 s – 8 h buckets | `status` (`succeeded`, `failed`), `execution` (`local`, `agent`) | E |
 | `octo_jobs_queued`, `octo_jobs_running` | gauge, read from the jobs table at scrape time | — | C |
 | `octo_job_lease_expired_total` | counter | `outcome` (`requeued`, `failed`) | E |
+| `octo_result_integrity_total` | counter | `check` (`schema`, `signature`), `outcome` (`ok`, `rejected`, `warned`, `verified`, `unsigned`, `unverifiable`) | E |
 | `octo_job_cancellations_total` | counter | `outcome` (`queued`, `confirmed`, `unconfirmed`, `late_results`) | E |
 | `octo_job_idempotent_replays_total` | counter | `operation` (`start`, `results`) | E |
 | `octo_scan_policy_refusals_total` | counter | `reason` (`safe_only`, `avoid_ports`, `agent_unsupported`) | E |
@@ -625,3 +626,19 @@ fails nowhere: the panel is empty and the alert never fires. So:
   (`k8s/scripts/grafana-queries-as-rules.py`). It uses the pinned Prometheus
   image through docker, or a local `promtool` of exactly the pinned version
   (`$PROMTOOL`, or one on `PATH`), so a local pass means what the CI pass means.
+
+## Sensor `/healthz` and `/metrics`
+
+A sensor can expose its own health and counters ([#366](https://github.com/onixus/Shapoclyack/issues/366)) on a port of its own, **off by default**:
+set `OCTO_AGENT_METRICS_ADDR=127.0.0.1:9108` (a non-loopback address also needs `OCTO_AGENT_METRICS_TOKEN`, which `/metrics` then requires as a bearer token).
+`/healthz` answers `200 ok` while the sensor is registered and the API answered a heartbeat within the last three poll intervals (at least 120 s), otherwise `503` with a short reason.
+
+| Series | Type | Labels | Meaning |
+|---|---|---|---|
+| `octo_sensor_info` | gauge | `version` | Build |
+| `octo_sensor_registered`, `octo_sensor_busy`, `octo_sensor_result_signing_enabled` | gauge | — | 1/0 flags |
+| `octo_sensor_heartbeat_last_success_timestamp_seconds` | gauge | — | Alert on `time() - … > 300` |
+| `octo_sensor_heartbeat_failures_total` | counter | — | Failed heartbeats |
+| `octo_sensor_jobs_total` | counter | `outcome` (`succeeded`, `failed`, `cancelled`) | Scans run |
+| `octo_sensor_result_uploads_total` | counter | `outcome` (`ok`, `rejected`, `error`) | Result uploads |
+| `octo_sensor_result_upload_bytes_total` | counter | — | Archive bytes the API accepted |

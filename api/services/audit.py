@@ -125,6 +125,17 @@ ACTION_AGENT_CERT_REFUSED = "agent.certificate_refused"
 # Lifting the lock a revocation puts on enrolment by token alone: the act that
 # lets a host with only the token get a certificate again.
 ACTION_AGENT_CERT_ENROLMENT_RESET = "agent.certificate_enrolment_reset"
+# The ed25519 key a sensor signs its run archives with (#366). ``refused`` is
+# a registration presenting a key other than the pinned one -- a reinstalled
+# sensor, or somebody holding the token trying to swap the key; ``reset`` is the
+# operator act that lets the next registration pin a new key.
+ACTION_AGENT_RESULT_KEY_PIN = "agent.result_key_pin"
+ACTION_AGENT_RESULT_KEY_REFUSED = "agent.result_key_refused"
+ACTION_AGENT_RESULT_KEY_RESET = "agent.result_key_reset"
+# An upload refused on integrity grounds (schema or signature), and one
+# accepted unsigned while OCTO_REQUIRE_SIGNED_RESULTS is off (#366).
+ACTION_RESULTS_REJECTED = "results.rejected"
+ACTION_RESULTS_UNSIGNED = "results.unsigned"
 # Agent groups (#361). Membership decides which worker may execute which of a
 # tenant's scans, so moving an agent between groups is an access-control change
 # and belongs in the same trail as granting a membership — "which agent was
