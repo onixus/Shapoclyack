@@ -282,3 +282,61 @@ def test_webhook_transport_still_hmac_posts(settings):
     webhooks.enqueue_event(_event(event_id="ev-hmac"))
     webhooks.dispatch_once(post=fake_post)
     assert any(h.get("X-Shapoclyack-Signature", "").startswith("sha256=") for h in seen)
+
+
+def _seed_asset(settings, **fields):
+    now = datetime.now(UTC)
+    with get_session(settings.postgres_url) as session:
+        session.add(
+            models.Asset(
+                asset_id="asset-map",
+                tenant_id="default",
+                status="active",
+                first_seen=now,
+                last_seen=now,
+                **fields,
+            )
+        )
+        session.add(
+            models.AssetIdentifier(
+                asset_id="asset-map",
+                tenant_id="default",
+                identifier_type="ip",
+                identifier_value="10.0.0.1",
+            )
+        )
+
+
+@requires_postgres
+def test_dispatch_routes_ticket_by_asset_business_unit_and_skips_low(settings):
+    """#353: asset context reaches the mapping; a skipped severity posts nothing."""
+    _seed_asset(settings, business_unit="Payments", asset_criticality=5)
+    webhooks.create_subscription(
+        tenant_id="default",
+        name="jira-map",
+        url="https://jira.example",
+        transport="jira",
+        transport_config={
+            "project_key": "DEF",
+            "target_rules": [{"business_unit": "Payments", "min_criticality": 4, "target": "PAY"}],
+            "severity_rules": {"low": {"create": False}},
+        },
+        secret="jira-token",
+        created_by="admin",
+    )
+    captured = []
+
+    def fake_post(url, body, headers, **kwargs):
+        captured.append(json.loads(body))
+        return delivery_transport.DeliveryResult(
+            ok=True, status_code=201, error=None, retryable=False, body='{"key":"PAY-1"}'
+        )
+
+    webhooks.enqueue_event(_event(event_id="ev-map-1"))
+    webhooks.enqueue_event(
+        _event(event_id="ev-map-2", data={"severity": "low", "cve": "CVE-2026-2"})
+    )
+    outcome = webhooks.dispatch_once(post=fake_post)
+    assert outcome["delivered"] == 2
+    assert len(captured) == 1
+    assert captured[0]["fields"]["project"]["key"] == "PAY"

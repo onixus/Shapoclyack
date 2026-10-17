@@ -169,7 +169,7 @@ MIN_FP_SUPPRESS_DAYS = 1
 MAX_FP_SUPPRESS_DAYS = 365
 DEFAULT_FP_SUPPRESS_DAYS = 90
 
-TICKET_SYSTEMS = ("jira", "servicenow", "smax", "defectdojo", "other")
+TICKET_SYSTEMS = ("jira", "servicenow", "smax", "defectdojo", "github", "gitlab", "other")
 
 #: Which observer produced a finding. ``scan`` is this module's own path;
 #: ``endpoint_software`` is ``api/services/software_findings.py``;

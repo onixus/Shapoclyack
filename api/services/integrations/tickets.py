@@ -1,6 +1,6 @@
 """Ticket-creation transports over the 10.3 delivery queue (ROADMAP P2).
 
-Jira, ServiceNow and DefectDojo are not a second queue: a subscription with
+Jira, ServiceNow, DefectDojo, GitHub Issues and GitLab Issues are not a second queue: a subscription with
 ``transport`` other than ``webhook`` still enqueues a ``webhook_deliveries``
 row, still retries 5xx/timeouts, still dead-letters a 4xx. What changes is
 the POST — HMAC-signed event JSON would be rejected by those APIs, so this
@@ -20,13 +20,15 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 
+from api.services.integrations import ticket_mapping
 from api.services.integrations.delivery import DeliveryResult, post
 
-TRANSPORTS = ("webhook", "jira", "servicenow", "defectdojo")
-TICKET_TRANSPORTS = ("jira", "servicenow", "defectdojo")
+TRANSPORTS = ("webhook", "jira", "servicenow", "defectdojo", "github", "gitlab")
+TICKET_TRANSPORTS = ("jira", "servicenow", "defectdojo", "github", "gitlab")
 
 #: How ``secret`` is presented to the tracker (#347). Which one a tracker wants
 #: is a deployment fact, not something we can infer from the transport name:
@@ -40,7 +42,17 @@ AUTH_MODES = ("bearer", "basic", "token")
 
 #: The mode used when ``transport_config.auth_mode`` is unset — the behaviour
 #: every subscription created before #347 already has.
-DEFAULT_AUTH_MODES = {"jira": "bearer", "servicenow": "bearer", "defectdojo": "token"}
+DEFAULT_AUTH_MODES = {
+    "jira": "bearer",
+    "servicenow": "bearer",
+    "defectdojo": "token",
+    "github": "bearer",
+    "gitlab": "bearer",
+}
+
+_GITHUB_REPO = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
+_GITLAB_PROJECT = re.compile(r"^(\d{1,18}|[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+){1,19})$")
+_JIRA_PROJECT = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 _USER_AGENT = "Shapoclyack-Ticket/1"
 
@@ -100,6 +112,40 @@ def validate_sync_interval(transport: str, value: Any) -> int:
     return seconds
 
 
+def _target_validator(transport: str):
+    """The check for a transport's routable target (project, repo, test id)."""
+
+    def check(value: Any) -> Any:
+        if transport == "jira":
+            text = str(value or "").strip()
+            if not _JIRA_PROJECT.match(text):
+                raise TicketSpecError("jira transport_config.project_key is not a project key")
+            return text
+        if transport == "github":
+            text = str(value or "").strip()
+            if not _GITHUB_REPO.match(text) or ".." in text:
+                raise TicketSpecError("github transport_config.repository must be 'owner/repo'")
+            return text
+        if transport == "gitlab":
+            text = str(value or "").strip()
+            if not _GITLAB_PROJECT.match(text) or ".." in text:
+                raise TicketSpecError(
+                    "gitlab transport_config.project must be a numeric id or 'group/project'"
+                )
+            return text
+        if transport == "defectdojo":
+            try:
+                number = int(value)
+            except (TypeError, ValueError) as exc:
+                raise TicketSpecError("defectdojo transport_config.test_id must be an integer") from exc
+            if number < 1:
+                raise TicketSpecError("defectdojo transport_config.test_id must be >= 1")
+            return number
+        raise TicketSpecError(f"{transport} has no routable target")
+
+    return check
+
+
 def validate_transport_config(transport: str, raw: dict[str, Any] | None) -> dict[str, Any]:
     cfg = dict(raw or {})
     if transport == "webhook":
@@ -112,29 +158,37 @@ def validate_transport_config(transport: str, raw: dict[str, Any] | None) -> dic
             transport, cfg.get("sync_interval_seconds")
         ),
     }
+    check = _target_validator(transport) if transport != "servicenow" else None
     if transport == "jira":
-        project = str(cfg.get("project_key") or "").strip()
-        if not project:
+        if not str(cfg.get("project_key") or "").strip():
             raise TicketSpecError("jira transport_config.project_key is required")
         issue_type = str(cfg.get("issue_type") or "Bug").strip() or "Bug"
-        return {"project_key": project, "issue_type": issue_type, **common}
-    if transport == "servicenow":
+        base = {"project_key": check(cfg.get("project_key")), "issue_type": issue_type}
+    elif transport == "servicenow":
         table = str(cfg.get("table") or "incident").strip() or "incident"
         if "/" in table or "\\" in table or ".." in table:
             raise TicketSpecError("servicenow transport_config.table is not a table name")
-        return {"table": table, **common}
-    if transport == "defectdojo":
+        base = {"table": table}
+    elif transport == "defectdojo":
         test_id = cfg.get("test_id")
         if test_id is None or str(test_id).strip() == "":
             raise TicketSpecError("defectdojo transport_config.test_id is required")
-        try:
-            test_id_int = int(test_id)
-        except (TypeError, ValueError) as exc:
-            raise TicketSpecError("defectdojo transport_config.test_id must be an integer") from exc
-        if test_id_int < 1:
-            raise TicketSpecError("defectdojo transport_config.test_id must be >= 1")
-        return {"test_id": test_id_int, **common}
-    return {}
+        base = {"test_id": check(test_id)}
+    elif transport == "github":
+        if not str(cfg.get("repository") or "").strip():
+            raise TicketSpecError("github transport_config.repository is required")
+        base = {"repository": check(cfg.get("repository"))}
+    elif transport == "gitlab":
+        if not str(cfg.get("project") or "").strip():
+            raise TicketSpecError("gitlab transport_config.project is required")
+        base = {"project": check(cfg.get("project")), "confidential": bool(cfg.get("confidential"))}
+    else:
+        return {}
+    try:
+        mapping = ticket_mapping.validate_mapping(transport, cfg, check)
+    except ticket_mapping.MappingError as exc:
+        raise TicketSpecError(f"{transport} transport_config.{exc}") from exc
+    return {**base, **mapping, **common}
 
 
 def endpoint_url(transport: str, base: str, config: dict[str, Any]) -> str:
@@ -147,6 +201,11 @@ def endpoint_url(transport: str, base: str, config: dict[str, Any]) -> str:
         return urljoin(root, f"api/now/table/{table}")
     if transport == "defectdojo":
         return urljoin(root, "api/v2/findings/")
+    if transport == "github":
+        # Both halves were validated as path-safe; quoting is belt and braces.
+        return urljoin(root, f"repos/{quote(str(config['repository']), safe='/')}/issues")
+    if transport == "gitlab":
+        return urljoin(root, f"api/v4/projects/{quote(str(config['project']), safe='')}/issues")
     return base
 
 
@@ -201,22 +260,76 @@ def _severity(envelope: dict[str, Any]) -> str:
     return str(_data(envelope).get("severity") or "unknown").lower()
 
 
-def build_body(transport: str, payload: dict[str, Any], config: dict[str, Any]) -> bytes:
+def _texts(
+    envelope: dict[str, Any], config: dict[str, Any], asset: dict[str, Any] | None
+) -> tuple[str, str, dict[str, str]]:
+    """Summary and description: the operator's templates, else the built-ins."""
+    context = ticket_mapping.build_context(envelope, asset)
+    summary_t = config.get("summary_template")
+    description_t = config.get("description_template")
+    summary = ticket_mapping.render(summary_t, context) if summary_t else _summary(envelope)
+    description = (
+        ticket_mapping.render(description_t, context) if description_t else _description(envelope)
+    )
+    return summary, description, context
+
+
+def plan(
+    transport: str,
+    payload: dict[str, Any],
+    config: dict[str, Any],
+    asset: dict[str, Any] | None = None,
+) -> ticket_mapping.Resolution:
+    """What the mapping decides for this event: skip, or where it goes."""
+    return ticket_mapping.resolve(config, _severity(_envelope(payload)), asset)
+
+
+def with_target(transport: str, config: dict[str, Any], target: Any) -> dict[str, Any]:
+    """``config`` with the routed target substituted for the base one."""
+    if target is None:
+        return config
+    key = ticket_mapping.TARGET_KEYS.get(transport)
+    return {**config, key: target} if key else config
+
+
+def build_body(
+    transport: str,
+    payload: dict[str, Any],
+    config: dict[str, Any],
+    asset: dict[str, Any] | None = None,
+    resolution: ticket_mapping.Resolution | None = None,
+) -> bytes:
     envelope = _envelope(payload)
+    res = resolution or plan(transport, payload, config, asset)
+    config = with_target(transport, config, res.target)
+    summary, description, context = _texts(envelope, config, asset)
     if transport == "jira":
-        body = {
-            "fields": {
-                "project": {"key": config["project_key"]},
-                "issuetype": {"name": config.get("issue_type") or "Bug"},
-                "summary": _summary(envelope)[:255],
-                "description": _description(envelope),
-            }
+        fields: dict[str, Any] = {
+            "project": {"key": config["project_key"]},
+            "issuetype": {"name": config.get("issue_type") or "Bug"},
+            "summary": summary[:255],
+            "description": description,
         }
+        if res.priority:
+            fields["priority"] = {"name": res.priority}
+        if res.labels:
+            # Jira labels cannot hold whitespace.
+            fields["labels"] = [re.sub(r"\s+", "_", label) for label in res.labels]
+        if config.get("components"):
+            fields["components"] = [{"name": name} for name in config["components"]]
+        for key, value in (config.get("custom_fields") or {}).items():
+            if isinstance(value, str):
+                fields[key] = ticket_mapping.render(value, context)
+            elif isinstance(value, list):
+                fields[key] = [ticket_mapping.render(v, context) for v in value]
+            else:
+                fields[key] = value
+        body: dict[str, Any] = {"fields": fields}
     elif transport == "servicenow":
         body = {
-            "short_description": _summary(envelope)[:160],
-            "description": _description(envelope),
-            "urgency": "1" if _severity(envelope) == "critical" else "2",
+            "short_description": summary[:160],
+            "description": description,
+            "urgency": res.priority or ("1" if _severity(envelope) == "critical" else "2"),
         }
     elif transport == "defectdojo":
         sev = _severity(envelope).capitalize()
@@ -224,13 +337,23 @@ def build_body(transport: str, payload: dict[str, Any], config: dict[str, Any]) 
             sev = "Info"
         body = {
             "test": config["test_id"],
-            "title": _summary(envelope)[:255],
+            "title": summary[:255],
             "severity": sev,
-            "description": _description(envelope),
+            "description": description,
             "active": True,
             "verified": False,
             "numerical_severity": "S1" if sev == "Critical" else "S3",
         }
+    elif transport == "github":
+        body = {"title": summary[:256], "body": description}
+        if res.labels:
+            body["labels"] = res.labels
+    elif transport == "gitlab":
+        body = {"title": summary[:255], "description": description}
+        if res.labels:
+            body["labels"] = ",".join(label.replace(",", " ") for label in res.labels)
+        if config.get("confidential"):
+            body["confidential"] = True
     else:
         raise TicketSpecError(f"not a ticket transport: {transport}")
     return json.dumps(body, separators=(",", ":"), sort_keys=True).encode("utf-8")
@@ -253,6 +376,9 @@ def request_headers(
     headers = {str(k): str(v) for k, v in (extra_headers or {}).items()}
     headers["Content-Type"] = "application/json"
     headers["User-Agent"] = _USER_AGENT
+    if transport == "github":
+        headers.setdefault("Accept", "application/vnd.github+json")
+        headers.setdefault("X-GitHub-Api-Version", "2022-11-28")
     has_auth = any(k.lower() == "authorization" for k in headers)
     token = (secret or "").strip()
     if token and not has_auth:
@@ -280,10 +406,24 @@ def authorization_value(auth_mode: str, token: str) -> str:
     return f"Bearer {token}"
 
 
+def _http_url(value: Any) -> str | None:
+    """A tracker-supplied link, kept only when it is an http(s) URL."""
+    text = str(value or "").strip()
+    return text if text.startswith(("https://", "http://")) else None
+
+
 def parse_created(
-    transport: str, base_url: str, body: str | None
+    transport: str,
+    base_url: str,
+    body: str | None,
+    config: dict[str, Any] | None = None,
 ) -> tuple[str | None, str | None]:
-    """Return ``(ticket_key, ticket_url)`` from a successful create response."""
+    """Return ``(ticket_key, ticket_url)`` from a successful create response.
+
+    GitHub and GitLab numbers are only unique inside a repository, so their key
+    is ``<repository>#<number>``: the status poll can then find the issue from
+    the key alone, with no subscription config in hand.
+    """
     if not body:
         return None, None
     try:
@@ -308,6 +448,13 @@ def parse_created(
             return None, None
         key = str(finding_id)
         return key, f"{root}/finding/{key}"
+    if transport in ("github", "gitlab") and isinstance(parsed, dict):
+        number = parsed.get("number") if transport == "github" else parsed.get("iid")
+        target = (config or {}).get("repository" if transport == "github" else "project")
+        if number is None or not target:
+            return None, None
+        link = _http_url(parsed.get("html_url" if transport == "github" else "web_url"))
+        return f"{target}#{number}", link
     return None, None
 
 
@@ -322,17 +469,41 @@ def deliver(
     timeout_seconds: int,
     allow_private: bool,
     post_fn=post,
+    asset: dict[str, Any] | None = None,
 ) -> DeliveryResult:
-    """One native create-issue POST. Same SSRF/retry classification as webhooks."""
+    """One native create-issue POST. Same SSRF/retry classification as webhooks.
+
+    ``asset`` is the business context of the event's host (``business_unit``,
+    ``environment``, ``criticality``, ``owner``) when the caller looked it up;
+    only ``target_rules`` and asset placeholders read it.
+    """
     try:
         cfg = validate_transport_config(transport, config)
+        resolution = plan(transport, payload, cfg, asset)
+        if not resolution.create:
+            # A deliberate "no ticket for this severity" is a successful
+            # delivery, not a failure to retry or dead-letter. No ticket key
+            # comes back, so nothing is linked to the finding.
+            return DeliveryResult(
+                ok=True,
+                status_code=None,
+                error=None,
+                retryable=False,
+                body=None,
+            )
+        cfg = with_target(transport, cfg, resolution.target)
         url = endpoint_url(transport, base_url, cfg)
         # Re-validate the constructed path so a weird table name cannot
         # walk the subscription URL into a different host.
         if urlsplit(url).hostname != urlsplit(base_url).hostname:
             raise TicketSpecError("ticket endpoint host does not match the subscription URL")
-        body = build_body(transport, payload, cfg)
-        headers = request_headers(transport, secret=secret, extra_headers=extra_headers)
+        body = build_body(transport, payload, cfg, asset, resolution)
+        headers = request_headers(
+            transport,
+            secret=secret,
+            extra_headers=extra_headers,
+            auth_mode=cfg.get("auth_mode"),
+        )
     except TicketSpecError as exc:
         return DeliveryResult(
             ok=False,
@@ -350,7 +521,7 @@ def deliver(
     )
     if not result.ok:
         return result
-    key, ticket_url = parse_created(transport, base_url, result.body)
+    key, ticket_url = parse_created(transport, base_url, result.body, cfg)
     return DeliveryResult(
         ok=True,
         status_code=result.status_code,

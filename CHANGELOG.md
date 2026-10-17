@@ -6,6 +6,17 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- Configurable ticket mapping and GitHub / GitLab Issues transports
+  ([#353](https://github.com/onixus/Shapoclyack/issues/353),
+  [API](docs/api-and-rbac.md)): subject and description templates (plain
+  `{placeholder}` substitution from a closed list, never evaluated), labels,
+  Jira components and custom fields, per-severity priority and `create: false`
+  routing, and project / repository / test selection by the asset's business
+  unit, environment and criticality. `github` and `gitlab` join `jira`,
+  `servicenow` and `defectdojo` as ticket transports, with two-way status sync.
+  Azure DevOps is not included. No migration: the settings live in
+  `transport_config`. Also fixed: a configured `transport_config.auth_mode` was
+  ignored when *creating* a ticket (only the status poll honoured it).
 - TLS posture on the Pulse path
   ([#545](https://github.com/onixus/Shapoclyack/issues/545), [Pulse backend](docs/pulse-backend.md)):
   an A-F grade per cipher suite computed by Shapoclyack (`scanner/pipeline/tls_grading.py`,
