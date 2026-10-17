@@ -289,7 +289,7 @@ def _texts(
     """
     markdown = transport in ("github", "gitlab")
     line_ctx = ticket_mapping.build_context(envelope, asset, single_line=True)
-    body_ctx = ticket_mapping.build_context(envelope, asset, markdown=markdown)
+    body_ctx = ticket_mapping.build_context(envelope, asset, markdown=markdown, single_line=markdown)
     summary_t = config.get("summary_template")
     description_t = config.get("description_template")
     summary = ticket_mapping.render(summary_t, line_ctx) if summary_t else _summary(envelope)
@@ -512,6 +512,9 @@ def deliver(
     only ``target_rules`` and asset placeholders read it.
     """
     try:
+        # Validated again on every delivery, strictly: a stored config that no
+        # longer passes (a rule tightened in a later release) fails here as a
+        # permanent TicketSpecError rather than being sent half-understood.
         cfg = validate_transport_config(transport, config)
         resolution = plan(transport, payload, cfg, asset)
         if not resolution.create:

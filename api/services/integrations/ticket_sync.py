@@ -206,7 +206,7 @@ def _split_issue_key(ticket_key: str) -> tuple[str, str]:
     repo, sep, number = str(ticket_key).rpartition("#")
     if not sep or not repo or not number.isdigit():
         raise TicketSpecError(f"ticket key {ticket_key!r} is not '<repository>#<number>'")
-    if ".." in repo.split("/") or repo.startswith("/"):
+    if any(part in ("", ".", "..") for part in repo.split("/")):
         raise TicketSpecError(f"ticket key {ticket_key!r} has an unsafe repository")
     return repo, number
 
@@ -219,18 +219,19 @@ def allowed_issue_repos(config: dict[str, Any] | None) -> set[str]:
     return {r.lower() for r in repos if r}
 
 
-def _issue_path(transport: str, ticket_key: str, config: dict[str, Any] | None) -> str:
-    """Issue API path for a key, only inside the subscription's own repositories.
+def _issue_path(transport: str, ticket_key: str) -> str:
+    """Issue API path for a stored key.
 
-    A ticket key can be typed by anyone allowed to link tickets, and the
-    subscription's token is the tenant admin's. Without this check a key such as
-    ``other-org/private#1`` would be read, closed and reopened with that token.
+    Only the key's *form* is checked here. Which repositories a key may name is
+    decided when the link is created (``vulnerabilities.set_ticket`` checks
+    :func:`allowed_issue_repos`; the transport builds its own keys from the
+    config), and it is the only writer of ``ticket_key``. So a link that exists
+    was valid when made, and survives the repository later leaving the config
+    (a renamed target, a removed rule) instead of silently ceasing to sync.
+    GitHub / GitLab links did not exist before this was introduced, so there
+    are no unchecked legacy links to worry about.
     """
     repo, number = _split_issue_key(ticket_key)
-    if repo.lower() not in allowed_issue_repos(config):
-        raise TicketSpecError(
-            f"ticket key {ticket_key!r} is not in a repository this subscription is configured for"
-        )
     if transport == "github":
         return f"repos/{quote(repo, safe='/')}/issues/{number}"
     return f"api/v4/projects/{quote(repo, safe='')}/issues/{number}"
@@ -257,7 +258,6 @@ def fetch_ticket_status(
     timeout_seconds: int = 10,
     allow_private: bool = False,
     request_fn=request,
-    config: dict[str, Any] | None = None,
 ) -> tuple[str | None, str | None, dict[str, Any]]:
     """Read one ticket. Returns ``(suggested_state, raw_status, raw_payload)``.
 
@@ -277,7 +277,7 @@ def fetch_ticket_status(
         url = _url(base_url, f"api/v2/findings/{key}/")
     elif t in ("github", "gitlab"):
         try:
-            url = _url(base_url, _issue_path(t, ticket_key, config))
+            url = _url(base_url, _issue_path(t, ticket_key))
         except TicketSpecError as exc:
             # Not a request that failed: one we refused to make. Permanent.
             return None, None, {"error": str(exc), "status_code": None, "retryable": False}
@@ -363,7 +363,6 @@ def push_status_update(
     timeout_seconds: int = 10,
     allow_private: bool = False,
     request_fn=request,
-    config: dict[str, Any] | None = None,
 ) -> bool:
     """Reflect a local lifecycle change onto the ticket. Best effort.
 
@@ -391,7 +390,7 @@ def push_status_update(
         else:
             method, payload = "PUT", {"state_event": "close" if closed else "reopen"}
         try:
-            issue_path = _issue_path(t, ticket_key, config)
+            issue_path = _issue_path(t, ticket_key)
         except TicketSpecError as exc:
             logger.warning("Refusing to update %s ticket: %s", t, exc)
             return False

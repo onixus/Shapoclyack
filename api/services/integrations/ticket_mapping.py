@@ -105,7 +105,7 @@ def _clean(value: Any, *, single_line: bool = False) -> str:
 
 
 _WHITESPACE = re.compile(r"\s+")
-_MD_ACTIVE = re.compile(r"([\\`*_\[\]()<>#!|~])")
+_MD_ACTIVE = re.compile(r"([\\`*_\[\]()<>#!|~%$&])")
 
 
 def markdown_escape(text: str) -> str:
@@ -115,7 +115,13 @@ def markdown_escape(text: str) -> str:
     ``@org/security`` pings people, ``#12`` links an unrelated issue and
     ``[x](https://...)`` plants a link in a ticket the SOC trusts.
     """
-    return _MD_ACTIVE.sub(r"\\\1", text).replace("@", "&#64;")
+    # One line only: GitLab quick actions (``/close``, ``/assign @x``) act on a
+    # line that starts with them, and a banner containing a newline could start
+    # one. ``%``, ``$``, ``&`` and ``~`` are GitLab reference sigils
+    # (milestone, snippet, epic, label).
+    text = _WHITESPACE.sub(" ", text).strip()
+    text = _MD_ACTIVE.sub(r"\\\1", text).replace("@", "&#64;")
+    return "\\" + text if text.startswith("/") else text
 
 
 def render(template: str, context: dict[str, str]) -> str:
@@ -333,6 +339,23 @@ def _validate_target_rules(
     return out
 
 
+def _refuse_placeholders_in_code(template: str) -> None:
+    """GitHub / GitLab descriptions are Markdown; code is where escaping breaks.
+
+    Scan-derived values are escaped for Markdown prose. Inside a code span or
+    fence that escaping would print literally, and *not* escaping would let a
+    value close the span with a backtick and continue as prose. Whether a
+    placeholder sits inside code cannot be told reliably (double-backtick spans,
+    fences, indentation), so a template that mixes a backtick with a
+    placeholder is refused instead of guessed at.
+    """
+    if "`" in template and _TOKEN.search(template):
+        raise MappingError(
+            "description_template may not use placeholders together with backticks "
+            "(code spans or fences); write the values as plain text"
+        )
+
+
 def validate_mapping(transport: str, cfg: dict[str, Any], validate_target) -> dict[str, Any]:
     """The normalised mapping keys of ``cfg``; only keys that are set appear.
 
@@ -344,6 +367,8 @@ def validate_mapping(transport: str, cfg: dict[str, Any], validate_target) -> di
     for key in ("summary_template", "description_template"):
         template = validate_template(key, cfg.get(key))
         if template:
+            if key == "description_template" and transport in ("github", "gitlab"):
+                _refuse_placeholders_in_code(template)
             out[key] = template
     labels = _string_list("labels", cfg.get("labels"))
     if labels:

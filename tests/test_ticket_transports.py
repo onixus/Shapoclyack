@@ -505,3 +505,65 @@ def test_link_created_ticket_for_github_and_manual_link_format(settings):
             settings, tenant_id="default", vuln_id="vln_gh", system="github",
             key="12", url=None, actor="alice",
         )
+
+
+@requires_postgres
+def test_manual_github_link_is_checked_against_the_subscription(settings):
+    now = datetime.now(UTC)
+    _seed_asset(settings)
+    with get_session(settings.postgres_url) as session:
+        session.add(
+            models.Vulnerability(
+                vuln_id="vln_man", tenant_id="default", asset_id="asset-map",
+                finding_key="k-man", cve="CVE-2026-1", port="443", title="t",
+                severity="critical", state="OPEN", state_changed_at=now,
+                first_seen_at=now, last_seen_at=now, sla_started_at=now,
+                created_at=now, updated_at=now,
+            )
+        )
+
+    def link(key):
+        return vulns_service.set_ticket(
+            settings, tenant_id="default", vuln_id="vln_man", system="github",
+            key=key, url=None, actor="alice",
+        )
+
+    # no subscription at all: nothing to validate against
+    with pytest.raises(ValueError, match="subscription"):
+        link("acme/sec#1")
+    sub = webhooks.create_subscription(
+        tenant_id="default",
+        name="gh",
+        url="https://api.github.com",
+        transport="github",
+        transport_config={
+            "repository": "acme/sec",
+            "target_rules": [{"business_unit": "Pay", "target": "acme/pay"}],
+        },
+        secret="tok",
+        created_by="admin",
+    )
+    with pytest.raises(ValueError, match="not one"):
+        link("victim-org/private#1")
+    assert link("ACME/sec#1")["ticket_key"] == "ACME/sec#1"
+    assert link("acme/pay#2")["ticket_key"] == "acme/pay#2"
+    # the repository leaves the config: the stored link is left alone
+    webhooks.update_subscription(
+        sub["subscription_id"],
+        transport_config={"repository": "acme/other"},
+    )
+    finding = vulns_service.get_vulnerability(settings, tenant_id="default", vuln_id="vln_man")
+    assert finding["ticket_key"] == "acme/pay#2"
+    # ...but a new hand-typed link to the removed repository is refused
+    with pytest.raises(ValueError, match="not one"):
+        link("acme/pay#3")
+
+
+@requires_postgres
+def test_link_created_ticket_survives_non_dict_event_data(settings):
+    _seed_asset(settings)
+    payload = {"event": {"kind": "new_cve", "host": "10.0.0.1", "cve": "CVE-2026-1", "data": "oops"}}
+    assert webhooks.link_created_ticket(
+        tenant_id="default", payload=payload, transport="github",
+        ticket_key="a/b#1", ticket_url=None,
+    ) is False

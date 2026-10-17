@@ -383,7 +383,6 @@ class TicketSyncWorker:
                     secret=endpoint["secret"],
                     extra_headers=endpoint["headers"],
                     auth_mode=endpoint["config"].get("auth_mode"),
-                    config=endpoint["config"],
                     timeout_seconds=self._settings.webhook_timeout_seconds,
                     allow_private=self._settings.webhook_allow_private_targets,
                     **extra,

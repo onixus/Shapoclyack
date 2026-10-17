@@ -1001,7 +1001,8 @@ def link_created_ticket(
         return False
     envelope = payload.get("event") if isinstance(payload.get("event"), dict) else payload
     host = str(envelope.get("host") or "").strip()
-    cve = str((envelope.get("data") or {}).get("cve") or envelope.get("cve") or "").strip() or None
+    data = envelope.get("data") if isinstance(envelope.get("data"), dict) else {}
+    cve = str(data.get("cve") or envelope.get("cve") or "").strip() or None
     settings = _require_settings()
     try:
         with get_session(settings.postgres_url) as session:
@@ -1021,6 +1022,7 @@ def link_created_ticket(
             url=ticket_url,
             actor="shapoclyack",
             note="opened by ticket transport",
+            verify_repository=False,
         )
         return linked is not None
     except Exception:  # noqa: BLE001

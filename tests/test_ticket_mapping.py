@@ -328,7 +328,6 @@ def test_fetch_status_closed_issue(transport, key, url, cfg):
         base_url="https://t.example",
         ticket_key=key,
         request_fn=req,
-        config=cfg,
     )
     assert req.calls[0][:2] == ("GET", url)
     assert (state, raw) == ("CLOSED", "closed")
@@ -338,50 +337,46 @@ def test_fetch_status_open_issue_asserts_nothing():
     req = _Req('{"state": "open"}')
     state, raw, _ = ticket_sync.fetch_ticket_status(
         transport="github", base_url="https://t.example", ticket_key="acme/sec#1",
-        request_fn=req, config=GH_CFG,
+        request_fn=req,
     )
     assert state is None and raw == "open"
 
 
-@pytest.mark.parametrize(
-    "key", ["12", "acme/sec#x", "../b#1", "#1", "victim-org/private#1", "acme/sec-other#1"]
-)
-def test_issue_key_outside_the_subscription_is_never_requested(key):
-    """#353 review: the subscription's token must not reach a repository the
-    tenant did not configure, whatever key a user linked."""
+@pytest.mark.parametrize("key", ["12", "acme/sec#x", "../b#1", "#1", "a//b#1", "/a/b#1"])
+def test_malformed_issue_key_is_never_requested(key):
     req = _Req('{"state": "closed"}')
     state, raw, payload = ticket_sync.fetch_ticket_status(
-        transport="github", base_url="https://t.example", ticket_key=key,
-        request_fn=req, config=GH_CFG,
+        transport="github", base_url="https://t.example", ticket_key=key, request_fn=req,
     )
     assert req.calls == []
     assert state is None and payload["error"] and payload["retryable"] is False
     assert not ticket_sync.push_status_update(
         transport="github", base_url="https://t.example", ticket_key=key,
-        to_state="CLOSED", request_fn=req, config=GH_CFG,
+        to_state="CLOSED", request_fn=req,
     )
     assert req.calls == []
 
 
-def test_issue_key_without_config_is_refused():
-    req = _Req()
-    state, _, payload = ticket_sync.fetch_ticket_status(
-        transport="gitlab", base_url="https://t.example", ticket_key="grp/sub/proj#1",
+def test_stored_link_keeps_syncing_after_the_repository_leaves_the_config():
+    """The allow-list is applied when a link is made, not on every poll."""
+    req = _Req('{"state": "closed"}')
+    state, _, _ = ticket_sync.fetch_ticket_status(
+        transport="github", base_url="https://t.example", ticket_key="old-org/old#9",
         request_fn=req,
     )
-    assert req.calls == [] and state is None and payload["error"]
+    assert state == "CLOSED" and req.calls[0][1].endswith("/repos/old-org/old/issues/9")
 
 
 def test_push_close_and_reopen():
     req = _Req()
     assert ticket_sync.push_status_update(
         transport="github", base_url="https://t.example", ticket_key="acme/sec#1",
-        to_state="CLOSED", request_fn=req, config=GH_CFG,
+        to_state="CLOSED", request_fn=req,
     )
     assert req.calls[-1][0] == "PATCH" and json.loads(req.calls[-1][2]) == {"state": "closed"}
     assert ticket_sync.push_status_update(
         transport="gitlab", base_url="https://t.example", ticket_key="grp/sub/proj#2",
-        to_state="OPEN", request_fn=req, config=GL_CFG,
+        to_state="OPEN", request_fn=req,
     )
     assert req.calls[-1][0] == "PUT"
     assert json.loads(req.calls[-1][2]) == {"state_event": "reopen"}
@@ -389,7 +384,7 @@ def test_push_close_and_reopen():
     n = len(req.calls)
     assert not ticket_sync.push_status_update(
         transport="github", base_url="https://t.example", ticket_key="acme/sec#1",
-        to_state="VERIFYING", request_fn=req, config=GH_CFG,
+        to_state="VERIFYING", request_fn=req,
     )
     assert len(req.calls) == n
 
@@ -468,3 +463,43 @@ def test_markdown_active_scan_data_is_neutralised_for_github_and_gitlab():
             text = body.get("body") or body["description"]
             assert "@org" not in text and "[click]" not in text
             assert "&#64;org" in text and "\\#12" in text and "\\[click\\]" in text
+
+
+def test_quick_actions_and_references_in_scan_data_are_defused():
+    evil = "x\n/close\n/assign @x\n/label ~bug %m $s &e !1"
+    cfg = tickets.validate_transport_config("gitlab", {"project": "a/b"})
+    payload = _payload()
+    payload["event"]["data"]["script_id"] = evil
+    desc = json.loads(tickets.build_body("gitlab", payload, cfg))["description"]
+    assert not any(line.startswith("/") for line in desc.splitlines())
+    import re
+
+    for sigil in ("~bug", "%m", "$s", "&e", "!1"):
+        assert not re.search(r"(?<!\\)" + re.escape(sigil), desc), sigil
+    assert "@x" not in desc
+    templ = tickets.validate_transport_config(
+        "gitlab", {"project": "a/b", "description_template": "{script_id}"}
+    )
+    desc = json.loads(tickets.build_body("gitlab", payload, templ))["description"]
+    assert "\n" not in desc and not desc.startswith("/")
+    # a value that is itself a quick action at the start of the line
+    payload["event"]["data"]["script_id"] = "/close"
+    desc = json.loads(tickets.build_body("gitlab", payload, templ))["description"]
+    assert desc == "\\/close"
+
+
+@pytest.mark.parametrize("template", ["`{host}`", "```\n{script_id}\n```", "``{cve}``"])
+def test_placeholders_inside_code_are_refused_for_markdown_trackers(template):
+    for transport, base in (("github", {"repository": "a/b"}), ("gitlab", {"project": "a/b"})):
+        with pytest.raises(tickets.TicketSpecError, match="backticks"):
+            tickets.validate_transport_config(
+                transport, {**base, "description_template": template}
+            )
+    # Jira is not Markdown: unaffected
+    tickets.validate_transport_config(
+        "jira", {"project_key": "S", "description_template": template}
+    )
+    # backticks without placeholders are fine
+    tickets.validate_transport_config(
+        "github", {"repository": "a/b", "description_template": "run `nmap`"}
+    )

@@ -2140,10 +2140,15 @@ subject and description are the built-in ones.
   of control characters and capped at 500 characters. In the summary and in
   `custom_fields` newlines and tabs also collapse to a space (Jira rejects a
   line break there); the description keeps its line breaks. On GitHub and GitLab
-  the scan-derived values in the description are Markdown-escaped (`@` becomes
-  `&#64;`, `#`, `[`, `]`, `(`, backticks and the like are backslash-escaped), so
-  banner text cannot ping people, link issues or plant links; the title is plain
-  text and is only whitespace-normalised. A custom description does
+  the scan-derived values in the description are collapsed to one line and
+  Markdown-escaped (`@` becomes `&#64;`; `#`, `[`, `]`, `(`, backticks, `~`, `%`,
+  `$`, `&`, `!` and the like are backslash-escaped; a value starting with `/` is
+  escaped so it cannot act as a GitLab quick action such as `/close`), so banner
+  text cannot ping people, link issues, run quick actions or plant links; the
+  title is plain text and is only whitespace-normalised. Because escaping
+  cannot be done correctly inside code, a GitHub / GitLab `description_template`
+  that combines a backtick with any placeholder is `422`: write the values as
+  plain text. A custom description does
   **not** carry the built-in "not confirmation that the finding is exploitable"
   line; put it in the template if you want it.
 - `labels` (Jira, GitHub, GitLab), `components` (Jira): static lists.
@@ -2182,12 +2187,13 @@ subject and description are the built-in ones.
 
 **Limits.** Status sync addresses a ticket through the tenant's *newest enabled*
 subscription of that transport: one GitHub (or GitLab, Jira, ...) endpoint per
-tenant is supported. For GitHub and GitLab the key's repository must be the
-subscription's `repository` / `project` or a `target_rules` target; a linked
-key pointing anywhere else is never requested (it shows as a sync error) so
-the subscription's token cannot be aimed at other repositories. Linking a
-GitHub or GitLab ticket by hand needs a key of the form `owner/repo#12`, else
-`422`. A second subscription for the same transport does not get its own
+tenant is supported. Linking a GitHub or GitLab ticket by hand needs a key of
+the form `owner/repo#12` whose repository is the subscription's `repository` /
+`project` or a `target_rules` target, and an enabled subscription to check it
+against; otherwise `422`, so the subscription's token cannot be aimed at other
+repositories. The check happens once, when the link is made: a link that exists
+keeps syncing even if its repository later leaves the configuration. The
+configuration itself is validated strictly again on every delivery. A second subscription for the same transport does not get its own
 polling: use `target_rules` to cover several repositories through one.
 
 Outgoing requests use the same SSRF-validated, redirect-free, DNS-pinned wire as
