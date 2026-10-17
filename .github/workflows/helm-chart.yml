@@ -1,0 +1,55 @@
+name: Helm chart
+
+# Runs only when something the chart is built from changes (#341). The chart is
+# the kustomize base in another packaging and nothing else keeps the two equal,
+# so a base edit that forgets the chart has to fail a pull request, not wait for
+# someone to run scripts/ci-helm.sh. The full CI runs on the local Jenkins (whose
+# pytest cells also run tests/test_helm_chart.py); this is the cheap path filter
+# in front of it, one short job.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "k8s/**"
+      - "charts/**"
+      - "scripts/ci-helm.sh"
+      - "scripts/helm_parity.py"
+      - "tests/test_helm_chart.py"
+      - ".github/workflows/helm-chart.yml"
+  push:
+    branches: [main]
+    paths:
+      - "k8s/**"
+      - "charts/**"
+      - "scripts/ci-helm.sh"
+      - "scripts/helm_parity.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helm-chart-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  helm:
+    name: Helm lint and parity with kustomize
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Same major as the Jenkins cells (Jenkinsfile, HELM_IMAGE).
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.17.3
+      # The hash-pinned lock, like every other install (tests/test_python_locks.py);
+      # it is the runtime set, which carries the PyYAML helm_parity.py needs.
+      - name: Install PyYAML from the lock
+        run: "python -m pip install --require-hashes --only-binary=:all: -r requirements.lock"
+      # kubectl is preinstalled on ubuntu-latest.
+      - name: Lint and compare with the kustomize base
+        run: ./scripts/ci-helm.sh

@@ -35,9 +35,14 @@ helm install shapoclyack charts/shapoclyack --namespace network-scan -f my-value
 
 For tools that render with `helm template` (Argo CD, Flux), set
 `namespaces.main.create=true` and the chart emits the labelled Namespace itself.
+Do not combine it with `helm install`: the namespace already exists and belongs to no
+release, so Helm refuses to adopt it (and with `--create-namespace` the two collide).
+Helm cannot tell `install` from `template` inside a template, so this is not guarded.
 
-Credentials come first. The default values render the base's dev placeholders, and the
-API refuses to start on the placeholder JWT secret unless `OCTO_ENV=dev`. Use one of:
+Credentials come first, and the chart insists on them: with neither of the following,
+`helm install` / `helm template` **fails** and names what is missing. The base's dev
+placeholders are public (they are in this repository), and Postgres, ClickHouse and NATS
+would start with them. Use one of:
 
 - `existingSecrets.<name>`: the name of a Secret you created. Keys are the base's:
   `api` is `jwt_secret`, `postgres`, `clickhouse` and `clickhouseBackup` are `password`,
@@ -50,6 +55,12 @@ API refuses to start on the placeholder JWT secret unless `OCTO_ENV=dev`. Use on
   Secret (master key, console bootstrap) is not generated: ESO's `creationPolicy: Owner`
   needs the complete key list, so keep using that example for it.
 
+`--set devPlaceholders=true` renders the placeholders anyway. It exists for a throwaway
+cluster and for the parity check (`charts/shapoclyack/ci/parity-values.yaml`); the API
+additionally refuses the placeholder JWT secret unless `OCTO_ENV=dev`. The ClickHouse
+backup user's placeholder is not in the API's placeholder list (`api/settings.py`)
+deliberately: the API never sees that password, only ClickHouse and the backup job do.
+
 The scanner-executor starts once the Secret `shapoclyack-scanner-executor` exists in its
 namespace ([Kubernetes hardening](k8s-hardening.md), enrolling the executor).
 
@@ -57,11 +68,13 @@ namespace ([Kubernetes hardening](k8s-hardening.md), enrolling the executor).
 
 | Value | Default | Purpose |
 |-------|---------|---------|
-| `replicas.api`, `replicas.scannerExecutor` | `1` | Datastores stay single-replica; clustering them is a configuration change, see [High availability](high-availability.md) |
+| `replicas.api`, `replicas.scannerExecutor` | `1` | Datastores stay single-replica; clustering them is a configuration change, see [High availability](high-availability.md). More than one API replica (or an `api.autoscaling.maxReplicas` above one) with a `ReadWriteOnce` scanner-data volume is refused at render time |
+| `api.spread.enabled` | `false` | The prod-ha overlay's placement for the API: preferred anti-affinity, hard per-node spread, best-effort per-zone spread |
+| `api.autoscaling.*` | disabled | The prod-ha HPA (needs metrics-server); `replicas.api` is then not written to the Deployment |
 | `storage.<scannerData\|clickhouse\|nats\|postgres>.size` / `.storageClass` | base sizes / cluster default | `scannerData.accessMode` must be `ReadWriteMany` for `replicas.api > 1` |
 | `existingSecrets.*` | empty | See above |
 | `externalSecrets.*` | disabled | See above |
-| `ingress.*` | disabled | Host, class, annotations, TLS. TLS is not optional (#309) |
+| `ingress.*` | disabled | Host, class, annotations, TLS. TLS is not optional (#309): no `tls`, or a host missing from every `tls[].hosts`, is refused |
 | `images.<api\|aio\|clickhouse\|nats\|postgres\|awscli>` | digest-pinned, as in the base | Set `digest: ""` to deploy by tag |
 | `resources.*` | the base's requests and limits | One entry per workload |
 | `networkPolicy.enabled` | `true` | The datastore and executor-namespace ingress rules |
@@ -95,11 +108,25 @@ and commit the result. Edits to a Deployment or StatefulSet in the base have to 
 repeated in `charts/shapoclyack/templates/`; the parity check says where they differ.
 Bump `version` in `Chart.yaml` with any chart change.
 
-`ci-helm.sh` needs `helm` (3.12+ or 4.x), `kubectl` and PyYAML. It is not wired into the
-Jenkinsfile: the Jenkins controller image (`jenkins-local/Dockerfile`) has `kubectl` but
-neither `helm` nor PyYAML. To add it, install `helm` there (pinned, like `kubectl`) and
-add `sh 'scripts/ci-helm.sh'` next to `validate-kustomize.sh` in the `Kustomize` stage; in
-`.github/workflows/ci.yml` the `helm` job already runs it.
+`ci-helm.sh` needs `helm`, `kubectl` and PyYAML. Where it runs:
+
+- `.github/workflows/helm-chart.yml`: on pull requests and pushes to `main` that touch
+  `k8s/**`, `charts/**` or the scripts (path-filtered, one short job; helm 3.17.3 through
+  `azure/setup-helm` pinned by commit).
+- Jenkins: the pytest cells get a pinned `helm` binary (`HELM_IMAGE` in the Jenkinsfile,
+  copied out of the image the way `kubectl` is) and run `tests/test_helm_chart.py`, which
+  repeats the parity check against the base rendered by the stage. `OCTO_REQUIRE_HELM=1`
+  makes a missing helm a failure there. It is a flag of its own: the global
+  `OCTO_REQUIRE_INTEGRATION=1` every cell sets must not turn a cell without helm red. On a
+  laptop without helm those tests skip.
+
+Supported Helm: the chart is tested on 3.17.3 (CI) and 4.3.1 (local); the declared floor
+`kubeVersion >=1.27` follows the topology-spread fields the prod-ha overlay needs. Older
+Helm 3 releases were not run.
+
+Known limitations: `externalSecrets.apiVersion` defaults to `external-secrets.io/v1beta1`
+as in the example manifest and was never run against a real ESO (newer ESO serves `v1`);
+the datastores are not scalable through the chart.
 
 ## Publishing as an OCI artifact (not set up)
 

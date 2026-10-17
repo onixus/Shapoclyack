@@ -110,18 +110,35 @@ api:
   # Extra container env entries, appended after the base ones. Never repeat a
   # name the chart already sets: a duplicate is rejected on server-side apply.
   extraEnv: []
+  # Placement for replicas > 1, as in overlays/prod-ha (#335). Off by default.
+  spread:
+    enabled: false
+  # HorizontalPodAutoscaler (needs metrics-server). When on, replicas.api is not
+  # written to the Deployment; maxReplicas is what the RWX check uses. The
+  # database pool is sized for 6 replicas (see overlays/prod-ha/api-ha-patch.yaml).
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
 
-# Credentials. By default the chart renders the same dev placeholders as the
-# kustomize base. The API refuses to start on the placeholder JWT secret unless
-# OCTO_ENV=dev, so a real install must replace them, in one of two ways:
+# Credentials. The kustomize base ships public dev placeholders; this chart
+# refuses to render them unless asked (devPlaceholders). A real install
+# supplies its own, in one of two ways:
 #
 #  * existingSecrets: name a Secret you created (with the same keys the base
 #    uses: jwt_secret; password; password; api_password + agent_password; password).
 #    The chart then renders no placeholder for it and points the workloads at it.
 #  * externalSecrets.enabled: ExternalSecrets Operator creates the Secrets named
 #    as in the base from your secret store.
+#
+# With neither, rendering FAILS: the placeholders are public, and Postgres,
+# ClickHouse and NATS would start with them. devPlaceholders=true renders them
+# anyway, for a throwaway cluster or for the parity check against the base.
+devPlaceholders: false
+
 existingSecrets:
-  api: ""               # key: jwt_secret (optional: jwt_secret_previous)
+  api: ""             # key: jwt_secret (optional: jwt_secret_previous)
   postgres: ""          # key: password
   clickhouse: ""        # key: password
   clickhouseBackup: ""  # key: password

@@ -73,10 +73,23 @@ def _dump(obj: dict) -> list[str]:
     return yaml.safe_dump(obj, sort_keys=True, default_flow_style=False).splitlines()
 
 
+def _index(path: str, side: str) -> tuple[dict, int]:
+    """Objects by (kind, namespace, name); a repeated identity is a failure, not a merge."""
+    objects: dict = {}
+    duplicates = 0
+    for obj in _load(path):
+        key = _key(obj)
+        if key in objects:
+            print("DUPLICATE in %s: %s %s/%s" % (side, key[0], key[1] or "-", key[2]))
+            duplicates += 1
+        objects[key] = _normalise(obj)
+    return objects, duplicates
+
+
 def compare(kustomize_path: str, helm_path: str) -> int:
-    left = {_key(o): _normalise(o) for o in _load(kustomize_path)}
-    right = {_key(o): _normalise(o) for o in _load(helm_path)}
-    failures = 0
+    left, dup_left = _index(kustomize_path, "kustomize")
+    right, dup_right = _index(helm_path, "chart")
+    failures = dup_left + dup_right
 
     for key in sorted(left.keys() - right.keys()):
         print("MISSING in chart: %s %s/%s" % (key[0], key[1] or "-", key[2]))
@@ -113,21 +126,37 @@ _FILE_BACKED = {
 
 def sync(kustomize_path: str, chart_dir: str) -> int:
     written = 0
+    wanted: dict[str, set[str]] = {}
     for obj in _load(kustomize_path):
         meta = obj.get("metadata", {})
+        if obj.get("kind") != "ConfigMap":
+            continue
         # The executor namespace's copy of scanner-config is the same file.
-        if obj.get("kind") != "ConfigMap" or meta.get("namespace") != "network-scan":
+        if meta.get("namespace") != "network-scan":
             continue
         subdir = _FILE_BACKED.get(meta["name"])
         if subdir is None:
+            print(
+                "WARNING: base ConfigMap %s is not carried by the chart; add it to "
+                "_FILE_BACKED here and to templates/configmaps.yaml" % meta["name"],
+                file=sys.stderr,
+            )
             continue
         target = os.path.join(chart_dir, "files", subdir)
         os.makedirs(target, exist_ok=True)
+        wanted[subdir] = set(obj.get("data", {}))
         for name, text in obj.get("data", {}).items():
             with open(os.path.join(target, name), "w", encoding="utf-8") as fh:
                 fh.write(text)
             written += 1
-    print("synced %d file(s) into %s/files" % (written, chart_dir))
+    removed = 0
+    for subdir, names in wanted.items():
+        target = os.path.join(chart_dir, "files", subdir)
+        for name in sorted(set(os.listdir(target)) - names):
+            os.remove(os.path.join(target, name))
+            print("removed stale %s/%s" % (subdir, name))
+            removed += 1
+    print("synced %d file(s) into %s/files, removed %d stale" % (written, chart_dir, removed))
     return 0
 
 

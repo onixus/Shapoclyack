@@ -53,10 +53,14 @@ fi
 parity=(-f "${CHART}/ci/parity-values.yaml")
 
 echo "[helm] lint"
+# The defaults refuse to render (no credentials), so every variant carries the
+# parity values (devPlaceholders) unless it supplies credentials itself.
 helm lint --strict "${CHART}" "${parity[@]}"
-helm lint --strict "${CHART}" --set ingress.enabled=true --set ingress.className=nginx
+helm lint --strict "${CHART}" "${parity[@]}" --set ingress.enabled=true --set ingress.className=nginx
 helm lint --strict "${CHART}" --set externalSecrets.enabled=true
-helm lint --strict "${CHART}" --set existingSecrets.api=api-creds --set networkPolicy.enabled=false
+helm lint --strict "${CHART}" "${parity[@]}" --set existingSecrets.api=api-creds --set networkPolicy.enabled=false
+helm lint --strict "${CHART}" "${parity[@]}" --set api.spread.enabled=true --set api.autoscaling.enabled=true \
+  --set storage.scannerData.accessMode=ReadWriteMany
 
 echo "[helm] render: every switch must produce a manifest"
 # A namespace is passed because the chart takes the control plane's from the release.
@@ -65,9 +69,27 @@ for args in \
   "--set externalSecrets.enabled=true" \
   "--set existingSecrets.api=api-creds" \
   "--set networkPolicy.enabled=false" \
-  "--set backup.postgres.enabled=false --set backup.clickhouse.enabled=false"; do
+  "--set backup.postgres.enabled=false --set backup.clickhouse.enabled=false" \
+  "--set api.spread.enabled=true --set replicas.api=3 --set storage.scannerData.accessMode=ReadWriteMany"; do
   # shellcheck disable=SC2086
-  helm template shapoclyack "${CHART}" --namespace network-scan ${args} > /dev/null
+  helm template shapoclyack "${CHART}" --namespace network-scan "${parity[@]}" ${args} > /dev/null
+done
+
+echo "[helm] render: unsafe combinations must be refused"
+for args in \
+  "" \
+  "--set ingress.enabled=true --set ingress.tls=null" \
+  "--set replicas.api=3"; do
+  # shellcheck disable=SC2086
+  if [[ -z "${args}" ]]; then
+    set -- --namespace network-scan
+  else
+    set -- --namespace network-scan "${parity[@]}" ${args}
+  fi
+  if helm template shapoclyack "${CHART}" "$@" > /dev/null 2>&1; then
+    echo "[helm] expected a refusal for: ${args:-<defaults>}" >&2
+    exit 1
+  fi
 done
 
 echo "[helm] parity with kustomize base"

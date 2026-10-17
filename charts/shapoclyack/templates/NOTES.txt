@@ -1,8 +1,9 @@
 Shapoclyack {{ .Chart.AppVersion }} installed in namespace {{ .Release.Namespace }}.
-{{ if and (not .Values.externalSecrets.enabled) (not .Values.existingSecrets.api) }}
-WARNING: the API Secret holds the dev placeholder JWT secret. The API refuses to
-start on it unless OCTO_ENV=dev. Set existingSecrets.api (and the other
-existingSecrets.*) or externalSecrets.enabled=true; see docs/helm.md.
+{{ if .Values.devPlaceholders }}
+WARNING: devPlaceholders=true. Postgres, ClickHouse and NATS run with passwords
+that are public in the repository, and the API refuses the placeholder JWT secret
+unless OCTO_ENV=dev. Use existingSecrets.* or externalSecrets.enabled=true for
+anything but a throwaway cluster; see docs/helm.md.
 {{- end }}
 {{- if not .Values.namespaces.main.create }}
 

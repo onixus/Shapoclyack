@@ -9,7 +9,9 @@ metadata:
   name: shapoclyack-api
   namespace: {{ .Release.Namespace }}
 spec:
+  {{- if not .Values.api.autoscaling.enabled }}
   replicas: {{ .Values.replicas.api }}
+  {{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/component: api
@@ -174,6 +176,37 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       serviceAccountName: api
+      {{- if .Values.api.spread.enabled }}
+      # Same placement as overlays/prod-ha/api-ha-patch.yaml (#335): preferred
+      # anti-affinity, a hard per-node spread and a best-effort per-zone one.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: api
+                  app.kubernetes.io/name: shapoclyack
+              topologyKey: kubernetes.io/hostname
+            weight: 100
+      topologySpreadConstraints:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: api
+            app.kubernetes.io/name: shapoclyack
+        maxSkew: 1
+        nodeAffinityPolicy: Honor
+        nodeTaintsPolicy: Honor
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: api
+            app.kubernetes.io/name: shapoclyack
+        maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+      {{- end }}
       terminationGracePeriodSeconds: 45
       volumes:
       - name: data
