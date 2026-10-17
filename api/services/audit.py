@@ -133,9 +133,9 @@ ACTION_AGENT_RESULT_KEY_PIN = "agent.result_key_pin"
 ACTION_AGENT_RESULT_KEY_REFUSED = "agent.result_key_refused"
 ACTION_AGENT_RESULT_KEY_RESET = "agent.result_key_reset"
 # An upload refused on integrity grounds (schema or signature), and one
-# accepted unsigned while OCTO_REQUIRE_SIGNED_RESULTS is off (#366).
+# accepted with a schema problem while OCTO_RESULT_SCHEMA_MODE is warn (#366).
 ACTION_RESULTS_REJECTED = "results.rejected"
-ACTION_RESULTS_UNSIGNED = "results.unsigned"
+ACTION_RESULTS_SCHEMA_WARNED = "results.schema_warned"
 # Agent groups (#361). Membership decides which worker may execute which of a
 # tenant's scans, so moving an agent between groups is an access-control change
 # and belongs in the same trail as granting a membership — "which agent was

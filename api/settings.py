@@ -290,12 +290,14 @@ class Settings:
     # the agent while it is still listening. 0 disables the deadline.
     agent_results_ingest_wait_seconds: float = 25.0
     # Integrity of an uploaded run archive (#366). ``result_schema_mode``:
-    # ``enforce`` (default) refuses a malformed core artifact, ``warn`` only
-    # counts and logs it, ``off`` skips the check. ``require_signed_results``
-    # is the transition switch for ed25519 archive signatures: off (default)
-    # accepts an unsigned archive with a warning, metric and audit row; on
-    # refuses it. A signature that is present but wrong is refused either way.
-    result_schema_mode: str = "enforce"
+    # ``warn`` (default for the first release) counts, logs and audits a
+    # malformed core artifact and accepts the upload; ``enforce`` refuses it;
+    # ``off`` skips the check. ``require_signed_results`` is the transition
+    # switch for ed25519 archive signatures: off (default) accepts an upload
+    # with no signature from a sensor that has no key registered, with a
+    # warning and a metric; on refuses it. A sensor that has a key registered
+    # must always sign, and a wrong signature is always refused.
+    result_schema_mode: str = "warn"
     require_signed_results: bool = False
     # NATS JetStream URL (e.g. nats://shapoclyack-nats-client:4222). Empty disables broker.
     nats_url: str = ""
@@ -2096,7 +2098,7 @@ def load_settings() -> Settings:
             0.0, float(os.environ.get("OCTO_AGENT_RESULTS_INGEST_WAIT_SECONDS", "25") or 0.0)
         ),
         result_schema_mode=_choice(
-            os.environ.get("OCTO_RESULT_SCHEMA_MODE", ""), ("enforce", "warn", "off"), "enforce"
+            os.environ.get("OCTO_RESULT_SCHEMA_MODE", ""), ("enforce", "warn", "off"), "warn"
         ),
         require_signed_results=os.environ.get("OCTO_REQUIRE_SIGNED_RESULTS", "false")
         .strip()

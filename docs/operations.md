@@ -2207,8 +2207,12 @@ files arrays of objects each carrying a `host`); `run_meta.json`, when present,
 must name the run the upload is for. A refusal closes the job `failed` with
 `results rejected (schema): <file>: <what>` in its error (it does not leave the
 job for the reaper, which would re-run a scan whose output would be refused
-again) and writes `results.rejected` to the audit trail. Roll back with
-`OCTO_RESULT_SCHEMA_MODE=warn`.
+again) and writes `results.rejected` to the audit trail. That is `enforce`.
+The first release ships `OCTO_RESULT_SCHEMA_MODE=warn`: the upload is accepted,
+and the problem is logged, counted (`outcome="warned"`) and audited as
+`results.schema_warned`. Move to `enforce` after one release cycle in which
+`octo_result_integrity_total{check="schema",outcome="warned"}` stayed at zero
+across every sensor version you run.
 
 **Signatures.** A sensor creates an ed25519 key on first start
 (`OCTO_AGENT_RESULT_KEY_FILE`), sends the public half when it registers, and
@@ -2225,13 +2229,15 @@ Rolling it out without stopping the fleet:
 1. Upgrade the sensors. With `OCTO_REQUIRE_SIGNED_RESULTS=false` (the default)
    an unsigned upload is accepted and counted.
 2. Watch `octo_result_integrity_total{check="signature",outcome=~"unsigned|unverifiable"}`
-   (and `results.unsigned` in the audit trail) fall to zero. `verified` is the
+   fall to zero. `verified` is the
    share that is signed and good.
 3. Set `OCTO_REQUIRE_SIGNED_RESULTS=true`. Unsigned uploads are now refused and
    the job closed `failed`. Rolling back is setting it to `false`. A replica
    still on the previous release ignores the setting: finish the rollout first.
 
-A **wrong** signature is refused in both modes. After a sensor is reinstalled
+A sensor that has a key registered must sign every upload: omitting the
+signature is refused in both modes (otherwise the token alone would be enough
+to downgrade it). A **wrong** signature is refused in both modes too. After a sensor is reinstalled
 without its key file it registers a new key, the API keeps the old one, and its
 archives are refused until an operator resets it:
 
@@ -2239,7 +2245,15 @@ archives are refused until an operator resets it:
 curl -X DELETE "$API/api/agents/edge-01/result-key?reason=reinstalled" -H "$AUTH"
 ```
 
-The next registration pins the new key. Treat an `agent.result_key_refused`
+The next registration pins the new key. Closing the job on a wrong signature is
+deliberate (the same sensor would produce the same refusal on every re-run), and
+someone holding the sensor's token could already fail its jobs; what must not
+happen is a *restart* doing it, which is why the key lives on a volume: the
+Kubernetes StatefulSets (`scanner-executor`, the agent example) mount a
+`sensor-key` PVC at `/var/lib/shapoclyack/sensor-key` through
+`OCTO_AGENT_RESULT_KEY_FILE`, and the sensor logs an error at registration when
+the API's pinned key is not its own. To run without signing, set
+`OCTO_AGENT_RESULT_SIGNING=off` on the sensor. Treat an `agent.result_key_refused`
 row you did not expect as what it says: something other than the original
 sensor knows its token. Trust is on first use: a token holder who registers
 before the real sensor ever sends a key pins its own, so register keys at

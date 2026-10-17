@@ -1434,6 +1434,22 @@ def _execute_job(
                     "The API rejected the result of job %s: %s", job["job_id"], exc
                 )
                 return
+            except RuntimeError as exc:
+                if "-> 422:" not in str(exc):
+                    raise
+                # An integrity refusal (schema or signature): the API has
+                # closed the job as failed with the reason, and resending the
+                # same archive would be refused the same way.
+                LOG.error(
+                    "The API refused the archive of job %s and closed the job: %s. "
+                    "After a reinstall, a signature error means the pinned result key "
+                    "is not this sensor's: an operator resets it with DELETE "
+                    "/api/agents/%s/result-key",
+                    job["job_id"],
+                    exc,
+                    agent_id,
+                )
+                return
         # Only here, past every way the upload can fail or be refused: the
         # results call answers once the ingest is done, so this is the API
         # saying it holds the run. A run that sent no archive — the scan failed

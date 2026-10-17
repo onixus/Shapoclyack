@@ -44,6 +44,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from api.services import metrics as metrics_service
+from api.services import results_ingest
 from api.settings import Settings
 
 LOG = logging.getLogger("shapoclyack.ingest")
@@ -56,7 +57,9 @@ SIGNING_DOMAIN = "shapoclyack-run-archive-v1"
 #: Largest single artifact the validator will parse. The archive as a whole is
 #: bounded by ``results_ingest.MAX_UNCOMPRESSED_BYTES``; this keeps one huge
 #: member from being decoded into a Python object tree several times its size.
-MAX_VALIDATED_MEMBER_BYTES = 256 * 1024 * 1024
+MAX_VALIDATED_MEMBER_BYTES = 64 * 1024 * 1024
+#: ...and all of them together, so eight maximal files are not eight times the cap.
+MAX_VALIDATED_TOTAL_BYTES = 128 * 1024 * 1024
 
 SCHEMA_MODES = ("enforce", "warn", "off")
 
@@ -80,7 +83,8 @@ _HOST_ROWS = {
     "items": {
         "type": "object",
         "required": ["host"],
-        "properties": {"host": {"type": "string", "minLength": 1}},
+        # Not minLength: a nuclei row can carry an empty host.
+        "properties": {"host": {"type": ["string", "null"]}},
     },
 }
 
@@ -180,8 +184,8 @@ def validate_document(name: str, document: Any) -> list[str]:
 
 
 def schema_mode(settings: Settings) -> str:
-    mode = str(getattr(settings, "result_schema_mode", "enforce") or "enforce").lower()
-    return mode if mode in SCHEMA_MODES else "enforce"
+    mode = str(getattr(settings, "result_schema_mode", "warn") or "warn").lower()
+    return mode if mode in SCHEMA_MODES else "warn"
 
 
 def validate_artifacts(
@@ -196,7 +200,12 @@ def validate_artifacts(
     Raises :class:`ResultsRejected` (code ``schema``) naming the first problem
     found. Reads members from the in-memory archive; nothing touches the disk.
     """
+    # The container limits (unsafe paths, links, expanded size) come first: this
+    # function reads members into memory, which must not happen for an archive
+    # the extractor would refuse anyway. IngestError propagates as before.
+    results_ingest.validate_archive(archive_bytes)
     seen: dict[str, Any] = {}
+    budget = MAX_VALIDATED_TOTAL_BYTES
     try:
         with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tf:
             for member in tf.getmembers():
@@ -211,12 +220,24 @@ def validate_artifacts(
                     raise ResultsRejected(
                         "schema", f"{name}: larger than {MAX_VALIDATED_MEMBER_BYTES} bytes"
                     )
+                budget -= member.size
+                if budget < 0:
+                    raise ResultsRejected(
+                        "schema",
+                        f"core artifacts together exceed {MAX_VALIDATED_TOTAL_BYTES} bytes",
+                    )
                 handle = tf.extractfile(member)
                 raw = handle.read() if handle is not None else b""
                 try:
                     document = json.loads(raw.decode("utf-8"))
                 except (UnicodeDecodeError, ValueError) as exc:
                     raise ResultsRejected("schema", f"{name}: not valid JSON ({exc})") from exc
+                except (RecursionError, MemoryError) as exc:
+                    # A few hundred KiB of "[" is enough to exhaust the parser's
+                    # stack; that is a malformed document, not a server error.
+                    raise ResultsRejected(
+                        "schema", f"{name}: nested too deeply or too large to parse"
+                    ) from exc
                 errors = validate_document(name, document)
                 if errors:
                     raise ResultsRejected("schema", "; ".join(errors))
@@ -327,6 +348,14 @@ def verify_signature(
     """
     required = bool(getattr(settings, "require_signed_results", False))
     if not signature_b64:
+        if pinned_key_b64:
+            # The downgrade: a sensor that registered a key signs everything,
+            # so an unsigned upload under its identity is not an old sensor, it
+            # is somebody holding its token. Refused whatever the switch says.
+            raise ResultsRejected(
+                "signature",
+                "this sensor has a result signing key registered, but the upload is unsigned",
+            )
         if required:
             raise ResultsRejected(
                 "signature",

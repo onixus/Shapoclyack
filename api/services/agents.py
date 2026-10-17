@@ -944,8 +944,32 @@ def _pin_result_key(
     if not key or (row.agent_kind or KIND_SCANNER) != KIND_SCANNER:
         return
     if not row.result_signing_key:
-        row.result_signing_key = key
-        row.result_key_pinned_at = now
+        if row in session.new:
+            row.result_signing_key = key
+            row.result_key_pinned_at = now
+            won = True
+        else:
+            # Conditional on the column still being NULL, decided by the
+            # database: two registrations racing after an operator reset both
+            # read NULL here, and a plain assignment would let the second
+            # commit silently replace the first. The loser re-reads and falls
+            # through to the refusal below, so the answer it gets names the
+            # key that really is pinned.
+            session.flush()
+            won = (
+                session.execute(
+                    update(models.Agent)
+                    .where(
+                        models.Agent.agent_id == row.agent_id,
+                        models.Agent.result_signing_key.is_(None),
+                    )
+                    .values(result_signing_key=key, result_key_pinned_at=now)
+                ).rowcount
+                == 1
+            )
+            session.refresh(row)
+        if not won:
+            return _pin_result_key(session, row, key, now=now, audit=audit)
         audit_service.record(
             session,
             audit,

@@ -10,13 +10,14 @@ All notable changes to Shapoclyack are documented in this file.
   [operations](docs/operations.md#sensor-result-integrity-schemas-and-signatures)):
   the API validates a run archive's core artifacts against JSON schemas before
   extracting it (fail-closed with the file and path in the job's error; unknown
-  fields allowed, `OCTO_RESULT_SCHEMA_MODE=warn|off` to relax), and verifies an
+  fields allowed; ships as `OCTO_RESULT_SCHEMA_MODE=warn` for the first release, `enforce` to refuse), and verifies an
   ed25519 signature made by the sensor over the archive plus agent, job, run,
   exit code and attempt. The sensor generates its key, registers the public half
   (pinned on first use, replaced only by `DELETE /api/agents/{id}/result-key`),
   and signs. `OCTO_REQUIRE_SIGNED_RESULTS` (default off) turns an unsigned upload
-  from a warning, metric (`octo_result_integrity_total`) and `results.unsigned`
-  audit row into a refusal; a wrong signature is always refused. Migration `0095`
+  from a warning and metric (`octo_result_integrity_total`) into a refusal; a sensor
+  that has registered a key must always sign, and a wrong signature is always
+  refused. The sensor keeps its key on a PVC in the Kubernetes manifests. Migration `0095`
   adds two columns to `agents`. The sensor can also serve `/healthz` and
   `/metrics` on `OCTO_AGENT_METRICS_ADDR` (off by default; see
   [observability](docs/observability.md#sensor-healthz-and-metrics)).

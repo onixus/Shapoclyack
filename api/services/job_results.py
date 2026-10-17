@@ -315,14 +315,9 @@ def _check_result_integrity(
             agent_id,
             signed.detail,
         )
-        _audit_integrity(
-            settings,
-            audit,
-            action=audit_service.ACTION_RESULTS_UNSIGNED,
-            job_id=job_id,
-            tenant_id=tenant_id,
-            after={"agent_id": agent_id, "outcome": signed.outcome, "detail": signed.detail},
-        )
+        # Counted and logged, not audited: while the switch is off this is the
+        # state of every sensor that predates signing, and a row per upload
+        # would bury the trail. The metric is how the unsigned share is watched.
 
     mode = result_integrity.schema_mode(settings)
     if mode == "off":
@@ -335,6 +330,14 @@ def _check_result_integrity(
         if mode == "warn":
             result_integrity.count("schema", "warned")
             _log.warning("Job %s archive failed schema validation (warn mode): %s", job_id, exc)
+            _audit_integrity(
+                settings,
+                audit,
+                action=audit_service.ACTION_RESULTS_SCHEMA_WARNED,
+                job_id=job_id,
+                tenant_id=tenant_id,
+                after={"agent_id": agent_id, "reason": exc.reason[:500], "run_id": run_id},
+            )
             return
         result_integrity.count("schema", "rejected")
         raise

@@ -270,7 +270,6 @@ def test_unsigned_is_a_warning_until_required():
     archive = make_archive()
     assert _verify(_Settings(False), pinned=None, signature=None, archive=archive).outcome == "unsigned"
     _, public = new_key()
-    assert _verify(_Settings(False), pinned=public, signature=None, archive=archive).outcome == "unsigned"
     with pytest.raises(result_integrity.ResultsRejected) as caught:
         _verify(_Settings(True), pinned=public, signature=None, archive=archive)
     assert caught.value.code == "signature"
@@ -446,6 +445,7 @@ postgres = requires_postgres
 
 
 def _make_settings(tmp_path: Path, **overrides):
+    overrides.setdefault("result_schema_mode", "enforce")
     base = make_settings(
         tmp_path,
         state_dir=tmp_path / "state",
@@ -572,7 +572,6 @@ def test_a_signed_upload_is_accepted(settings):
         result_key_id=result_integrity.key_fingerprint(public),
     )
     assert done.status == "succeeded"
-    assert audit_service.ACTION_RESULTS_UNSIGNED not in _audit_actions(settings)
 
 
 @postgres
@@ -659,7 +658,7 @@ def test_an_archive_replayed_from_another_sensor_in_another_tenant_is_refused(se
 
 
 @postgres
-def test_unsigned_is_accepted_with_an_audit_row_while_the_switch_is_off(settings):
+def test_unsigned_from_a_sensor_without_a_key_is_accepted_while_the_switch_is_off(settings):
     agents_service.register_agent(agent_id="agent-1", tenant_id="default")
     job_id, run_id = _claimed_job(settings)
     done = jobs_service.complete_job(
@@ -671,7 +670,6 @@ def test_unsigned_is_accepted_with_an_audit_row_while_the_switch_is_off(settings
         archive_bytes=make_archive(run_id=run_id),
     )
     assert done.status == "succeeded"
-    assert audit_service.ACTION_RESULTS_UNSIGNED in _audit_actions(settings)
 
 
 @postgres
@@ -745,6 +743,7 @@ def test_warn_mode_lets_a_malformed_artifact_through(tmp_path):
         archive_bytes=make_archive({"summary.json": {"alive_hosts": "x"}}, run_id=run_id),
     )
     assert done.status == "succeeded"
+    assert audit_service.ACTION_RESULTS_SCHEMA_WARNED in _audit_actions(settings)
 
 
 # --------------------------------------------------------------------------
@@ -900,3 +899,165 @@ def test_a_client_without_a_key_registers_and_uploads_as_before(tmp_path):
         "job-1", agent_id="agent-1", exit_code=0, run_id="run-1", error=None, archive_path=archive
     )
     assert b"result_signature" not in sent[1]
+
+
+# --------------------------------------------------------------------------
+# Review round: downgrade, parser limits, race, persistence
+# --------------------------------------------------------------------------
+
+
+def test_a_pinned_key_makes_the_signature_mandatory_whatever_the_switch_says():
+    """Omitting the form fields must not turn a signing sensor into an old one."""
+    _, public = new_key()
+    for required in (False, True):
+        with pytest.raises(result_integrity.ResultsRejected) as caught:
+            _verify(_Settings(required), pinned=public, signature=None, archive=make_archive())
+        assert caught.value.code == "signature"
+        assert "unsigned" in caught.value.reason
+
+
+def test_a_deeply_nested_document_is_a_refusal_not_a_server_error():
+    bomb = b"[" * 100_000 + b"]" * 100_000
+    with pytest.raises(result_integrity.ResultsRejected) as caught:
+        result_integrity.validate_artifacts(
+            make_archive({"findings.json": bomb}), run_id="run-1", exit_code=0
+        )
+    assert "findings.json" in caught.value.reason
+
+
+def test_the_container_limits_are_applied_before_anything_is_parsed(monkeypatch):
+    """An archive the extractor would refuse is refused without reading members."""
+    from api.services import results_ingest
+
+    parsed: list[str] = []
+    real_loads = json.loads
+    monkeypatch.setattr(json, "loads", lambda *a, **k: parsed.append("x") or real_loads(*a, **k))
+    monkeypatch.setattr(results_ingest, "MAX_UNCOMPRESSED_BYTES", 10)
+    monkeypatch.setattr(
+        results_ingest.validate_archive,
+        "__kwdefaults__",
+        {"max_uncompressed_bytes": 10},
+    )
+    with pytest.raises(results_ingest.IngestError):
+        result_integrity.validate_artifacts(make_archive(), run_id="run-1", exit_code=0)
+    assert parsed == []
+
+
+def test_one_oversized_core_file_is_refused_without_being_parsed(monkeypatch):
+    monkeypatch.setattr(result_integrity, "MAX_VALIDATED_MEMBER_BYTES", 100)
+    big = make_archive({"vulnerabilities.json": [{"host": "10.0.0.%d" % i} for i in range(50)]})
+    with pytest.raises(result_integrity.ResultsRejected) as caught:
+        result_integrity.validate_artifacts(big, run_id="run-1", exit_code=0)
+    assert "larger than" in caught.value.reason
+
+
+def test_the_total_of_core_files_is_bounded_too(monkeypatch):
+    monkeypatch.setattr(result_integrity, "MAX_VALIDATED_TOTAL_BYTES", 200)
+    with pytest.raises(result_integrity.ResultsRejected) as caught:
+        result_integrity.validate_artifacts(
+            make_archive({"vulnerabilities.json": [{"host": "10.0.0.%d" % i} for i in range(20)]}),
+            run_id="run-1",
+            exit_code=0,
+        )
+    assert "together exceed" in caught.value.reason
+
+
+def test_rows_with_an_empty_or_null_host_are_valid():
+    """nuclei writes str(raw.get("host") or "")."""
+    result_integrity.validate_artifacts(
+        make_archive({"vulnerabilities.json": [{"host": ""}, {"host": None}]}),
+        run_id="run-1",
+        exit_code=0,
+    )
+
+
+def test_the_default_schema_mode_is_warn():
+    from api.settings import Settings
+
+    assert Settings().result_schema_mode == "warn"
+    assert result_integrity.schema_mode(Settings()) == "warn"
+
+
+@postgres
+def test_a_signing_sensor_cannot_be_downgraded_by_omitting_the_signature(settings):
+    _, public = new_key()
+    agents_service.register_agent(agent_id="agent-1", tenant_id="default", result_signing_key=public)
+    job_id, run_id = _claimed_job(settings)
+    with pytest.raises(result_integrity.ResultsRejected):
+        jobs_service.complete_job(
+            settings,
+            job_id,
+            agent_id="agent-1",
+            exit_code=0,
+            run_id=run_id,
+            archive_bytes=make_archive(run_id=run_id),
+        )
+    assert get_job(settings, job_id).status == "failed"
+
+
+@postgres
+def test_two_registrations_racing_for_an_empty_slot_pin_exactly_one_key(settings):
+    """Both read NULL; the database decides, and the loser is told the winner's fingerprint."""
+    import threading
+
+    _, key_a = new_key()
+    _, key_b = new_key()
+    agents_service.register_agent(agent_id="agent-1", tenant_id="default")
+    results: dict[str, str | None] = {}
+    barrier = threading.Barrier(2)
+    seen = threading.local()
+
+    real_pin = agents_service._pin_result_key
+
+    def synchronised(session, row, key, **kwargs):
+        # Both sessions have loaded the row (key NULL) before either writes.
+        # Only the first call per thread: the loser recurses to re-decide.
+        if not getattr(seen, "waited", False):
+            seen.waited = True
+            barrier.wait(timeout=10)
+        return real_pin(session, row, key, **kwargs)
+
+    def register(name: str, key: str) -> None:
+        results[name] = agents_service.register_agent(
+            agent_id="agent-1", tenant_id="default", result_signing_key=key
+        ).result_key_fingerprint
+
+    original = agents_service._pin_result_key
+    agents_service._pin_result_key = synchronised  # type: ignore[assignment]
+    try:
+        threads = [
+            threading.Thread(target=register, args=("a", key_a)),
+            threading.Thread(target=register, args=("b", key_b)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+    finally:
+        agents_service._pin_result_key = original  # type: ignore[assignment]
+
+    pinned = agents_service.pinned_result_key("agent-1")
+    assert pinned in (key_a, key_b)
+    winner = result_integrity.key_fingerprint(pinned)
+    assert results == {"a": winner, "b": winner}
+
+
+def test_the_sensor_manifests_keep_the_signing_key_on_a_volume_that_survives_the_pod():
+    """A key under $HOME (an emptyDir) is a new key after every restart."""
+    import yaml
+
+    root = Path(__file__).resolve().parents[1] / "k8s" / "shapoclyack"
+    for relative in (
+        "base/scanner-executor/statefulset.yaml",
+        "examples/agent-deployment.example.yaml",
+    ):
+        doc = yaml.safe_load((root / relative).read_text(encoding="utf-8"))
+        assert doc["kind"] == "StatefulSet"
+        claims = {t["metadata"]["name"] for t in doc["spec"]["volumeClaimTemplates"]}
+        container = doc["spec"]["template"]["spec"]["containers"][0]
+        mounts = {m["name"]: m["mountPath"] for m in container["volumeMounts"]}
+        env = {e["name"]: e.get("value") for e in container["env"]}
+        assert "sensor-key" in claims, relative
+        key_file = env["OCTO_AGENT_RESULT_KEY_FILE"]
+        assert key_file.startswith(mounts["sensor-key"] + "/"), relative
+        assert doc["spec"]["template"]["spec"]["securityContext"]["fsGroup"] == 1000
