@@ -93,10 +93,29 @@ def validate_template(name: str, value: Any) -> str | None:
     return text
 
 
-def _clean(value: Any) -> str:
+def _clean(value: Any, *, single_line: bool = False) -> str:
     if value is None:
         return ""
-    return _CONTROL.sub("", str(value))[:MAX_VALUE_CHARS]
+    text = _CONTROL.sub("", str(value))[:MAX_VALUE_CHARS]
+    if single_line:
+        # Jira refuses a summary or a single-line field holding a newline, and
+        # that is a dead-lettered delivery rather than a ticket.
+        text = _WHITESPACE.sub(" ", text).strip()
+    return text
+
+
+_WHITESPACE = re.compile(r"\s+")
+_MD_ACTIVE = re.compile(r"([\\`*_\[\]()<>#!|~])")
+
+
+def markdown_escape(text: str) -> str:
+    """Make scanner-supplied text inert in GitHub/GitLab Markdown.
+
+    Banners and script ids are attacker-influenced. Unescaped, a value such as
+    ``@org/security`` pings people, ``#12`` links an unrelated issue and
+    ``[x](https://...)`` plants a link in a ticket the SOC trusts.
+    """
+    return _MD_ACTIVE.sub(r"\\\1", text).replace("@", "&#64;")
 
 
 def render(template: str, context: dict[str, str]) -> str:
@@ -104,15 +123,27 @@ def render(template: str, context: dict[str, str]) -> str:
     return _TOKEN.sub(lambda m: context.get(m.group(1), m.group(0)), template)
 
 
-def build_context(envelope: dict[str, Any], asset: dict[str, Any] | None) -> dict[str, str]:
-    """Placeholder values for one event. Missing values render as ``-``."""
+def build_context(
+    envelope: dict[str, Any],
+    asset: dict[str, Any] | None,
+    *,
+    single_line: bool = False,
+    markdown: bool = False,
+) -> dict[str, str]:
+    """Placeholder values for one event. Missing values render as ``-``.
+
+    ``single_line`` is for summaries and single-line fields (newlines, tabs
+    collapse to a space); ``markdown`` escapes Markdown-active text for
+    GitHub / GitLab bodies.
+    """
     data = envelope.get("data") if isinstance(envelope.get("data"), dict) else {}
     asset = asset or {}
 
     def pick(*values: Any) -> str:
         for value in values:
             if value not in (None, ""):
-                return _clean(value)
+                text = _clean(value, single_line=single_line)
+                return markdown_escape(text) if markdown else text
         return "-"
 
     host = pick(envelope.get("host"), data.get("host"))
@@ -138,6 +169,21 @@ def build_context(envelope: dict[str, Any], asset: dict[str, Any] | None) -> dic
 # --------------------------------------------------------------------------
 # Validation of the mapping section
 # --------------------------------------------------------------------------
+
+
+def strict_bool(name: str, value: Any, default: bool) -> bool:
+    """A JSON boolean or nothing. ``"false"`` is a mistake, not ``True``."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    raise MappingError(f"{name} must be true or false")
+
+
+#: Transports whose create call has a label concept.
+LABEL_TRANSPORTS = ("jira", "github", "gitlab")
+#: ServiceNow ``urgency`` values.
+SNOW_URGENCIES = ("1", "2", "3")
 
 
 def _string_list(name: str, value: Any) -> list[str]:
@@ -195,7 +241,7 @@ def _validate_custom_fields(transport: str, raw: Any) -> dict[str, Any]:
     return out
 
 
-def _validate_severity_rules(raw: Any) -> dict[str, dict[str, Any]]:
+def _validate_severity_rules(transport: str, raw: Any) -> dict[str, dict[str, Any]]:
     if raw in (None, {}):
         return {}
     if not isinstance(raw, dict):
@@ -210,14 +256,23 @@ def _validate_severity_rules(raw: Any) -> dict[str, dict[str, Any]]:
             raise MappingError(
                 f"severity_rules.{severity} has unknown key(s) {', '.join(sorted(unknown))}"
             )
-        clean: dict[str, Any] = {"create": bool(rule.get("create", True))}
+        clean: dict[str, Any] = {
+            "create": strict_bool(f"severity_rules.{severity}.create", rule.get("create"), True)
+        }
         priority = str(rule.get("priority") or "").strip()
         if priority:
             if len(priority) > MAX_ITEM_CHARS:
                 raise MappingError(f"severity_rules.{severity}.priority is too long")
+            if transport == "servicenow" and priority not in SNOW_URGENCIES:
+                raise MappingError(
+                    f"severity_rules.{severity}.priority must be one of "
+                    f"{', '.join(SNOW_URGENCIES)} (ServiceNow urgency)"
+                )
             clean["priority"] = priority
         labels = _string_list(f"severity_rules.{severity}.labels", rule.get("labels"))
         if labels:
+            if transport not in LABEL_TRANSPORTS:
+                raise MappingError(f"severity_rules.{severity}.labels is not supported for {transport}")
             clean["labels"] = labels
         out[severity] = clean
     return out
@@ -268,6 +323,8 @@ def _validate_target_rules(
             clean["severities"] = sorted({_severity_name(s, where) for s in severities})
         labels = _string_list(f"{where}.labels", rule.get("labels"))
         if labels:
+            if transport not in LABEL_TRANSPORTS:
+                raise MappingError(f"{where}.labels is not supported for {transport}")
             clean["labels"] = labels
         # A rule with no condition would shadow every rule after it.
         if not set(clean) - {"target", "labels"}:
@@ -290,6 +347,8 @@ def validate_mapping(transport: str, cfg: dict[str, Any], validate_target) -> di
             out[key] = template
     labels = _string_list("labels", cfg.get("labels"))
     if labels:
+        if transport not in LABEL_TRANSPORTS:
+            raise MappingError(f"labels is not supported for {transport}")
         out["labels"] = labels
     components = _string_list("components", cfg.get("components"))
     if components:
@@ -299,7 +358,7 @@ def validate_mapping(transport: str, cfg: dict[str, Any], validate_target) -> di
     custom = _validate_custom_fields(transport, cfg.get("custom_fields"))
     if custom:
         out["custom_fields"] = custom
-    severity_rules = _validate_severity_rules(cfg.get("severity_rules"))
+    severity_rules = _validate_severity_rules(transport, cfg.get("severity_rules"))
     if severity_rules:
         if any("priority" in r for r in severity_rules.values()) and transport not in (
             "jira",

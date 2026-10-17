@@ -56,6 +56,17 @@ _JIRA_PROJECT = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 _USER_AGENT = "Shapoclyack-Ticket/1"
 
+#: ``DeliveryResult.error`` of a successful delivery that deliberately made no
+#: ticket (a ``severity_rules`` entry with ``create: false``). The queue stores
+#: it in ``last_error`` and ``last_status``, and the dispatcher counts it as
+#: ``skipped`` rather than ``delivered``; the row itself stays ``delivered`` so
+#: nothing that reads delivery statuses has a fourth one to learn.
+SKIPPED_PREFIX = "skipped:"
+
+
+def is_skipped(result: DeliveryResult) -> bool:
+    return bool(result.ok and result.error and result.error.startswith(SKIPPED_PREFIX))
+
 
 class TicketSpecError(ValueError):
     """The subscription is missing a required adapter knob. Not retryable."""
@@ -181,7 +192,11 @@ def validate_transport_config(transport: str, raw: dict[str, Any] | None) -> dic
     elif transport == "gitlab":
         if not str(cfg.get("project") or "").strip():
             raise TicketSpecError("gitlab transport_config.project is required")
-        base = {"project": check(cfg.get("project")), "confidential": bool(cfg.get("confidential"))}
+        try:
+            confidential = ticket_mapping.strict_bool("confidential", cfg.get("confidential"), False)
+        except ticket_mapping.MappingError as exc:
+            raise TicketSpecError(f"gitlab transport_config.{exc}") from exc
+        base = {"project": check(cfg.get("project")), "confidential": confidential}
     else:
         return {}
     try:
@@ -234,11 +249,11 @@ def _summary(envelope: dict[str, Any]) -> str:
     return f"{kind} on {host}"
 
 
-def _description(envelope: dict[str, Any]) -> str:
-    kind = str(envelope.get("kind") or "")
-    host = envelope.get("host")
-    port = envelope.get("port")
-    run_id = envelope.get("run_id")
+def _description(envelope: dict[str, Any], esc=lambda text: text) -> str:
+    kind = esc(str(envelope.get("kind") or ""))
+    host = esc(str(envelope.get("host")))
+    port = esc(str(envelope.get("port")))
+    run_id = esc(str(envelope.get("run_id")))
     data = _data(envelope)
     lines = [
         f"Shapoclyack event: {kind}",
@@ -248,7 +263,7 @@ def _description(envelope: dict[str, Any]) -> str:
     ]
     for key in ("cve", "severity", "cvss", "script_id"):
         if data.get(key) not in (None, ""):
-            lines.append(f"{key}: {data.get(key)}")
+            lines.append(f"{key}: {esc(str(data.get(key)))}")
     lines.append(
         "This ticket was opened from an asset-change event. It is not "
         "confirmation that the finding is exploitable."
@@ -261,17 +276,29 @@ def _severity(envelope: dict[str, Any]) -> str:
 
 
 def _texts(
-    envelope: dict[str, Any], config: dict[str, Any], asset: dict[str, Any] | None
+    transport: str,
+    envelope: dict[str, Any],
+    config: dict[str, Any],
+    asset: dict[str, Any] | None,
 ) -> tuple[str, str, dict[str, str]]:
-    """Summary and description: the operator's templates, else the built-ins."""
-    context = ticket_mapping.build_context(envelope, asset)
+    """Summary, description and the single-line context for custom fields.
+
+    The summary and custom fields get newline-free values; the description
+    keeps line breaks. GitHub / GitLab bodies are Markdown, so scan-derived
+    values are escaped there.
+    """
+    markdown = transport in ("github", "gitlab")
+    line_ctx = ticket_mapping.build_context(envelope, asset, single_line=True)
+    body_ctx = ticket_mapping.build_context(envelope, asset, markdown=markdown)
     summary_t = config.get("summary_template")
     description_t = config.get("description_template")
-    summary = ticket_mapping.render(summary_t, context) if summary_t else _summary(envelope)
-    description = (
-        ticket_mapping.render(description_t, context) if description_t else _description(envelope)
-    )
-    return summary, description, context
+    summary = ticket_mapping.render(summary_t, line_ctx) if summary_t else _summary(envelope)
+    summary = " ".join(summary.split())
+    if description_t:
+        description = ticket_mapping.render(description_t, body_ctx)
+    else:
+        description = _description(envelope, ticket_mapping.markdown_escape if markdown else lambda t: t)
+    return summary, description, line_ctx
 
 
 def plan(
@@ -281,7 +308,14 @@ def plan(
     asset: dict[str, Any] | None = None,
 ) -> ticket_mapping.Resolution:
     """What the mapping decides for this event: skip, or where it goes."""
-    return ticket_mapping.resolve(config, _severity(_envelope(payload)), asset)
+    envelope = _envelope(payload)
+    res = ticket_mapping.resolve(config, _severity(envelope), asset)
+    if not res.create and envelope.get("kind") == "test":
+        # The Test button exists to prove the tracker is reachable with this
+        # credential. A rule on ``unknown`` severity must not turn it into a
+        # success that never contacted the tracker.
+        return ticket_mapping.resolve({**config, "severity_rules": {}}, "unknown", asset)
+    return res
 
 
 def with_target(transport: str, config: dict[str, Any], target: Any) -> dict[str, Any]:
@@ -302,7 +336,7 @@ def build_body(
     envelope = _envelope(payload)
     res = resolution or plan(transport, payload, config, asset)
     config = with_target(transport, config, res.target)
-    summary, description, context = _texts(envelope, config, asset)
+    summary, description, context = _texts(transport, envelope, config, asset)
     if transport == "jira":
         fields: dict[str, Any] = {
             "project": {"key": config["project_key"]},
@@ -487,7 +521,7 @@ def deliver(
             return DeliveryResult(
                 ok=True,
                 status_code=None,
-                error=None,
+                error=f"{SKIPPED_PREFIX} {resolution.skip_reason}",
                 retryable=False,
                 body=None,
             )

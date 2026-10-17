@@ -2137,20 +2137,34 @@ subject and description are the built-in ones.
   business context, `business_unit`, `environment`, `criticality`, `owner`.
   Substitution only: no expression, attribute or filter syntax is evaluated, and
   an unknown `{name}` is `422`. Missing values render as `-`; values are stripped
-  of control characters and capped at 500 characters. A custom description does
+  of control characters and capped at 500 characters. In the summary and in
+  `custom_fields` newlines and tabs also collapse to a space (Jira rejects a
+  line break there); the description keeps its line breaks. On GitHub and GitLab
+  the scan-derived values in the description are Markdown-escaped (`@` becomes
+  `&#64;`, `#`, `[`, `]`, `(`, backticks and the like are backslash-escaped), so
+  banner text cannot ping people, link issues or plant links; the title is plain
+  text and is only whitespace-normalised. A custom description does
   **not** carry the built-in "not confirmation that the finding is exploitable"
   line; put it in the template if you want it.
 - `labels` (Jira, GitHub, GitLab), `components` (Jira): static lists.
-  Jira labels have whitespace replaced with `_`.
+  Jira labels have whitespace replaced with `_`. `labels` (also inside
+  `severity_rules` and `target_rules`) on ServiceNow or DefectDojo is `422`
+  rather than silently ignored, and so is `components` outside Jira.
 - `custom_fields` (Jira): `{"customfield_10010": "{host}", ...}`; values may be
   templates, numbers, booleans or lists of strings. The fields Shapoclyack owns
   (`project`, `issuetype`, `summary`, `description`, `priority`, `labels`,
   `components`) cannot be overridden.
 - `severity_rules`: `{"low": {"create": false}, "critical": {"priority":
-  "Highest", "labels": ["sla-1d"]}}`. `create: false` makes the delivery succeed
-  without calling the tracker (no ticket, nothing linked); it complements the
-  subscription-wide `min_severity`. `priority` is the Jira priority name or the
-  ServiceNow `urgency` value; GitHub, GitLab and DefectDojo have no priority
+  "Highest", "labels": ["sla-1d"]}}`. `create` must be a JSON boolean (the
+  string `"false"` is `422`). `create: false` closes the delivery out without
+  calling the tracker (no ticket, nothing linked); the delivery row keeps status
+  `delivered` but its `last_error` and the subscription's `last_status` read
+  `skipped: severity <x> is configured not to open tickets`, the dispatcher
+  reports it as `skipped`, and `octo_webhook_deliveries_total{outcome="skipped"}`
+  counts it apart from real deliveries. It complements the subscription-wide
+  `min_severity`. The **Test** event is never skipped, so it always proves the
+  tracker is reachable. `priority` is the Jira priority name or the
+  ServiceNow `urgency` value (`1`, `2` or `3`; anything else is `422`); GitHub, GitLab and DefectDojo have no priority
   field (DefectDojo already takes the event's severity), so use `labels`.
 - `target_rules`: an ordered list, first match wins, that replaces the Jira
   `project_key`, GitHub `repository`, GitLab `project` or DefectDojo `test_id`:
@@ -2158,7 +2172,23 @@ subject and description are the built-in ones.
   "max_criticality": 5, "severities": ["critical"], "target": "PAY", "labels":
   [...]}`. A rule needs at least one condition; the target is validated like the
   base one. An asset with no value for a condition never matches it, and an event
-  whose host is not a known asset of the tenant uses the base target.
+  whose host is not a known asset of the tenant uses the base target. When a
+  host maps to several assets, the asset holding the matching finding decides
+  (the one the created ticket is linked to), else the lowest asset id. If the
+  asset lookup itself *fails*, the delivery is retried with backoff instead of
+  falling back to the base target: a finding is never filed against the wrong
+  project because the database blinked.
+- `confidential` (GitLab) must be a JSON boolean.
+
+**Limits.** Status sync addresses a ticket through the tenant's *newest enabled*
+subscription of that transport: one GitHub (or GitLab, Jira, ...) endpoint per
+tenant is supported. For GitHub and GitLab the key's repository must be the
+subscription's `repository` / `project` or a `target_rules` target; a linked
+key pointing anywhere else is never requested (it shows as a sync error) so
+the subscription's token cannot be aimed at other repositories. Linking a
+GitHub or GitLab ticket by hand needs a key of the form `owner/repo#12`, else
+`422`. A second subscription for the same transport does not get its own
+polling: use `target_rules` to cover several repositories through one.
 
 Outgoing requests use the same SSRF-validated, redirect-free, DNS-pinned wire as
 every other webhook delivery; the repository / project path is validated and

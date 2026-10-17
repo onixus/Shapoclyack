@@ -299,17 +299,36 @@ class _Req:
         )
 
 
+GH_CFG = {
+    "repository": "acme/sec",
+    "target_rules": [{"business_unit": "Payments", "target": "acme/pay"}],
+}
+GL_CFG = {"project": "grp/sub/proj"}
+
+
 @pytest.mark.parametrize(
-    "transport,key,url",
+    "transport,key,url,cfg",
     [
-        ("github", "acme/sec#12", "https://t.example/repos/acme/sec/issues/12"),
-        ("gitlab", "grp/sub/proj#7", "https://t.example/api/v4/projects/grp%2Fsub%2Fproj/issues/7"),
+        ("github", "acme/sec#12", "https://t.example/repos/acme/sec/issues/12", GH_CFG),
+        # a repository reached through a target rule is the subscription's too,
+        # and GitHub names are case-insensitive
+        ("github", "Acme/Pay#3", "https://t.example/repos/Acme/Pay/issues/3", GH_CFG),
+        (
+            "gitlab",
+            "grp/sub/proj#7",
+            "https://t.example/api/v4/projects/grp%2Fsub%2Fproj/issues/7",
+            GL_CFG,
+        ),
     ],
 )
-def test_fetch_status_closed_issue(transport, key, url):
+def test_fetch_status_closed_issue(transport, key, url, cfg):
     req = _Req('{"state": "closed"}')
     state, raw, _ = ticket_sync.fetch_ticket_status(
-        transport=transport, base_url="https://t.example", ticket_key=key, request_fn=req
+        transport=transport,
+        base_url="https://t.example",
+        ticket_key=key,
+        request_fn=req,
+        config=cfg,
     )
     assert req.calls[0][:2] == ("GET", url)
     assert (state, raw) == ("CLOSED", "closed")
@@ -318,36 +337,134 @@ def test_fetch_status_closed_issue(transport, key, url):
 def test_fetch_status_open_issue_asserts_nothing():
     req = _Req('{"state": "open"}')
     state, raw, _ = ticket_sync.fetch_ticket_status(
-        transport="github", base_url="https://t.example", ticket_key="a/b#1", request_fn=req
+        transport="github", base_url="https://t.example", ticket_key="acme/sec#1",
+        request_fn=req, config=GH_CFG,
     )
     assert state is None and raw == "open"
 
 
-@pytest.mark.parametrize("key", ["12", "a/b#x", "../b#1", "#1"])
-def test_issue_key_is_rechecked_before_it_reaches_a_url(key):
-    with pytest.raises(tickets.TicketSpecError):
-        ticket_sync.fetch_ticket_status(
-            transport="github", base_url="https://t.example", ticket_key=key, request_fn=_Req()
-        )
+@pytest.mark.parametrize(
+    "key", ["12", "acme/sec#x", "../b#1", "#1", "victim-org/private#1", "acme/sec-other#1"]
+)
+def test_issue_key_outside_the_subscription_is_never_requested(key):
+    """#353 review: the subscription's token must not reach a repository the
+    tenant did not configure, whatever key a user linked."""
+    req = _Req('{"state": "closed"}')
+    state, raw, payload = ticket_sync.fetch_ticket_status(
+        transport="github", base_url="https://t.example", ticket_key=key,
+        request_fn=req, config=GH_CFG,
+    )
+    assert req.calls == []
+    assert state is None and payload["error"] and payload["retryable"] is False
+    assert not ticket_sync.push_status_update(
+        transport="github", base_url="https://t.example", ticket_key=key,
+        to_state="CLOSED", request_fn=req, config=GH_CFG,
+    )
+    assert req.calls == []
+
+
+def test_issue_key_without_config_is_refused():
+    req = _Req()
+    state, _, payload = ticket_sync.fetch_ticket_status(
+        transport="gitlab", base_url="https://t.example", ticket_key="grp/sub/proj#1",
+        request_fn=req,
+    )
+    assert req.calls == [] and state is None and payload["error"]
 
 
 def test_push_close_and_reopen():
     req = _Req()
     assert ticket_sync.push_status_update(
-        transport="github", base_url="https://t.example", ticket_key="a/b#1",
-        to_state="CLOSED", request_fn=req,
+        transport="github", base_url="https://t.example", ticket_key="acme/sec#1",
+        to_state="CLOSED", request_fn=req, config=GH_CFG,
     )
     assert req.calls[-1][0] == "PATCH" and json.loads(req.calls[-1][2]) == {"state": "closed"}
     assert ticket_sync.push_status_update(
-        transport="gitlab", base_url="https://t.example", ticket_key="g/p#2",
-        to_state="OPEN", request_fn=req,
+        transport="gitlab", base_url="https://t.example", ticket_key="grp/sub/proj#2",
+        to_state="OPEN", request_fn=req, config=GL_CFG,
     )
     assert req.calls[-1][0] == "PUT"
     assert json.loads(req.calls[-1][2]) == {"state_event": "reopen"}
     # VERIFYING has no tracker equivalent: nothing is pushed
     n = len(req.calls)
     assert not ticket_sync.push_status_update(
-        transport="github", base_url="https://t.example", ticket_key="a/b#1",
-        to_state="VERIFYING", request_fn=req,
+        transport="github", base_url="https://t.example", ticket_key="acme/sec#1",
+        to_state="VERIFYING", request_fn=req, config=GH_CFG,
     )
     assert len(req.calls) == n
+
+
+# --- review fixes ----------------------------------------------------------
+
+
+def test_routed_github_key_names_the_routed_repository():
+    rec = _Recorder('{"number": 4, "html_url": "https://github.com/acme/pay/issues/4"}')
+    result = _deliver("github", GH_CFG, _payload(), rec, asset={"business_unit": "Payments"})
+    assert rec.calls[0][0] == "https://tracker.example/repos/acme/pay/issues"
+    assert result.ticket_key == "acme/pay#4"
+
+
+def test_skipped_result_is_distinguishable_and_test_event_is_never_skipped():
+    rec = _Recorder()
+    cfg = {"project_key": "SEC", "severity_rules": {"unknown": {"create": False}}}
+    skipped = _deliver("jira", cfg, _payload("unknown"), rec)
+    assert tickets.is_skipped(skipped) and "unknown" in skipped.error
+    assert rec.calls == []
+    # the Test button must reach the tracker even when a rule would skip it
+    result = _deliver("jira", cfg, _payload("unknown", kind="test"), rec)
+    assert not tickets.is_skipped(result) and len(rec.calls) == 1
+
+
+@pytest.mark.parametrize("value", ["false", "no", 0, 1])
+def test_non_boolean_flags_are_refused(value):
+    with pytest.raises(tickets.TicketSpecError, match="true or false"):
+        tickets.validate_transport_config(
+            "jira", {"project_key": "S", "severity_rules": {"low": {"create": value}}}
+        )
+    with pytest.raises(tickets.TicketSpecError, match="true or false"):
+        tickets.validate_transport_config("gitlab", {"project": "a/b", "confidential": value})
+
+
+def test_servicenow_priority_and_unsupported_labels_are_refused():
+    with pytest.raises(tickets.TicketSpecError, match="urgency"):
+        tickets.validate_transport_config(
+            "servicenow", {"severity_rules": {"high": {"priority": "High"}}}
+        )
+    for transport, base in (("servicenow", {}), ("defectdojo", {"test_id": 1})):
+        with pytest.raises(tickets.TicketSpecError, match="labels"):
+            tickets.validate_transport_config(transport, {**base, "labels": ["x"]})
+        with pytest.raises(tickets.TicketSpecError, match="labels"):
+            tickets.validate_transport_config(
+                transport, {**base, "severity_rules": {"low": {"labels": ["x"]}}}
+            )
+
+
+def test_newlines_are_removed_from_summary_and_custom_fields_but_kept_in_description():
+    cfg = tickets.validate_transport_config(
+        "jira",
+        {
+            "project_key": "SEC",
+            "summary_template": "{script_id} on {host}",
+            "description_template": "banner:\n{script_id}",
+            "custom_fields": {"customfield_1": "{script_id}"},
+        },
+    )
+    payload = _payload()
+    payload["event"]["data"]["script_id"] = "line1\nline2\tx\r"
+    fields = json.loads(tickets.build_body("jira", payload, cfg))["fields"]
+    assert fields["summary"] == "line1 line2 x on 10.0.0.1"
+    assert fields["customfield_1"] == "line1 line2 x"
+    assert fields["description"] == "banner:\nline1\nline2\tx\r"
+
+
+def test_markdown_active_scan_data_is_neutralised_for_github_and_gitlab():
+    evil = "@org/security [click](https://evil.example) #12"
+    for transport, cfg in (("github", {"repository": "a/b"}), ("gitlab", {"project": "a/b"})):
+        for extra in ({}, {"description_template": "{script_id}"}):
+            full = tickets.validate_transport_config(transport, {**cfg, **extra})
+            payload = _payload()
+            payload["event"]["data"]["script_id"] = evil
+            body = json.loads(tickets.build_body(transport, payload, full))
+            text = body.get("body") or body["description"]
+            assert "@org" not in text and "[click]" not in text
+            assert "&#64;org" in text and "\\#12" in text and "\\[click\\]" in text

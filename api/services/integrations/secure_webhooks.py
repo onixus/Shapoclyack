@@ -162,13 +162,22 @@ def _subscription_snapshot(
         )
 
 
+class AssetContextError(RuntimeError):
+    """The asset lookup failed (as opposed to finding no asset). Retryable."""
+
+
 def _asset_context(tenant_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     """Business context of the event's host, for ticket routing and templates (#353).
 
-    Fail-soft: a ticket that cannot be routed by business unit is still better
-    opened against the default project than lost, so a lookup error is logged
-    and the mapping falls back to the base configuration. Tenant-scoped; the
-    host is matched against the tenant's own asset identifiers only.
+    ``None`` means "no such asset": the mapping then uses the subscription's
+    base target. A *failed* lookup raises :class:`AssetContextError` instead,
+    and the dispatcher retries the delivery. Falling back to the base target on
+    an error would send a Payments finding to the default project, mark it
+    delivered and link it, with nothing left to retry.
+
+    When a host resolves to several assets the one holding the matching finding
+    wins (the one ``link_created_ticket`` will link), else the lowest asset id.
+    Tenant-scoped through both the identifier and the asset.
     """
     envelope = payload.get("event") if isinstance(payload.get("event"), dict) else payload
     host = str(envelope.get("host") or "").strip().lower()
@@ -177,20 +186,27 @@ def _asset_context(tenant_id: str, payload: dict[str, Any]) -> dict[str, Any] | 
     settings = _base._require_settings()
     try:
         with get_session(settings.postgres_url) as session:
-            asset = session.execute(
-                select(models.Asset)
-                .join(
-                    models.AssetIdentifier,
-                    models.AssetIdentifier.asset_id == models.Asset.asset_id,
-                )
-                .where(
-                    models.AssetIdentifier.tenant_id == tenant_id,
-                    models.Asset.tenant_id == tenant_id,
-                    func.lower(models.AssetIdentifier.identifier_value) == host,
-                )
-                .order_by(models.Asset.asset_id)
-                .limit(1)
-            ).scalar_one_or_none()
+            asset = None
+            findings = _base.matching_findings(session, tenant_id=tenant_id, payload=payload)
+            if findings:
+                asset = session.get(models.Asset, findings[0].asset_id)
+                if asset is not None and asset.tenant_id != tenant_id:
+                    asset = None
+            if asset is None:
+                asset = session.execute(
+                    select(models.Asset)
+                    .join(
+                        models.AssetIdentifier,
+                        models.AssetIdentifier.asset_id == models.Asset.asset_id,
+                    )
+                    .where(
+                        models.AssetIdentifier.tenant_id == tenant_id,
+                        models.Asset.tenant_id == tenant_id,
+                        func.lower(models.AssetIdentifier.identifier_value) == host,
+                    )
+                    .order_by(models.Asset.asset_id)
+                    .limit(1)
+                ).scalar_one_or_none()
             if asset is None:
                 return None
             return {
@@ -199,9 +215,9 @@ def _asset_context(tenant_id: str, payload: dict[str, Any]) -> dict[str, Any] | 
                 "criticality": asset.asset_criticality,
                 "owner": asset.owner_email,
             }
-    except Exception:  # noqa: BLE001 - routing context is optional, the ticket is not
+    except Exception as exc:  # noqa: BLE001 - re-raised as the retryable kind
         LOG.warning("ticket asset context lookup failed tenant=%s", tenant_id, exc_info=True)
-        return None
+        raise AssetContextError(f"asset lookup failed: {type(exc).__name__}") from exc
 
 
 def _subscription_is_enabled(subscription_id: str) -> bool:
@@ -357,6 +373,15 @@ def dispatch_once(
                     error=f"{type(exc).__name__}: {exc}"[:500],
                     retryable=False,
                 )
+            except AssetContextError as exc:
+                # Routing needs the asset and the database could not say. Retry
+                # rather than file the ticket against the default target.
+                result = delivery_transport.DeliveryResult(
+                    ok=False,
+                    status_code=None,
+                    error=str(exc)[:500],
+                    retryable=True,
+                )
             except Exception as exc:  # noqa: BLE001 - one bad receiver must not stall the queue
                 LOG.exception("Webhook delivery %s raised before/while sending", delivery_id)
                 result = delivery_transport.DeliveryResult(
@@ -374,7 +399,12 @@ def dispatch_once(
             outcome["attempted"] += 1
             metrics.WEBHOOK_DELIVERY_DURATION_SECONDS.observe(result.duration_seconds)
             status = _base._record_result(delivery_id=delivery_id, result=result, now=_base._now())
-            if status == "delivered":
+            if status == "delivered" and ticket_transport.is_skipped(result):
+                # A severity rule chose not to open a ticket (#353): the row is
+                # closed out, but it is not a delivery and is counted apart.
+                outcome["skipped"] = outcome.get("skipped", 0) + 1
+                metrics.WEBHOOK_DELIVERIES_TOTAL.labels(outcome="skipped").inc()
+            elif status == "delivered":
                 outcome["delivered"] += 1
                 metrics.WEBHOOK_DELIVERIES_TOTAL.labels(outcome="delivered").inc()
                 if transport in ticket_transport.TICKET_TRANSPORTS:

@@ -211,8 +211,26 @@ def _split_issue_key(ticket_key: str) -> tuple[str, str]:
     return repo, number
 
 
-def _issue_path(transport: str, ticket_key: str) -> str:
+def allowed_issue_repos(config: dict[str, Any] | None) -> set[str]:
+    """Repositories / projects this subscription is configured to open issues in."""
+    cfg = config or {}
+    repos = {str(cfg.get("repository") or cfg.get("project") or "")}
+    repos.update(str(rule.get("target") or "") for rule in cfg.get("target_rules") or [])
+    return {r.lower() for r in repos if r}
+
+
+def _issue_path(transport: str, ticket_key: str, config: dict[str, Any] | None) -> str:
+    """Issue API path for a key, only inside the subscription's own repositories.
+
+    A ticket key can be typed by anyone allowed to link tickets, and the
+    subscription's token is the tenant admin's. Without this check a key such as
+    ``other-org/private#1`` would be read, closed and reopened with that token.
+    """
     repo, number = _split_issue_key(ticket_key)
+    if repo.lower() not in allowed_issue_repos(config):
+        raise TicketSpecError(
+            f"ticket key {ticket_key!r} is not in a repository this subscription is configured for"
+        )
     if transport == "github":
         return f"repos/{quote(repo, safe='/')}/issues/{number}"
     return f"api/v4/projects/{quote(repo, safe='')}/issues/{number}"
@@ -239,6 +257,7 @@ def fetch_ticket_status(
     timeout_seconds: int = 10,
     allow_private: bool = False,
     request_fn=request,
+    config: dict[str, Any] | None = None,
 ) -> tuple[str | None, str | None, dict[str, Any]]:
     """Read one ticket. Returns ``(suggested_state, raw_status, raw_payload)``.
 
@@ -257,7 +276,11 @@ def fetch_ticket_status(
     elif t == "defectdojo":
         url = _url(base_url, f"api/v2/findings/{key}/")
     elif t in ("github", "gitlab"):
-        url = _url(base_url, _issue_path(t, ticket_key))
+        try:
+            url = _url(base_url, _issue_path(t, ticket_key, config))
+        except TicketSpecError as exc:
+            # Not a request that failed: one we refused to make. Permanent.
+            return None, None, {"error": str(exc), "status_code": None, "retryable": False}
     else:
         raise TicketSpecError(f"unsupported ticket transport: {transport}")
 
@@ -340,6 +363,7 @@ def push_status_update(
     timeout_seconds: int = 10,
     allow_private: bool = False,
     request_fn=request,
+    config: dict[str, Any] | None = None,
 ) -> bool:
     """Reflect a local lifecycle change onto the ticket. Best effort.
 
@@ -366,9 +390,14 @@ def push_status_update(
             method, payload = "PATCH", {"state": "closed" if closed else "open"}
         else:
             method, payload = "PUT", {"state_event": "close" if closed else "reopen"}
+        try:
+            issue_path = _issue_path(t, ticket_key, config)
+        except TicketSpecError as exc:
+            logger.warning("Refusing to update %s ticket: %s", t, exc)
+            return False
         result = request_fn(
             method,
-            _url(base_url, _issue_path(t, ticket_key)),
+            _url(base_url, issue_path),
             json.dumps(payload).encode("utf-8"),
             headers,
             timeout_seconds=timeout_seconds,

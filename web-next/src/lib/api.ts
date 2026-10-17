@@ -3023,7 +3023,14 @@ export type TrackedVulnerability = {
   match_evidence?: RetroMatchEvidence | null;
 };
 
-export type TicketSystem = "jira" | "servicenow" | "smax" | "defectdojo" | "other";
+export type TicketSystem =
+  | "jira"
+  | "servicenow"
+  | "smax"
+  | "defectdojo"
+  | "github"
+  | "gitlab"
+  | "other";
 
 export type VulnerabilityTicketBody = {
   system: TicketSystem;

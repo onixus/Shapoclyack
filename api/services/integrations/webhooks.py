@@ -927,9 +927,57 @@ def _record_result(
         subscription = session.get(models.WebhookSubscription, row.subscription_id)
         if subscription is not None:
             subscription.last_delivery_at = now
-            subscription.last_status = "delivered" if result.ok else (result.error or "failed")[:200]
+            # A skipped ticket (#353) is ok but not "delivered": last_status says why.
+            subscription.last_status = (
+                "delivered"
+                if result.ok and not ticket_transport.is_skipped(result)
+                else (result.error or "failed")[:200]
+            )
         session.flush()
     return status
+
+
+def matching_findings(
+    session: Any, *, tenant_id: str, payload: dict[str, Any]
+) -> list[models.Vulnerability]:
+    """The tracked findings an event is about, in one deterministic order.
+
+    Open before closed, then by asset id. Both the ticket link and the ticket
+    routing (#353) take the first one, so they agree on which asset — and so on
+    which business unit — a ticket belongs to when a host resolves to several.
+    """
+    envelope = payload.get("event") if isinstance(payload.get("event"), dict) else payload
+    host = str(envelope.get("host") or "").strip()
+    data = envelope.get("data") if isinstance(envelope.get("data"), dict) else {}
+    cve = str(data.get("cve") or envelope.get("cve") or "").strip() or None
+    script_id = str(data.get("script_id") or "").strip() or None
+    port = envelope.get("port")
+    port_s = "" if port is None else str(port).strip()
+    if not host or (not cve and not script_id):
+        return []
+    asset_ids = list(
+        session.execute(
+            select(models.AssetIdentifier.asset_id).where(
+                models.AssetIdentifier.tenant_id == tenant_id,
+                func.lower(models.AssetIdentifier.identifier_value) == host.lower(),
+            )
+        ).scalars().all()
+    )
+    if not asset_ids:
+        return []
+    query = select(models.Vulnerability).where(
+        models.Vulnerability.tenant_id == tenant_id,
+        models.Vulnerability.asset_id.in_(asset_ids),
+    )
+    if cve:
+        query = query.where(func.upper(models.Vulnerability.cve) == cve.upper())
+    else:
+        query = query.where(models.Vulnerability.script_id == script_id)
+    if port_s:
+        query = query.where(models.Vulnerability.port == port_s)
+    rows = list(session.execute(query).scalars().all())
+    rows.sort(key=lambda row: (0 if row.state != "CLOSED" else 1, row.asset_id, row.vuln_id))
+    return rows
 
 
 def link_created_ticket(
@@ -953,40 +1001,13 @@ def link_created_ticket(
         return False
     envelope = payload.get("event") if isinstance(payload.get("event"), dict) else payload
     host = str(envelope.get("host") or "").strip()
-    data = envelope.get("data") if isinstance(envelope.get("data"), dict) else {}
-    cve = str(data.get("cve") or envelope.get("cve") or "").strip() or None
-    script_id = str(data.get("script_id") or "").strip() or None
-    port = envelope.get("port")
-    port_s = "" if port is None else str(port).strip()
-    if not host or (not cve and not script_id):
-        return False
+    cve = str((envelope.get("data") or {}).get("cve") or envelope.get("cve") or "").strip() or None
     settings = _require_settings()
     try:
         with get_session(settings.postgres_url) as session:
-            asset_ids = list(
-                session.execute(
-                    select(models.AssetIdentifier.asset_id).where(
-                        models.AssetIdentifier.tenant_id == tenant_id,
-                        func.lower(models.AssetIdentifier.identifier_value) == host.lower(),
-                    )
-                ).scalars().all()
-            )
-            if not asset_ids:
-                return False
-            query = select(models.Vulnerability).where(
-                models.Vulnerability.tenant_id == tenant_id,
-                models.Vulnerability.asset_id.in_(asset_ids),
-            )
-            if cve:
-                query = query.where(func.upper(models.Vulnerability.cve) == cve.upper())
-            else:
-                query = query.where(models.Vulnerability.script_id == script_id)
-            if port_s:
-                query = query.where(models.Vulnerability.port == port_s)
-            rows = list(session.execute(query).scalars().all())
+            rows = matching_findings(session, tenant_id=tenant_id, payload=payload)
             if not rows:
                 return False
-            rows.sort(key=lambda row: 0 if row.state != "CLOSED" else 1)
             target = rows[0]
             if target.ticket_key or target.ticket_url:
                 return False

@@ -39,6 +39,7 @@ from scanner.pipeline.non_cve_policy import actionable
 import hashlib
 import ipaddress
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -169,6 +170,7 @@ MIN_FP_SUPPRESS_DAYS = 1
 MAX_FP_SUPPRESS_DAYS = 365
 DEFAULT_FP_SUPPRESS_DAYS = 90
 
+_ISSUE_KEY = re.compile(r"^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*#\d{1,12}$")
 TICKET_SYSTEMS = ("jira", "servicenow", "smax", "defectdojo", "github", "gitlab", "other")
 
 #: Which observer produced a finding. ``scan`` is this module's own path;
@@ -2535,6 +2537,7 @@ def push_ticket_state(
             secret=secret,
             extra_headers=headers,
             auth_mode=config.get("auth_mode"),
+            config=config,
         )
     except Exception:  # noqa: BLE001 - a foreign tracker must not fail the move
         LOG.warning(
@@ -2817,6 +2820,7 @@ def sync_ticket_status(
         secret=secret,
         extra_headers=headers,
         auth_mode=config.get("auth_mode"),
+        config=config,
     )
     return apply_ticket_status(
         settings,
@@ -4015,6 +4019,8 @@ def set_ticket(
     if system not in TICKET_SYSTEMS:
         raise ValueError(f"unknown ticket system {system!r}; expected one of {', '.join(TICKET_SYSTEMS)}")
     key = (key or "").strip() or None
+    if key and system in ("github", "gitlab") and not _ISSUE_KEY.match(key):
+        raise ValueError(f"{system} ticket key must look like '<repository>#<number>'")
     url = (url or "").strip() or None
     if url:
         url = _validate_ticket_url(url)
