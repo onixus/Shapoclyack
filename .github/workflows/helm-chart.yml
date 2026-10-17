@@ -3,9 +3,9 @@ name: Helm chart
 # Runs only when something the chart is built from changes (#341). The chart is
 # the kustomize base in another packaging and nothing else keeps the two equal,
 # so a base edit that forgets the chart has to fail a pull request, not wait for
-# someone to run scripts/ci-helm.sh. The full CI runs on the local Jenkins (whose
-# pytest cells also run tests/test_helm_chart.py); this is the cheap path filter
-# in front of it, one short job.
+# someone to run scripts/ci-helm.sh. It runs the script and tests/test_helm_chart.py
+# (the Jenkins pytest cells and the PR Gate run that file too); this is the cheap
+# path-filtered job for it.
 on:
   pull_request:
     branches: [main]
@@ -15,6 +15,8 @@ on:
       - "scripts/ci-helm.sh"
       - "scripts/helm_parity.py"
       - "tests/test_helm_chart.py"
+      - "requirements.lock"
+      - "requirements-dev.lock"
       - ".github/workflows/helm-chart.yml"
   push:
     branches: [main]
@@ -23,6 +25,9 @@ on:
       - "charts/**"
       - "scripts/ci-helm.sh"
       - "scripts/helm_parity.py"
+      - "tests/test_helm_chart.py"
+      - "requirements.lock"
+      - "requirements-dev.lock"
   workflow_dispatch:
 
 permissions:
@@ -39,17 +44,23 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       # Same major as the Jenkins cells (Jenkinsfile, HELM_IMAGE).
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
           version: v3.17.3
-      # The hash-pinned lock, like every other install (tests/test_python_locks.py);
-      # it is the runtime set, which carries the PyYAML helm_parity.py needs.
-      - name: Install PyYAML from the lock
-        run: "python -m pip install --require-hashes --only-binary=:all: -r requirements.lock"
+      # The hash-pinned lock, like every other install (tests/test_python_locks.py).
+      - name: Install Python dependencies
+        run: "python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.lock"
       # kubectl is preinstalled on ubuntu-latest.
       - name: Lint and compare with the kustomize base
         run: ./scripts/ci-helm.sh
+      # The hardening, guard and parity-tool tests. OCTO_REQUIRE_HELM makes a
+      # missing helm or kubectl a failure rather than a skip. The tests render
+      # the base and prod-ha themselves (kubectl), so no render directory is set.
+      - name: Chart tests
+        env:
+          OCTO_REQUIRE_HELM: "1"
+        run: python -m pytest tests/test_helm_chart.py -q -p no:cacheprovider

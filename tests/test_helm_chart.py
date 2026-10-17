@@ -292,6 +292,17 @@ def test_defaults_refuse_to_render_public_placeholder_credentials(tools):
     assert partial.returncode != 0 and "nats" in partial.stderr
 
 
+def test_autoscaling_bounds_are_checked(tools):
+    rwx = ["--set", "storage.scannerData.accessMode=ReadWriteMany", "--set", "api.autoscaling.enabled=true"]
+    inverted = _helm("-f", PARITY_VALUES, *rwx, "--set", "api.autoscaling.minReplicas=3",
+                     "--set", "api.autoscaling.maxReplicas=2", check=False)
+    assert inverted.returncode != 0 and "above maxReplicas" in inverted.stderr
+    # The RWX guard looks at the largest of replicas, min and max.
+    rwo = _helm("-f", PARITY_VALUES, "--set", "api.autoscaling.enabled=true",
+                "--set", "api.autoscaling.maxReplicas=1", check=False)
+    assert rwo.returncode != 0
+
+
 def test_several_api_replicas_need_a_shared_volume(tools):
     refused = _helm("-f", PARITY_VALUES, "--set", "replicas.api=3", check=False)
     assert refused.returncode != 0 and "ReadWriteMany" in refused.stderr
@@ -302,21 +313,57 @@ def test_several_api_replicas_need_a_shared_volume(tools):
     assert "affinity" not in _api(ok)["spec"]["template"]["spec"], "placement is opt-in"
 
 
-def test_spread_and_autoscaling_follow_the_prod_ha_overlay(tools):
-    docs = _render(
+def _overlay_render(name: str) -> str | None:
+    """A kustomize overlay, rendered here or by validate-kustomize.sh."""
+    if shutil.which("kubectl"):
+        return subprocess.run(
+            ["kubectl", "kustomize", str(BASE.parent / "overlays" / name)],
+            check=True, capture_output=True, text=True,
+        ).stdout
+    render_dir = os.environ.get(RENDER_DIR_ENV)
+    path = Path(render_dir or "") / "overlays" / f"{name}.yaml"
+    return path.read_text(encoding="utf-8") if render_dir and path.is_file() else None
+
+
+def _placement(docs: list[dict]) -> list[dict]:
+    """The API's scheduling fields and the HPA: what api.spread/autoscaling claim to reproduce."""
+    out = []
+    for d in docs:
+        if d["kind"] == "HorizontalPodAutoscaler":
+            out.append(d)
+        elif d["kind"] == "Deployment" and d["metadata"]["name"] == "shapoclyack-api":
+            pod = d["spec"]["template"]["spec"]
+            out.append({
+                "kind": "Placement",
+                "metadata": {"name": "shapoclyack-api"},
+                "spec": {
+                    "affinity": pod.get("affinity"),
+                    "topologySpreadConstraints": pod.get("topologySpreadConstraints"),
+                },
+            })
+    return out
+
+
+def test_spread_and_autoscaling_are_the_prod_ha_overlay_field_for_field(tools, tmp_path):
+    """Compared with the overlay itself, not with a copy of its numbers: a weight, a
+    maxSkew, a stabilization window or a CPU target edited on either side fails here.
+    Known differences (the overlay's replicas: 2, database pool env, RWX PVC patch, ...)
+    are outside these fields on purpose; only the scheduling fields and the HPA are claimed."""
+    overlay = _overlay_render("prod-ha")
+    if overlay is None:
+        pytest.skip("prod-ha render unavailable") if not _require_helm() else pytest.fail("prod-ha render unavailable")
+    chart = _render(
         "--set", "api.spread.enabled=true",
         "--set", "api.autoscaling.enabled=true",
         "--set", "storage.scannerData.accessMode=ReadWriteMany",
     )
-    pod = _api(docs)["spec"]["template"]["spec"]
-    hard = pod["topologySpreadConstraints"][0]
-    assert hard["whenUnsatisfiable"] == "DoNotSchedule" and hard["topologyKey"] == "kubernetes.io/hostname"
-    assert "replicas" not in _api(docs)["spec"], "the HPA owns the count"
-    hpa = _kinds(docs, "HorizontalPodAutoscaler")[0]
-    assert hpa["spec"]["scaleTargetRef"]["name"] == "shapoclyack-api"
-    # The spread selector has to match the API pods' labels or it spreads nothing.
-    labels = _api(docs)["spec"]["template"]["metadata"]["labels"]
-    assert hard["labelSelector"]["matchLabels"].items() <= labels.items()
+    docs = _placement([d for d in yaml.safe_load_all(overlay) if d])
+    assert {d["kind"] for d in docs} == {"HorizontalPodAutoscaler", "Placement"}
+    assert _compare(tmp_path, docs, _placement(chart)) == 0
+    assert "replicas" not in _api(chart)["spec"], "the HPA owns the count"
+    # Off by default, and an HPA-less chart renders no placement at all.
+    plain = _api(_render("--set", "replicas.api=3", "--set", "storage.scannerData.accessMode=ReadWriteMany"))
+    assert "affinity" not in plain["spec"]["template"]["spec"] and plain["spec"]["replicas"] == 3
 
 
 def test_network_policy_switch_removes_exactly_the_policies(tools):
@@ -366,6 +413,30 @@ def test_ingress_without_tls_for_every_host_is_refused(tools):
         "--set", "ingress.hosts[0].host=other.example.com", check=False,
     )
     assert mismatch.returncode != 0 and "other.example.com" in mismatch.stderr
+
+
+@pytest.mark.parametrize(
+    ("tls_host", "host", "covered"),
+    [
+        ("*.example.com", "a.example.com", True),
+        ("*.example.com", "a.b.example.com", False),
+        ("*.example.com", "example.com", False),
+        ("a.example.com", "a.example.com", True),
+        ("other.example.com", "a.example.com", False),
+    ],
+)
+def test_ingress_tls_wildcard_covers_exactly_one_label(tools, tls_host, host, covered):
+    result = _helm(
+        "-f", PARITY_VALUES, "--set", "ingress.enabled=true",
+        "--set", f"ingress.tls[0].hosts[0]={tls_host}", "--set", f"ingress.hosts[0].host={host}",
+        check=False,
+    )
+    assert (result.returncode == 0) is covered, result.stderr
+
+
+def test_ingress_without_any_host_is_refused(tools):
+    result = _helm("-f", PARITY_VALUES, "--set", "ingress.enabled=true", "--set", "ingress.hosts=null", check=False)
+    assert result.returncode != 0 and "ingress.hosts" in result.stderr
 
 
 def test_scalar_knobs_reach_the_workloads(tools):

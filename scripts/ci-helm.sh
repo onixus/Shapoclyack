@@ -75,22 +75,34 @@ for args in \
   helm template shapoclyack "${CHART}" --namespace network-scan "${parity[@]}" ${args} > /dev/null
 done
 
-echo "[helm] render: unsafe combinations must be refused"
-for args in \
-  "" \
-  "--set ingress.enabled=true --set ingress.tls=null" \
-  "--set replicas.api=3"; do
-  # shellcheck disable=SC2086
-  if [[ -z "${args}" ]]; then
+echo "[helm] render: unsafe combinations must be refused, for the stated reason"
+# "<extra helm args>|<substring the refusal must contain>". A template syntax
+# error would also make helm fail, which is why the reason is checked too.
+# The first case runs on the defaults, without the parity values.
+refuse() {
+  local args="$1" reason="$2" out
+  if [[ "${args}" == "DEFAULTS" ]]; then
     set -- --namespace network-scan
   else
+    # shellcheck disable=SC2086
     set -- --namespace network-scan "${parity[@]}" ${args}
   fi
-  if helm template shapoclyack "${CHART}" "$@" > /dev/null 2>&1; then
-    echo "[helm] expected a refusal for: ${args:-<defaults>}" >&2
+  if out="$(helm template shapoclyack "${CHART}" "$@" 2>&1)"; then
+    echo "[helm] expected a refusal for: ${args}" >&2
     exit 1
   fi
-done
+  if [[ "${out}" != *"${reason}"* ]]; then
+    echo "[helm] refused for: ${args}, but not for '${reason}':" >&2
+    echo "${out}" >&2
+    exit 1
+  fi
+}
+refuse "DEFAULTS" "devPlaceholders"
+refuse "--set ingress.enabled=true --set ingress.tls=null" "needs ingress.tls"
+refuse "--set ingress.enabled=true --set ingress.hosts=null" "at least one entry in ingress.hosts"
+refuse "--set ingress.enabled=true --set ingress.hosts[0].host=a.b.example.com --set ingress.tls[0].hosts[0]=*.example.com" "not covered"
+refuse "--set replicas.api=3" "ReadWriteMany"
+refuse "--set api.autoscaling.enabled=true --set api.autoscaling.minReplicas=3 --set api.autoscaling.maxReplicas=2 --set storage.scannerData.accessMode=ReadWriteMany" "above maxReplicas"
 
 echo "[helm] parity with kustomize base"
 helm template shapoclyack "${CHART}" --namespace network-scan "${parity[@]}" > "${work}/helm.yaml"

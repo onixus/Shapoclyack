@@ -15,9 +15,10 @@ All notable changes to Shapoclyack are documented in this file.
   or `devPlaceholders=true` is set, several API replicas on a ReadWriteOnce volume, and an
   Ingress without TLS for every host. `scripts/ci-helm.sh` runs `helm lint --strict` and
   fails when the default render differs from `kubectl kustomize k8s/shapoclyack/base` in
-  any object or field (hardening included; `scripts/helm_parity.py`); it runs on pull
-  requests that touch `k8s/`/`charts/` (`.github/workflows/helm-chart.yml`) and, as
-  `tests/test_helm_chart.py`, in the Jenkins pytest cells (helm 3.17.3). OCI publishing to
+  any object or field (hardening included; `scripts/helm_parity.py`); it runs,
+  with `tests/test_helm_chart.py`, on pull requests that touch `k8s/`/`charts/`
+  (`.github/workflows/helm-chart.yml`); the tests also run in the PR Gate and in the Jenkins
+  pytest cells (helm 3.17.3). Wildcard TLS hosts and an HPA with min above max are handled. OCI publishing to
   GHCR is described, not set up.
 - TLS posture on the Pulse path
   ([#545](https://github.com/onixus/Shapoclyack/issues/545), [Pulse backend](docs/pulse-backend.md)):

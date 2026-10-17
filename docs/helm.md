@@ -68,13 +68,13 @@ namespace ([Kubernetes hardening](k8s-hardening.md), enrolling the executor).
 
 | Value | Default | Purpose |
 |-------|---------|---------|
-| `replicas.api`, `replicas.scannerExecutor` | `1` | Datastores stay single-replica; clustering them is a configuration change, see [High availability](high-availability.md). More than one API replica (or an `api.autoscaling.maxReplicas` above one) with a `ReadWriteOnce` scanner-data volume is refused at render time |
-| `api.spread.enabled` | `false` | The prod-ha overlay's placement for the API: preferred anti-affinity, hard per-node spread, best-effort per-zone spread |
-| `api.autoscaling.*` | disabled | The prod-ha HPA (needs metrics-server); `replicas.api` is then not written to the Deployment |
+| `replicas.api`, `replicas.scannerExecutor` | `1` | Datastores stay single-replica; clustering them is a configuration change, see [High availability](high-availability.md). More than one API replica (or an `api.autoscaling.maxReplicas` above one) with a `ReadWriteOnce` scanner-data volume is refused at render time. The guard reads `accessMode`; it cannot know whether the `storageClass` really provides ReadWriteMany (a cluster default that does not leaves the PVC Pending), so it is a check, not a proof |
+| `api.spread.enabled` | `false` | Pod `affinity` and `topologySpreadConstraints` of the API, identical to overlays/prod-ha (compared against the rendered overlay by `tests/test_helm_chart.py`) |
+| `api.autoscaling.*` | disabled | The prod-ha HPA, whole spec identical to the overlay's (needs metrics-server); `replicas.api` is then not written to the Deployment. `minReplicas` above `maxReplicas` is refused |
 | `storage.<scannerData\|clickhouse\|nats\|postgres>.size` / `.storageClass` | base sizes / cluster default | `scannerData.accessMode` must be `ReadWriteMany` for `replicas.api > 1` |
 | `existingSecrets.*` | empty | See above |
 | `externalSecrets.*` | disabled | See above |
-| `ingress.*` | disabled | Host, class, annotations, TLS. TLS is not optional (#309): no `tls`, or a host missing from every `tls[].hosts`, is refused |
+| `ingress.*` | disabled | Host, class, annotations, TLS. TLS is not optional (#309): no `hosts`, no `tls`, or a host missing from every `tls[].hosts`, is refused. A wildcard TLS host covers one label (`*.example.com` covers `a.example.com`, not `a.b.example.com` or `example.com`); a `tls` entry without `hosts` covers nothing here, list the host |
 | `images.<api\|aio\|clickhouse\|nats\|postgres\|awscli>` | digest-pinned, as in the base | Set `digest: ""` to deploy by tag |
 | `resources.*` | the base's requests and limits | One entry per workload |
 | `networkPolicy.enabled` | `true` | The datastore and executor-namespace ingress rules |
@@ -111,8 +111,13 @@ Bump `version` in `Chart.yaml` with any chart change.
 `ci-helm.sh` needs `helm`, `kubectl` and PyYAML. Where it runs:
 
 - `.github/workflows/helm-chart.yml`: on pull requests and pushes to `main` that touch
-  `k8s/**`, `charts/**` or the scripts (path-filtered, one short job; helm 3.17.3 through
-  `azure/setup-helm` pinned by commit).
+  `k8s/**`, `charts/**`, the scripts, the test file or the lock files. It runs
+  `scripts/ci-helm.sh` and then `tests/test_helm_chart.py` with `OCTO_REQUIRE_HELM=1`
+  (helm 3.17.3 through `azure/setup-helm`, actions pinned by commit). It is path-filtered, so
+  do not make its job a required status check on `main`: a pull request that matches no path
+  would wait for it forever.
+- PR Gate (`.github/workflows/pr-gate.yml`): its pytest step runs the test file too, with
+  `OCTO_REQUIRE_HELM=1`, so a runner image without helm or kubectl fails instead of skipping.
 - Jenkins: the pytest cells get a pinned `helm` binary (`HELM_IMAGE` in the Jenkinsfile,
   copied out of the image the way `kubectl` is) and run `tests/test_helm_chart.py`, which
   repeats the parity check against the base rendered by the stage. `OCTO_REQUIRE_HELM=1`
