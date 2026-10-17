@@ -324,10 +324,15 @@ def _check_result_integrity(
         return
     try:
         result_integrity.validate_artifacts(
-            archive_bytes, run_id=run_id, exit_code=exit_code, cancelled=cancelled
+            archive_bytes,
+            run_id=run_id,
+            exit_code=exit_code,
+            cancelled=cancelled,
+            max_file_bytes=getattr(settings, "result_schema_max_file_bytes", None),
         )
     except result_integrity.ResultsRejected as exc:
-        if mode == "warn":
+        # warn relaxes the shape rules only; an unreadable document is refused.
+        if mode == "warn" and not exc.parse:
             result_integrity.count("schema", "warned")
             _log.warning("Job %s archive failed schema validation (warn mode): %s", job_id, exc)
             _audit_integrity(

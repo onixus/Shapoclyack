@@ -2252,12 +2252,40 @@ happen is a *restart* doing it, which is why the key lives on a volume: the
 Kubernetes StatefulSets (`scanner-executor`, the agent example) mount a
 `sensor-key` PVC at `/var/lib/shapoclyack/sensor-key` through
 `OCTO_AGENT_RESULT_KEY_FILE`, and the sensor logs an error at registration when
-the API's pinned key is not its own. To run without signing, set
-`OCTO_AGENT_RESULT_SIGNING=off` on the sensor. Treat an `agent.result_key_refused`
+the API's pinned key is not its own. To run without signing, do it in this order: first
+`DELETE /api/agents/{id}/result-key` (once a key is pinned an unsigned upload is
+refused whatever the sensor says), and only then `OCTO_AGENT_RESULT_SIGNING=off`.
+A sensor that has lost its key (volume not writable, `cryptography` missing)
+logs an error at registration naming this procedure. Treat an `agent.result_key_refused`
 row you did not expect as what it says: something other than the original
 sensor knows its token. Trust is on first use: a token holder who registers
 before the real sensor ever sends a key pins its own, so register keys at
 install time and rotate the provisioning key if in doubt.
+
+**Upgrading Kubernetes installations.** `volumeClaimTemplates` of an existing
+StatefulSet are immutable, so `kubectl apply -k` on a cluster that already runs
+the scanner-executor fails with "updates to statefulset spec ... forbidden".
+Recreate the StatefulSet without touching its pods, then apply:
+
+```bash
+kubectl -n <executor-namespace> delete statefulset shapoclyack-scanner-executor --cascade=orphan
+kubectl apply -k k8s/shapoclyack/overlays/<overlay>
+```
+
+The pods are replaced by the new template on the next rollout and then get
+their `sensor-key` volume. The claim has no `storageClassName`, so it uses the
+cluster's default class; a cluster without one (typically air-gapped) leaves the
+pod `Pending`. Set the class with a patch on the StatefulSet in your overlay:
+
+```yaml
+- op: add
+  path: /spec/volumeClaimTemplates/0/spec/storageClassName
+  value: <your-class>
+```
+
+Until the pod has the volume, its key is not persistent and a restart would
+produce a key the API refuses; keep `OCTO_AGENT_RESULT_SIGNING=off` in the pod
+during such a gap if it cannot be avoided.
 
 ### Sensor client certificates
 

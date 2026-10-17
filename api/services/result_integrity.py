@@ -57,9 +57,9 @@ SIGNING_DOMAIN = "shapoclyack-run-archive-v1"
 #: Largest single artifact the validator will parse. The archive as a whole is
 #: bounded by ``results_ingest.MAX_UNCOMPRESSED_BYTES``; this keeps one huge
 #: member from being decoded into a Python object tree several times its size.
-MAX_VALIDATED_MEMBER_BYTES = 64 * 1024 * 1024
+MAX_VALIDATED_MEMBER_BYTES = 256 * 1024 * 1024
 #: ...and all of them together, so eight maximal files are not eight times the cap.
-MAX_VALIDATED_TOTAL_BYTES = 128 * 1024 * 1024
+MAX_VALIDATED_TOTAL_BYTES = results_ingest.MAX_UNCOMPRESSED_BYTES
 
 SCHEMA_MODES = ("enforce", "warn", "off")
 
@@ -67,10 +67,15 @@ SCHEMA_MODES = ("enforce", "warn", "off")
 class ResultsRejected(ValueError):
     """An upload refused on integrity grounds; ``code`` names the check."""
 
-    def __init__(self, code: str, reason: str) -> None:
+    def __init__(self, code: str, reason: str, *, parse: bool = False) -> None:
         super().__init__(reason)
         self.code = code
         self.reason = reason
+        #: True when the document could not be read safely (not JSON, nested
+        #: too deeply, too large). Schema mode ``warn`` never lets these
+        #: through: it relaxes the *shape* rules, and the console reads these
+        #: files, so an unreadable one must not be stored.
+        self.parse = parse
 
 
 # --------------------------------------------------------------------------
@@ -194,6 +199,7 @@ def validate_artifacts(
     run_id: str | None,
     exit_code: int = 0,
     cancelled: bool = False,
+    max_file_bytes: int | None = None,
 ) -> None:
     """Parse the known artifacts straight out of the tar and check them.
 
@@ -204,6 +210,7 @@ def validate_artifacts(
     # function reads members into memory, which must not happen for an archive
     # the extractor would refuse anyway. IngestError propagates as before.
     results_ingest.validate_archive(archive_bytes)
+    file_cap = max_file_bytes or MAX_VALIDATED_MEMBER_BYTES
     seen: dict[str, Any] = {}
     budget = MAX_VALIDATED_TOTAL_BYTES
     try:
@@ -216,27 +223,34 @@ def validate_artifacts(
                 # summary.json (a sub-report) is not what the API reads.
                 if "/" in name or name not in ARTIFACT_SCHEMAS or not member.isfile():
                     continue
-                if member.size > MAX_VALIDATED_MEMBER_BYTES:
+                if member.size > file_cap:
                     raise ResultsRejected(
-                        "schema", f"{name}: larger than {MAX_VALIDATED_MEMBER_BYTES} bytes"
+                        "schema",
+                        f"{name}: larger than {file_cap} bytes",
+                        parse=True,
                     )
                 budget -= member.size
                 if budget < 0:
                     raise ResultsRejected(
                         "schema",
                         f"core artifacts together exceed {MAX_VALIDATED_TOTAL_BYTES} bytes",
+                        parse=True,
                     )
                 handle = tf.extractfile(member)
                 raw = handle.read() if handle is not None else b""
                 try:
                     document = json.loads(raw.decode("utf-8"))
                 except (UnicodeDecodeError, ValueError) as exc:
-                    raise ResultsRejected("schema", f"{name}: not valid JSON ({exc})") from exc
+                    raise ResultsRejected(
+                        "schema", f"{name}: not valid JSON ({exc})", parse=True
+                    ) from exc
                 except (RecursionError, MemoryError) as exc:
                     # A few hundred KiB of "[" is enough to exhaust the parser's
                     # stack; that is a malformed document, not a server error.
                     raise ResultsRejected(
-                        "schema", f"{name}: nested too deeply or too large to parse"
+                        "schema",
+                        f"{name}: nested too deeply or too large to parse",
+                        parse=True,
                     ) from exc
                 errors = validate_document(name, document)
                 if errors:

@@ -156,7 +156,11 @@ def load_signer(agent_id_file: str | None = None) -> ResultSigner | None:
     try:
         signer = ResultSigner.load_or_create(path)
     except (OSError, ValueError, ImportError) as exc:
-        LOG.warning(
+        # An explicitly configured path that cannot be used is a deployment
+        # error (a volume that is not writable): loud, because a sensor whose
+        # key the API has pinned has its uploads refused while it is unsigned.
+        log = LOG.error if os.environ.get(KEY_FILE_VAR, "").strip() else LOG.warning
+        log(
             "Result signing key unavailable at %s (%s); uploads will be unsigned. "
             "Set %s to a writable, persistent path",
             path,

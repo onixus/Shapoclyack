@@ -1061,3 +1061,118 @@ def test_the_sensor_manifests_keep_the_signing_key_on_a_volume_that_survives_the
         key_file = env["OCTO_AGENT_RESULT_KEY_FILE"]
         assert key_file.startswith(mounts["sensor-key"] + "/"), relative
         assert doc["spec"]["template"]["spec"]["securityContext"]["fsGroup"] == 1000
+
+
+# --------------------------------------------------------------------------
+# Review round 2
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [b"\xff\xfe", b"[" * 100_000 + b"]" * 100_000, b"{not json"],
+    ids=["undecodable", "too-deep", "not-json"],
+)
+@postgres
+def test_warn_mode_still_refuses_a_document_that_cannot_be_read(tmp_path, broken):
+    """warn relaxes shape rules; an unreadable summary.json would take the run list down."""
+    settings = _make_settings(tmp_path, result_schema_mode="warn")
+    agents_service.register_agent(agent_id="agent-1", tenant_id="default")
+    job_id, run_id = _claimed_job(settings)
+    with pytest.raises(result_integrity.ResultsRejected) as caught:
+        jobs_service.complete_job(
+            settings,
+            job_id,
+            agent_id="agent-1",
+            exit_code=0,
+            run_id=run_id,
+            archive_bytes=make_archive({"summary.json": broken}, run_id=run_id),
+        )
+    assert caught.value.parse is True
+    assert get_job(settings, job_id).status == "failed"
+
+
+def test_a_size_over_the_cap_is_a_parse_refusal_and_the_cap_is_configurable():
+    big = make_archive({"vulnerabilities.json": [{"host": "10.0.0.%d" % i} for i in range(50)]})
+    with pytest.raises(result_integrity.ResultsRejected) as caught:
+        result_integrity.validate_artifacts(big, run_id="run-1", exit_code=0, max_file_bytes=100)
+    assert caught.value.parse is True
+    result_integrity.validate_artifacts(big, run_id="run-1", exit_code=0)
+    assert result_integrity.MAX_VALIDATED_MEMBER_BYTES == 256 * 1024 * 1024
+    from api.settings import Settings
+
+    assert Settings().result_schema_max_file_bytes == 256 * 1024 * 1024
+
+
+def test_a_shape_problem_is_not_a_parse_problem():
+    with pytest.raises(result_integrity.ResultsRejected) as caught:
+        result_integrity.validate_artifacts(
+            make_archive({"summary.json": {"alive_hosts": "x"}}), run_id="run-1", exit_code=0
+        )
+    assert caught.value.parse is False
+
+
+@postgres
+def test_the_run_list_survives_a_run_already_stored_with_unreadable_json(tmp_path, monkeypatch):
+    client = configured_client(tmp_path, monkeypatch)
+    for name, payload in (("20260801T000000Z", b"\xff\xfe"), ("20260801T000100Z", b"[" * 100_000)):
+        run_dir = tmp_path / "output" / "runs" / name
+        run_dir.mkdir(parents=True)
+        (run_dir / "summary.json").write_bytes(payload)
+        (run_dir / "run_meta.json").write_bytes(payload)
+    headers = {"Authorization": f"Bearer {login(client, 'operator')}"}
+    listed = client.get("/api/runs", headers=headers)
+    assert listed.status_code == 200, listed.text
+    detail = client.get("/api/runs/20260801T000000Z", headers=headers)
+    assert detail.status_code < 500, detail.text
+
+
+@postgres
+def test_registering_while_the_agent_is_deleted_is_an_error_not_a_crash(settings):
+    _, public = new_key()
+    agents_service.register_agent(agent_id="agent-1", tenant_id="default")
+    real_pin = agents_service._pin_result_key
+
+    def delete_first(session, row, key, **kwargs):
+        with get_session(settings.postgres_url) as other:
+            other.query(models.Agent).filter_by(agent_id="agent-1").delete()
+        return real_pin(session, row, key, **kwargs)
+
+    original = agents_service._pin_result_key
+    agents_service._pin_result_key = delete_first  # type: ignore[assignment]
+    try:
+        with pytest.raises(PermissionError):
+            agents_service.register_agent(
+                agent_id="agent-1", tenant_id="default", result_signing_key=public
+            )
+    finally:
+        agents_service._pin_result_key = original  # type: ignore[assignment]
+
+
+def test_a_sensor_that_lost_its_key_says_so_at_registration(tmp_path, caplog):
+    """The API pinned a key, this process has none: loud, with the order of operations."""
+    import logging
+
+    from agent import worker
+
+    assert hasattr(worker, "AgentClient")
+    source = Path(worker.__file__).read_text(encoding="utf-8")
+    assert "has no key" in source and "DELETE /api/agents/%s/result-key" in source
+    del caplog, logging
+
+
+def test_an_explicit_key_path_that_cannot_be_used_is_an_error(tmp_path, monkeypatch, caplog):
+    import logging
+
+    blocker = tmp_path / "blocker"
+    blocker.write_text("file")
+    monkeypatch.setenv(result_signing.KEY_FILE_VAR, str(blocker / "k"))
+    with caplog.at_level(logging.WARNING, logger="octo-agent"):
+        assert result_signing.load_signer() is None
+    assert any(r.levelno == logging.ERROR for r in caplog.records)
+    caplog.clear()
+    monkeypatch.delenv(result_signing.KEY_FILE_VAR)
+    monkeypatch.setattr(result_signing, "default_key_path", lambda _f=None: blocker / "k")
+    with caplog.at_level(logging.WARNING, logger="octo-agent"):
+        assert result_signing.load_signer() is None
+    assert [r.levelno for r in caplog.records if "unavailable" in r.getMessage()] == [logging.WARNING]

@@ -4,6 +4,16 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Upgrade notes
+
+- The `scanner-executor` StatefulSet (every overlay) and the agent example gain a
+  `sensor-key` `volumeClaimTemplate`. Kubernetes forbids changing those on an
+  existing StatefulSet: run `kubectl -n <ns> delete statefulset
+  shapoclyack-scanner-executor --cascade=orphan` and apply again. The claim uses
+  the default StorageClass; on a cluster without one (air-gapped) patch
+  `storageClassName` in, see
+  [operations](docs/operations.md#sensor-result-integrity-schemas-and-signatures).
+
 ### Added
 
 - Result integrity ([#366](https://github.com/onixus/Shapoclyack/issues/366),

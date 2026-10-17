@@ -2081,6 +2081,16 @@ def run_loop(args: argparse.Namespace) -> int:
         registered = True
         observability.TELEMETRY.mark_registered()
         pinned = info.get("result_key_fingerprint")
+        if client.result_signer is None and pinned:
+            LOG.error(
+                "The API has a result-signing key pinned for this sensor (%s) but this "
+                "process has no key (signing is off or the key file could not be used), "
+                "so every upload will be refused. Restore the key file, or have an "
+                "operator run DELETE /api/agents/%s/result-key first and only then set "
+                "OCTO_AGENT_RESULT_SIGNING=off",
+                pinned,
+                registered_id,
+            )
         if client.result_signer is not None and pinned and pinned != client.result_signer.key_id:
             # The API keeps the first key it was given and refused ours. Logged
             # as an error because every archive this sensor uploads will be

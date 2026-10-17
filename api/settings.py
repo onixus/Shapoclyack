@@ -298,6 +298,9 @@ class Settings:
     # warning and a metric; on refuses it. A sensor that has a key registered
     # must always sign, and a wrong signature is always refused.
     result_schema_mode: str = "warn"
+    # Largest core JSON artifact the schema check will parse; larger is refused
+    # in every mode but ``off``.
+    result_schema_max_file_bytes: int = 256 * 1024 * 1024
     require_signed_results: bool = False
     # NATS JetStream URL (e.g. nats://shapoclyack-nats-client:4222). Empty disables broker.
     nats_url: str = ""
@@ -2096,6 +2099,10 @@ def load_settings() -> Settings:
         ),
         agent_results_ingest_wait_seconds=max(
             0.0, float(os.environ.get("OCTO_AGENT_RESULTS_INGEST_WAIT_SECONDS", "25") or 0.0)
+        ),
+        result_schema_max_file_bytes=max(
+            1024 * 1024,
+            int(os.environ.get("OCTO_RESULT_SCHEMA_MAX_FILE_BYTES", str(256 * 1024 * 1024)) or 0),
         ),
         result_schema_mode=_choice(
             os.environ.get("OCTO_RESULT_SCHEMA_MODE", ""), ("enforce", "warn", "off"), "warn"
