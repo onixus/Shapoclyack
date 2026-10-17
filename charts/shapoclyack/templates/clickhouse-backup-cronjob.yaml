@@ -1,0 +1,117 @@
+{{- if .Values.backup.clickhouse.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  labels:
+    app.kubernetes.io/component: clickhouse-backup
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-clickhouse-backup
+  namespace: {{ .Release.Namespace }}
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 3600
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/component: clickhouse-backup
+            app.kubernetes.io/name: shapoclyack
+        spec:
+          automountServiceAccountToken: false
+          containers:
+          - command:
+            - /bin/sh
+            - /opt/shapoclyack/clickhouse-backup.sh
+            env:
+            - name: HOME
+              value: /tmp
+            - name: TMPDIR
+              value: /tmp
+            - name: CLICKHOUSE_HOST
+              value: shapoclyack-clickhouse-client
+            - name: CLICKHOUSE_PORT
+              value: "9000"
+            - name: CLICKHOUSE_USER
+              value: shapoclyack_backup
+            - name: CLICKHOUSE_DATABASE
+              value: shapoclyack
+            - name: CLICKHOUSE_BACKUP_TIMEOUT_SECONDS
+              value: "3000"
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: password
+                  name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "clickhouseBackup" "default" "shapoclyack-clickhouse-backup") }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  key: access_key_id
+                  name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "clickhouseBackupS3" "default" "shapoclyack-clickhouse-backup-s3") }}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: secret_access_key
+                  name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "clickhouseBackupS3" "default" "shapoclyack-clickhouse-backup-s3") }}
+            - name: AWS_DEFAULT_REGION
+              valueFrom:
+                secretKeyRef:
+                  key: region
+                  name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "clickhouseBackupS3" "default" "shapoclyack-clickhouse-backup-s3") }}
+            - name: S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  key: bucket
+                  name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "clickhouseBackupS3" "default" "shapoclyack-clickhouse-backup-s3") }}
+            - name: S3_PREFIX
+              valueFrom:
+                secretKeyRef:
+                  key: prefix
+                  name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "clickhouseBackupS3" "default" "shapoclyack-clickhouse-backup-s3") }}
+            - name: S3_ENDPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  key: endpoint_url
+                  name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "clickhouseBackupS3" "default" "shapoclyack-clickhouse-backup-s3") }}
+                  optional: true
+            image: {{ include "shapoclyack.image" .Values.images.clickhouse }}
+            imagePullPolicy: {{ .Values.images.pullPolicy }}
+            name: backup
+            resources:
+{{- toYaml .Values.resources.clickhouseBackup | nindent 14 }}
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
+              readOnlyRootFilesystem: true
+            volumeMounts:
+            - mountPath: /opt/shapoclyack
+              name: script
+              readOnly: true
+            - mountPath: /tmp
+              name: tmp
+          restartPolicy: Never
+          securityContext:
+            runAsGroup: 101
+            runAsNonRoot: true
+            runAsUser: 101
+            seccompProfile:
+              type: RuntimeDefault
+          volumes:
+          - configMap:
+              defaultMode: 292
+              name: shapoclyack-clickhouse-backup-script
+            name: script
+          - emptyDir:
+              medium: Memory
+              sizeLimit: 16Mi
+            name: tmp
+      ttlSecondsAfterFinished: 86400
+  schedule: {{ .Values.backup.clickhouse.schedule | quote }}
+  successfulJobsHistoryLimit: 3
+{{- end }}

@@ -1,0 +1,71 @@
+apiVersion: v1
+data:
+  k8s.yaml: |
+    {{- .Files.Get "files/scanner-config/k8s.yaml" | nindent 4 }}
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/part-of: shapoclyack
+  name: scanner-config
+  namespace: {{ .Values.namespaces.executor.name }}
+---
+apiVersion: v1
+data:
+  k8s.yaml: |
+    {{- .Files.Get "files/scanner-config/k8s.yaml" | nindent 4 }}
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/part-of: shapoclyack
+  name: scanner-config
+  namespace: {{ .Release.Namespace }}
+---
+{{- if .Values.backup.clickhouse.enabled }}
+apiVersion: v1
+data:
+  clickhouse-backup.sh: |
+    {{- .Files.Get "files/clickhouse-backup/clickhouse-backup.sh" | nindent 4 }}
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/component: clickhouse-backup
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-clickhouse-backup-script
+  namespace: {{ .Release.Namespace }}
+---
+{{- end }}
+apiVersion: v1
+data:
+  config.xml: |
+    {{- .Files.Get "files/clickhouse/config.xml" | nindent 4 }}
+  init.sql: |
+    {{- .Files.Get "files/clickhouse/init.sql" | nindent 4 }}
+  users.xml: |
+    {{- .Files.Get "files/clickhouse/users.xml" | nindent 4 }}
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/component: clickhouse
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-clickhouse-config
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+data:
+  nats.conf: |
+    {{- .Files.Get "files/nats/nats.conf" | nindent 4 }}
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/component: nats
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-nats-config
+  namespace: {{ .Release.Namespace }}

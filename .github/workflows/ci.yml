@@ -173,6 +173,20 @@ jobs:
       - name: Validate Prometheus rules
         run: ./k8s/scripts/validate-prometheus-rules.sh
 
+  helm:
+    name: Helm chart (lint, parity with kustomize)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # helm and kubectl are on the ubuntu-latest image.
+      - name: Install PyYAML
+        run: pip install PyYAML==6.0.3
+      - name: Lint and compare with the kustomize base
+        run: ./scripts/ci-helm.sh
+
   image:
     # Builds the actual distributed image (no nmap, nmap-vulners or vulscan;
     # issue #97, removed from the product in #548). This is what ghcr.io/onixus/shapoclyack-{scanner,aio} ship.

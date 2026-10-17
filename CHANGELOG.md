@@ -6,6 +6,14 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- Helm chart `charts/shapoclyack/`
+  ([#341](https://github.com/onixus/Shapoclyack/issues/341), [Helm chart](docs/helm.md)):
+  the kustomize base as a chart, with values for replicas, storage size and class,
+  per-credential `existingSecrets`, optional External Secrets and Ingress, images and
+  resources, and a NetworkPolicy switch. `scripts/ci-helm.sh` runs `helm lint --strict` and
+  fails when the default render differs from `kubectl kustomize k8s/shapoclyack/base` in
+  any object or field (hardening included; `scripts/helm_parity.py`). OCI publishing to GHCR
+  is described, not set up.
 - TLS posture on the Pulse path
   ([#545](https://github.com/onixus/Shapoclyack/issues/545), [Pulse backend](docs/pulse-backend.md)):
   an A-F grade per cipher suite computed by Shapoclyack (`scanner/pipeline/tls_grading.py`,

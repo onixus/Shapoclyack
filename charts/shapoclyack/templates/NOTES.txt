@@ -1,0 +1,18 @@
+Shapoclyack {{ .Chart.AppVersion }} installed in namespace {{ .Release.Namespace }}.
+{{ if and (not .Values.externalSecrets.enabled) (not .Values.existingSecrets.api) }}
+WARNING: the API Secret holds the dev placeholder JWT secret. The API refuses to
+start on it unless OCTO_ENV=dev. Set existingSecrets.api (and the other
+existingSecrets.*) or externalSecrets.enabled=true; see docs/helm.md.
+{{- end }}
+{{- if not .Values.namespaces.main.create }}
+
+The chart does not manage the release namespace. Pod Security labels are part of
+the hardening baseline; apply them once:
+  kubectl label namespace {{ .Release.Namespace }} \
+    pod-security.kubernetes.io/enforce=baseline \
+    pod-security.kubernetes.io/warn=restricted \
+    pod-security.kubernetes.io/audit=restricted --overwrite
+{{- end }}
+
+The scanner-executor starts only once Secret {{ include "shapoclyack.secretName" (dict "root" $ "key" "scannerExecutor" "default" "shapoclyack-scanner-executor") }}
+exists in namespace {{ .Values.namespaces.executor.name }} (docs/k8s-hardening.md, enrolling the executor).

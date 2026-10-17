@@ -1,0 +1,134 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app.kubernetes.io/component: scanner-executor
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-scanner-executor
+  namespace: {{ .Values.namespaces.executor.name }}
+spec:
+  podManagementPolicy: Parallel
+  replicas: {{ .Values.replicas.scannerExecutor }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: scanner-executor
+      app.kubernetes.io/name: shapoclyack
+  serviceName: shapoclyack-scanner-executor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: scanner-executor
+        app.kubernetes.io/name: shapoclyack
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - command:
+        - python
+        - -m
+        - agent
+        env:
+        - name: OCTO_API_URL
+          value: http://shapoclyack-api.{{ .Release.Namespace }}.svc:8080
+        - name: OCTO_AGENT_PROVISIONING_KEY_FILE
+          value: /etc/shapoclyack/executor-key/provisioning_key
+        - name: OCTO_AGENT_PROVISIONING_KEY
+          valueFrom:
+            secretKeyRef:
+              key: provisioning_key
+              name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "scannerExecutor" "default" "shapoclyack-scanner-executor") }}
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: OCTO_AGENT_ID_PREFIX
+          valueFrom:
+            secretKeyRef:
+              key: agent_id_prefix
+              name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "scannerExecutor" "default" "shapoclyack-scanner-executor") }}
+        - name: OCTO_AGENT_ID
+          value: $(OCTO_AGENT_ID_PREFIX)-$(POD_NAME)
+        - name: OCTO_CONFIG
+          value: scanner/config/k8s.yaml
+        - name: OCTO_OUTPUT_DIR
+          value: scanner/output
+        - name: OCTO_AGENT_HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        image: {{ include "shapoclyack.image" .Values.images.aio }}
+        imagePullPolicy: {{ .Values.images.pullPolicy }}
+        name: executor
+        resources:
+{{- toYaml .Values.resources.executor | nindent 10 }}
+        securityContext:
+          allowPrivilegeEscalation: true
+          capabilities:
+            add:
+            - NET_RAW
+            - NET_ADMIN
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - mountPath: /app/scanner/config
+          name: config
+          readOnly: true
+        - mountPath: /etc/shapoclyack/executor-key
+          name: executor-key
+          readOnly: true
+        - mountPath: /app/scanner/output
+          name: output
+        - mountPath: /app/scanner/state
+          name: state
+        - mountPath: /tmp
+          name: tmp
+        - mountPath: /home/octo
+          name: home
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: scanner-executor
+      topologySpreadConstraints:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: scanner-executor
+            app.kubernetes.io/name: shapoclyack
+        maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: scanner-executor
+            app.kubernetes.io/name: shapoclyack
+        maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+      volumes:
+      - configMap:
+          name: scanner-config
+        name: config
+      - name: executor-key
+        secret:
+          defaultMode: 288
+          items:
+          - key: provisioning_key
+            path: provisioning_key
+          secretName: {{ include "shapoclyack.secretName" (dict "root" $ "key" "scannerExecutor" "default" "shapoclyack-scanner-executor") }}
+      - emptyDir:
+          sizeLimit: 20Gi
+        name: output
+      - emptyDir:
+          sizeLimit: 5Gi
+        name: state
+      - emptyDir:
+          sizeLimit: 5Gi
+        name: tmp
+      - emptyDir:
+          sizeLimit: 1Gi
+        name: home

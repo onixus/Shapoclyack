@@ -1,0 +1,6 @@
+# Overrides scripts/ci-helm.sh applies on top of the defaults when it compares
+# the chart with `kubectl kustomize k8s/shapoclyack/base`. The base contains the
+# release namespace object; the chart leaves it out by default (see values.yaml).
+namespaces:
+  main:
+    create: true

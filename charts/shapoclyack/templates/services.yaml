@@ -1,0 +1,157 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: api
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-api
+  namespace: {{ .Release.Namespace }}
+spec:
+  ports:
+  - name: http
+    port: 8080
+    targetPort: http
+  selector:
+    app.kubernetes.io/component: api
+    app.kubernetes.io/name: shapoclyack
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: clickhouse
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-clickhouse
+  namespace: {{ .Release.Namespace }}
+spec:
+  clusterIP: None
+  ports:
+  - name: http
+    port: 8123
+    targetPort: http
+  - name: native
+    port: 9000
+    targetPort: native
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/component: clickhouse
+    app.kubernetes.io/name: shapoclyack
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: clickhouse
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-clickhouse-client
+  namespace: {{ .Release.Namespace }}
+spec:
+  ports:
+  - name: http
+    port: 8123
+    targetPort: http
+  - name: native
+    port: 9000
+    targetPort: native
+  selector:
+    app.kubernetes.io/component: clickhouse
+    app.kubernetes.io/name: shapoclyack
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: nats
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-nats
+  namespace: {{ .Release.Namespace }}
+spec:
+  clusterIP: None
+  ports:
+  - name: client
+    port: 4222
+    targetPort: client
+  - name: monitor
+    port: 8222
+    targetPort: monitor
+  - name: cluster
+    port: 6222
+    targetPort: cluster
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/component: nats
+    app.kubernetes.io/name: shapoclyack
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: nats
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-nats-client
+  namespace: {{ .Release.Namespace }}
+spec:
+  ports:
+  - name: client
+    port: 4222
+    targetPort: client
+  - name: monitor
+    port: 8222
+    targetPort: monitor
+  selector:
+    app.kubernetes.io/component: nats
+    app.kubernetes.io/name: shapoclyack
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: postgres
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  clusterIP: None
+  ports:
+  - name: client
+    port: 5432
+    targetPort: client
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/component: postgres
+    app.kubernetes.io/name: shapoclyack
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: postgres
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-postgres-client
+  namespace: {{ .Release.Namespace }}
+spec:
+  ports:
+  - name: client
+    port: 5432
+    targetPort: client
+  selector:
+    app.kubernetes.io/component: postgres
+    app.kubernetes.io/name: shapoclyack
+  type: ClusterIP

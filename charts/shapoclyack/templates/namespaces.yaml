@@ -1,0 +1,28 @@
+{{- if .Values.namespaces.main.create }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+  name: {{ .Release.Namespace }}
+{{- end }}
+{{- if .Values.namespaces.executor.create }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    app.kubernetes.io/component: scanner-executor
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: restricted
+  name: {{ .Values.namespaces.executor.name }}
+{{- end }}
