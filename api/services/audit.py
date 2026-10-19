@@ -94,6 +94,7 @@ ACTION_ROLE_UPDATE = "role.update"
 ACTION_ROLE_DELETE = "role.delete"
 ACTION_SERVICE_TOKEN_CREATE = "service_token.create"
 ACTION_SERVICE_TOKEN_REVOKE = "service_token.revoke"
+ACTION_SERVICE_TOKEN_ROTATE = "service_token.rotate"
 # SCIM provisioning (#316). The token is a credential of its own type, and a
 # group is what the IdP maps to roles: renaming one, or moving people in and
 # out of it, is how access changes from the directory side. The membership,

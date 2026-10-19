@@ -1641,6 +1641,10 @@ class ServiceTokenInfo(BaseModel):
     tenant_id: str
     name: str
     token_prefix: str
+    allowed_cidrs: list[str] = Field(default_factory=list)
+    rotated_from_id: str | None = None
+    rotation_expires_at: str | None = None
+    expiry_notice_days: int = 7
     scopes: list[str] = Field(default_factory=list)
     role: Literal["viewer", "operator", "admin"] = "viewer"
     status: Literal["active", "expired", "revoked"] = "active"
@@ -1666,6 +1670,13 @@ class CreateServiceTokenRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     scopes: list[str] = Field(min_length=1, max_length=64)
     role: Literal["viewer", "operator", "admin"] = "viewer"
+    expires_in_days: int | None = Field(default=None, ge=1, le=3650)
+    allowed_cidrs: list[str] = Field(default_factory=list, max_length=64)
+    expiry_notice_days: int = Field(default=7, ge=0, le=3650)
+
+
+class RotateServiceTokenRequest(BaseModel):
+    grace_seconds: int = Field(default=3600, ge=0, le=604800)
     expires_in_days: int | None = Field(default=None, ge=1, le=3650)
 
 
@@ -3873,3 +3884,18 @@ class RetroMatchRefreshResult(BaseModel):
 
     queued: int = 0
     worker_running: bool = False
+
+
+class AssetConnectorRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    base_url: str = Field(max_length=2048)
+    table: str = Field(default="cmdb_ci_computer", min_length=1, max_length=100)
+    field_mapping: dict[str, str] = Field(max_length=32)
+    token: str | None = Field(default=None, min_length=1, max_length=4096, pattern=r"^[^\r\n]+$")
+    enabled: bool = False
+    interval_seconds: int = Field(default=3600, ge=300, le=604800)
+
+
+class AssetConnectorRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dry_run: bool = True

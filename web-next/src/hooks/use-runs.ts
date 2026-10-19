@@ -6,7 +6,6 @@ import {
   fetchPorts,
   fetchRun,
   fetchRuns,
-  fetchScreenshots,
   fetchVulns,
   type PageParams,
   type ScanListFilters,
@@ -49,14 +48,6 @@ export function useRunPorts(runId: string) {
     queryKey: queryKeys.runPorts(runId),
     queryFn: () => fetchPorts(runId),
     enabled: Boolean(runId),
-  });
-}
-
-export function useRunScreenshots(runId: string, enabled: boolean) {
-  return useQuery({
-    queryKey: queryKeys.runScreenshots(runId),
-    queryFn: () => fetchScreenshots(runId),
-    enabled: Boolean(runId) && enabled,
   });
 }
 

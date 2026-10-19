@@ -497,7 +497,7 @@ and not the next is not a ceiling:
   the stage that sends HTTP payloads rather than counting SYN/ACKs — ~8.9k
   templates at whatever web interface an engineering station exposes — so a
   fragile run turns it off entirely. It also turns fingerprint HTTP requests
-  and browser screenshots off, and disables only the **direct-handshake
+  and legacy browser capture off, and disables only the **direct-handshake
   fallback** of TLS posture. TLS posture itself stays enabled so it may parse
   certificate evidence already present in NSE/Pulse artifacts without opening
   a new connection. Domain monitoring keeps its DNS lookups but loses the
@@ -507,7 +507,7 @@ and not the next is not a ceiling:
   throttled rather than silenced, `nuclei.rate_limit` is held to
   `per_host_rate` and every active secondary pool
   (`tls_posture.probe_concurrency`, `fingerprint.concurrency`,
-  `screenshots.concurrency`, `discovery.domain_monitor.takeover_http_concurrency`)
+  `discovery.domain_monitor.takeover_http_concurrency`)
   is held to `max_host_concurrency`. The ceiling counts endpoints in flight, not
   connections: the TLS probe makes up to four handshakes per endpoint, one after
   another in the same worker — two of them the TLS 1.0/1.1 checks, which
@@ -1712,7 +1712,7 @@ shorter retention silently shortens the trend line.
 ### Screenshot retention
 
 
-Web screenshots (ROADMAP P4.4) are the other automatic policy. A PNG of a
+Historical screenshot artifacts retain their automatic policy. A PNG of a
 login page can still hold names after the DOM overlay, so pixels must not
 live as long as the rest of a run directory.
 
@@ -1726,11 +1726,10 @@ Several API replicas may sweep the same tree; a missing file is a no-op.
 Disabling `OCTO_SCREENSHOT_RETENTION_ENABLED` stops the worker; existing
 PNGs stay until the run directory is pruned.
 
-The stage itself is off by default (`screenshots.enabled`). Turning it on
-needs Playwright + Chromium on the scanner host (`pip install playwright &&
-playwright install chromium`). Without that binary the stage writes
-`skipped_reason: playwright.unavailable` and no files. Capture is not in
-the default image.
+Screenshot capture is withdrawn from the supported product (#367); published
+images have no Playwright/Chromium runtime or isolated capture worker. The
+legacy scanner configuration is retained for compatibility and defaults to
+disabled. Retention continues to protect existing PNG artifacts.
 
 PNG download is operator-or-higher. A viewer requesting
 `/api/runs/{id}/download/screenshots/…png` gets `404`, same as a missing

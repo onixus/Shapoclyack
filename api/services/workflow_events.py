@@ -84,6 +84,7 @@ WORKFLOW_EVENT_KINDS = (
     "scan_failed",
     "report_generated",
     "agent_offline",
+    "service_token_expiring",
 )
 
 #: Kinds whose ``data`` carries a finding's ``severity``, and which are

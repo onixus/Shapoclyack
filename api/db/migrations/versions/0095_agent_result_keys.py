@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "0095_agent_result_keys"
-down_revision = "0088_actionable_non_cve"
+down_revision = "0091_asset_connector_run_lease"
 branch_labels = None
 depends_on = None
 
