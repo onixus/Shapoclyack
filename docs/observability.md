@@ -636,6 +636,7 @@ set `OCTO_AGENT_METRICS_ADDR=127.0.0.1:9108` (a non-loopback address also needs 
 | Series | Type | Labels | Meaning |
 |---|---|---|---|
 | `octo_sensor_info` | gauge | `version` | Build |
+| `octo_sensor_start_time_seconds` | gauge | — | Process start (restart detection) |
 | `octo_sensor_registered`, `octo_sensor_busy`, `octo_sensor_result_signing_enabled` | gauge | — | 1/0 flags |
 | `octo_sensor_heartbeat_last_success_timestamp_seconds` | gauge | — | Alert on `time() - … > 300` |
 | `octo_sensor_heartbeat_failures_total` | counter | — | Failed heartbeats |
