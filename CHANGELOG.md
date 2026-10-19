@@ -9,6 +9,8 @@ All notable changes to Shapoclyack are documented in this file.
 - The nuclei build pins `github.com/getkin/kin-openapi` to v0.149.0 through
   `GO_SECURITY_PINS`; nuclei v3.11.1 linked v0.144.0, which the image gate
   rejected for CVE-2026-100349, -100351, -100352, -100353 and -100354.
+- `aiohttp` is locked at 3.14.5 (from 3.14.3) in the scanner, API and CI locks
+  for CVE-2026-111064 / GHSA-2g87-pp6c-29x5, fixed in 3.14.4.
 
 ### Added
 
