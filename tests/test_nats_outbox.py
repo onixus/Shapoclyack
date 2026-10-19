@@ -40,7 +40,7 @@ pytestmark = requires_postgres
 NATS_URL = "nats://nats.invalid:4222"
 
 
-def _archive(data: bytes = b'{"ok":true}\n') -> bytes:
+def _archive(data: bytes = b"[]\n") -> bytes:
     """The same bytes on every call, so the content-derived msg_id matches.
 
     ``tarfile.open(mode="w:gz")`` stamps the current time into the gzip

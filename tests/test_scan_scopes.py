@@ -405,7 +405,7 @@ def test_starting_an_out_of_scope_scan_over_the_api_is_403(tmp_path, monkeypatch
 
 def _run_archive(denials: dict | None) -> bytes:
     """A results upload, optionally carrying the scanner's scope refusals."""
-    files = {"findings.json": b"{}\n", "summary.json": b'{"alive_hosts": 0}\n'}
+    files = {"findings.json": b"[]\n", "summary.json": b'{"alive_hosts": 0}\n'}
     if denials is not None:
         files[scan_scope.DENIED_ARTIFACT] = (json.dumps(denials) + "\n").encode("utf-8")
     buf = io.BytesIO()
