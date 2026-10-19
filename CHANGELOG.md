@@ -217,6 +217,17 @@ All notable changes to Shapoclyack are documented in this file.
   1 grade finding on TLSv1.2 to F on TLSv1.0, TLSv1.1 and TLSv1.2 (each has an F
   suite).
 
+### Security
+
+- The nuclei binary in the scanner and all-in-one images is now built against
+  `github.com/getkin/kin-openapi` v0.149.0 instead of the v0.144.0 that nuclei
+  v3.11.1 (still the latest release) asks for. That closes CVE-2026-100349,
+  CVE-2026-100351, CVE-2026-100352, CVE-2026-100353 and CVE-2026-100354 (HIGH),
+  plus the MEDIUM CVE-2026-100347/-100348, which had turned the blocking Trivy
+  gate red on every branch. The pin sits in `GO_SECURITY_PINS` in `Dockerfile`
+  and `Dockerfile.allinone`, so the go-tools stage's `go version -m` check fails
+  the image build if nuclei ever links a different kin-openapi.
+
 ## [0.47-1009-rc1] — 2026-10-09
 
 Release candidate for validation, not the current stable release. API and sensor
