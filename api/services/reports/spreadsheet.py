@@ -29,7 +29,8 @@ import re
 import zipfile
 from collections.abc import Sequence
 from typing import Any
-from xml.sax.saxutils import escape as _xml_escape
+# Only escapes text we write; nothing here parses XML.
+from xml.sax.saxutils import escape as _xml_escape  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 
 # See the module docstring: the tab and carriage return are here because Excel
 # strips them before deciding whether a cell is a formula.
