@@ -6,9 +6,6 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
-- The nuclei build pins `github.com/getkin/kin-openapi` to v0.149.0 through
-  `GO_SECURITY_PINS`; nuclei v3.11.1 linked v0.144.0, which the image gate
-  rejected for CVE-2026-100349, -100351, -100352, -100353 and -100354.
 - `aiohttp` is locked at 3.14.5 (from 3.14.3) in the scanner, API and CI locks
   for CVE-2026-111064 / GHSA-2g87-pp6c-29x5, fixed in 3.14.4.
 
@@ -236,6 +233,14 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- Two tests that only run against live Postgres and ClickHouse were red on
+  `main` since the non-CVE and finding-evidence work landed (#565), which kept
+  every Jenkins run from reaching the image and Trivy stages. The data-subject
+  register now classifies `vulnerabilities.non_cve` and
+  `vulnerabilities.finding_evidence` (sensor observations of the target, no
+  console account), and the ClickHouse receipt test expects the one CVE row the
+  CVE-keyed analytics table now gets, since findings without a CVE are kept out
+  of it deliberately.
 - `tls_posture` mis-parsed Nmap's `ssl-enum-ciphers` output in two ways. Real
   output indents every version header and the parser was anchored at column 0,
   so only the first protocol block was read and TLSv1.0/1.1 behind another
@@ -250,6 +255,17 @@ All notable changes to Shapoclyack are documented in this file.
   version's own ciphers earn it. On the corpus, 172.29.41.21:443 went from
   1 grade finding on TLSv1.2 to F on TLSv1.0, TLSv1.1 and TLSv1.2 (each has an F
   suite).
+
+### Security
+
+- The nuclei binary in the scanner and all-in-one images is now built against
+  `github.com/getkin/kin-openapi` v0.149.0 instead of the v0.144.0 that nuclei
+  v3.11.1 (still the latest release) asks for. That closes CVE-2026-100349,
+  CVE-2026-100351, CVE-2026-100352, CVE-2026-100353 and CVE-2026-100354 (HIGH),
+  plus the MEDIUM CVE-2026-100347/-100348, which had turned the blocking Trivy
+  gate red on every branch. The pin sits in `GO_SECURITY_PINS` in `Dockerfile`
+  and `Dockerfile.allinone`, so the go-tools stage's `go version -m` check fails
+  the image build if nuclei ever links a different kin-openapi.
 
 ## [0.47-1009-rc1] — 2026-10-09
 
