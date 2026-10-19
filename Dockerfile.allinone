@@ -47,6 +47,11 @@ ARG NAABU_VERSION=v2.6.1
 #   x/net    v0.60.0   CVE-2026-78669 (HTTP/2 SETTINGS flood DoS); all three
 #                      tools. The stdlib half of it and CVE-2026-78667 need
 #                      Go >= 1.26.9, which the go-tools digest above carries
+#   kin-openapi v0.149.0
+#                      CVE-2026-100349, -100351, -100352, -100353, -100354
+#                      (HIGH: DoS and an auth bypass; fixed across 0.146.0-
+#                      0.149.0) plus the MEDIUM -100347/-100348; nuclei, whose
+#                      latest release (v3.11.1) still asks for 0.144.0
 #
 # A pin must be >= what every tool already requires: `go get` refuses to
 # downgrade a module a tool pins higher (naabu 2.6.1 requires utls v1.8.2)
@@ -56,7 +61,7 @@ ARG NAABU_VERSION=v2.6.1
 # finding: a pin the binary does not link in costs nothing, and a tool that
 # grows the dependency later inherits the fixed version rather than a fresh
 # advisory.
-ARG GO_SECURITY_PINS="golang.org/x/crypto@v0.57.0 github.com/go-git/go-git/v5@v5.19.2 golang.org/x/mod@v0.41.0 google.golang.org/grpc@v1.83.2 github.com/refraction-networking/utls@v1.8.2 golang.org/x/net@v0.60.0"
+ARG GO_SECURITY_PINS="golang.org/x/crypto@v0.57.0 github.com/go-git/go-git/v5@v5.19.2 golang.org/x/mod@v0.41.0 google.golang.org/grpc@v1.83.2 github.com/refraction-networking/utls@v1.8.2 golang.org/x/net@v0.60.0 github.com/getkin/kin-openapi@v0.149.0"
 
 # One throwaway module per tool, not one shared module: a shared module would
 # resolve a single dependency graph across all three and silently upgrade one

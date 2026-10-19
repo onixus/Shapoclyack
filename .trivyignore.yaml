@@ -37,4 +37,6 @@ vulnerabilities: []
 # GHSA-r277-6w6q-xmqw (kin-openapi fail-open auth bypass) was never ignored
 # here: nuclei v3.11.1 pins kin-openapi 0.144.0, which carries the fix, and
 # that is the version the go-tools stage compiles. Do not add it as an
-# exception — bump nuclei instead.
+# exception — bump nuclei instead. The same goes for the later kin-openapi
+# CVEs (CVE-2026-100347/48/49/51/52/53/54): GO_SECURITY_PINS forces v0.149.0 until a
+# nuclei release requires it by itself.

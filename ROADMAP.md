@@ -767,7 +767,7 @@ below is closed in code, not in a release — everything since `0.46-0922` is un
 | IAM breadth | [#317](https://github.com/onixus/Shapoclyack/issues/317), [#322](https://github.com/onixus/Shapoclyack/issues/322), [#323](https://github.com/onixus/Shapoclyack/issues/323), [#324](https://github.com/onixus/Shapoclyack/issues/324), [#326](https://github.com/onixus/Shapoclyack/issues/326) | No SAML or LDAP code; no password history, `must_change_password` or reset; no service-token rotation or `allowed_cidrs`; no `last_login_at` or invitations; no organization/parent tenant in the schema |
 | DR, sizing, platforms | [#333](https://github.com/onixus/Shapoclyack/issues/333), [#337](https://github.com/onixus/Shapoclyack/issues/337), [#340](https://github.com/onixus/Shapoclyack/issues/340), [#341](https://github.com/onixus/Shapoclyack/issues/341), [#342](https://github.com/onixus/Shapoclyack/issues/342) | Tools and a local 10k drill exist, a cluster/real-storage drill does not; the sizing model is uncalibrated on a production-durability stand; the Pulse distribution ADR is still *Proposed*; no Helm chart and no OpenShift SCC in the tree |
 | Integrations | [#350](https://github.com/onixus/Shapoclyack/issues/350), [#353](https://github.com/onixus/Shapoclyack/issues/353), [#354](https://github.com/onixus/Shapoclyack/issues/354), [#355](https://github.com/onixus/Shapoclyack/issues/355), [#357](https://github.com/onixus/Shapoclyack/issues/357) | CMDB/AD connectors (above); ticket transports are Jira/ServiceNow/DefectDojo with a fixed field mapping; `/api/v1` is an alias for the auth, sensor and endpoint routers only, with no deprecation policy, finding/asset export or client; reports are PDF/HTML/JSON only, with no S3/SFTP delivery; saved views and a WCAG pass |
-| Fleet and scanning | [#358](https://github.com/onixus/Shapoclyack/issues/358), [#366](https://github.com/onixus/Shapoclyack/issues/366), [#367](https://github.com/onixus/Shapoclyack/issues/367), [#368](https://github.com/onixus/Shapoclyack/issues/368) | RPM providers are merged, feed and fleet acceptance is not; uploaded results are not schema-validated or signed and the sensor has no `/metrics`; the images ship no Playwright, so screenshots never run; credentialed scanning still needs a do-or-don't decision |
+| Fleet and scanning | [#358](https://github.com/onixus/Shapoclyack/issues/358), [#366](https://github.com/onixus/Shapoclyack/issues/366), [#367](https://github.com/onixus/Shapoclyack/issues/367), [#368](https://github.com/onixus/Shapoclyack/issues/368) | RPM providers are merged, feed and fleet acceptance is not; uploaded results are not schema-validated or signed and the sensor has no `/metrics`; the images ship no Playwright, so screenshots never run; general-purpose credentialed scanning is explicitly excluded; network-equipment visibility and reconsideration criteria are recorded under [Not doing](#not-doing-and-why) (#368) |
 
 Follow-ups: signed native Lariska builds are implemented; publisher/fleet acceptance
 and client-certificate support in Lariska remain separate work
@@ -785,6 +785,21 @@ enforcement; deployments must enable and operate its publisher/verifier.
 - **Lariska does not become an EDR.** Behavioural telemetry and detection is a different market
   and a different support obligation. Inventory plus patch level is the niche where the agent
   earns its place.
+- **No general-purpose credentialed scanning over SSH, WinRM or SNMP**
+  ([#368](https://github.com/onixus/Shapoclyack/issues/368), decision recorded 2026-10-15).
+  Managed hosts use the installed Lariska Agent for versioned software inventory,
+  source completeness, inventory changes and patch-gap assessment; a second remote-login
+  collector would duplicate that path and add privileged target-secret distribution,
+  rotation, lockout and command-execution responsibilities to every sensor. This does
+  not claim full host configuration or compliance auditing. Network appliances that
+  cannot run Lariska retain network observations only: no authenticated firmware,
+  configuration or patch-completeness claim. Limited SNMPv3 read-only inventory is a
+  possible separate future feature, not delivered or committed scope. Reconsider only
+  with a concrete unsupported device/customer need, a bounded read-only OID/device
+  matrix, tenant-isolated secret lifecycle and authorization, safe failure/rate limits,
+  and device-backed acceptance evidence. Existing sensor SSH deployment and the
+  standalone SNMPv2c informational probe remain separate capabilities; see
+  [operator coverage boundaries](docs/operations.md#credentialed-scanning-scope-and-coverage-368).
 - **No attack-path engine yet** (the open P2 remainder in
   [docs/ui-ux-redesign-roadmap.md](docs/ui-ux-redesign-roadmap.md)). There is no data on
   internal topology, privilege or segmentation; the result would be a handsome graph with
