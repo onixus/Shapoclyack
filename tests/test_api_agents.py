@@ -182,7 +182,7 @@ def test_agent_claim_and_upload_results(tmp_path, monkeypatch):
 
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        data = b'{"ok": true}\n'
+        data = b"[]\n"
         info = tarfile.TarInfo(name="findings.json")
         info.size = len(data)
         tf.addfile(info, io.BytesIO(data))
@@ -328,7 +328,7 @@ def test_results_upload_over_body_cap_is_rejected_before_the_route(tmp_path, mon
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
         data = b"x" * 8192
-        info = tarfile.TarInfo(name="findings.json")
+        info = tarfile.TarInfo(name="blob.bin")
         info.size = len(data)
         tf.addfile(info, io.BytesIO(data))
 
@@ -364,7 +364,7 @@ def test_claim_endpoint_is_not_capped_by_the_results_limit(tmp_path, monkeypatch
 def _results_archive() -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        for name, data in (("findings.json", b'{"ok": true}\n'), ("summary.json", b'{"alive_hosts": 1}\n')):
+        for name, data in (("findings.json", b"[]\n"), ("summary.json", b'{"alive_hosts": 1}\n')):
             info = tarfile.TarInfo(name=name)
             info.size = len(data)
             tf.addfile(info, io.BytesIO(data))

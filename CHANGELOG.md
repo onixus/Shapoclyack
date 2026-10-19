@@ -4,6 +4,16 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Upgrade notes
+
+- The `scanner-executor` StatefulSet (every overlay) and the agent example gain a
+  `sensor-key` `volumeClaimTemplate`. Kubernetes forbids changing those on an
+  existing StatefulSet: run `kubectl -n <ns> delete statefulset
+  shapoclyack-scanner-executor --cascade=orphan` and apply again. The claim uses
+  the default StorageClass; on a cluster without one (air-gapped) patch
+  `storageClassName` in, see
+  [operations](docs/operations.md#sensor-result-integrity-schemas-and-signatures).
+
 ### Security
 
 - `aiohttp` is locked at 3.14.5 (from 3.14.3) in the scanner, API and CI locks
@@ -22,6 +32,21 @@ All notable changes to Shapoclyack are documented in this file.
   Azure DevOps is not included. No migration: the settings live in
   `transport_config`. Also fixed: a configured `transport_config.auth_mode` was
   ignored when *creating* a ticket (only the status poll honoured it).
+- Result integrity ([#366](https://github.com/onixus/Shapoclyack/issues/366),
+  [operations](docs/operations.md#sensor-result-integrity-schemas-and-signatures)):
+  the API validates a run archive's core artifacts against JSON schemas before
+  extracting it (fail-closed with the file and path in the job's error; unknown
+  fields allowed; ships as `OCTO_RESULT_SCHEMA_MODE=warn` for the first release, `enforce` to refuse), and verifies an
+  ed25519 signature made by the sensor over the archive plus agent, job, run,
+  exit code and attempt. The sensor generates its key, registers the public half
+  (pinned on first use, replaced only by `DELETE /api/agents/{id}/result-key`),
+  and signs. `OCTO_REQUIRE_SIGNED_RESULTS` (default off) turns an unsigned upload
+  from a warning and metric (`octo_result_integrity_total`) into a refusal; a sensor
+  that has registered a key must always sign, and a wrong signature is always
+  refused. The sensor keeps its key on a PVC in the Kubernetes manifests. Migration `0095`
+  adds two columns to `agents`. The sensor can also serve `/healthz` and
+  `/metrics` on `OCTO_AGENT_METRICS_ADDR` (off by default; see
+  [observability](docs/observability.md#sensor-healthz-and-metrics)).
 - Service tokens support linked rotation with a bounded overlap, inherited source CIDR
   restrictions and deduplicated advance expiry notifications through workflow subscriptions (#323).
 - Tenant ServiceNow CMDB connectors feed the existing CSV/JSON import planner with

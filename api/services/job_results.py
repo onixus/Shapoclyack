@@ -11,17 +11,20 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from api.db import models
 from api.db.engine import get_session
 from api.schemas import JobInfo
 from api.services import agents as agents_service
+from api.services import audit as audit_service
 from api.services import job_inputs
 from api.services import job_leases
 from api.services import job_repository
 from api.services import job_states
 from api.services import job_store
 from api.services import metrics as metrics_service
+from api.services import result_integrity
 from api.services import results_ingest
 from api.services import run_ids
 from api.services import run_publisher
@@ -234,6 +237,170 @@ def _merge_cancellation_reason(requested: str | None, reported: str | None) -> s
     return merged[:2000] or None
 
 
+def _audit_integrity(
+    settings: Settings,
+    audit: audit_service.AuditContext | None,
+    *,
+    action: str,
+    job_id: str,
+    tenant_id: str,
+    after: dict[str, Any],
+) -> None:
+    """One audit row for an integrity decision, in its own transaction.
+
+    Fail-soft by design: the decision (refuse, or accept with a warning) has
+    already been made and counted, and an audit store that is down must not
+    turn a refusal into a 500 the sensor would retry or a warning into a lost
+    upload. The log line keeps the record when the row cannot be written.
+    """
+    try:
+        with get_session(settings.postgres_url) as session:
+            audit_service.record(
+                session,
+                audit,
+                action=action,
+                resource_type="job",
+                resource_id=job_id,
+                tenant_id=tenant_id,
+                after=after,
+            )
+    except Exception:  # noqa: BLE001 - see docstring
+        _log.exception("Could not audit %s for job %s: %s", action, job_id, after)
+
+
+def _check_result_integrity(
+    settings: Settings,
+    *,
+    job_id: str,
+    tenant_id: str,
+    agent_id: str,
+    run_id: str | None,
+    exit_code: int,
+    attempt: int | None,
+    cancelled: bool,
+    archive_bytes: bytes,
+    signature: str | None,
+    key_id: str | None,
+    audit: audit_service.AuditContext | None,
+) -> None:
+    """Signature, then schema; raises ``ResultsRejected`` for an upload to refuse (#366).
+
+    The signature goes first: content nobody vouched for is not parsed. Wrong
+    signature -> always refused; missing signature or missing pinned key ->
+    refused only under ``require_signed_results``, otherwise accepted with a
+    metric and an audit row so the unsigned share of the fleet can be watched
+    going to zero before the switch is turned on.
+    """
+    try:
+        signed = result_integrity.verify_signature(
+            settings,
+            pinned_key_b64=agents_service.pinned_result_key(agent_id),
+            signature_b64=signature,
+            key_id=key_id,
+            agent_id=agent_id,
+            job_id=job_id,
+            run_id=run_id,
+            exit_code=exit_code,
+            attempt=attempt,
+            archive_bytes=archive_bytes,
+        )
+    except result_integrity.ResultsRejected:
+        result_integrity.count("signature", "rejected")
+        raise
+    result_integrity.count("signature", signed.outcome)
+    if signed.outcome != "verified":
+        _log.warning(
+            "Job %s from agent %s accepted without a verified signature: %s",
+            job_id,
+            agent_id,
+            signed.detail,
+        )
+        # Counted and logged, not audited: while the switch is off this is the
+        # state of every sensor that predates signing, and a row per upload
+        # would bury the trail. The metric is how the unsigned share is watched.
+
+    mode = result_integrity.schema_mode(settings)
+    if mode == "off":
+        return
+    try:
+        result_integrity.validate_artifacts(
+            archive_bytes,
+            run_id=run_id,
+            exit_code=exit_code,
+            cancelled=cancelled,
+            max_file_bytes=getattr(settings, "result_schema_max_file_bytes", None),
+        )
+    except result_integrity.ResultsRejected as exc:
+        # warn relaxes the shape rules only; an unreadable document is refused.
+        if mode == "warn" and not exc.parse:
+            result_integrity.count("schema", "warned")
+            _log.warning("Job %s archive failed schema validation (warn mode): %s", job_id, exc)
+            _audit_integrity(
+                settings,
+                audit,
+                action=audit_service.ACTION_RESULTS_SCHEMA_WARNED,
+                job_id=job_id,
+                tenant_id=tenant_id,
+                after={"agent_id": agent_id, "reason": exc.reason[:500], "run_id": run_id},
+            )
+            return
+        result_integrity.count("schema", "rejected")
+        raise
+    result_integrity.count("schema", "ok")
+
+
+def _fail_rejected_upload(
+    settings: Settings,
+    job_id: str,
+    *,
+    fence: job_leases.IngestLease,
+    tenant_id: str,
+    agent_id: str,
+    status: str,
+    exit_code: int,
+    run_id: str | None,
+    idempotency_key: str | None,
+    requested_reason: str | None,
+    rejection: result_integrity.ResultsRejected,
+    audit: audit_service.AuditContext | None,
+) -> None:
+    """Close the job as failed with the reason, and audit the refusal (#366).
+
+    A rejection is deterministic: the same sensor re-running the same scan
+    would produce the same archive and be refused again, so leaving the job
+    for the reaper would loop the scan until its attempts ran out. The reason
+    lands in ``jobs.error`` where the operator already looks, and the sensor
+    still gets the 422 from the caller re-raising.
+    """
+    _audit_integrity(
+        settings,
+        audit,
+        action=audit_service.ACTION_RESULTS_REJECTED,
+        job_id=job_id,
+        tenant_id=tenant_id,
+        after={
+            "agent_id": agent_id,
+            "check": rejection.code,
+            "reason": rejection.reason[:500],
+            "run_id": run_id,
+        },
+    )
+    job_store.update_job(
+        settings,
+        job_id,
+        fence=fence,
+        publication=None,
+        status=(job_states.FAILED if status == job_states.SUCCEEDED else status),
+        finished_at=_now(),
+        exit_code=exit_code or 1,
+        run_id=run_id,
+        error=_merge_cancellation_reason(
+            requested_reason, f"results rejected ({rejection.code}): {rejection.reason}"
+        ),
+        results_idempotency_key=(idempotency_key or None),
+    )
+
+
 def complete_job(
     settings: Settings,
     job_id: str,
@@ -247,6 +414,9 @@ def complete_job(
     idempotency_key: str | None = None,
     attempt: int | None = None,
     cancelled: bool = False,
+    result_signature: str | None = None,
+    result_key_id: str | None = None,
+    audit: audit_service.AuditContext | None = None,
 ) -> JobInfo:
     """Record an agent's result upload. Replays return the original outcome.
 
@@ -434,6 +604,55 @@ def complete_job(
         if archive_bytes:
             if not resolved_run_id:
                 raise ValueError("run_id required when uploading results")
+            try:
+                _check_result_integrity(
+                    settings,
+                    job_id=job_id,
+                    tenant_id=job_tenant,
+                    agent_id=agent_id,
+                    run_id=str(resolved_run_id),
+                    exit_code=exit_code,
+                    attempt=attempt,
+                    cancelled=cancelled,
+                    archive_bytes=archive_bytes,
+                    signature=result_signature,
+                    key_id=result_key_id,
+                    audit=audit,
+                )
+            except result_integrity.ResultsRejected as exc:
+                if late_archive:
+                    # The outcome the reaper wrote stays; only the bytes are
+                    # refused, and the refusal is still on the record.
+                    _audit_integrity(
+                        settings,
+                        audit,
+                        action=audit_service.ACTION_RESULTS_REJECTED,
+                        job_id=job_id,
+                        tenant_id=job_tenant,
+                        after={
+                            "agent_id": agent_id,
+                            "check": exc.code,
+                            "reason": exc.reason[:500],
+                            "run_id": str(resolved_run_id),
+                            "late_archive": True,
+                        },
+                    )
+                else:
+                    _fail_rejected_upload(
+                        settings,
+                        job_id,
+                        fence=fence,
+                        tenant_id=job_tenant,
+                        agent_id=agent_id,
+                        status=status,
+                        exit_code=exit_code,
+                        run_id=str(resolved_run_id),
+                        idempotency_key=idempotency_key,
+                        requested_reason=requested_reason,
+                        rejection=exc,
+                        audit=audit,
+                    )
+                raise
             # Into staging named after this ingest lease, never straight into
             # the run directory: a job keeps its run id across attempts, so
             # extracting there would publish a straggler's archive over the
