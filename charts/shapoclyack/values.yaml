@@ -71,6 +71,10 @@ storage:
   postgres:
     size: 10Gi
     storageClass: ""
+  # Per-executor PVC for the sensor's result-signing key (#366).
+  sensorKey:
+    size: 16Mi
+    storageClass: ""
 
 resources:
   api:

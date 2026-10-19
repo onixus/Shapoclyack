@@ -49,6 +49,8 @@ spec:
               name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "scannerExecutor" "default" "shapoclyack-scanner-executor") }}
         - name: OCTO_AGENT_ID
           value: $(OCTO_AGENT_ID_PREFIX)-$(POD_NAME)
+        - name: OCTO_AGENT_RESULT_KEY_FILE
+          value: /var/lib/shapoclyack/sensor-key/result-signing.key
         - name: OCTO_CONFIG
           value: scanner/config/k8s.yaml
         - name: OCTO_OUTPUT_DIR
@@ -86,6 +88,8 @@ spec:
           name: tmp
         - mountPath: /home/octo
           name: home
+        - mountPath: /var/lib/shapoclyack/sensor-key
+          name: sensor-key
       securityContext:
         fsGroup: 1000
         runAsGroup: 1000
@@ -132,3 +136,20 @@ spec:
       - emptyDir:
           sizeLimit: 1Gi
         name: home
+  # One small volume per pod for the result-signing key (#366): a fresh key
+  # after a restart is refused by the API, which keeps the first one it saw.
+  volumeClaimTemplates:
+  - metadata:
+      labels:
+        app.kubernetes.io/component: scanner-executor
+        app.kubernetes.io/name: shapoclyack
+      name: sensor-key
+    spec:
+{{- with .Values.storage.sensorKey.storageClass }}
+      storageClassName: {{ . | quote }}
+{{- end }}
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: {{ .Values.storage.sensorKey.size }}
