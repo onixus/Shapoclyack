@@ -52,7 +52,7 @@ def settings(tmp_path: Path):
 def _archive() -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        for name, data in (("findings.json", b"{}\n"), ("summary.json", b'{"alive_hosts": 1}\n')):
+        for name, data in (("findings.json", b"[]\n"), ("summary.json", b'{"alive_hosts": 1}\n')):
             info = tarfile.TarInfo(name=name)
             info.size = len(data)
             tf.addfile(info, io.BytesIO(data))

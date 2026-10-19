@@ -561,6 +561,11 @@ class AgentRegisterRequest(BaseModel):
     capabilities: list[str] | None = None
     # Lariska's deployed wire protocol uses this boolean rather than a list.
     signed_updates: bool | None = None
+    #: The sensor's ed25519 public key for signing run archives (#366): base64
+    #: of the raw 32 bytes. Pinned on the first registration that sends one; a
+    #: different key later is refused (see ``result_key_fingerprint`` in the
+    #: answer) until an operator resets it.
+    result_signing_key: str | None = Field(default=None, max_length=128)
 
 
 class AgentHeartbeatRequest(BaseModel):
@@ -587,6 +592,10 @@ class AgentHeartbeatRequest(BaseModel):
 
 class AgentInfo(BaseModel):
     agent_id: str
+    #: Fingerprint of the result-signing key pinned for this sensor (#366), or
+    #: None. A sensor compares it with its own key's fingerprint to learn that
+    #: its registration was refused as a key change.
+    result_key_fingerprint: str | None = None
     hostname: str = ""
     version: str = ""
     #: ``scanner`` or ``endpoint`` (#358). The fields below that talk about

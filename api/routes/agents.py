@@ -179,12 +179,19 @@ def register_agent(
             # reverse, so a host recorded as an endpoint cannot register its
             # way into the scanning fleet.
             agent_kind=body.agent_kind,
+            # Pinned on first use and never replaced from here (#366): see
+            # agents_service._pin_result_key.
+            result_signing_key=body.result_signing_key,
             tenant_id=principal.tenant_id,
             provisioning_key_id=principal.key_id,
             audit=audit,
         )
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
 
 
 def _stop_only(
@@ -413,6 +420,12 @@ async def upload_results(
     # so this field cannot be used to retire a job as cancelled that nobody
     # asked to stop; see jobs.complete_job.
     cancelled: Annotated[bool, Form()] = False,
+    # ed25519 signature over the archive and the job it belongs to (#366), and
+    # the fingerprint of the key that made it. Optional so a sensor that
+    # predates signing keeps uploading; what an absent one means is
+    # OCTO_REQUIRE_SIGNED_RESULTS. See api/services/result_integrity.py.
+    result_signature: Annotated[str | None, Form()] = None,
+    result_key_id: Annotated[str | None, Form()] = None,
 ) -> JobInfo:
     _bind_identity(principal, agent_id)
     agent = _agent_for_request(request, principal, agent_id)
@@ -421,6 +434,12 @@ async def upload_results(
     if agent.tenant_id != principal.tenant_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-tenant agent access denied")
     _require_active(agent)
+    audit = audit_service.context_from_request(
+        request,
+        settings,
+        actor=agent_id,
+        actor_type=audit_service.ACTOR_AGENT,
+    )
     archive_bytes: bytes | None = None
     if archive is not None:
         archive_bytes = await archive.read()
@@ -451,6 +470,9 @@ async def upload_results(
                 idempotency_key=(idempotency_key or "").strip()[:200] or None,
                 attempt=attempt,
                 cancelled=cancelled,
+                result_signature=(result_signature or "").strip()[:200] or None,
+                result_key_id=(result_key_id or "").strip()[:64] or None,
+                audit=audit,
             )
     except ingest_gate.IngestOverloaded as exc:
         # Deliberately 503 and not 429: the agent did nothing wrong and is not
@@ -495,6 +517,36 @@ async def upload_results(
         ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.delete("/agents/{agent_id}/result-key", response_model=AgentInfo)
+def reset_agent_result_key(
+    agent_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    # Same step-up as resetting a certificate enrolment: what this opens is the
+    # next signing key to whoever registers as this sensor first.
+    _: StepUpDep,
+    audit: AuditDep,
+    reason: str = "",
+) -> AgentInfo:
+    """Forget the sensor's pinned result-signing key (tenant ``admin``, step-up).
+
+    The next registration that presents a key pins it. Needed after a sensor is
+    reinstalled without its key file; until then its archives are refused (a
+    wrong signature always is) and its registrations are audited as
+    ``agent.result_key_refused``.
+    """
+    try:
+        return agents_service.reset_result_key(
+            agent_id,
+            None
+            if principal.is_platform_admin and not principal.tenant_requested
+            else principal.tenant_id,
+            reason=reason,
+            audit=audit,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.get("/agent-groups", response_model=list[AgentGroupInfo])
