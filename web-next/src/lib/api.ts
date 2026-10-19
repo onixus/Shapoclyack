@@ -575,26 +575,6 @@ export type RunDetail = {
   artifacts: string[];
 };
 
-/** Operator-only screenshot manifest (P4.4). Pixels can still hold PII. */
-export type ScreenshotItem = {
-  host: string | null;
-  port: number | string | null;
-  scheme: string | null;
-  url: string | null;
-  file: string;
-  redacted_fields: number;
-  available: boolean;
-};
-
-export type ScreenshotManifest = {
-  skipped_reason: string | null;
-  captured_count: number;
-  redacted_fields: number;
-  truncated: boolean;
-  retention_days: number;
-  items: ScreenshotItem[];
-};
-
 export type FindingEvidence = {
   observation_count: number;
   finding_count: number;
@@ -2020,31 +2000,6 @@ export async function downloadArtifact(runId: string, path: string) {
       { responseType: "blob" },
     );
     triggerBrowserDownload(data, path.split("/").pop() || "artifact");
-  } catch (error) {
-    throw new Error(apiErrorMessage(error));
-  }
-}
-
-/** Operator-only screenshot manifest. Viewers 403. */
-export async function fetchScreenshots(runId: string) {
-  try {
-    const { data } = await api.get<ScreenshotManifest>(
-      `/runs/${encodeURIComponent(runId)}/screenshots`,
-    );
-    return data;
-  } catch (error) {
-    throw new Error(apiErrorMessage(error));
-  }
-}
-
-/** Raw PNG bytes for an operator-only screenshot. Caller owns the blob URL. */
-export async function fetchScreenshotBlob(runId: string, path: string) {
-  try {
-    const { data } = await api.get<Blob>(
-      `/runs/${encodeURIComponent(runId)}/download/${encodeArtifactPath(path)}`,
-      { responseType: "blob" },
-    );
-    return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
   }
@@ -3626,6 +3581,10 @@ export type ServiceTokenInfo = {
   tenant_id: string;
   name: string;
   token_prefix: string;
+  allowed_cidrs?: string[];
+  rotated_from_id?: string | null;
+  rotation_expires_at?: string | null;
+  expiry_notice_days?: number;
   scopes: string[];
   role: Role;
   status: "active" | "expired" | "revoked";
@@ -3650,12 +3609,24 @@ export async function fetchServiceTokens(tenantId: string) {
 
 export async function createServiceToken(
   tenantId: string,
-  body: { name: string; scopes: string[]; role: Role; expires_in_days?: number },
+  body: { name: string; scopes: string[]; role: Role; expires_in_days?: number; allowed_cidrs?: string[]; expiry_notice_days?: number },
 ) {
   try {
     const { data } = await api.post<ServiceTokenInfo>(
       `/tenants/${encodeURIComponent(tenantId)}/service-tokens`,
       body,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function rotateServiceToken(tenantId: string, tokenId: string, graceSeconds: number) {
+  try {
+    const { data } = await api.post<ServiceTokenInfo>(
+      `/tenants/${encodeURIComponent(tenantId)}/service-tokens/${encodeURIComponent(tokenId)}/rotate`,
+      { grace_seconds: graceSeconds },
     );
     return data;
   } catch (error) {
@@ -4615,6 +4586,7 @@ export const WEBHOOK_EVENT_KINDS = [
   "scan_failed",
   "report_generated",
   "agent_offline",
+  "service_token_expiring",
   "audit.*",
 ] as const;
 

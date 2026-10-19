@@ -38,7 +38,7 @@ produced on a test stand and ships in no image.
 | Pulse | GenDec release tag (`PULSE_VERSION`, currently `v1.3.0`) + per-platform sha256 pinned in `scripts/pulse-pinned.sha256` | MIT | Default service-probe backend (banner/OS/CVE detection); replaces Nmap in the default image. **`onixus/GenDec` is a private repository** — see the note below |
 | Nuclei | `NUCLEI_VERSION` build argument (currently `v3.11.1`) | MIT | Pin tool and templates |
 | DejaVu Sans | Debian package `fonts-dejavu-core` (API and all-in-one images); a 27 KB Latin+Cyrillic subset in `tests/fixtures/fonts/` | Bitstream Vera licence + public domain (DejaVu changes) | Unicode face for PDF reports (`api/services/reports/render.py`); without it the renderer falls back to fpdf2's Latin-1 core fonts. The subset is a test fixture only, not shipped in any image |
-| Playwright / Chromium | not pinned; optional host install | Apache-2.0 (Playwright) | **Not in the default image.** P4.4 screenshots skip when the package or browser is missing |
+| Playwright / Chromium | legacy adapter only; not shipped | Apache-2.0 (Playwright) | **Not shipped or supported.** Legacy capture adapter only; screenshot capture is withdrawn from the product (#367) |
 | nuclei-templates | Git reference (`NUCLEI_TEMPLATES_REF`, currently `v9.9.4`) | MIT | Template content has its own provenance |
 | nmap-vulners | Git reference | GPL-3.0 | **Not bundled and not used** (the NSE stage is gone). CVE by version is `retro_match` and `pulse --cve` |
 | Vulscan | — | GPL-3.0 | **Not bundled and not used** (the NSE stage is gone; `scripts/fetch-vulscan-db.sh` was removed with it) |

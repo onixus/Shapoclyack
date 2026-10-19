@@ -54,7 +54,7 @@ ARG NAABU_VERSION=v2.6.1
 # finding: a pin the binary does not link in costs nothing, and a tool that
 # grows the dependency later inherits the fixed version rather than a fresh
 # advisory.
-ARG GO_SECURITY_PINS="golang.org/x/crypto@v0.57.0 github.com/go-git/go-git/v5@v5.19.2 golang.org/x/mod@v0.41.0 google.golang.org/grpc@v1.83.2 github.com/refraction-networking/utls@v1.8.2 golang.org/x/net@v0.60.0"
+ARG GO_SECURITY_PINS="golang.org/x/crypto@v0.57.0 github.com/go-git/go-git/v5@v5.19.2 golang.org/x/mod@v0.41.0 google.golang.org/grpc@v1.83.2 github.com/refraction-networking/utls@v1.8.2 golang.org/x/net@v0.60.0 github.com/getkin/kin-openapi@v0.149.0"
 
 # One throwaway module per tool, not one shared module: a shared module would
 # resolve a single dependency graph across all three and silently upgrade one

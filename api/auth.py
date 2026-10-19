@@ -724,7 +724,9 @@ def _authenticate_service_token(request: Request, settings: Settings, token: str
     # Across tenants: the token's hash is what says which tenant it belongs
     # to, so the lookup cannot be scoped to one yet (#311).
     with tenant_scope.system("authentication: service token"):
-        principal = service_tokens.verify_token(settings, token)
+        principal = service_tokens.verify_token(
+            settings, token, client_ip=_request_client_ip(request, settings)
+        )
     if principal is None:
         # One message for unknown, revoked and expired alike — the presenter of
         # a guessed token learns nothing about which half was wrong.
@@ -890,10 +892,11 @@ RATE_LIMIT_STATE_ATTR = "rate_limit_charged"
 
 def _request_client_ip(request: Request, settings: Settings) -> str:
     """The address the login limiter would attribute ``request`` to."""
+    from api.core.client_cert import socket_peer
     from api.core.client_ip import parse_trusted_proxies, resolve_client_ip
 
     return resolve_client_ip(
-        request.client.host if request.client else None,
+        socket_peer(request.scope),
         request.headers.get("x-forwarded-for"),
         parse_trusted_proxies(settings.trusted_proxies),
     )

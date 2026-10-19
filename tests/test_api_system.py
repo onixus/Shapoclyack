@@ -64,11 +64,11 @@ def test_system_status_shape():
 
     assert set(body["scan_config"]["stages"]) >= {
         "fingerprint",
-        "screenshots",
         "tls_posture",
         "nuclei",
         "pdf_summary",
     }
+    assert "screenshots" not in body["scan_config"]["stages"]
     assert "balanced" in body["scan_config"]["profiles"]
     assert body["scan_config"].get("service_backend") in ("pulse", None)
     assert "nse_profiles" not in body["scan_config"]

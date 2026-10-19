@@ -303,6 +303,10 @@ class ServiceToken(Base):
     expires_at: Mapped[datetime]
     last_used_at: Mapped[datetime | None] = mapped_column(default=None)
     revoked_at: Mapped[datetime | None] = mapped_column(default=None)
+    allowed_cidrs: Mapped[list[str]] = mapped_column(JSON, default=list)
+    rotated_from_id: Mapped[str | None] = mapped_column(default=None)
+    rotation_expires_at: Mapped[datetime | None] = mapped_column(default=None)
+    expiry_notice_days: Mapped[int] = mapped_column(default=7)
 
 
 class UserTenant(Base):
@@ -3415,3 +3419,22 @@ class RunRiskAssessment(Base):
             "captured_at",
         ),
     )
+
+
+class AssetImportConnector(Base):
+    """One tenant-scoped, read-only ServiceNow source (#350)."""
+
+    __tablename__ = "asset_import_connectors"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id", ondelete="CASCADE"), primary_key=True)
+    base_url: Mapped[str]
+    table: Mapped[str]
+    field_mapping: Mapped[dict] = mapped_column(JSON)
+    token_encrypted: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(default=False)
+    interval_seconds: Mapped[int] = mapped_column(default=3600)
+    next_run_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    last_run_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_error: Mapped[str | None] = mapped_column(default=None)
+    last_counts: Mapped[dict | None] = mapped_column(JSON, default=None)
+    # Expiring claim held while a run fetches without an open transaction.
+    run_lease_until: Mapped[datetime | None] = mapped_column(default=None)
