@@ -202,6 +202,14 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- Two tests that only run against live Postgres and ClickHouse were red on
+  `main` since the non-CVE and finding-evidence work landed (#565), which kept
+  every Jenkins run from reaching the image and Trivy stages. The data-subject
+  register now classifies `vulnerabilities.non_cve` and
+  `vulnerabilities.finding_evidence` (sensor observations of the target, no
+  console account), and the ClickHouse receipt test expects the one CVE row the
+  CVE-keyed analytics table now gets, since findings without a CVE are kept out
+  of it deliberately.
 - `tls_posture` mis-parsed Nmap's `ssl-enum-ciphers` output in two ways. Real
   output indents every version header and the parser was anchored at column 0,
   so only the first protocol block was read and TLSv1.0/1.1 behind another
