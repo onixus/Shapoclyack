@@ -45,7 +45,6 @@ value on the System page rather than assuming the file was applied.
 | `reporting` | Which report formats a run writes (Markdown, HTML, CSV, JSON, PDF) and the PDF's title/org | [Operations](operations.md), [Reports and compliance](reports-and-compliance.md) |
 | `enrichment` | CVSS v4, GeoIP and ASN datasets | [Enrichment sources](#enrichment-sources) |
 | `fingerprint` | HTTP fingerprinting of already-open web ports: technology catalogue, versions, CPE, exposed consoles and gateways | [Web fingerprinting](web-fingerprinting.md), [Scan performance](scan-performance.md) |
-| `screenshots` | Viewport PNGs of open web ports | [Web screenshots](#web-screenshots) |
 | `dns` | Resolvers passed to nuclei (`-resolvers`) and dnsx (`-r`); empty = the host's `/etc/resolv.conf` | [Network requirements](network-requirements.md#dns-resolvers) |
 | `nuclei` | Nuclei stage: template directory, severities, caps, rate limit, OAST server | [NSE and vulnerability checks](#nse-and-vulnerability-checks) |
 | `tls_posture` | Certificate and chain validity, chain trust (`chain_trust`, `ca_bundle`; sensor config only), key and signature strength, hostname mismatch, legacy protocols (`probe_legacy_protocols`) and cipher findings | [Pulse backend](pulse-backend.md#what-the-probe-checks-and-what-it-can-establish) |
@@ -183,24 +182,18 @@ run, with its token in `OCTO_INTERACTSH_TOKEN`. What that server and the
 scanned hosts then need to reach is in
 [network requirements](network-requirements.md#out-of-band-testing-interactsh).
 
-## Web screenshots
+## Screenshot compatibility
 
-`screenshots.enabled` (default `false`) takes a viewport PNG of each
-already-open web port — the same candidates as `fingerprint`, no new scan.
-`max_targets` (50) and `concurrency` (4) cap the work. Capture needs
-Playwright + Chromium on the scanner host; without them the stage skips and
-writes `skipped_reason: playwright.unavailable`. Playwright is not a
-required dependency and is not baked into the default image.
+Web screenshot capture is withdrawn from the supported product surface (#367).
+Published images do not contain Playwright or Chromium, and no isolated browser
+worker is shipped. The console does not offer a Screenshots tab or a capture
+setting. Installing a browser inside the scanner is not a supported deployment.
 
-Obvious form fields are covered with a black overlay in the live DOM, then
-the screenshot is taken. Unredacted bytes are never written. A name in a
-heading is not redacted. That is why PNG access is operator-only and why
-the API reaper deletes the files after
-`OCTO_SCREENSHOT_RETENTION_DAYS` (see [operations.md](operations.md)).
-
-The System page **Pipeline Stages** tile and the config-override whitelist
-expose `screenshots.enabled`. Leave it off until Playwright is installed
-and the retention window matches the site's data-handling policy.
+The legacy `screenshots` scanner configuration remains readable for existing
+installations; it defaults to disabled. Historical `screenshots.json` manifests,
+operator-only PNG downloads, and screenshot retention remain supported for
+existing artifacts. These compatibility paths do not imply capture availability.
+See [operations.md](operations.md#screenshot-retention) for artifact retention.
 
 ## Discovery modules
 
@@ -815,6 +808,9 @@ OCTO_REPORT_SMTP_STARTTLS
 OCTO_REPORT_SMTP_TIMEOUT_SECONDS
 OCTO_REPORT_SMTP_USERNAME
 OCTO_REPORT_SMTP_VERIFY_TLS
+OCTO_REQUIRE_SIGNED_RESULTS
+OCTO_RESULT_SCHEMA_MAX_FILE_BYTES
+OCTO_RESULT_SCHEMA_MODE
 OCTO_RETENTION_BOUNDS
 OCTO_RETRO_MATCH_BATCH_SIZE
 OCTO_RETRO_MATCH_ENABLED
@@ -955,6 +951,13 @@ Core deployment variables:
 | `OCTO_AGENT_RESULTS_MAX_CONCURRENT_INGESTS` | Result uploads this replica ingests at the same time (default `4`). Ingestion — SQL, the NATS publish, archive extraction, artifact writes, projection updates — is synchronous and runs on a worker thread; this is the ceiling on those threads, and with them on database connections and simultaneous extractions. Raising it past `OCTO_DB_POOL_SIZE` + `OCTO_DB_MAX_OVERFLOW` buys nothing: the extra ingests queue on the connection pool instead |
 | `OCTO_AGENT_RESULTS_INGEST_MAX_WAITING` | Uploads allowed to queue for one of those slots (default `8`). This is a **memory** bound, not a fairness knob: a waiting upload is holding its whole archive in RAM, so the worst case in flight is `(concurrent + waiting) × OCTO_AGENT_RESULTS_MAX_BODY_BYTES` — 1.5 GiB at the defaults, if every sensor sent a maximum-size archive at once. Beyond the ceiling an upload is answered `503` with `Retry-After` rather than buffered |
 | `OCTO_AGENT_RESULTS_INGEST_WAIT_SECONDS` | How long a queued upload waits for a slot before that same `503` (default `25`; `0` waits indefinitely). Keep it below the sensor's own request timeout, or the answer arrives after the sensor stopped listening and the retry is charged the whole upload again |
+| `OCTO_REQUIRE_SIGNED_RESULTS` | `false` | API. Whether a results upload must carry a valid ed25519 signature from its sensor ([#366](https://github.com/onixus/Shapoclyack/issues/366), [operations.md](operations.md#sensor-result-integrity-schemas-and-signatures)). `false` — an upload with no signature from a sensor that has **no key registered** (an older sensor) is accepted with a warning in the log and `octo_result_integrity_total{check="signature",outcome="unsigned"}`; `true` — it is refused and the job closed `failed` with the reason. A sensor that **has** a key registered must always sign, and a signature that is present but wrong is refused: both in either mode |
+| `OCTO_RESULT_SCHEMA_MAX_FILE_BYTES` | `268435456` (256 MiB) | API. Largest single core JSON artifact (`summary.json`, `vulnerabilities.json`, …) the schema check will parse; all of them together are bounded by the 512 MiB archive limit. A larger file is refused in every mode except `off`: this protects memory, not shape. Parsing holds roughly 5-10x the file in memory, and up to `OCTO_AGENT_RESULTS_MAX_CONCURRENT_INGESTS` (default 4) uploads parse at once, so on an API pod with a small memory limit lower this (e.g. `67108864`) or the concurrency |
+| `OCTO_RESULT_SCHEMA_MODE` | `warn` | API. What a run archive whose core artifacts (`run_meta.json`, `summary.json`, `vulnerabilities.json`, `findings.json`, `alive_hosts.json`, …; present files only) fail their schema does. `warn` (the default for the first release) — a *shape* problem is accepted, counted as `outcome="warned"`, logged and audited as `results.schema_warned`, while a file that cannot be read safely (not JSON, nested too deeply, over the size cap) is refused as in `enforce`; `enforce` — refused (`422`), the job closed `failed` with the file and the offending path in `jobs.error`; `off` — not checked. Move to `enforce` once `warned` has stayed at zero for a release cycle (operations.md). Unknown properties and unknown files are always allowed; a misspelt value falls back to `warn` |
+| `OCTO_AGENT_RESULT_SIGNING` | *(on)* | Sensor. `off`/`false` stops the sensor generating and using a result-signing key; its archives then go up unsigned |
+| `OCTO_AGENT_RESULT_KEY_FILE` | next to `OCTO_AGENT_ID_FILE`, else `~/.shapoclyack-sensor/result-signing.key` | Sensor. Where the sensor keeps its ed25519 private key (PEM, created on first start with mode `0600`; on a volume with `fsGroup` the kubelet makes it group-writable, so `0660` inside the pod). **It must be on storage that survives the pod or container** — the Kubernetes manifests mount a PVC for it; under an `emptyDir` `$HOME` every restart makes a new key, which the API refuses (and closes the job) until an operator resets the pinned one. If the file cannot be created or read the sensor logs a warning and uploads unsigned |
+| `OCTO_AGENT_METRICS_ADDR` | *(empty — off)* | Sensor. `host:port` for the sensor's `GET /healthz` and `GET /metrics` (Prometheus text), e.g. `127.0.0.1:9108`. A non-loopback address is refused at start-up unless `OCTO_AGENT_METRICS_TOKEN` is set. A bad value is logged and the sensor runs without the endpoint |
+| `OCTO_AGENT_METRICS_TOKEN` | *(empty)* | Sensor. When set, `/metrics` requires `Authorization: Bearer <token>`; `/healthz` stays open for orchestrator probes |
 | `OCTO_AGENT_DEPLOY_SSH_PORTS` | TCP ports the SSH push deployer and its host-key probe may dial (default `22,2222`, #240). Both open a connection to a host and port taken from the request body, which over an open range makes the probe a port scanner with a tidy response format. Name the port here if your fleet listens elsewhere; `*` restores the full range. A value that is not a port list refuses startup rather than narrowing the list silently |
 | `OCTO_AGENT_DEPLOY_ENFORCE_SCAN_SCOPE` | Require a deployment target to sit **inside** the tenant's approved scan scope, not merely outside its denied ranges (default `false`, #240 / #226). Off, the scope's *prohibitions* still apply — a host a tenant was told not to touch is not reachable by SSH from this API either. On is a stricter claim than most fleets can make: a sensor on a management host that scans a customer range is the ordinary MSSP shape, and with this set that deployment is refused |
 | `OCTO_HTTPS_PROXY` | Proxy for outgoing `https://` requests, in API **and** sensor ([#359](https://github.com/onixus/Shapoclyack/issues/359)): webhook and ticket delivery, OIDC, advisory feeds, and every call the sensor makes. `[http://][user:pass@]host[:port]` — the proxy URL itself must be `http://`, and no SOCKS. `https://` is refused rather than accepted and downgraded: the hop to the proxy is never wrapped in TLS here, so it would promise an encrypted hop that does not exist while `Proxy-Authorization: Basic` went out in the clear. Falls back to `HTTPS_PROXY`/`https_proxy` when unset; the prefixed name exists so a pod can override a cluster-wide injection meant for something else. HTTPS *through* it is a `CONNECT` tunnel, so the receiver's certificate is still verified against its own name |
@@ -1452,7 +1455,7 @@ Moving an existing installation into a bucket: `scripts/migrate-artifacts.py`
 copies what is on the volume under the same keys new artifacts get. It deletes
 nothing, skips what is already there, and is safe to re-run.
 
-Web screenshots (ROADMAP P4.4 / Phase 9.3):
+Historical screenshot artifact retention (capture is withdrawn; #367):
 
 | Variable | Default | Purpose |
 |---|---|---|

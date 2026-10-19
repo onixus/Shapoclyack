@@ -58,7 +58,7 @@ gantt
    * Активация модуля Организационного профиля (`org_profile`): сбор связанных доменов через RDAP/CT-логи и выявление забытых субдоменов;
    * Проверка и очистка висячих записей (Dangling CNAME) и аудит почтовой защиты (SPF/DKIM/DMARC).
 2. **Синхронизация с корпоративной CMDB / Active Directory:**
-   * Импорт выгрузки CMDB/AD (`POST /api/assets/import`, CSV/JSON, сначала пробный прогон с отчётом конфликтов; диалог импорта на странице `/assets`) или фоновый скрипт, вызывающий `PATCH /api/assets/{id}`. Коннекторов ServiceNow и LDAP/AD по расписанию нет — выгрузку готовит ваш скрипт ([#350](https://github.com/onixus/Shapoclyack/issues/350));
+   * Импорт выгрузки CMDB/AD (`POST /api/assets/import`, CSV/JSON, сначала пробный прогон с отчётом конфликтов; диалог импорта на странице `/assets`) или фоновый скрипт, вызывающий `PATCH /api/assets/{id}`. Коннектор ServiceNow Table API поддерживает поля и расписание; LDAP/AD ожидает #317 ([#350](https://github.com/onixus/Shapoclyack/issues/350));
    * Импорт бизнес-контекста: наименование информационной системы (`business_service`), контур (`environment`), категория обрабатываемых данных (`data_classification`);
    * Назначение ответственных за системы (`owner_email`) и шкалы критичности от 0 до 4 (`asset_criticality`).
 3. **Очистка данных и инвентаризация Shadow IT:**

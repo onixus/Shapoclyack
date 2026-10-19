@@ -385,3 +385,24 @@ def test_the_executor_image_carries_no_setuid_binaries() -> None:
     assert fping and fping.start() < strip.start(), "fping's capability is not set before the strip"
     installs = [m.end() for m in re.finditer(r"apt-get install", final)]
     assert installs and strip.start() > max(installs), "a package installed after the strip may bring one back"
+
+
+@pytest.mark.parametrize("target", RENDER_TARGETS)
+def test_every_rendered_executor_keeps_its_signing_key_on_its_own_volume(target: str) -> None:
+    """A key under an emptyDir is a new key after each restart, which the API
+    refuses (#366). Rendered per overlay, so a patch that drops the claim, the
+    mount or the variable in one of them fails here."""
+    executor = _executor(target)
+    if executor is None:
+        pytest.skip(f"{target} renders no executor")
+    spec = executor["spec"]
+    claims = {t["metadata"]["name"] for t in spec.get("volumeClaimTemplates") or []}
+    assert "sensor-key" in claims, target
+    pod = spec["template"]["spec"]
+    container = _container(executor, "executor")
+    mount = next(m for m in container["volumeMounts"] if m["name"] == "sensor-key")
+    assert not mount.get("readOnly")
+    path = _env(container)["OCTO_AGENT_RESULT_KEY_FILE"]["value"]
+    assert path.startswith(mount["mountPath"].rstrip("/") + "/"), target
+    assert pod["securityContext"]["fsGroup"] == 1000, target
+    assert not any(v["name"] == "sensor-key" for v in pod.get("volumes") or []), "an emptyDir shadows the claim"

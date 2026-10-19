@@ -679,7 +679,7 @@ One row per administrative change, with the resource before and after it:
 | `user.webauthn_register`, `user.webauthn_revoke` | `POST /api/auth/mfa/webauthn/register/verify`, `DELETE /api/auth/mfa/webauthn/credentials/{id}` — a security key added to or removed from one's own account (key id, name, AAGUID; no key material) |
 | `membership.grant`, `membership.revoke` | `PUT`/`DELETE /api/tenants/{id}/members/{u}`. A `membership.grant` is also written per holder when a tenant role is deleted with `reassign_to`, `after.reason` naming the role that went |
 | `role.create`, `role.update`, `role.delete` | `POST`/`PATCH`/`DELETE /api/tenants/{id}/roles[/{role}]` ([#318](https://github.com/onixus/Shapoclyack/issues/318)) — the definition (`role_id`, `description`, `rank`, `permissions`) before and after. A rename's `after` carries `memberships_renamed`; a delete's carries where its holders went |
-| `service_token.create`, `service_token.revoke` | `POST /api/tenants/{id}/service-tokens[…/revoke]` |
+| `service_token.create`, `service_token.rotate`, `service_token.revoke` | `POST /api/tenants/{id}/service-tokens[…/revoke]` |
 | `provisioning_key.create`, `provisioning_key.revoke` | `POST /api/tenants/{id}/provisioning-keys[…/revoke]` |
 | `agent.register` | `POST /api/agent/register`, **first registration only** — a restart re-registers, and that is uptime rather than an administrative change |
 | `agent.certificate_issue`, `agent.certificate_pin`, `agent.certificate_revoke` | `POST /api/agent/certificate` (the agent is the actor; `after` carries the fingerprint, serial, SPIFFE id, expiry and the fingerprints it superseded), `POST /api/agents/{id}/certificates`, `POST /api/agents/{id}/certificates/revoke` ([#309](https://github.com/onixus/Shapoclyack/issues/309)) |
@@ -687,6 +687,8 @@ One row per administrative change, with the resource before and after it:
 | `agent.disable`, `agent.enable`, `agent.quarantine` | `PATCH /api/agents/{id}` — one action per resulting state, so "who took this host out of the fleet" is a filter on the action rather than a read of every lifecycle row. `before` carries the state the sensor was moved out of, `after` the new state and the operator's reason |
 | `agent_group.create`, `agent_group.delete` | `POST` / `DELETE /api/agent-groups` — the groups a job can be addressed to ([#361](https://github.com/onixus/Shapoclyack/issues/361)) |
 | `agent_group.assign` | `PUT /api/agents/{id}/group` — `before` and `after` carry the group the sensor left and the one it joined. Membership decides which of the tenant's scans that host may execute, so it belongs in the same trail as a membership grant |
+| `agent.result_key_pin`, `agent.result_key_refused`, `agent.result_key_reset` | The sensor's result-signing key ([#366](https://github.com/onixus/Shapoclyack/issues/366)): pinned by the first registration that presents one; a registration presenting a different key (`after` holds `pinned_fingerprint` and `offered_fingerprint`; the pinned key is not replaced); `DELETE /api/agents/{id}/result-key` |
+| `results.rejected`, `results.schema_warned` | Resource `job`. An upload refused on integrity grounds (`after.check` is `schema` or `signature`, `after.reason` the cause), and one accepted with a schema problem while `OCTO_RESULT_SCHEMA_MODE` is `warn`. Unsigned uploads are counted (`octo_result_integrity_total`) and logged, not audited: while signing is optional that is every older sensor, on every run |
 | `agent.delete` | `DELETE /api/agents/{id}` — `before` holds the hostname, the lifecycle state, the `provisioning_key_id` on record and `other_agents_on_key`. With `?revoke_key=true` a second row, `provisioning_key.revoke`, follows under the same actor and `X-Request-Id`: two acts on two resources, and the key survives the sensor. When the key is unusable after that (revoked or expired) and the sensor was locked by a certificate revocation, an `agent.certificate_enrolment_reset` row with the reason `agent deleted; its provisioning key is …` records the lock going with it ([#309](https://github.com/onixus/Shapoclyack/issues/309)) |
 | `report.download` | `GET /api/reports/{id}/download` — a report is the tenant's findings leaving it |
 | `scan_scope.replace` | `PUT /api/tenants/{id}/scan-scope`. `before` holds the entries that went (`removed`), `after` the ones that arrived (`added`), each with the scope's `entry_count` — a diff rather than two full scopes, so the record is bounded by the change and not by a tenant with 3 000 entries |
@@ -1079,6 +1081,7 @@ be read back.
 | `POST /api/tenants/{tenant_id}/service-tokens` | `tenant.credential.manage` | Issue. Returns `token` — the only time it exists |
 | `GET /api/tenants/{tenant_id}/service-tokens` | `tenant.credential.manage` | List, without secrets. Revoked and expired ones stay listed |
 | `POST /api/tenants/{tenant_id}/service-tokens/{token_id}/revoke` | `tenant.credential.manage` | Kill immediately. Idempotent |
+| `POST /api/tenants/{tenant_id}/service-tokens/{token_id}/rotate` | `tenant.credential.manage` + step-up | Return a linked replacement once; keep the predecessor working for a bounded overlap |
 
 **A token is never stronger than the hand that issued it.** `role` in the
 create request is capped at the caller's own role in that tenant, and both the
@@ -1091,6 +1094,16 @@ Without this, one request turned "manages credentials" into a credential that
 starts scans, writes assets and files reports, and outlives the session that
 minted it. The **scopes** need no separate cap: the role is the ceiling they
 narrow, never a way past it.
+
+**Rotation and a lost response.** `rotate` returns the replacement's secret
+exactly once and a predecessor can be rotated only once, so a second `POST` on
+it is a `422`. If the response that carried the new secret was lost, the
+secret is not re-issued (the server keeps only a hash). Recover by rotating
+the *replacement* (its `token_id` is in the predecessor's listing as
+`rotated_from_id` on the replacement), or revoke the replacement and issue a
+fresh token; the predecessor stops working at the end of its overlap either way.
+The expiry notice follows the same rule: while a live replacement exists the
+predecessor is not announced, the replacement is, at its own deadline.
 
 A token is presented on the ordinary `Authorization: Bearer` header; which
 credential it is, is decided by its own shape, never by anything the caller
@@ -1125,6 +1138,42 @@ token's scopes is accepted at creation and refused at request time.
 rotates. `last_used_at` is written at most once per
 `OCTO_SERVICE_TOKEN_LAST_USED_INTERVAL_SECONDS` so a busy integration does not
 turn every request into a write.
+
+Issuance accepts `allowed_cidrs` (up to 64 IPv4/IPv6 networks; empty allows
+all sources) and `expiry_notice_days` (default 7; 0 disables notices). Networks
+are canonicalized and inherited by replacements. A restricted token is refused
+with 401 before recording use when its resolved source falls outside the policy,
+including when the source cannot be parsed. The source uses the same
+`OCTO_TRUSTED_PROXIES` boundary as login/audit: untrusted peers cannot select
+their address through `X-Forwarded-For`. Configure ingress trust narrowly and
+ensure it appends the real client address.
+
+Rotation accepts `{ "grace_seconds": 3600, "expires_in_days": 90 }`; the latter
+is optional and uses the configured default lifetime. Grace ranges from 0 to
+604800 seconds (7 days), never beyond the predecessor's existing expiry. The
+replacement preserves role, scopes, source policy and notice period; the caller
+must still hold enough authority to delegate that role. `rotated_from_id` links
+the replacement; `rotation_expires_at` on the predecessor is its overlap deadline.
+The predecessor can be rotated only once; concurrent requests produce one
+replacement. Revoked, expired or already rotated predecessors return 422.
+Zero grace ends the old credential immediately. Revoke either credential to end
+that credential's access during overlap. The rotation response contains the new
+secret once; listing and audit never contain it. `service_token.rotate` records
+both public credential snapshots atomically with the change.
+
+Subscribe a tenant webhook to `service_token_expiring` for advance notices.
+The existing SLA worker checks active tenants on its normal interval and emits
+one durable workflow occurrence per token/deadline, with public metadata only;
+its usual webhook retries and broker delivery apply. Both
+`OCTO_SLA_ESCALATION_ENABLED` and `OCTO_WORKFLOW_EVENTS_ENABLED` must be enabled.
+No subscription or broker means no external notice. Notifications do not alter
+expiry. Rotation overlap uses the earlier deadline for its notice.
+
+Rolling back migration `0089` preserves the predecessor overlap deadline by
+shortening `expires_at`, and revokes every source-restricted token before
+dropping its network policy. Older versions cannot enforce that policy, so
+those integrations require new credentials after rollback. Re-upgrading keeps
+these revocations and deadlines; it does not reactivate credentials.
 
 ## Roles
 
@@ -1523,6 +1572,8 @@ named no tenant, the caller's own tenant otherwise. Note the `queued`/`running`
 split here differs from the `octo_jobs_*` gauges in [slo.md](slo.md), which
 count `claimed` as running because they measure executor occupancy instead.
 
+`POST /api/agent/jobs/{job_id}/results` also accepts `result_signature` (base64 ed25519 over the archive's SHA-256 and the agent, job, run, exit code and attempt) and `result_key_id` (the signing key's fingerprint) ([#366](https://github.com/onixus/Shapoclyack/issues/366)); an archive whose core artifacts fail their schema, or whose signature is wrong, is answered `422` with the reason and the job is closed `failed` with `results rejected (schema|signature): …` in `error`. `POST /api/agent/register` accepts `result_signing_key` (base64 of the raw 32-byte ed25519 public key): the first key is pinned, a different one later is ignored and audited, and `AgentInfo.result_key_fingerprint` says which is pinned.
+
 `POST /api/agent/jobs/{job_id}/results` accepts an optional `idempotency_key`
 form field with the same intent on the upload side: repeating an upload that
 already landed returns the stored outcome (200), rather than the 422 a second
@@ -1815,6 +1866,7 @@ This does not change tenant-wide scan-start keys on the `jobs` row.
 | `POST /api/agents/{id}/certificates` | **admin** | Pin a certificate to this sensor by its fingerprint (`{"certificate": "<PEM>"}`) — for one whose SAN does not name the sensor. **201**. `422` when the certificate is expired, not from `OCTO_AGENT_MTLS_CLIENT_CA`, names a *different* sensor in its SPIFFE URI, or is already revoked or pinned to another sensor. Idempotent for the same sensor |
 | `POST /api/agents/{id}/certificates/revoke` | **admin** | Exactly one of `{"fingerprint": …}`, `{"serial": …}` or `{"all": true}`, with an optional `reason` (it is what the refused sensor is told). Effective on the next request. An unknown fingerprint is recorded as a `tombstone`; an unknown serial is `404`, as is a fingerprint on record for another sensor. Revoking a certificate the sensor held (on record and not yet revoked, expired or not) also **locks** the sensor: no enrolment by token alone and no request without a certificate (`403`, `X-Client-Cert-Error: enrolment-locked`, under `optional` too) until the reset below — otherwise the revoked host would enrol itself a new certificate on its next poll. A tombstone, or revoking what is already revoked, locks nothing; the audit row's `enrolment_locked` says which. The lock is on the agent id, not the host: a host holding the provisioning key enrols under another id, so for a stolen host revoke the key first. A renewal in flight when the revocation commits is refused, not issued |
 | `POST /api/agents/{id}/certificates/reset-enrolment` | **admin** + step-up | Let the sensor enrol from scratch by its token (`{"reason": …}`): revokes whatever of its certificates is still live, lifts the lock a revocation set, clears the conflict marker. Behind the same multi-factor step-up as minting a provisioning key ([#315](https://github.com/onixus/Shapoclyack/issues/315)): what it hands out is the next certificate, to whoever holds the token first. Audited as `agent.certificate_enrolment_reset`. Answers the sensor's certificates, as revoke does. Works by id for a sensor deleted since — its lock outlives it while its provisioning key is still active (`404` only when the tenant has neither the agent nor an enrolment record for the id). Exactly one enrolment by token follows: of two at once, the second is refused `missing` |
+| `DELETE /api/agents/{id}/result-key` | **admin** + step-up | Forget the sensor's pinned result-signing key (`?reason=…`) so its next registration pins a new one ([#366](https://github.com/onixus/Shapoclyack/issues/366)). Needed after a sensor is reinstalled without its key file. Audited as `agent.result_key_reset` (`before` holds the old fingerprint). Answers the sensor; `404` outside the caller's tenant |
 | `DELETE /api/agents/{id}?revoke_key=false` | operator | Forgets the registration. It does **not** stop the remote process, and on its own it does **not** revoke anything: the host still holds its provisioning key and a live JWT, so it re-registers on its next heartbeat. `?revoke_key=true` revokes the key the sensor registered with, which also invalidates the JWTs already minted from it. The response reports which happened — `provisioning_key_id: null, key_revoked: false` means there was no key on record (a sensor registered before [#308](https://github.com/onixus/Shapoclyack/issues/308), or a legacy shared-token one) — and `other_agents_on_key` says how many *other* sensors that revocation stopped. `client_cert_lock_lifted` ([#309](https://github.com/onixus/Shapoclyack/issues/309)) is `true` when the sensor's client-certificate lock went with it: it does once its key is unusable — revoked by this call or before, or expired — and is then audited as `agent.certificate_enrolment_reset`; otherwise the lock stays with the id |
 | `GET /api/agent-groups` | viewer | The tenant's agent groups ([#361](https://github.com/onixus/Shapoclyack/issues/361)), each with the number of sensors in it. Readable at viewer rank because it is the vocabulary of the scan form and of the approved scope |
 | `POST /api/agent-groups` | `agent.group.manage` | Create one (`{"name": "pci-segment", "description": …}`). Names are lowercase letters, digits and dashes, unique within the tenant, and **immutable** — the name is what jobs, sensors and scope entries refer to, so a rename would silently re-point a restriction. `422` for a malformed or duplicate name — including when the duplicate is only discovered by the unique index, i.e. two operators posting the same name at the same instant |
@@ -2807,7 +2859,8 @@ process's filesystem or object storage. Two consequences for a client:
 Two artifact classes are not covered by the viewer's blanket artifact access,
 because they carry data about people rather than about open ports.
 
-**Screenshot PNGs** under `screenshots/` (ROADMAP P4.4).
+**Historical screenshot PNGs** under `screenshots/`. Capture is withdrawn from
+the supported product (#367); these access rules remain for existing artifacts.
 They can still hold personal data after DOM redaction, so:
 
 - `GET /api/runs/{id}` omits those paths from `artifacts`;

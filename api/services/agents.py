@@ -23,6 +23,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.exc import InvalidRequestError
+from sqlalchemy.orm.exc import StaleDataError
 from sqlalchemy import case, extract, func, or_, select, update
 
 from api import __version__
@@ -32,6 +34,7 @@ from api.schemas import AgentFleetSummary, AgentInfo
 from api.services import agent_certs
 from api.services import audit as audit_service
 from api.services import pagination
+from api.services import result_integrity
 from api.services import tenants as tenants_service
 from api.services import version_compare
 from api.settings import Settings
@@ -345,6 +348,15 @@ def _count_other_agents_on_key(session, *, key_id: str | None, agent_id: str) ->
     return int(count or 0)
 
 
+def _result_key_fingerprint(key: str | None) -> str | None:
+    if not key:
+        return None
+    try:
+        return result_integrity.key_fingerprint(key)
+    except ValueError:
+        return None
+
+
 def _to_info(row: models.Agent) -> AgentInfo:
     online = _is_online(row.last_seen_at)
     lifecycle_status = row.lifecycle_status or LIFECYCLE_ACTIVE
@@ -362,6 +374,7 @@ def _to_info(row: models.Agent) -> AgentInfo:
     upgrade_required = is_scanner and is_below_min_version(version)
     return AgentInfo(
         agent_id=row.agent_id,
+        result_key_fingerprint=_result_key_fingerprint(row.result_signing_key),
         hostname=row.hostname or "",
         version=version,
         labels=dict(row.labels or {}),
@@ -776,9 +789,15 @@ def register_agent(
     signed_updates: bool | None = None,
     provisioning_key_id: str | None = None,
     agent_kind: str = KIND_SCANNER,
+    result_signing_key: str | None = None,
     audit: "audit_service.AuditContext | None" = None,
 ) -> AgentInfo:
     settings = _require_settings()
+    # A malformed key fails the registration (422) instead of being dropped: a
+    # sensor that believes it registered a key and did not would sign for
+    # nothing and be refused later with a much less obvious reason.
+    if result_signing_key:
+        result_integrity.parse_public_key(result_signing_key)
     now = _now()
     if agent_id:
         # The one question here that has to see past the caller's tenant
@@ -853,6 +872,7 @@ def register_agent(
             # rather than one that is already gone.
             if provisioning_key_id:
                 row.provisioning_key_id = provisioning_key_id
+            _pin_result_key(session, row, result_signing_key, now=now, audit=audit)
             session.flush()
             return _to_info(row)
 
@@ -876,6 +896,7 @@ def register_agent(
             healthy_since=now,
         )
         session.add(row)
+        _pin_result_key(session, row, result_signing_key, now=now, audit=audit)
         session.flush()
         info = _to_info(row)
         # Only a *new* agent is an administrative event. An agent that restarts
@@ -901,6 +922,136 @@ def register_agent(
             },
         )
         return info
+
+
+def _pin_result_key(
+    session: Any,
+    row: models.Agent,
+    key: str | None,
+    *,
+    now: datetime,
+    audit: "audit_service.AuditContext | None",
+) -> None:
+    """Trust-on-first-use for the sensor's result-signing key (#366).
+
+    The first key a sensor registers is pinned. The same key again is a no-op.
+    A *different* key is refused: the registration itself still succeeds (the
+    sensor keeps scanning), but the pinned key is untouched, the refusal is
+    audited and the answer carries the pinned fingerprint. Without this a
+    holder of the bearer token could re-register with its own key and sign
+    forged archives; with it, replacing a key takes an operator
+    (:func:`reset_result_key`). Endpoint agents upload no archives and are
+    ignored.
+    """
+    if not key or (row.agent_kind or KIND_SCANNER) != KIND_SCANNER:
+        return
+    if not row.result_signing_key:
+        if row in session.new:
+            row.result_signing_key = key
+            row.result_key_pinned_at = now
+            won = True
+        else:
+            # Conditional on the column still being NULL, decided by the
+            # database: two registrations racing after an operator reset both
+            # read NULL here, and a plain assignment would let the second
+            # commit silently replace the first. The loser re-reads and falls
+            # through to the comparison below, so the answer it gets names the
+            # key that really is pinned.
+            try:
+                session.flush()
+                won = (
+                    session.execute(
+                        update(models.Agent)
+                        .where(
+                            models.Agent.agent_id == row.agent_id,
+                            models.Agent.result_signing_key.is_(None),
+                        )
+                        .values(result_signing_key=key, result_key_pinned_at=now)
+                    ).rowcount
+                    == 1
+                )
+                session.refresh(row)
+            except (InvalidRequestError, StaleDataError) as exc:
+                # Deleted between the load and the update (an operator removed
+                # the agent mid-registration): nothing to pin the key to.
+                raise PermissionError(
+                    "this agent was deleted while it was registering; register again"
+                ) from exc
+        if won:
+            audit_service.record(
+                session,
+                audit,
+                action=audit_service.ACTION_AGENT_RESULT_KEY_PIN,
+                resource_type="agent",
+                resource_id=row.agent_id,
+                tenant_id=row.tenant_id,
+                after={"result_key_fingerprint": result_integrity.key_fingerprint(key)},
+            )
+            return
+        if not row.result_signing_key:
+            # Lost to a writer that cleared it again before the re-read.
+            return
+    if row.result_signing_key == key:
+        return
+    audit_service.record(
+        session,
+        audit,
+        action=audit_service.ACTION_AGENT_RESULT_KEY_REFUSED,
+        resource_type="agent",
+        resource_id=row.agent_id,
+        tenant_id=row.tenant_id,
+        after={
+            "pinned_fingerprint": result_integrity.key_fingerprint(row.result_signing_key),
+            "offered_fingerprint": result_integrity.key_fingerprint(key),
+        },
+    )
+    _log.warning(
+        "Agent %s registered a result-signing key that is not the pinned one; refused",
+        row.agent_id,
+    )
+
+
+def reset_result_key(
+    agent_id: str,
+    tenant_id: str | None,
+    *,
+    reason: str = "",
+    audit: "audit_service.AuditContext | None" = None,
+) -> AgentInfo:
+    """Forget the pinned result-signing key so the next registration pins a new one.
+
+    ``tenant_id=None`` is an unscoped platform admin. ``LookupError`` for an
+    agent outside that scope.
+    """
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Agent, agent_id, with_for_update=True)
+        if row is None or (tenant_id is not None and row.tenant_id != tenant_id):
+            raise LookupError("Agent not found")
+        previous = _result_key_fingerprint(row.result_signing_key)
+        row.result_signing_key = None
+        row.result_key_pinned_at = None
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_AGENT_RESULT_KEY_RESET,
+            resource_type="agent",
+            resource_id=row.agent_id,
+            tenant_id=row.tenant_id,
+            before={"result_key_fingerprint": previous},
+            after={"reason": (reason or "")[:500]},
+        )
+        session.flush()
+        return _to_info(row)
+
+
+def pinned_result_key(agent_id: str) -> str | None:
+    """The base64 public key pinned for ``agent_id``, or None."""
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        return session.execute(
+            select(models.Agent.result_signing_key).where(models.Agent.agent_id == agent_id)
+        ).scalar_one_or_none()
 
 
 def heartbeat(

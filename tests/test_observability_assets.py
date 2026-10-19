@@ -548,11 +548,30 @@ def test_the_label_check_allows_a_tenant_only_on_the_capped_series():
 # --- docs/observability.md ---------------------------------------------------------
 
 
+SENSOR_EXPORTER = ROOT / "agent/observability.py"
+
+
+def _sensor_series() -> set[str]:
+    """Families the sensor's own ``/metrics`` emits (#366) — not the API's."""
+    return set(re.findall(r'emit\(\s*"(octo_sensor_[a-z0-9_]+)"', SENSOR_EXPORTER.read_text(encoding="utf-8")))
+
+
 def test_the_catalogue_names_only_exported_series():
     unknown = metric_catalogue.unknown_series(
         CATALOGUE.read_text(encoding="utf-8"), family_names=True
-    )
+    ) - _sensor_series()
     assert not unknown, f"docs/observability.md names series the API does not export: {sorted(unknown)}"
+
+
+def test_the_catalogue_matches_the_sensor_exporter():
+    """The sensor section documents exactly what ``agent/observability.py`` emits."""
+    emitted = _sensor_series()
+    assert emitted, "no octo_sensor_ families found in the sensor exporter"
+    documented = set(re.findall(r"\bocto_sensor_[a-z0-9_]*[a-z0-9]", CATALOGUE.read_text(encoding="utf-8")))
+    assert documented == emitted, {
+        "undocumented": sorted(emitted - documented),
+        "not emitted": sorted(documented - emitted),
+    }
 
 
 def test_the_catalogue_covers_every_exported_family():

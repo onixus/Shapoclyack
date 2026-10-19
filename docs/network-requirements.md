@@ -361,8 +361,8 @@ later inside its event loop.
 ## Bandwidth
 
 The results upload is the largest thing a sensor sends: one gzipped run
-directory, whose size follows the number of hosts and whether screenshots are
-on. On a branch office's uplink an unshaped upload is the reason the site's
+directory, whose size follows the number of hosts and retained evidence.
+On a branch office's uplink an unshaped upload is the reason the site's
 voice traffic stutters for two minutes after every scan.
 
 `OCTO_AGENT_UPLOAD_RATE_LIMIT_KBPS` shapes it — KiB/s, `0` (the default) for no

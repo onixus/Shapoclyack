@@ -111,7 +111,7 @@ root filesystem is read-only everywhere except where noted.
 | `CronJob/shapoclyack-clickhouse-backup` ([#333](https://github.com/onixus/Shapoclyack/issues/333)) | `network-scan` | 101:101 | `/tmp` (16Mi in memory: `clickhouse-client`'s `HOME`/`TMPDIR` and the script's `mktemp -d` for query output; the server itself uploads the backup, so nothing is staged here) | yes |
 | `CronJob/enrichment-refresh` (base/enrichment) | `network-scan` | 1000:1000 | `scanner/data` (PVC `enrichment-data`); `/tmp` (the geoip/asn/epss/kev fetchers download into `mktemp -d`) | yes |
 | `CronJob/enrichment-bundle-load` (base/enrichment-bundle, [#339](https://github.com/onixus/Shapoclyack/issues/339)) | `network-scan` | 1000:1000 | `scanner/data` (PVC `enrichment-data`: the bundle is staged and installed there, so the swap is a rename on one filesystem); `/tmp`; the inbox PVC is mounted read-only | yes |
-| `StatefulSet/shapoclyack-scanner-executor` | `network-scan-executor` | 1000:1000 | `scanner/output`, `scanner/state` (the run and its checkpoints); `/tmp` (the sensor's per-job workdir: target lists and the run archive before upload; the screenshot stage's browser profile); `/home/octo` (nuclei, naabu and dnsx write `~/.config/<tool>/config.yaml` on every start and exit when they cannot — projectdiscovery/goflags) | **no** — see below |
+| `StatefulSet/shapoclyack-scanner-executor` | `network-scan-executor` | 1000:1000 | `/var/lib/shapoclyack/sensor-key` (a 16Mi PVC per pod from `volumeClaimTemplates`, writable through `fsGroup`: the sensor's result-signing key, which must outlive the pod, #366); `scanner/output`, `scanner/state` (the run and its checkpoints); `/tmp` (the sensor's per-job workdir: target lists and the run archive before upload); `/home/octo` (nuclei, naabu and dnsx write `~/.config/<tool>/config.yaml` on every start and exit when they cannot — projectdiscovery/goflags) | **no** — see below |
 | `Job/network-scan`, `CronJob/network-scan-scheduled`, `Job/network-scan-resume` (base/local-scan only) | `network-scan` | 1000:1000 | as the executor, with `scanner/output`/`state` on the `scanner-data` PVC | **no** — see below |
 | `StatefulSet/shapoclyack-agent` (examples, a sensor in another cluster) | yours, not `network-scan` | 1000:1000 | as the executor | **no** — see below |
 | `CronJob/shapoclyack-audit-retention`, `Deployment/shapoclyack-audit-syslog-forwarder` (examples) | `network-scan` | 1000:1000 | `/tmp` (retention only) | yes |
@@ -283,8 +283,9 @@ settings that decide how hard a sensor hits its network **the sensor's own
 file stays the limit**: discovery and port rates, nuclei's rate limit and
 and concurrency take the lower of the file's value and the
 overlay's; nuclei's excluded tags are the union of the two, so an override
-cannot re-enable `intrusive`, `fuzz` or `dos` templates a sensor excludes; and
-screenshots run only where the sensor's file enables them. An overlay can make
+cannot re-enable `intrusive`, `fuzz` or `dos` templates a sensor excludes. Legacy
+screenshot overlays cannot enable capture against a disabled host setting, but
+capture itself is withdrawn from the supported product (#367). An overlay can make
 a sensor gentler, never rougher — to make a sensor faster, raise its own file.
 Stage switches (nuclei on or off, the organisation-profile stages) follow the
 overlay, since that is what an intent is.
@@ -700,7 +701,7 @@ For an installation moving from a pre-#338 release:
   ([above](#the-scanner-executor)). **Review the configurator's overrides
   before upgrading**: they used to stop at the API in agent mode, and now reach
   every tenant's remote sensors — bounded by each sensor's own rates, timing,
-  nuclei exclusions and screenshot setting, but otherwise as written.
+  nuclei exclusions and legacy screenshot setting, but otherwise as written.
 - **Finished runs are swept by sensor retention.** Acknowledged results are
   removed once they are no longer the baseline; unacknowledged results default
   to 72 hours, with a 5 GiB budget. Active scans and recently cancelled partial

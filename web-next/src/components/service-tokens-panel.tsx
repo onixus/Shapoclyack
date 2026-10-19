@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import {
   useCreateServiceToken,
   useRevokeServiceToken,
+  useRotateServiceToken,
   useServiceTokens,
 } from "@/hooks/use-service-tokens";
 import { type Role, type ServiceTokenInfo } from "@/lib/api";
@@ -56,6 +57,7 @@ export function ServiceTokensPanel({
   const { data = [], isLoading, error } = useServiceTokens(tenantId, canManage);
   const createMutation = useCreateServiceToken(tenantId);
   const revokeMutation = useRevokeServiceToken(tenantId);
+  const rotateMutation = useRotateServiceToken(tenantId);
   // The issuance ceiling, shown rather than discovered (#318 review). A
   // `token-admin` holds `tenant.credential.manage` at rank 1, so the server
   // refuses the `operator` and `admin` options with a 403 — offering them was
@@ -66,6 +68,9 @@ export function ServiceTokensPanel({
   const issuable = TOKEN_ROLES.filter((entry) => entry.rank <= ceiling);
 
   const [name, setName] = useState("");
+  const [cidrs, setCidrs] = useState("");
+  const [noticeDays, setNoticeDays] = useState(7);
+  const [graceSeconds, setGraceSeconds] = useState(3600);
   const [scopes, setScopes] = useState("runs:read");
   const [role, setRole] = useState<Role>("viewer");
   const [issued, setIssued] = useState<ServiceTokenInfo | null>(null);
@@ -73,8 +78,8 @@ export function ServiceTokensPanel({
   if (!canManage) {
     return (
       <p className="text-sm text-muted-foreground">
-        Managing this tenant&apos;s service tokens needs the{" "}
-        <code>tenant.credential.manage</code> permission — its admin or a token-admin.
+        Managing this tenant&apos;s service tokens needs the <code>tenant.credential.manage</code>{" "}
+        permission — its admin or a token-admin.
       </p>
     );
   }
@@ -87,7 +92,13 @@ export function ServiceTokensPanel({
       .filter(Boolean);
     if (!name.trim() || parsed.length === 0) return;
     try {
-      const created = await createMutation.mutateAsync({ name: name.trim(), scopes: parsed, role });
+      const created = await createMutation.mutateAsync({
+        name: name.trim(),
+        scopes: parsed,
+        role,
+        allowed_cidrs: cidrs.split(/[\s,]+/).filter(Boolean),
+        expiry_notice_days: noticeDays,
+      });
       setIssued(created);
       setName("");
     } catch {
@@ -135,16 +146,54 @@ export function ServiceTokensPanel({
           </select>
           {issuable.length < TOKEN_ROLES.length ? (
             <p className="text-xs text-muted-foreground">
-              A token cannot be stronger than the hand issuing it, so your role
-              in this tenant caps this list.
+              A token cannot be stronger than the hand issuing it, so your role in this tenant caps
+              this list.
             </p>
           ) : null}
+        </div>
+        <div className="grid gap-1.5 sm:col-span-3">
+          <Label htmlFor="service-token-cidrs">Allowed source networks</Label>
+          <Input
+            id="service-token-cidrs"
+            value={cidrs}
+            onChange={(event) => setCidrs(event.target.value)}
+            placeholder="192.0.2.0/24, 2001:db8::/32"
+          />
+          <p className="text-xs text-muted-foreground">
+            Leave empty to allow every source address.
+          </p>
+        </div>
+        <div className="grid gap-1.5">
+          <Label htmlFor="service-token-notice">Expiry notice (days)</Label>
+          <Input
+            id="service-token-notice"
+            type="number"
+            min={0}
+            max={3650}
+            value={noticeDays}
+            onChange={(event) => setNoticeDays(Number(event.target.value))}
+          />
         </div>
         <Button type="submit" className="sm:col-span-4" disabled={createMutation.isPending}>
           <KeyRound className="mr-2 h-4 w-4" />
           {createMutation.isPending ? "Issuing…" : "Issue token"}
         </Button>
       </form>
+
+      <div className="grid max-w-sm gap-1.5">
+        <Label htmlFor="service-token-grace">Rotation overlap (seconds)</Label>
+        <Input
+          id="service-token-grace"
+          type="number"
+          min={0}
+          max={604800}
+          value={graceSeconds}
+          onChange={(event) => setGraceSeconds(Number(event.target.value))}
+        />
+        <p className="text-xs text-muted-foreground">
+          The previous token works during this window. Zero ends its access immediately.
+        </p>
+      </div>
 
       {issued?.token ? (
         <div
@@ -188,6 +237,7 @@ export function ServiceTokensPanel({
                 <th className="py-2 pr-4">Role</th>
                 <th className="py-2 pr-4">{t("ui.scopes")}</th>
                 <th className="py-2 pr-4">{t("ui.status")}</th>
+                <th className="py-2 pr-4">Source networks</th>
                 <th className="py-2 pr-4">{t("ui.expires")}</th>
                 <th className="py-2 pr-4">{t("ui.lastUsed")}</th>
                 <th className="py-2" />
@@ -200,10 +250,49 @@ export function ServiceTokensPanel({
                   <td className="py-2 pr-4 font-mono text-xs">{token.token_prefix}</td>
                   <td className="py-2 pr-4">{token.role}</td>
                   <td className="py-2 pr-4 font-mono text-xs">{token.scopes.join(" ")}</td>
-                  <td className="py-2 pr-4">{token.status}</td>
+                  <td className="py-2 pr-4">
+                    {token.status}
+                    {token.rotated_from_id ? (
+                      <span className="block text-xs">Replaces {token.rotated_from_id}</span>
+                    ) : null}
+                    {token.rotation_expires_at ? (
+                      <span className="block text-xs">
+                        Overlap ends {new Date(token.rotation_expires_at).toISOString()}
+                      </span>
+                    ) : null}
+                  </td>
+                  <td className="py-2 pr-4 text-xs">
+                    {token.allowed_cidrs?.join(", ") || "Any source"}
+                  </td>
                   <td className="py-2 pr-4 tabular-nums">{formatDate(token.expires_at)}</td>
                   <td className="py-2 pr-4 tabular-nums">{formatDate(token.last_used_at)}</td>
                   <td className="py-2">
+                    {token.status === "active" && !token.rotation_expires_at ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={
+                          rotateMutation.isPending ||
+                          !Number.isInteger(graceSeconds) ||
+                          graceSeconds < 0 ||
+                          graceSeconds > 604800
+                        }
+                        onClick={async () => {
+                          try {
+                            setIssued(
+                              await rotateMutation.mutateAsync({
+                                tokenId: token.token_id,
+                                graceSeconds,
+                              }),
+                            );
+                          } catch {
+                            /* The mutation surfaces the error. */
+                          }
+                        }}
+                      >
+                        Rotate
+                      </Button>
+                    ) : null}
                     {token.status === "active" ? (
                       <Button
                         variant="outline"

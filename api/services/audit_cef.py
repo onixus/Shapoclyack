@@ -84,6 +84,7 @@ _ACTION_SEVERITY = {
     "role.update": 8,
     "role.delete": 8,
     "service_token.create": 8,
+    "service_token.rotate": 8,
     "provisioning_key.create": 8,
     "agent.delete": 8,
     "config.update": 8,

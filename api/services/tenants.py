@@ -209,6 +209,7 @@ def reset_for_tests() -> None:
         # publication?" answer about somebody else's run.
         session.query(models.NatsOutboxEntry).delete()
         session.query(models.RunPublication).delete()
+        session.query(models.AssetImportConnector).delete()
         session.query(models.WebhookSubscription).delete()
         session.query(models.Wordlist).delete()
         session.query(models.ProvisioningKey).delete()
