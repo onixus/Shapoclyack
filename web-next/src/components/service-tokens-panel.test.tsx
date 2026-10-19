@@ -95,6 +95,8 @@ describe("ServiceTokensPanel", () => {
       name: "ci-pipeline",
       scopes: ["runs:read", "vulnerabilities:read"],
       role: "viewer",
+      allowed_cidrs: [],
+      expiry_notice_days: 7,
     });
     expect(await screen.findByText(/shown only once/i)).toBeInTheDocument();
     expect(screen.getByText("octo_st_abcdef0123456789_secretvalue")).toBeInTheDocument();
@@ -138,9 +140,7 @@ describe("ServiceTokensPanel", () => {
     await userEvent.type(screen.getByLabelText("Scopes"), "runs:delete");
     await userEvent.click(screen.getByRole("button", { name: /issue token/i }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "422 invalid scope 'runs:delete'",
-    );
+    expect(await screen.findByRole("alert")).toHaveTextContent("422 invalid scope 'runs:delete'");
     // What the operator typed survives, so the scope can be corrected in place.
     expect(screen.getByLabelText("Name")).toHaveValue("ci-pipeline");
     expect(unhandled).not.toHaveBeenCalled();
@@ -191,4 +191,26 @@ describe("ServiceTokensPanel", () => {
     }
     expect(screen.queryByText(/cannot be stronger than the hand issuing it/i)).toBeNull();
   });
+});
+
+it("rotates with a chosen overlap and displays the replacement only once", async () => {
+  vi.spyOn(apiModule, "fetchServiceTokens").mockResolvedValue([
+    token(),
+    token({ token_id: "st_old", name: "overlap", rotation_expires_at: "2026-10-15T10:00:00Z" }),
+  ]);
+  const rotate = vi
+    .spyOn(apiModule, "rotateServiceToken")
+    .mockResolvedValue(
+      token({ token_id: "st_new", rotated_from_id: "st_1", token: "replacement-secret" }),
+    );
+  renderPanel();
+  const buttons = await screen.findAllByRole("button", { name: "Rotate" });
+  expect(buttons).toHaveLength(1);
+  await userEvent.clear(screen.getByLabelText("Rotation overlap (seconds)"));
+  await userEvent.type(screen.getByLabelText("Rotation overlap (seconds)"), "120");
+  await userEvent.click(buttons[0]);
+  await waitFor(() => expect(rotate).toHaveBeenCalledWith("acme", "st_1", 120));
+  expect(await screen.findByText("replacement-secret")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /i have copied it/i }));
+  expect(screen.queryByText("replacement-secret")).not.toBeInTheDocument();
 });

@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { AssetConnectorPanel } from "@/components/asset/connector-panel";
 import { Upload } from "lucide-react";
 import { useT, type MsgKey } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
@@ -84,7 +85,12 @@ export function AssetImportButton() {
   if (!allowed) return null;
   return (
     <>
-      <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" onClick={() => setOpen(true)}>
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-8 gap-1.5 text-xs"
+        onClick={() => setOpen(true)}
+      >
         <Upload className="h-3.5 w-3.5" />
         {t("assetImport.button")}
       </Button>
@@ -187,6 +193,7 @@ export function AssetImportDialog({
         </DialogHeader>
 
         <div className="space-y-3">
+          <AssetConnectorPanel />
           <div className="space-y-1.5">
             <Label htmlFor="asset-import-file" className="text-xs text-foreground">
               {t("assetImport.file")}
@@ -303,7 +310,10 @@ export function AssetImportDialog({
                       <td className="px-2 py-1 text-muted-foreground">
                         {item.message ??
                           Object.entries(item.changes)
-                            .map(([name, change]) => `${name}: ${change.old ?? "∅"} → ${change.new ?? "∅"}`)
+                            .map(
+                              ([name, change]) =>
+                                `${name}: ${change.old ?? "∅"} → ${change.new ?? "∅"}`,
+                            )
                             .join("; ")}
                       </td>
                     </tr>
