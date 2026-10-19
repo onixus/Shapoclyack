@@ -34,7 +34,7 @@ graph TB
 |---|---|---|
 | **EASM и инвентарь периметра** | Выявление Shadow IT, учет активов, картографирование графа сервисов | Модуль `org_profile`, `/attack-surface`, `/assets` |
 | **Сетевая топология и сенсоры** | Проектирование безопасного размещения сканирующих узлов в DMZ и VPC | Распределенный флот сенсоров (API-ресурс `agents`, `agent_kind = scanner`) через NATS JetStream или HTTPS-claim |
-| **Интеграция с CMDB и каталогами** | Автоматическое обогащение активов бизнес-контекстом и владельцами | Импорт выгрузки CSV/JSON `POST /api/assets/import` с пробным прогоном и `PATCH /api/assets/{id}` (`context_source: cmdb/ad`); коннекторов ServiceNow и LDAP/AD нет |
+| **Интеграция с CMDB и каталогами** | Автоматическое обогащение активов бизнес-контекстом и владельцами | Импорт выгрузки CSV/JSON `POST /api/assets/import` с пробным прогоном и `PATCH /api/assets/{id}` (`context_source: cmdb/ad`); ServiceNow Table API с полями и расписанием; LDAP/AD ожидает #317 |
 | **Встраивание в DevSecOps (CI/CD)** | Автоматизированный контроль релизных контуров и динамических сред | Сервисные токены (`/service-tokens`), REST API, Idempotency-Key |
 | **SOC & Event-Driven архитектура** | Потоковая передача событий об уязвимостях и новых активах | Webhooks dispatcher, NATS JetStream asset-event streams |
 | **Архитектура комплаенса** | Автоматизированный аудит контролей PCI DSS, CIS Controls, ISO 27001 | Движок сигналов и каталоги фреймворков (`/compliance`) |
@@ -108,7 +108,7 @@ $$\text{Domain / FQDN} \longrightarrow \text{IP-Address} \longrightarrow \text{P
 
 ## Сценарий 3: Интеграция с корпоративной CMDB и Active Directory
 
-Точная оценка рисков невозможна без знания владельца и бизнес-назначения сервера. Shapoclyack дает для этого **импорт выгрузки из CMDB/AD** — CSV или JSON в `POST /api/assets/import` с пробным прогоном и отчётом по строкам — и **REST-контракт бизнес-контекста актива** (`PATCH /api/assets/{id}`) для точечных правок. Выгрузку из CMDB (ServiceNow, Jira Service Management, внутренние учетные системы) по расписанию делает ваш скрипт: **коннектора** ServiceNow (Table API) и синхронизации компьютеров из LDAP/AD в платформе нет, они остаются в [#350](https://github.com/onixus/Shapoclyack/issues/350). Направление одно — из CMDB в Shapoclyack; обратной записи в CMDB платформа не делает.
+Точная оценка рисков невозможна без знания владельца и бизнес-назначения сервера. Shapoclyack дает для этого **импорт выгрузки из CMDB/AD** — CSV или JSON в `POST /api/assets/import` с пробным прогоном и отчётом по строкам — и **REST-контракт бизнес-контекста актива** (`PATCH /api/assets/{id}`) для точечных правок. Выгрузку из CMDB (ServiceNow, Jira Service Management, внутренние учетные системы) по расписанию делает ваш скрипт: **коннектор** ServiceNow (Table API) с полями и расписанием доступен в диалоге импорта; синхронизация компьютеров LDAP/AD ожидает #317 в [#350](https://github.com/onixus/Shapoclyack/issues/350). Направление одно — из CMDB в Shapoclyack; обратной записи в CMDB платформа не делает.
 
 ### 3.1. Модель данных бизнес-контекста актива
 Поля сущности **Asset** в Shapoclyack:

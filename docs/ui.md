@@ -51,7 +51,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/scans/external` | External scans: internet-facing launcher (domains, public ranges, org profile, wordlists) and the jobs/runs classified `external` | Operator |
 | `/scans/internal` | Internal scans: private-range launcher, sensor/endpoint context and the jobs/runs classified `internal` | Operator |
 | `/runs` | Tenant-scoped run history, filterable by surface (`?surface=external|internal|mixed|unknown`) | Viewer |
-| `/runs/view?runId=…` | Findings, entities, diff, artifacts, contextual score and risk explanation; operator-only Screenshots tab | Viewer; operator for screenshots |
+| `/runs/view?runId=…` | Findings, entities, diff, artifacts, contextual score and risk explanation | Viewer |
 | `/reports` | Report and artifact discovery, plus the report factory panel (branding, templates, schedules, on-demand generation) | Viewer; operator to generate, admin for branding and delivery schedules |
 | `/compliance` | PCI DSS 4.0 / CIS v8 / ISO 27001 / ФСТЭК № 117, 21, 239 / ГОСТ Р 57580.1 control status for the selected tenant, with per-control evidence | Viewer |
 | `/adoption` | Whether the platform produces outcomes: closures in a window, share confirmed by a scan, SLA adherence, median time to fix, owner and context coverage, closed-and-verified per analyst, time to first value, overlay age; plus **Noise** (false-positive verdicts, suppressions in force and lapsed, overrides, noisiest detectors and observers) and **Coverage** (scanned share, vulnerability-assessed share, and how many approved ranges a scan has reached) | Viewer |
@@ -752,19 +752,17 @@ With a Country-edition database every marker is country-level, which the page
 states rather than hides. See
 [configuration.md](configuration.md#enrichment-sources).
 
-## Run screenshots
+## Historical screenshot artifacts
 
-`/runs/view` has a **Screenshots** tab for operators and admins only. It lists
-the already-redacted PNGs from `GET /api/runs/{id}/screenshots`. Viewers do
-not see the tab, do not get the PNG paths in the Artifacts list, and receive
-`404` if they request the file.
+Screenshot capture and its run-view tab are withdrawn (#367): the published
+images have no supported browser runtime. The System page and configuration
+editor do not offer the unsupported stage. An old `tab=screenshots` link opens
+Findings instead.
 
-The capture is opt-in (`screenshots.enabled`) and only visits web ports the
-scan already found. Playwright missing is a skip, not a failure. Redaction
-covers obvious form fields in the live DOM; a name in a heading is not
-redacted. The banner on the tab says so. Pixels older than
-`OCTO_SCREENSHOT_RETENTION_DAYS` (14) are deleted; `screenshots.json` stays
-in Artifacts.
+For existing artifacts, operator-only PNG downloads and retention continue to
+apply. Viewers do not get PNG paths in the Artifacts list and receive `404` if
+they request the file. `screenshots.json` remains a text artifact. See
+[API access rules](api-and-rbac.md#restricted-artifacts).
 
 ## SARIF viewer
 

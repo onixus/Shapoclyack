@@ -105,6 +105,26 @@ def run(url: str, *, rotate: bool = False, decrypt: bool = False, dry_run: bool 
     exists to prevent.
     """
     outcome = Outcome()
+    with get_session(url) as session:
+        connector_ids = list(session.scalars(select(models.AssetImportConnector.tenant_id)))
+    for tenant_id in connector_ids:
+        outcome.scanned += 1
+        with get_session(url) as session:
+            row = session.get(models.AssetImportConnector, tenant_id, with_for_update=True)
+            if row is None:
+                continue
+            try:
+                target = _target(row.token_encrypted, context=f"asset-import:{tenant_id}", rotate=rotate, decrypt=decrypt)
+            except Exception:
+                outcome.failed += 1
+                continue
+            if target == row.token_encrypted:
+                outcome.skipped += 1
+            else:
+                outcome.changed += 1
+                if not dry_run:
+                    row.token_encrypted = target
+
 
     with get_session(url) as session:
         subscription_ids = list(

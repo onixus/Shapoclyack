@@ -45,7 +45,6 @@ value on the System page rather than assuming the file was applied.
 | `reporting` | Which report formats a run writes (Markdown, HTML, CSV, JSON, PDF) and the PDF's title/org | [Operations](operations.md), [Reports and compliance](reports-and-compliance.md) |
 | `enrichment` | CVSS v4, GeoIP and ASN datasets | [Enrichment sources](#enrichment-sources) |
 | `fingerprint` | HTTP fingerprinting of already-open web ports: technology catalogue, versions, CPE, exposed consoles and gateways | [Web fingerprinting](web-fingerprinting.md), [Scan performance](scan-performance.md) |
-| `screenshots` | Viewport PNGs of open web ports | [Web screenshots](#web-screenshots) |
 | `dns` | Resolvers passed to nuclei (`-resolvers`) and dnsx (`-r`); empty = the host's `/etc/resolv.conf` | [Network requirements](network-requirements.md#dns-resolvers) |
 | `nuclei` | Nuclei stage: template directory, severities, caps, rate limit, OAST server | [NSE and vulnerability checks](#nse-and-vulnerability-checks) |
 | `tls_posture` | Certificate and chain validity, chain trust (`chain_trust`, `ca_bundle`; sensor config only), key and signature strength, hostname mismatch, legacy protocols (`probe_legacy_protocols`) and cipher findings | [Pulse backend](pulse-backend.md#what-the-probe-checks-and-what-it-can-establish) |
@@ -183,24 +182,18 @@ run, with its token in `OCTO_INTERACTSH_TOKEN`. What that server and the
 scanned hosts then need to reach is in
 [network requirements](network-requirements.md#out-of-band-testing-interactsh).
 
-## Web screenshots
+## Screenshot compatibility
 
-`screenshots.enabled` (default `false`) takes a viewport PNG of each
-already-open web port — the same candidates as `fingerprint`, no new scan.
-`max_targets` (50) and `concurrency` (4) cap the work. Capture needs
-Playwright + Chromium on the scanner host; without them the stage skips and
-writes `skipped_reason: playwright.unavailable`. Playwright is not a
-required dependency and is not baked into the default image.
+Web screenshot capture is withdrawn from the supported product surface (#367).
+Published images do not contain Playwright or Chromium, and no isolated browser
+worker is shipped. The console does not offer a Screenshots tab or a capture
+setting. Installing a browser inside the scanner is not a supported deployment.
 
-Obvious form fields are covered with a black overlay in the live DOM, then
-the screenshot is taken. Unredacted bytes are never written. A name in a
-heading is not redacted. That is why PNG access is operator-only and why
-the API reaper deletes the files after
-`OCTO_SCREENSHOT_RETENTION_DAYS` (see [operations.md](operations.md)).
-
-The System page **Pipeline Stages** tile and the config-override whitelist
-expose `screenshots.enabled`. Leave it off until Playwright is installed
-and the retention window matches the site's data-handling policy.
+The legacy `screenshots` scanner configuration remains readable for existing
+installations; it defaults to disabled. Historical `screenshots.json` manifests,
+operator-only PNG downloads, and screenshot retention remain supported for
+existing artifacts. These compatibility paths do not imply capture availability.
+See [operations.md](operations.md#screenshot-retention) for artifact retention.
 
 ## Discovery modules
 
@@ -1454,7 +1447,7 @@ Moving an existing installation into a bucket: `scripts/migrate-artifacts.py`
 copies what is on the volume under the same keys new artifacts get. It deletes
 nothing, skips what is already there, and is safe to re-run.
 
-Web screenshots (ROADMAP P4.4 / Phase 9.3):
+Historical screenshot artifact retention (capture is withdrawn; #367):
 
 | Variable | Default | Purpose |
 |---|---|---|

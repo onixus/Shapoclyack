@@ -25,7 +25,6 @@ export const queryKeys = {
   runPorts: (runId: string) => ["run", runId, "ports"] as const,
   runVulns: (runId: string, filters?: { host?: string | null; port?: string | null }) =>
     ["run", runId, "vulns", { host: filters?.host ?? null, port: filters?.port ?? null }] as const,
-  runScreenshots: (runId: string) => ["run", runId, "screenshots"] as const,
   jobs: ["jobs"] as const,
   jobsPage: (page?: PageParams, filters?: ScanListFilters) =>
     ["jobs", pageKey(page), { surface: filters?.surface ?? null }] as const,

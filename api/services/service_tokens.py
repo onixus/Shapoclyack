@@ -38,6 +38,7 @@ needs no password, so minting one stronger than yourself is promoting yourself
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import logging
 import re
 import secrets
@@ -141,13 +142,40 @@ def _to_dict(row: models.ServiceToken) -> dict[str, Any]:
         "last_used_at": _iso(row.last_used_at),
         "revoked_at": _iso(row.revoked_at),
         "status": status_of(row),
+        "allowed_cidrs": row.allowed_cidrs or [],
+        "rotated_from_id": row.rotated_from_id,
+        "rotation_expires_at": _iso(row.rotation_expires_at),
+        "expiry_notice_days": row.expiry_notice_days,
     }
+
+
+def effective_expiry(row: models.ServiceToken) -> datetime | None:
+    deadlines = [_aware(row.expires_at), _aware(row.rotation_expires_at)]
+    return min(value for value in deadlines if value is not None) if any(deadlines) else None
+
+
+def normalise_cidrs(cidrs: list[str] | None) -> list[str]:
+    if len(cidrs or []) > 64:
+        raise ValueError("at most 64 allowed CIDRs are supported")
+    return sorted({str(ipaddress.ip_network(value, strict=False)) for value in cidrs or []})
+
+
+def client_allowed(cidrs: list[str], client_ip: str | None) -> bool:
+    if not cidrs:
+        return True
+    try:
+        address = ipaddress.ip_address(client_ip or "")
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            address = address.ipv4_mapped
+        return any(address in ipaddress.ip_network(cidr) for cidr in cidrs)
+    except ValueError:
+        return False
 
 
 def status_of(row: models.ServiceToken) -> str:
     if row.revoked_at is not None:
         return "revoked"
-    expires = _aware(row.expires_at)
+    expires = effective_expiry(row)
     if expires is not None and expires <= _now():
         return "expired"
     return "active"
@@ -284,6 +312,8 @@ def create_token(
     role: str = "viewer",
     created_by: str | None = None,
     expires_in_days: int | None = None,
+    allowed_cidrs: list[str] | None = None,
+    expiry_notice_days: int = 7,
     issuer_role: str,
     issuer_is_platform_admin: bool = False,
     issuer_authority: permission_catalog.Authority | None = None,
@@ -313,6 +343,9 @@ def create_token(
     if len(cleaned_name) > 128:
         raise ValueError("name must be at most 128 characters")
     scope_text = normalise_scopes(scopes)
+    networks = normalise_cidrs(allowed_cidrs)
+    if not 0 <= expiry_notice_days <= 3650:
+        raise ValueError("expiry_notice_days must be between 0 and 3650")
 
     default_ttl = max(1, resolved.service_token_default_ttl_days)
     max_ttl = max(1, resolved.service_token_max_ttl_days)
@@ -335,6 +368,8 @@ def create_token(
             token_prefix=prefix,
             token_hash=pwd_context.hash(plaintext),
             scopes=scope_text,
+            allowed_cidrs=networks,
+            expiry_notice_days=expiry_notice_days,
             role=role,
             created_by=created_by,
             created_at=now,
@@ -478,7 +513,9 @@ def looks_like_service_token(candidate: str) -> bool:
     return _TOKEN_RE.match(candidate.strip()) is not None
 
 
-def verify_token(settings: Settings | None, plaintext: str) -> ServiceTokenPrincipal | None:
+def verify_token(
+    settings: Settings | None, plaintext: str, *, client_ip: str | None = None
+) -> ServiceTokenPrincipal | None:
     """Authenticate a presented token, or return None.
 
     One indexed lookup on the public prefix, then one bcrypt verification — the
@@ -511,7 +548,9 @@ def verify_token(settings: Settings | None, plaintext: str) -> ServiceTokenPrinc
             return None
         if row.revoked_at is not None:
             return None
-        expires = _aware(row.expires_at)
+        if not client_allowed(row.allowed_cidrs or [], client_ip):
+            return None
+        expires = effective_expiry(row)
         if expires is None or expires <= _now():
             return None
         try:
@@ -561,3 +600,101 @@ def reset_for_tests() -> None:
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         session.query(models.ServiceToken).delete()
+
+
+def rotate_token(
+    settings: Settings, *, token_id: str, tenant_id: str,
+    grace_seconds: int = 3600, expires_in_days: int | None = None,
+    issuer_role: str, issuer_is_platform_admin: bool = False,
+    issuer_authority: permission_catalog.Authority | None = None,
+    created_by: str | None = None,
+    audit: audit_service.AuditContext | None = None,
+) -> dict[str, Any] | None:
+    """Atomically link a replacement and shorten its predecessor's validity.
+
+    Locking the predecessor serializes competing rotations. It may be rotated
+    once only; retries cannot keep extending the overlap or create siblings.
+    """
+    if not 0 <= grace_seconds <= 604800:
+        raise ValueError("grace_seconds must be between 0 and 604800")
+    ttl = settings.service_token_default_ttl_days if expires_in_days is None else expires_in_days
+    if not 1 <= ttl <= settings.service_token_max_ttl_days:
+        raise ValueError("expires_in_days exceeds configured bounds")
+    with get_session(settings.postgres_url) as session:
+        old = session.execute(select(models.ServiceToken).where(
+            models.ServiceToken.token_id == token_id,
+            models.ServiceToken.tenant_id == tenant_id,
+        ).with_for_update()).scalar_one_or_none()
+        if old is None:
+            return None
+        if status_of(old) != "active" or old.rotation_expires_at is not None:
+            raise ValueError(
+                "only an active, previously unrotated token can be rotated; if the replacement's "
+                "secret was lost, rotate the replacement or revoke it and issue a new token")
+        _refuse_escalation(old.role, issuer_role=issuer_role,
+                          issuer_is_platform_admin=issuer_is_platform_admin,
+                          issuer_authority=issuer_authority)
+        before = _to_dict(old)
+        plaintext, prefix = _new_token()
+        now = _now()
+        replacement = models.ServiceToken(
+            token_id=f"st_{secrets.token_hex(8)}", tenant_id=tenant_id,
+            name=old.name, scopes=old.scopes, role=old.role,
+            allowed_cidrs=list(old.allowed_cidrs or []),
+            expiry_notice_days=old.expiry_notice_days,
+            rotated_from_id=old.token_id, created_by=created_by,
+            token_prefix=prefix, token_hash=pwd_context.hash(plaintext),
+            created_at=now, expires_at=now + timedelta(days=ttl),
+        )
+        old.rotation_expires_at = min(_aware(old.expires_at), now + timedelta(seconds=grace_seconds))
+        session.add(replacement)
+        session.flush()
+        out = _to_dict(replacement)
+        audit_service.record(session, audit, action=audit_service.ACTION_SERVICE_TOKEN_ROTATE,
+                             resource_type="service_token", resource_id=old.token_id,
+                             tenant_id=tenant_id, before=before,
+                             after={"predecessor": _to_dict(old), "replacement": out})
+    out["token"] = plaintext
+    return out
+
+
+def notify_expiring(settings: Settings, *, tenant_id: str, now: datetime) -> int:
+    """Send durable, deduplicated webhook/broker notices before credential expiry.
+
+    The normal workflow subscription machinery owns retries and tenant routing.
+    Zero notice days opts out. Rotation overlap uses the shorter deadline.
+    """
+    from api.services import workflow_events
+
+    if not settings.workflow_events_enabled:
+        return 0
+    with get_session(settings.postgres_url) as session:
+        rows = session.execute(select(models.ServiceToken).where(
+            models.ServiceToken.tenant_id == tenant_id,
+            models.ServiceToken.revoked_at.is_(None),
+            models.ServiceToken.expires_at > now,
+            models.ServiceToken.expiry_notice_days > 0,
+        )).scalars().all()
+        # A predecessor whose live replacement exists is expected to stop working;
+        # the replacement carries the notice for its own expiry instead.
+        replaced = set(session.scalars(select(models.ServiceToken.rotated_from_id).where(
+            models.ServiceToken.tenant_id == tenant_id,
+            models.ServiceToken.rotated_from_id.is_not(None),
+            models.ServiceToken.revoked_at.is_(None),
+            models.ServiceToken.expires_at > now,
+        )))
+        candidates = []
+        for row in rows:
+            if row.rotation_expires_at is not None and row.token_id in replaced:
+                continue
+            deadline = effective_expiry(row)
+            if now < deadline <= now + timedelta(days=row.expiry_notice_days):
+                candidates.append((_to_dict(row), deadline))
+    sent = 0
+    for data, deadline in candidates:
+        sent += bool(workflow_events.emit_once(
+            settings, "service_token_expiring", tenant_id=tenant_id,
+            subject_id=data["token_id"], marker=deadline.isoformat(),
+            data=data, now=now,
+        ))
+    return sent

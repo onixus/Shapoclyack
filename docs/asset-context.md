@@ -90,12 +90,31 @@ Two ways in, and they write the same columns and the same audit trail.
 directory export as CSV or JSON and upserts it row by row. What it is and is
 not:
 
-- **A file import, not a connector.** There is no ServiceNow (Table API)
-  connector and no LDAP/AD computer sync in the platform — those remain open
-  under #350 (the LDAP half after
-  [#317](https://github.com/onixus/Shapoclyack/issues/317)). A scheduled sync
-  today is your job that exports the file and posts it, ideally with a service
-  token issued with the `admin` role and an `Idempotency-Key`.
+- **ServiceNow CMDB connector.** The import dialog also configures one read-only
+  ServiceNow Table API source per tenant. Configure an HTTPS origin, a table,
+  an import-field → remote-field mapping, a write-only bearer token and a
+  schedule interval (300–604800 seconds). The master encryption key must be
+  configured first. Saving a changed origin requires a new token. Preview
+  fetches current records and computes the existing dry-run conflict report;
+  applying fetches again and preserves operator edits and identifier ownership.
+  Scheduled imports use the same policy, with no automatic merges, deletes,
+  identifier linking or operator-overwrite option. Config and apply are audited.
+  Only `asset.import` may view/configure/run this source.
+- **Bounded source, explicit failure.** Only public HTTPS destinations pass the
+  pinned SSRF-safe transport; redirects are not followed. Each page is at most
+  1 MiB, the complete fetch has a 60-second budget and the existing 5000-row /
+  2 MiB import limits apply before any writes. Sources above these limits fail
+  rather than silently importing a prefix. Narrow the source table externally.
+  A stable source ordered by `sys_id` is required; duplicate page identities fail.
+  Last attempt, safe error and outcome counts are available from
+  `GET /api/assets/import/connector`. Schedule failures retry at the configured
+  interval. Disable the schedule to stop future attempts. Configuration changes
+  serialize with an import that already started.
+- **LDAP/AD remains unavailable.** The API and UI explicitly report dependency
+  [#317](https://github.com/onixus/Shapoclyack/issues/317). A file whose source
+  is labelled `ad` is an operator-prepared export; it does not enable directory
+  synchronization. No real ServiceNow customer connection is part of local tests.
+
 - **Permission `asset.import`** — tenant `admin` and platform admin. The
   operator keeps `PATCH` and `/assets/bulk`; an import also *registers*
   assets, which spends the tenant's asset quota.
