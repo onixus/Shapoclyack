@@ -255,6 +255,8 @@ NOT_SUBJECT_COLUMNS: dict[tuple[str, str], str] = {
     ("vulnerabilities", "cwe"): "weakness identifiers",
     ("vulnerabilities", "fp_evidence"): "the scanner evidence a false-positive verdict rests on",
     ("vulnerabilities", "match_evidence"): "why a retro match was made",
+    ("vulnerabilities", "non_cve"): "the template and target subject of a reviewed non-CVE finding",
+    ("vulnerabilities", "finding_evidence"): "sensor observations of the target (rule, subject, preview, digests), rebound to tenant and run",
     ("webhook_subscriptions", "event_kinds"): "event names",
     ("webhook_subscriptions", "headers"): "HTTP headers for the receiver, set by the tenant",
     ("webhook_subscriptions", "transport_config"): "tracker project/table/test ids",
