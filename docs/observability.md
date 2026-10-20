@@ -297,7 +297,7 @@ neither could fire at all.
 | `octo_audit_events_published_total` | counter | `outcome` (`published`, `skipped`, `error`) | E |
 | `octo_workflow_events_total` | counter | `kind` (the eight `WORKFLOW_EVENT_KINDS`), `outcome` (`queued`, `no_subscription`, `error`) | E |
 | `octo_sla_escalations_total` | counter | `action` (`reassigned`, `severity_bumped`) | E |
-| `octo_webhook_deliveries_total` | counter | `outcome` (`queued`, `delivered`, `retrying`, `dead`) | E |
+| `octo_webhook_deliveries_total` | counter | `outcome` (`queued`, `delivered`, `skipped`, `retrying`, `dead`) | E |
 | `octo_webhook_delivery_duration_seconds` | histogram, 50 ms – 30 s | — | R |
 | `octo_webhook_delivery_queue` | gauge | `status` (the delivery statuses) | C |
 | `octo_ticket_sync_polls_total` | counter | `transport` (`jira`, `servicenow`, `defectdojo`), `outcome` (`applied`, `unchanged`, `failed`) | E |

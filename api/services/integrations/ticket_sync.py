@@ -1,4 +1,4 @@
-"""Two-way ticket status synchronisation for Jira, ServiceNow and DefectDojo (#183).
+"""Two-way ticket status synchronisation for Jira, ServiceNow, DefectDojo, GitHub and GitLab (#183).
 
 Inbound: poll the tracker and reconcile the finding's lifecycle state. On a
 cadence, by ``ticket_sync_worker.py`` (#347), and on demand from
@@ -94,6 +94,16 @@ def map_remote_status_to_vuln_state(
         # work is done — so that is the only thing read from it.
         return None, "Active"
 
+    if t == "github":
+        raw = str(remote_data.get("state") or "").strip().lower()
+        # Like DefectDojo, an issue can only honestly assert "the work is done".
+        # "open" is the state every issue is created in.
+        return ("CLOSED" if raw == "closed" else None), (raw or None)
+
+    if t == "gitlab":
+        raw = str(remote_data.get("state") or "").strip().lower()
+        return ("CLOSED" if raw == "closed" else None), (raw or None)
+
     return None, None
 
 
@@ -186,6 +196,47 @@ def _url(base_url: str, path: str, query: str = "") -> str:
     return urlunsplit((parts.scheme, parts.netloc, f"{root}/{path.lstrip('/')}", query, ""))
 
 
+def _split_issue_key(ticket_key: str) -> tuple[str, str]:
+    """``<repository>#<number>`` -> ``(repository, number)``.
+
+    The key was written by :func:`tickets.parse_created`, but it is also
+    editable by an operator, so both halves are re-checked here: the repository
+    ends up in a URL path and the number must be digits.
+    """
+    repo, sep, number = str(ticket_key).rpartition("#")
+    if not sep or not repo or not number.isdigit():
+        raise TicketSpecError(f"ticket key {ticket_key!r} is not '<repository>#<number>'")
+    if any(part in ("", ".", "..") for part in repo.split("/")):
+        raise TicketSpecError(f"ticket key {ticket_key!r} has an unsafe repository")
+    return repo, number
+
+
+def allowed_issue_repos(config: dict[str, Any] | None) -> set[str]:
+    """Repositories / projects this subscription is configured to open issues in."""
+    cfg = config or {}
+    repos = {str(cfg.get("repository") or cfg.get("project") or "")}
+    repos.update(str(rule.get("target") or "") for rule in cfg.get("target_rules") or [])
+    return {r.lower() for r in repos if r}
+
+
+def _issue_path(transport: str, ticket_key: str) -> str:
+    """Issue API path for a stored key.
+
+    Only the key's *form* is checked here. Which repositories a key may name is
+    decided when the link is created (``vulnerabilities.set_ticket`` checks
+    :func:`allowed_issue_repos`; the transport builds its own keys from the
+    config), and it is the only writer of ``ticket_key``. So a link that exists
+    was valid when made, and survives the repository later leaving the config
+    (a renamed target, a removed rule) instead of silently ceasing to sync.
+    GitHub / GitLab links did not exist before this was introduced, so there
+    are no unchecked legacy links to worry about.
+    """
+    repo, number = _split_issue_key(ticket_key)
+    if transport == "github":
+        return f"repos/{quote(repo, safe='/')}/issues/{number}"
+    return f"api/v4/projects/{quote(repo, safe='')}/issues/{number}"
+
+
 def _decode(result: DeliveryResult) -> dict[str, Any]:
     if not result.body:
         return {}
@@ -224,6 +275,12 @@ def fetch_ticket_status(
         url = _url(base_url, "api/now/table/incident", f"sysparm_query=number={key}&sysparm_limit=1")
     elif t == "defectdojo":
         url = _url(base_url, f"api/v2/findings/{key}/")
+    elif t in ("github", "gitlab"):
+        try:
+            url = _url(base_url, _issue_path(t, ticket_key))
+        except TicketSpecError as exc:
+            # Not a request that failed: one we refused to make. Permanent.
+            return None, None, {"error": str(exc), "status_code": None, "retryable": False}
     else:
         raise TicketSpecError(f"unsupported ticket transport: {transport}")
 
@@ -317,6 +374,35 @@ def push_status_update(
     t = validate_transport(transport)
     headers = request_headers(t, secret=secret, extra_headers=extra_headers, auth_mode=auth_mode)
     key = quote(str(ticket_key), safe="")
+
+    if t in ("github", "gitlab"):
+        closed = to_state == vuln_states.CLOSED
+        reopen = to_state in (
+            vuln_states.OPEN,
+            vuln_states.ACKNOWLEDGED,
+            vuln_states.PLANNED,
+            vuln_states.FIXING,
+        )
+        if not closed and not reopen:
+            return False
+        if t == "github":
+            method, payload = "PATCH", {"state": "closed" if closed else "open"}
+        else:
+            method, payload = "PUT", {"state_event": "close" if closed else "reopen"}
+        try:
+            issue_path = _issue_path(t, ticket_key)
+        except TicketSpecError as exc:
+            logger.warning("Refusing to update %s ticket: %s", t, exc)
+            return False
+        result = request_fn(
+            method,
+            _url(base_url, issue_path),
+            json.dumps(payload).encode("utf-8"),
+            headers,
+            timeout_seconds=timeout_seconds,
+            allow_private=allow_private,
+        )
+        return result.ok
 
     if t == "defectdojo":
         flags = DEFECTDOJO_PUSH_FLAGS.get(to_state)

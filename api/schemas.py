@@ -1125,8 +1125,8 @@ class CreateWebhookRequest(BaseModel):
     secret: str | None = Field(default=None, max_length=512)
     headers: dict[str, str] | None = None
     enabled: bool = True
-    # webhook (default HMAC POST) | jira | servicenow | defectdojo
-    transport: Literal["webhook", "jira", "servicenow", "defectdojo"] | None = None
+    # webhook (default HMAC POST) | jira | servicenow | defectdojo | github | gitlab
+    transport: Literal["webhook", "jira", "servicenow", "defectdojo", "github", "gitlab"] | None = None
     transport_config: dict[str, Any] | None = None
 
 
@@ -1142,7 +1142,7 @@ class UpdateWebhookRequest(BaseModel):
     # caller is the one who supplied it. An empty string clears signing.
     secret: str | None = Field(default=None, max_length=512)
     headers: dict[str, str] | None = None
-    transport: Literal["webhook", "jira", "servicenow", "defectdojo"] | None = None
+    transport: Literal["webhook", "jira", "servicenow", "defectdojo", "github", "gitlab"] | None = None
     transport_config: dict[str, Any] | None = None
 
 
@@ -2683,7 +2683,7 @@ class VulnerabilityTicketRequest(BaseModel):
     over the existing delivery queue. This only records where the work lives.
     """
 
-    system: Literal["jira", "servicenow", "smax", "defectdojo", "other"]
+    system: Literal["jira", "servicenow", "smax", "defectdojo", "github", "gitlab", "other"]
     key: str | None = Field(default=None, max_length=200)
     url: str | None = Field(default=None, max_length=2000)
     note: str | None = Field(default=None, max_length=2000)

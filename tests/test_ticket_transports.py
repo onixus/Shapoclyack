@@ -282,3 +282,288 @@ def test_webhook_transport_still_hmac_posts(settings):
     webhooks.enqueue_event(_event(event_id="ev-hmac"))
     webhooks.dispatch_once(post=fake_post)
     assert any(h.get("X-Shapoclyack-Signature", "").startswith("sha256=") for h in seen)
+
+
+def _seed_asset(settings, **fields):
+    now = datetime.now(UTC)
+    with get_session(settings.postgres_url) as session:
+        session.add(
+            models.Asset(
+                asset_id="asset-map",
+                tenant_id="default",
+                status="active",
+                first_seen=now,
+                last_seen=now,
+                **fields,
+            )
+        )
+        session.add(
+            models.AssetIdentifier(
+                asset_id="asset-map",
+                tenant_id="default",
+                identifier_type="ip",
+                identifier_value="10.0.0.1",
+            )
+        )
+
+
+@requires_postgres
+def test_dispatch_routes_ticket_by_asset_business_unit_and_skips_low(settings):
+    """#353: asset context reaches the mapping; a skipped severity posts nothing."""
+    _seed_asset(settings, business_unit="Payments", asset_criticality=5)
+    webhooks.create_subscription(
+        tenant_id="default",
+        name="jira-map",
+        url="https://jira.example",
+        transport="jira",
+        transport_config={
+            "project_key": "DEF",
+            "target_rules": [{"business_unit": "Payments", "min_criticality": 4, "target": "PAY"}],
+            "severity_rules": {"low": {"create": False}},
+        },
+        secret="jira-token",
+        created_by="admin",
+    )
+    captured = []
+
+    def fake_post(url, body, headers, **kwargs):
+        captured.append(json.loads(body))
+        return delivery_transport.DeliveryResult(
+            ok=True, status_code=201, error=None, retryable=False, body='{"key":"PAY-1"}'
+        )
+
+    webhooks.enqueue_event(_event(event_id="ev-map-1"))
+    webhooks.enqueue_event(
+        _event(event_id="ev-map-2", data={"severity": "low", "cve": "CVE-2026-2"})
+    )
+    outcome = webhooks.dispatch_once(post=fake_post)
+    assert outcome["delivered"] == 1 and outcome["skipped"] == 1
+    assert len(captured) == 1
+    assert captured[0]["fields"]["project"]["key"] == "PAY"
+
+
+def _seed_asset_for(settings, tenant_id, asset_id, **fields):
+    now = datetime.now(UTC)
+    with get_session(settings.postgres_url) as session:
+        session.add(
+            models.Asset(
+                asset_id=asset_id,
+                tenant_id=tenant_id,
+                status="active",
+                first_seen=now,
+                last_seen=now,
+                **fields,
+            )
+        )
+        session.add(
+            models.AssetIdentifier(
+                asset_id=asset_id,
+                tenant_id=tenant_id,
+                identifier_type="ip",
+                identifier_value="10.0.0.1",
+            )
+        )
+
+
+@requires_postgres
+def test_asset_context_never_crosses_tenants(settings):
+    """Same IP in two tenants: each tenant sees only its own asset's context."""
+    from api.services.integrations import secure_webhooks
+
+    tenants_service.create_tenant(name="Other", tenant_id="other")
+    _seed_asset_for(settings, "default", "a-default", business_unit="Payments")
+    _seed_asset_for(settings, "other", "a-other", business_unit="Secret-BU")
+    ctx = secure_webhooks._asset_context("default", _event())
+    assert ctx["business_unit"] == "Payments"
+    ctx = secure_webhooks._asset_context("other", _event())
+    assert ctx["business_unit"] == "Secret-BU"
+    # a tenant with no such asset gets "not found", not someone else's asset
+    tenants_service.create_tenant(name="Third", tenant_id="third")
+    assert secure_webhooks._asset_context("third", _event()) is None
+
+
+@requires_postgres
+def test_asset_context_prefers_the_asset_that_holds_the_finding(settings):
+    from api.services.integrations import secure_webhooks
+
+    now = datetime.now(UTC)
+    _seed_asset_for(settings, "default", "a-1", business_unit="First")
+    with get_session(settings.postgres_url) as session:
+        session.add(
+            models.Asset(
+                asset_id="a-2", tenant_id="default", status="active", first_seen=now,
+                last_seen=now, business_unit="Second",
+            )
+        )
+        session.add(
+            models.AssetIdentifier(
+                asset_id="a-2", tenant_id="default", identifier_type="hostname",
+                identifier_value="10.0.0.1",
+            )
+        )
+        session.add(
+            models.Vulnerability(
+                vuln_id="vln_a2", tenant_id="default", asset_id="a-2",
+                finding_key="k-a2", cve="CVE-2026-1", port="443", title="t",
+                severity="critical", state="OPEN", state_changed_at=now,
+                first_seen_at=now, last_seen_at=now, sla_started_at=now,
+                created_at=now, updated_at=now,
+            )
+        )
+    # the finding lives on a-2, so a-2 is where the ticket will be linked and
+    # therefore the asset whose business unit routes it
+    assert secure_webhooks._asset_context("default", _event())["business_unit"] == "Second"
+
+
+@requires_postgres
+def test_asset_lookup_failure_is_retried_not_routed_to_the_default(settings, monkeypatch):
+    _seed_asset(settings, business_unit="Payments", asset_criticality=5)
+    webhooks.create_subscription(
+        tenant_id="default",
+        name="jira-map",
+        url="https://jira.example",
+        transport="jira",
+        transport_config={
+            "project_key": "DEF",
+            "target_rules": [{"business_unit": "Payments", "target": "PAY"}],
+        },
+        secret="jira-token",
+        created_by="admin",
+    )
+    from api.services.integrations import secure_webhooks
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(secure_webhooks._base, "matching_findings", boom)
+    posted = []
+
+    def fake_post(url, body, headers, **kwargs):
+        posted.append(body)
+        return delivery_transport.DeliveryResult(
+            ok=True, status_code=201, error=None, retryable=False, body='{"key":"X-1"}'
+        )
+
+    webhooks.enqueue_event(_event(event_id="ev-retry"))
+    outcome = webhooks.dispatch_once(post=fake_post)
+    assert posted == []  # nothing filed against the default project
+    assert outcome["retrying"] == 1 and outcome["delivered"] == 0
+    # an asset that simply does not exist still falls back to the base target
+    monkeypatch.undo()
+    with get_session(settings.postgres_url) as session:
+        session.execute(models.AssetIdentifier.__table__.delete())
+        session.execute(models.Asset.__table__.delete())
+    assert secure_webhooks._asset_context("default", _event()) is None
+
+
+@requires_postgres
+def test_skipped_ticket_is_recorded_as_skipped(settings):
+    webhooks.create_subscription(
+        tenant_id="default",
+        name="jira-skip",
+        url="https://jira.example",
+        transport="jira",
+        transport_config={"project_key": "SEC", "severity_rules": {"low": {"create": False}}},
+        secret="jira-token",
+        created_by="admin",
+    )
+    webhooks.enqueue_event(_event(event_id="ev-skip", data={"severity": "low", "cve": "CVE-2026-2"}))
+    outcome = webhooks.dispatch_once(post=lambda *a, **k: pytest.fail("tracker was called"))
+    assert outcome.get("skipped") == 1 and outcome["delivered"] == 0
+    sub = webhooks.list_subscriptions(tenant_id="default")[0][0]
+    assert sub["last_status"].startswith("skipped:")
+    items, _ = webhooks.list_deliveries(subscription_id=sub["subscription_id"])
+    assert items[0]["last_error"].startswith("skipped:")
+
+
+@requires_postgres
+def test_link_created_ticket_for_github_and_manual_link_format(settings):
+    now = datetime.now(UTC)
+    _seed_asset(settings)
+    with get_session(settings.postgres_url) as session:
+        session.add(
+            models.Vulnerability(
+                vuln_id="vln_gh", tenant_id="default", asset_id="asset-map",
+                finding_key="k-gh", cve="CVE-2026-1", port="443", title="t",
+                severity="critical", state="OPEN", state_changed_at=now,
+                first_seen_at=now, last_seen_at=now, sla_started_at=now,
+                created_at=now, updated_at=now,
+            )
+        )
+    assert webhooks.link_created_ticket(
+        tenant_id="default",
+        payload=_event(),
+        transport="github",
+        ticket_key="acme/sec#12",
+        ticket_url="https://github.com/acme/sec/issues/12",
+    )
+    finding = vulns_service.get_vulnerability(settings, tenant_id="default", vuln_id="vln_gh")
+    assert finding["ticket_system"] == "github" and finding["ticket_key"] == "acme/sec#12"
+    # a hand-typed key that is not '<repository>#<number>' is refused up front
+    with pytest.raises(ValueError, match="repository"):
+        vulns_service.set_ticket(
+            settings, tenant_id="default", vuln_id="vln_gh", system="github",
+            key="12", url=None, actor="alice",
+        )
+
+
+@requires_postgres
+def test_manual_github_link_is_checked_against_the_subscription(settings):
+    now = datetime.now(UTC)
+    _seed_asset(settings)
+    with get_session(settings.postgres_url) as session:
+        session.add(
+            models.Vulnerability(
+                vuln_id="vln_man", tenant_id="default", asset_id="asset-map",
+                finding_key="k-man", cve="CVE-2026-1", port="443", title="t",
+                severity="critical", state="OPEN", state_changed_at=now,
+                first_seen_at=now, last_seen_at=now, sla_started_at=now,
+                created_at=now, updated_at=now,
+            )
+        )
+
+    def link(key):
+        return vulns_service.set_ticket(
+            settings, tenant_id="default", vuln_id="vln_man", system="github",
+            key=key, url=None, actor="alice",
+        )
+
+    # no subscription at all: nothing to validate against
+    with pytest.raises(ValueError, match="subscription"):
+        link("acme/sec#1")
+    sub = webhooks.create_subscription(
+        tenant_id="default",
+        name="gh",
+        url="https://api.github.com",
+        transport="github",
+        transport_config={
+            "repository": "acme/sec",
+            "target_rules": [{"business_unit": "Pay", "target": "acme/pay"}],
+        },
+        secret="tok",
+        created_by="admin",
+    )
+    with pytest.raises(ValueError, match="not one"):
+        link("victim-org/private#1")
+    assert link("ACME/sec#1")["ticket_key"] == "ACME/sec#1"
+    assert link("acme/pay#2")["ticket_key"] == "acme/pay#2"
+    # the repository leaves the config: the stored link is left alone
+    webhooks.update_subscription(
+        sub["subscription_id"],
+        transport_config={"repository": "acme/other"},
+    )
+    finding = vulns_service.get_vulnerability(settings, tenant_id="default", vuln_id="vln_man")
+    assert finding["ticket_key"] == "acme/pay#2"
+    # ...but a new hand-typed link to the removed repository is refused
+    with pytest.raises(ValueError, match="not one"):
+        link("acme/pay#3")
+
+
+@requires_postgres
+def test_link_created_ticket_survives_non_dict_event_data(settings):
+    _seed_asset(settings)
+    payload = {"event": {"kind": "new_cve", "host": "10.0.0.1", "cve": "CVE-2026-1", "data": "oops"}}
+    assert webhooks.link_created_ticket(
+        tenant_id="default", payload=payload, transport="github",
+        ticket_key="a/b#1", ticket_url=None,
+    ) is False
