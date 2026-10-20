@@ -154,6 +154,15 @@ RUN npm run build
 
 # Pinned by multi-arch index digest for reproducible, supply-chain-safe builds.
 # python:3.12-slim
+# Shared source/checksum pin and install allowlist for the SSH deployment client.
+# Build against the runtime's Debian ABI; compilers and headers stay here.
+FROM python:3.12-slim@sha256:dddfd7e07f9d15aeeca61529320492139d21cac7f0070c00609243e51e4e0016 AS openssh-client-build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential ca-certificates curl pkg-config libssl-dev zlib1g-dev \
+      libfido2-dev libkrb5-dev libedit-dev && rm -rf /var/lib/apt/lists/*
+COPY scripts/build-openssh-client.sh /tmp/build-openssh-client.sh
+RUN sh /tmp/build-openssh-client.sh
+
 FROM python:3.12-slim@sha256:dddfd7e07f9d15aeeca61529320492139d21cac7f0070c00609243e51e4e0016
 
 LABEL org.opencontainers.image.source="https://github.com/onixus/Shapoclyack" \
@@ -176,13 +185,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # Nmap is not bundled and not used (NPSL licence, issue #97; docs/nmap-migration.md).
 RUN set -eux; \
     apt-get update; \
-    # openssh-client: the SSH push deployment (api/services/agent_deployer.py)
-    # runs `ssh`/`ssh-keyscan` from this image; without it the feature fails
-    # with HostKeyUnavailable before anything is sent to the target.
+    # SSH client libraries: the fixed client is copied from the shared build
+    # below; do not reinstall Debian's vulnerable openssh-client package.
     # iproute2: Pulse's ARP discovery (discovery.l2) reads neighbours through
     # `ip -4 neigh`. Without `ip` it reports 0 live hosts, prints nothing and
     # exits 0 (docs/pulse-backend.md#l2-discovery).
-    PKGS="ca-certificates curl fping git iproute2 jq openssh-client fonts-dejavu-core"; \
+    PKGS="ca-certificates curl fping git iproute2 jq fonts-dejavu-core libssl3t64 zlib1g libfido2-1 libgssapi-krb5-2 libedit2"; \
     apt-get install -y --no-install-recommends ${PKGS}; \
     # Security updates the pinned base digest does not carry yet: Debian has
     # published them, python:3.12-slim has not been rebuilt on top. Upgrade
@@ -195,6 +203,23 @@ RUN set -eux; \
         dpkg --compare-versions "$(dpkg-query -W -f='${Version}' "$pkg")" ge '8.14.1-2+deb13u7'; \
     done; \
     rm -rf /var/lib/apt/lists/*
+
+# Copy only client binaries, helpers, config and provenance; no vulnerable
+# distro copy, SSH server, host keys or privileged signing helper ships.
+COPY --from=openssh-client-build /out/ /
+RUN set -eux; \
+    ! dpkg-query -W -f='${Status}' openssh-client 2>/dev/null | grep -q 'install ok installed'; \
+    ssh -V 2>&1 | grep -F 'OpenSSH_10.6p1'; \
+    for program in ssh scp sftp ssh-add ssh-agent ssh-keygen ssh-keyscan; do \
+      test -x "/usr/bin/$program"; \
+      libraries="$(ldd "/usr/bin/$program")"; \
+      case "$libraries" in *'not found'*) echo "$libraries" >&2; exit 1;; esac; \
+    done; \
+    for helper in ssh-pkcs11-helper ssh-sk-helper; do \
+      test -x "/usr/lib/openssh/$helper"; \
+      libraries="$(ldd "/usr/lib/openssh/$helper")"; \
+      case "$libraries" in *'not found'*) echo "$libraries" >&2; exit 1;; esac; \
+    done
 
 # Copied as directories, not as /out/bin/pulse: with --build-arg INSTALL_PULSE=0
 # the stage leaves both empty and this copies nothing, which is how the image
@@ -314,7 +339,7 @@ RUN bash scripts/fetch-nuclei-templates.sh /usr/share/nuclei-templates || true
 # runs with allowPrivilegeEscalation: true — without it the kernel ignores the
 # file capabilities on naabu and pulse — and the same setting lets a
 # setuid-root binary take the process to uid 0: su, passwd, mount, chfn and the
-# rest of the Debian base, ssh-keysign from openssh-client. Nothing in this
+# rest of the Debian base. Nothing in this
 # image uses one. Here, after the last package install, so none comes back;
 # chmod leaves the file capabilities above alone, fping's included; the check
 # fails the build rather than ship an fping without raw sockets.

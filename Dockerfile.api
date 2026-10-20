@@ -8,6 +8,15 @@ RUN npm ci
 COPY web-next/ ./
 RUN npm run build
 
+# Shared source/checksum pin and install allowlist for the SSH deployment client.
+# Build against the runtime's Debian ABI; compilers and headers stay here.
+FROM python:3.12-slim@sha256:dddfd7e07f9d15aeeca61529320492139d21cac7f0070c00609243e51e4e0016 AS openssh-client-build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential ca-certificates curl pkg-config libssl-dev zlib1g-dev \
+      libfido2-dev libkrb5-dev libedit-dev && rm -rf /var/lib/apt/lists/*
+COPY scripts/build-openssh-client.sh /tmp/build-openssh-client.sh
+RUN sh /tmp/build-openssh-client.sh
+
 FROM python:3.12-slim@sha256:dddfd7e07f9d15aeeca61529320492139d21cac7f0070c00609243e51e4e0016
 
 LABEL org.opencontainers.image.source="https://github.com/onixus/Shapoclyack" \
@@ -21,13 +30,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     OCTO_API_PORT=8080
 
 WORKDIR /app
-# openssh-client is the only system package: the SSH push deployment
-# (api/services/agent_deployer.py) shells out to `ssh` and `ssh-keyscan`, and
-# the image used to ship neither, so the documented feature failed with
-# HostKeyUnavailable before anything reached the target.
+# The SSH deployer uses the fixed client built above. Its runtime libraries
+# also preserve GSSAPI/FIDO/PKCS11 and interactive sftp support.
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends openssh-client fonts-dejavu-core; \
+    apt-get install -y --no-install-recommends fonts-dejavu-core libssl3t64 zlib1g libfido2-1 libgssapi-krb5-2 libedit2; \
     # Security updates the pinned base digest does not carry yet: Debian has
     # published them, python:3.12-slim has not been rebuilt on top. Upgrade
     # only the named packages, and assert the version so a no-op upgrade fails
@@ -35,6 +42,23 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0; \
     dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libpcre2-8-0)" ge '10.46-1~deb13u3'; \
     rm -rf /var/lib/apt/lists/*
+# Copy only client binaries, helpers, config and provenance; no vulnerable
+# distro copy, SSH server, host keys or privileged signing helper ships.
+COPY --from=openssh-client-build /out/ /
+RUN set -eux; \
+    ! dpkg-query -W -f='${Status}' openssh-client 2>/dev/null | grep -q 'install ok installed'; \
+    ssh -V 2>&1 | grep -F 'OpenSSH_10.6p1'; \
+    for program in ssh scp sftp ssh-add ssh-agent ssh-keygen ssh-keyscan; do \
+      test -x "/usr/bin/$program"; \
+      libraries="$(ldd "/usr/bin/$program")"; \
+      case "$libraries" in *'not found'*) echo "$libraries" >&2; exit 1;; esac; \
+    done; \
+    for helper in ssh-pkcs11-helper ssh-sk-helper; do \
+      test -x "/usr/lib/openssh/$helper"; \
+      libraries="$(ldd "/usr/lib/openssh/$helper")"; \
+      case "$libraries" in *'not found'*) echo "$libraries" >&2; exit 1;; esac; \
+    done
+
 # Installed from the hash-pinned locks, not from requirements-api.txt (#313);
 # see the same step in Dockerfile for why and requirements-pip.txt for the pip.
 # Package installers are build-only; remove pip and its bundled bootstrap wheel
