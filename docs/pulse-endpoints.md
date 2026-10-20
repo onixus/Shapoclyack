@@ -111,8 +111,7 @@ endpoint; no new TLS/JARM or active-check flags are enabled here. The pinned
 engine's packet/handshake budget is not measured by these planner counters.
 
 The immediate crash retry, optional all-closed settle retry, configured
-command retries and three-consecutive-crashed-chunks breaker remain bounded
-as before. Every retry uses the same exact chunk endpoints. More unique port
+command retries and crash/timeout breakers remain bounded as before. Every retry uses the same exact chunk endpoints. More unique port
 signatures can mean more processes, repeated engine initialization, and a
 larger aggregate retry/timeout budget over the whole stage. This change does
 not add a global deadline or promise a speedup. Measure these costs with the
@@ -168,19 +167,58 @@ coverage, and unresolved unavailable endpoints. The closed-service regression
 correctness tradeoff**, not a promise that 55% is a production latency ceiling.
 It must not be hidden by marking a missing host complete or reducing coverage.
 
-For N pending hosts with signatures s and chunk size H, nominal processes are
-`C = sum(ceil(hosts_with_signature_s / H))`, at most N. In the three-host
-fixture, different signatures cost 3 processes and 3 command pairs; identical
-signatures cost 1 process and 3 pairs. No runtime flag expands exact endpoints.
-At most three logical calls per chunk can arise from the initial call, OS
-fallback, and one crash **or** settle repeat; command retries multiply process
-attempts by at most `R + 1`. Thus `3*C*(R+1)` bounds adapter probe subprocess
-attempts, excluding binary/plugin capability checks and other stages. Each
-call has its configured process deadline plus any plugin allowance; settling
-adds its configured delay once per eligible chunk; lower-level retries also
-back off by `min(2 * attempt, 10)` seconds per failed attempt. Three consecutive crashed
-or timed-out chunks trigger their respective breakers. These are invocation
-bounds, not a global stage deadline, packet cap or bound over repeated resumes.
+For `N` pending hosts with complete port signatures `s` and positive chunk size
+`H`, nominal chunks are `C = sum(ceil(hosts_with_signature_s / H))`, at most
+`N`. Three distinct signatures cost three processes in a successful first
+pass; identical signatures can cost one. Raising `chunk_hosts` cannot batch
+different signatures together. The adapter has no separate global cap on `N`
+or signature count: upstream approved input and operator capacity policy must
+bound them. Its Pulse `--max-hosts` value guards expansion per invocation; it
+is not a total-stage inventory limit.
+
+The source permits the initial call, then at most one crash **or** settle
+repeat per chunk. OS raw-socket refusal can add one fallback call, **once for
+the whole invocation**, because it disables OS for all remaining chunks. Thus:
+
+```text
+L_i <= 2 + O_i                     logical calls for chunk i
+sum(O_i) <= 1                     OS capability fallback, if requested
+A <= (2*C + I_os) * (R + 1)        conservative probe subprocess attempts
+I_os = 1 if C > 0 and OS requested, otherwise 0
+B_i = T + min(20*E_i, 1800)        seconds per attempt if plugins are loaded
+B_i = T                            otherwise
+backoff(R) = sum(min(2*a, 10), a=1..R)
+W <= sum(L_i * ((R+1)*B_i + backoff(R))) + C*S
+```
+
+`E_i` is that chunk's exact pair count, `T` the process timeout, `R` configured
+command retries and `S` the optional settle delay. With `check=False`,
+`run_command` retries exceptions such as timeout/spawn failure; a nonzero exit
+returns immediately and is handled by the adapter. It does not automatically
+retry every nonzero exit. The formula conservatively allows every logical call
+to exhaust every process deadline and backoff, even where the branch conditions
+would prevent that combination.
+
+`A` excludes capability/plugin checks and other stages. Each offered plugin has
+a separate 20-second compilation check before planning/resume reconciliation.
+`W` is a sum of scheduled process deadlines, backoffs and settle delays, **not
+a hard elapsed whole-stage deadline**: startup, termination, parsing, artifact
+I/O and callback overhead are additional. No packet/connection ceiling follows
+from it. For the measured three-signature `T=90, R=0, S=0`, plugins-off profile,
+`A <= 7` and `W <= 630 seconds` conservatively include the one possible OS
+fallback; successful first passes actually use three processes. The homogeneous
+one-chunk profile has `A <= 3`, `W <= 270 seconds`. These are worst-case allowances,
+not measured medians or recommended latency objectives.
+
+Three crash outcomes without a successful non-timeout outcome trigger the
+crash breaker; timeouts leave its crash counter unchanged. Three consecutive
+timeouts trigger the separate timeout breaker. Earlier successful evidence is
+retained. A single unavailable endpoint
+still remains unresolved. Breakers may stop before all `C` chunks, but they
+never grant completion to unvisited inputs. Every replay recomputes exact pending
+input and starts a new invocation budget; the formulas do not bound arbitrary
+repeated resumes. No global deadline or new default is introduced to make a
+benchmark look faster.
 
 OS inference may contact additional ports; TLS/JARM may create multiple
 connections; optional plugins and cipher enumeration have their own budgets.
@@ -198,11 +236,35 @@ raw outputs/PCAP and immutable source/image/binary identities. Known service,
 OS-family and TLS endpoint evidence remained identical across each scenario.
 This is separate from replaying historical source revisions.
 
-**Remaining acceptance for #448:** full integrated-main CI and release-tarball
-provenance/installed-sensor acceptance. Historical and current
-engine results are separate evidence. Full Python 3.11/3.12 and one terminal
-successful required Jenkins gate are required; targeted tests and old per-stage
-rechecks do not replace that gate. The backend decision remains #452.
+**Observed auxiliary-probe boundary:** the [2026-10-20 real-binary
+preflight](benchmarks/port-discovery-20261020/README.md#failures-and-unsupported-acceptance)
+requested `--os --os-mode sinfp` on `2222,8080,8443`, then captured additional
+SYNs to ports `21,22,25,80,135,139,443,445,3306,3389,5900` before the ten-second
+process deadline. This is an explicit whole-engine scope/budget limitation of
+Pulse 1.4.0, not a violation of the planner's target-list equality. That
+supplement also verifies five cold/five warm Naabu/Pulse chains with actual TLS
+and Nuclei evidence at the same no-raw privilege. It disables OS after the failed
+preflight; it cannot extend the OS profile's acceptance or establish a strict
+packet cap. Operators requiring strict port-level scope must disable OS and
+review other engine/plugin auxiliary probes against their approved profile;
+this documentation does not certify any whole-engine strict-scope profile.
+
+**#448 local acceptance:** the repository contains the historical raw sample
+kit, the current 1.4.0 adapter comparison with raw outputs/PCAP, correctness and
+resume tests, and the explicit cost/profile acceptance above. The unavailable
+service latency regression is accepted for correct unresolved coverage; it is
+not a reason to restore false completion. The remaining delivery gate is one
+terminal successful **integrated** required Jenkins build including complete
+Python 3.11/3.12 suites. At preparation time that gate is pending; targeted
+checks do not replace it. The terminal result belongs in the PR description
+bound to its immutable final head, without changing source after the gate.
+Track that gate and the separate #449/#450/#452 evidence in the
+[acceptance map](issues-448-452-acceptance.md).
+
+Release-tarball provenance, signature verification and installed-sensor/network
+acceptance remain separate deployment boundaries. The committed image-binary
+and loopback evidence does not claim them. #452 accepts retaining Naabu; it
+does not promote an alternative discovery backend.
 
 Rollback is a reviewed revert of the code change. It restores the previous
 overscan/resume limitations; there is deliberately no runtime switch that
