@@ -116,23 +116,46 @@ def vulnerabilities_to_rows(
         require_captured=require_captured,
         job_id=str(payload.get("job_id") or "") or None,
     )
-    from scanner.pipeline.production_evidence import scoped
-    rows: list[list[Any]] = []
+    from scanner.pipeline.production_evidence import scoped, merge
+    from scanner.pipeline.finding_evidence import canonical_json
+
+    # This legacy table is host/CVE inventory, while tracker containers include
+    # port. Fold before insertion: ReplacingMergeTree would otherwise discard
+    # all but an arbitrary port's evidence at FINAL read/merge time.
+    groups: dict[tuple[str, str], list[tuple[dict, dict]]] = {}
     for item, scored in zip(vulns, scores, strict=True):
         host = str(item.get("host") or "").strip()
-        if not host or not _is_ipv4(host):
+        if not host or not _is_ipv4(host) or not item.get("cve"):
             continue
-        # This legacy analytics table is keyed by CVE and cannot represent
-        # object-scoped non-CVE issues. Keep those in the canonical tracker;
-        # script/template identifiers must never masquerade as CVE IDs.
-        if not item.get("cve"):
-            continue
-        cve = item["cve"]
+        groups.setdefault((str(ipaddress.ip_address(host)), str(item["cve"])), []).append((item, scored))
+
+    rows: list[list[Any]] = []
+    for (host, cve), entries in sorted(groups.items()):
+        # A scalar inventory assessment has one representative. Keep its exact
+        # receipt and choose conservatively/deterministically, without ranking
+        # individual evidence observations or replacing tracker assessments.
+        entries.sort(key=lambda pair: (float(pair[1]["contextual_score"]),
+                                       canonical_json(pair[0]), canonical_json(pair[1])))
+        item, scored = entries[-1]
+        evidence = None
+        for member, _ in entries:
+            evidence = merge(evidence, scoped(member.get("finding_evidence"),
+                tenant_id=tenant_id, run_id=str(payload.get("run_id") or "")))
+        containers = {str(member.get("port")) if member.get("port") is not None else None
+                      for member, _ in entries}
+        assessment = {**scored, "finding_evidence": evidence,
+                      "inventory_projection": {
+                          "schema": "octo.cve_inventory_projection.v1",
+                          "identity": "tenant-ipv4-cve",
+                          "container_count": len(containers),
+                          "representative_policy": "highest-contextual-score-deterministic-tie",
+                          "representative_port": str(item.get("port")) if item.get("port") is not None else None,
+                      }}
         rows.append(
             [
                 tenant_uuid,
                 host,
-                str(cve),
+                cve,
                 float(scored["base_cvss"]),
                 float(scored["epss_score"]),
                 int(scored["asset_criticality"]),
@@ -141,9 +164,7 @@ def vulnerabilities_to_rows(
                 float(scored["contextual_score"]),
                 str(scored["scoring_model_version"]),
                 ts,
-                json.dumps({**scored, "finding_evidence": scoped(item.get("finding_evidence"),
-                    tenant_id=tenant_id, run_id=str(payload.get("run_id") or ""))},
-                    sort_keys=True, separators=(",", ":")),
+                json.dumps(assessment, sort_keys=True, separators=(",", ":")),
             ]
         )
     return rows

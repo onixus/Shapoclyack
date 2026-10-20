@@ -1541,10 +1541,21 @@ def register_findings_from_run(
 
             from scanner.pipeline.production_evidence import publication_disposition
             disposition = publication_disposition(row.finding_evidence, evidence)
+            previous_execution = ((row.risk_assessment or {}).get("risk_assessment") or {}).get("execution_id")
+            current_execution = (scored.get("risk_assessment") or {}).get("execution_id")
+            distinct_publication = bool(current_execution and current_execution != previous_execution)
             if disposition == "replay" or (
-                    not (evidence or {}).get("observation_count") and row.last_seen_run_id == run_id):
-                # Retain newly available raw references and incomplete markers,
-                # but replay is not a new observation or a regression.
+                    not (evidence or {}).get("observation_count") and row.last_seen_run_id == run_id
+                    and (evidence is not None or not distinct_publication)):
+                # Captured operation context can change for a distinct
+                # publication using the same run/observations (#453). Refresh
+                # that view without turning identical evidence into a new
+                # positive, reopening a task or restarting its SLA.
+                if distinct_publication:
+                    for field, value in latest.items():
+                        setattr(row, field, value)
+                    row.updated_at = now
+                # Retain newly available raw references and incomplete markers.
                 row.finding_evidence = merge(row.finding_evidence, evidence)
                 reobserved += 1
                 continue

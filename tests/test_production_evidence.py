@@ -397,6 +397,74 @@ def test_incomplete_same_run_replay_marks_gap_without_reopening(tmp_path):
     assert current['finding_evidence']['projection_incomplete']
 
 
+def test_clickhouse_inventory_folds_port_subjects_before_replacing_merge(monkeypatch):
+    from api.services import ch_transform
+    # Stub only risk scoring; exercise real scope validation, bounded evidence
+    # union and full production ClickHouse row serialization.
+    def assess(settings, *, entries, **kwargs):
+        return [dict(contextual_score=float(r['cvss']), base_cvss=float(r['cvss']),
+                     epss_score=0, asset_criticality=3, exploit_active=False,
+                     cisa_decision='Track', scoring_model_version='fixture',
+                     receipt_id='receipt-port-' + r['port']) for r in entries]
+    monkeypatch.setattr(ch_transform.risk_context, 'assess_operation', assess)
+    members = [combine([{**BASE, 'port': '80', 'cvss': 9.0}])[0],
+               combine([{**BASE, 'port': '443', 'cvss': 5.0}])[0]]
+    payload = {'tenant_id': 'owner', 'run_id': 'published'}
+    expected = None
+    for permutation in itertools.permutations(members):
+        for replay in (1, 2):
+            archive = {'vulnerabilities.json': json.dumps(list(permutation) * replay).encode(),
+                       'run_meta.json': b'{"started_at":"2026-10-20T00:00:00Z"}'}
+            projected = ch_transform.vulnerabilities_to_rows(payload, archive, require_captured=False)
+            assert len(projected) == 1
+            assessment = json.loads(projected[0][-1])
+            assert assessment['receipt_id'] == 'receipt-port-80'
+            assert assessment['inventory_projection']['container_count'] == 2
+            evidence = assessment['finding_evidence']
+            assert evidence['finding_count'] == evidence['observation_count'] == 2
+            observations = [o for g in evidence['findings'] for o in g['observations']]
+            assert {o['subject']['port'] for o in observations} == {80, 443}
+            assert {(o['tenant_id'], o['run_id']) for o in observations} == {('owner', 'published')}
+            if expected is None:
+                expected = projected
+            assert projected == expected
+    invalid = copy.deepcopy(members[1])
+    invalid['finding_evidence'] = {'malformed': True}
+    projected = ch_transform.vulnerabilities_to_rows(payload,
+        {'vulnerabilities.json': json.dumps([members[0], invalid]).encode()}, require_captured=False)
+    evidence = json.loads(projected[0][-1])['finding_evidence']
+    assert evidence['observation_count'] == 1
+    assert evidence['projection_incomplete']
+
+
+@requires_postgres
+def test_distinct_risk_receipt_refresh_does_not_reopen_identical_evidence(tmp_path, monkeypatch):
+    from tests.test_vuln_lifecycle import _seed
+    from api.services import vulnerabilities as vulns, vuln_states, risk_context
+    assess = risk_context.score_batch
+    execution = ['publication:first']
+    def with_execution(*args, **kwargs):
+        scores = copy.deepcopy(assess(*args, **kwargs))
+        for scored in scores:
+            scored['risk_assessment']['execution_id'] = execution[0]
+        return scores
+    monkeypatch.setattr(risk_context, 'score_batch', with_execution)
+    settings, tenant = _seed(tmp_path, findings=combine([BASE]))
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='run-1')
+    original = vulns.list_vulnerabilities(settings, tenant_id=tenant)[0][0]
+    closed = vulns.transition(settings, tenant_id=tenant, vuln_id=original['vuln_id'],
+                              to_state=vuln_states.CLOSED, actor='admin')
+    execution[0] = 'publication:second'
+    assert vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='run-1').reopened == 0
+    current = vulns.get_vulnerability(settings, tenant_id=tenant, vuln_id=original['vuln_id'])
+    assert current['risk_assessment']['execution_id'] == 'publication:second'
+    assert current['state'] == vuln_states.CLOSED
+    assert current['observation_count'] == 1
+    assert current['finding_evidence']['observation_count'] == 1
+    assert current['due_at'] == closed['due_at']
+    assert current['closed_at'] == closed['closed_at']
+
+
 @requires_postgres
 def test_live_clickhouse_evidence_roundtrip_replay_and_tenant_counts(tmp_path):
     """Production insert + FINAL read keeps observations out of unique counts."""
@@ -410,8 +478,11 @@ def test_live_clickhouse_evidence_roundtrip_replay_and_tenant_counts(tmp_path):
     url = os.environ.get('OCTO_CLICKHOUSE_URL', '').strip()
     if not url:
         pytest.skip('OCTO_CLICKHOUSE_URL required for actual evidence roundtrip')
-    settings, tenant = _seed(tmp_path, findings=combine(rows()))
-    members = {'vulnerabilities.json': json.dumps(combine(rows())).encode()}
+    source_rows = rows() + [{**row, 'port': '80'} for row in rows()]
+    findings = combine(source_rows)
+    assert len(findings) == 2
+    settings, tenant = _seed(tmp_path, findings=findings)
+    members = {'vulnerabilities.json': json.dumps(findings).encode()}
     payload = {'tenant_id': tenant, 'run_id': 'run-1'}
     projected = ch_transform.vulnerabilities_to_rows(payload, members, settings=settings, require_captured=False)
     assert len(projected) == 1
@@ -427,9 +498,12 @@ def test_live_clickhouse_evidence_roundtrip_replay_and_tenant_counts(tmp_path):
         assert len(loaded) == 1
         assert str(loaded[0][0]) == str(tenant_to_uuid(tenant))
         assert loaded[0][1] == BASE['cve']
-        evidence = json.loads(loaded[0][2])['finding_evidence']
-        assert evidence['observation_count'] == 2
-        assert evidence['finding_count'] == 1
+        receipt = json.loads(loaded[0][2])
+        assert receipt['inventory_projection']['container_count'] == 2
+        evidence = receipt['finding_evidence']
+        assert evidence['observation_count'] == 4
+        assert evidence['finding_count'] == 2
+        assert {o['subject']['port'] for g in evidence['findings'] for o in g['observations']} == {80, 443}
         assert {o['tenant_id'] for g in evidence['findings'] for o in g['observations']} == {tenant}
         other = tenant + '-other'
         foreign = ch_transform.vulnerabilities_to_rows({**payload, 'tenant_id': other}, members,
