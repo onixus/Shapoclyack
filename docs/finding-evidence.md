@@ -231,8 +231,15 @@ rendering and original-run authenticated downloads with permission failures.
 The optional `test_live_clickhouse_evidence_roundtrip_replay_and_tenant_counts`
 also inserts through the production client into a temporary table using the
 production `ReplacingMergeTree` schema. A `FINAL` read verifies replay does not
-increase the inventory count, both observations survive, and tenant inventory
-counts remain separate. It runs when `OCTO_CLICKHOUSE_URL` is configured, including
+increase the host/CVE inventory count, all four observations across ports 80/443
+survive, and tenant inventory counts remain separate. The receipt also records
+`inventory_projection.container_count: 2`: legacy ClickHouse host/CVE inventory
+rows and port-scoped remediation tasks have different declared identities.
+Before insert, all ports of one host/CVE are folded into one bounded evidence
+projection; the scalar risk receipt uses the highest contextual score with a
+deterministic tie break. ClickHouse merges therefore cannot discard an arbitrary
+port within a publication. Existing CVE inventory consumers keep their contract;
+canonical task counts and workflow history remain in PostgreSQL. It runs when `OCTO_CLICKHOUSE_URL` is configured, including
 the Jenkins integration matrix. Service projections, database consumers and UI
 are tested independently; this is not a browser E2E session.
 
