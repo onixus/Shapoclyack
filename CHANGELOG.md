@@ -25,6 +25,10 @@ All notable changes to Shapoclyack are documented in this file.
   normalise deep-link filters, and the mobile drawer is keyboard-operable (#357).
   Refusals carry a `detail.code` (`saved_view_limit`, `saved_view_duplicate_name`); names are
   unique by a stored case-folded key; views go with the account and with a revoked membership.
+- API v1 aliases, twelve-month deprecation policy, bounded tenant-scoped CSV/NDJSON
+  exports and generated Python client/CLI ([#354](https://github.com/onixus/Shapoclyack/issues/354));
+  see [API changelog](docs/api-changelog.md) and [integration guide](docs/api-versioning.md).
+
 - Report formats, evidence signatures and S3 delivery
   ([#355](https://github.com/onixus/Shapoclyack/issues/355), [Reports](docs/reports-and-compliance.md)):
   reports render as CSV and XLSX (spreadsheet cells that would run as formulas

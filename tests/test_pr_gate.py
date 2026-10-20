@@ -27,6 +27,7 @@ EXPECTED_RUNS = [
     "python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.lock",
     "./scripts/ci-lint.sh",
     "python -m compileall scanner api tests agent",
+    "./scripts/ci-sdk.sh",
     "./scripts/ci-pytest.sh --maxfail=1",
 ]
 EXPECTED_USES = ["actions/checkout@v4", "actions/setup-python@v5"]

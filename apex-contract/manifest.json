@@ -60,7 +60,15 @@
     {
       "path": "api/app.py",
       "contains": [
-        "prefix=\"/api/v1\""
+        "ApiVersionMiddleware,",
+        "_publish_v1_schema(app)"
+      ]
+    },
+    {
+      "path": "api/versioning.py",
+      "contains": [
+        "def canonical_path(",
+        "path.startswith(\"/api/v1/\")"
       ]
     },
     {
