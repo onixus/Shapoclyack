@@ -1539,17 +1539,27 @@ def register_findings_from_run(
                     )
                 ).scalar_one()
 
-            if actionable(entry):
-                # Replaying a published observation must not inflate counts,
-                # reopen a manually closed task or roll latest state backwards.
-                def observation_ids(data):
-                    return {o.get("observation_id") for g in (data or {}).get("findings", [])
-                            for o in g.get("observations", [])}
-                current_ids = observation_ids(evidence)
-                if (current_ids and current_ids <= observation_ids(row.finding_evidence)) or (
-                        not current_ids and row.last_seen_run_id == run_id):
-                    reobserved += 1
-                    continue
+            from scanner.pipeline.production_evidence import publication_disposition
+            disposition = publication_disposition(row.finding_evidence, evidence)
+            if disposition == "replay" or (
+                    not (evidence or {}).get("observation_count") and row.last_seen_run_id == run_id):
+                # Retain newly available raw references and incomplete markers,
+                # but replay is not a new observation or a regression.
+                row.finding_evidence = merge(row.finding_evidence, evidence)
+                reobserved += 1
+                continue
+            if disposition == "historical":
+                row.finding_evidence = merge(row.finding_evidence, evidence)
+                # Existing receipts are newer. Retain historical new detector
+                # identities/vantages without replacing their current run/time.
+                row.detectors = merge_detectors(observed, row.detectors or [])
+                row.observation_count += 1
+                row.updated_at = now
+                reobserved += 1
+                _record_event(session, vuln_id=row.vuln_id, tenant_id=tenant_id,
+                              kind="observed", occurred_at=now,
+                              detail={"run_id": run_id, "historical": True})
+                continue
 
             # Weighed before ``latest`` is written over the row: an escalation
             # is a difference between what the verdict was made on and what

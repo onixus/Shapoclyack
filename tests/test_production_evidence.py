@@ -272,3 +272,126 @@ def test_explicit_http_authority_keeps_original_transport_subject_hashes():
     assert vhost['host'] == old['host']
     assert vhost['authority'] == 'a.example:443'
     assert vhost['object_id'] != old['object_id']
+
+
+@requires_postgres
+def test_cve_replay_and_out_of_order_publication_preserve_workflow(tmp_path):
+    from tests.test_vuln_lifecycle import _seed, _write_run, _HOSTS
+    from api.services import vulnerabilities as vulns, vuln_states
+
+    latest = combine([{**BASE, 'observed_at': '2026-10-10T00:00:00Z', 'severity': 'medium'}])
+    settings, tenant = _seed(tmp_path, findings=latest)
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='run-1')
+    original = vulns.list_vulnerabilities(settings, tenant_id=tenant)[0][0]
+    closed = vulns.transition(settings, tenant_id=tenant, vuln_id=original['vuln_id'],
+                              to_state=vuln_states.CLOSED, actor='admin')
+    events_before = vulns.list_events(settings, tenant_id=tenant, vuln_id=original['vuln_id'])[1]
+    assert vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='run-1').reopened == 0
+    replay = vulns.get_vulnerability(settings, tenant_id=tenant, vuln_id=original['vuln_id'])
+    assert replay['state'] == vuln_states.CLOSED
+    assert replay['observation_count'] == 1
+    assert vulns.list_events(settings, tenant_id=tenant, vuln_id=original['vuln_id'])[1] == events_before
+
+    historical = combine([{**BASE, 'observed_at': '2026-10-01T00:00:00Z', 'severity': 'critical'}])
+    _write_run(settings.output_dir, 'old-run', _HOSTS, historical)
+    stats = vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='old-run')
+    assert stats.reopened == 0
+    current = vulns.get_vulnerability(settings, tenant_id=tenant, vuln_id=original['vuln_id'])
+    for field in ('state', 'severity', 'last_seen_run_id', 'due_at', 'closed_at', 'finding_key'):
+        assert current[field] == closed[field]
+    assert current['observation_count'] == 2
+    assert current['finding_evidence']['observation_count'] == 2
+    assert current['detectors'] == closed['detectors']
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='old-run')
+    assert vulns.get_vulnerability(settings, tenant_id=tenant, vuln_id=original['vuln_id'])['observation_count'] == 2
+    events, _ = vulns.list_events(settings, tenant_id=tenant, vuln_id=original['vuln_id'])
+    assert sum(e['detail'].get('historical', False) for e in events) == 1
+
+    # A genuinely later weaker positive may reopen; no strongest-forever rule.
+    newer = combine([{**BASE, 'observed_at': '2026-10-11T00:00:00Z', 'severity': 'low'}])
+    _write_run(settings.output_dir, 'new-run', _HOSTS, newer)
+    assert vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='new-run').reopened == 1
+    current = vulns.get_vulnerability(settings, tenant_id=tenant, vuln_id=original['vuln_id'])
+    assert current['severity'] == 'low'
+    assert current['finding_evidence']['observation_count'] == 3
+
+
+@pytest.mark.parametrize('change', [{'protocol': 'udp'}, {'sni': 'new.example'},
+                                  {'affected_object': 'new'}, {'observed_at': None}])
+def test_historical_publication_requires_same_known_subject_and_time(change):
+    from scanner.pipeline.production_evidence import publication_disposition
+    prior = scoped(combine([{**BASE, 'observed_at': '2026-10-10T00:00:00Z'}])[0]['finding_evidence'],
+                   tenant_id='t', run_id='current')
+    incoming = scoped(combine([{**BASE, 'observed_at': '2026-10-01T00:00:00Z', **change}])[0]['finding_evidence'],
+                      tenant_id='t', run_id='incoming')
+    assert publication_disposition(prior, incoming) == 'current'
+
+
+@requires_postgres
+def test_captured_nuclei_report_reaches_consumers_without_changing_legacy_workflow(tmp_path):
+    from pathlib import Path
+    from datetime import UTC, datetime, timedelta
+    from tests.test_vuln_lifecycle import _seed, _write_run
+    from api.services import vulnerabilities as vulns, runs, ch_transform, assets
+
+    raw_dir = tmp_path / 'captured'
+    raw_dir.mkdir()
+    capture = Path('tests/fixtures/finding_evidence/nuclei_v3_11_1/loopback.jsonl').read_bytes()
+    raw_record = json.loads(capture)
+    (raw_dir / 'nuclei_raw.jsonl').write_bytes(capture)
+    host, port = raw_record['ip'], str(raw_record['port'])
+    legacy = {**BASE, 'host': host, 'port': port, 'cve': 'CVE-2099-9999',
+              'source': 'nuclei', 'script_id': 'nuclei:local-fixture-cve'}
+    settings, tenant = _seed(tmp_path, findings=[])
+    hosts = [{'host': host}]
+    _write_run(settings.output_dir, 'legacy', hosts, [legacy])
+    assets.upsert_assets_from_run(settings, tenant_id=tenant, run_id='legacy')
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='legacy')
+    original = vulns.list_vulnerabilities(settings, tenant_id=tenant)[0][0]
+    assert original['finding_evidence'] is None
+    vulns.request_exception(settings, tenant_id=tenant, vuln_id=original['vuln_id'],
+                            until=datetime.now(UTC) + timedelta(days=30), reason='vendor window', actor='requester')
+    approved = vulns.approve_exception(settings, tenant_id=tenant, vuln_id=original['vuln_id'], actor='approver')
+
+    build_reports(raw_dir, 1, [host], [], raw_dir / 'nmap', False, False, False, True,
+                  extra_vulnerabilities=[legacy], cvss4_enabled=False, geoip_enabled=False, asn_enabled=False)
+    exported = json.loads((raw_dir / 'vulnerabilities.json').read_text())
+    _write_run(settings.output_dir, 'captured', hosts, exported)
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='captured')
+    api_rows = runs.get_vulnerabilities(settings, 'captured', tenant_id=tenant)
+    tracker, total = vulns.list_vulnerabilities(settings, tenant_id=tenant)
+    ch_rows = ch_transform.vulnerabilities_to_rows({'tenant_id': tenant, 'run_id': 'captured'},
+                {'vulnerabilities.json': (raw_dir / 'vulnerabilities.json').read_bytes()},
+                settings=settings, require_captured=False)
+    assert len(exported) == len(api_rows) == total == len(ch_rows) == 1
+    for field in ('finding_key', 'due_at', 'exception_state', 'exception_reason', 'exception_until', 'exception_by'):
+        assert tracker[0][field] == approved[field]
+    for evidence in (tracker[0]['finding_evidence'], api_rows[0].finding_evidence,
+                     json.loads(ch_rows[0][-1])['finding_evidence']):
+        assert evidence['observation_count'] == evidence['finding_count'] == 1
+        observation = evidence['findings'][0]['observations'][0]
+        assert (observation['tenant_id'], observation['run_id']) == (tenant, 'captured')
+        assert {r['path'] for r in observation['artifact_refs']} == {'nuclei_raw.jsonl', 'report_sources.json'}
+        assert not evidence['findings'][0]['assessment']['machine_verified']
+    # Another authenticated tenant cannot retrieve the run projection.
+    assert runs.get_vulnerabilities(settings, 'captured', tenant_id='unrelated-tenant') is None
+
+
+@requires_postgres
+def test_incomplete_same_run_replay_marks_gap_without_reopening(tmp_path):
+    from tests.test_vuln_lifecycle import _seed, _write_run, _HOSTS
+    from api.services import vulnerabilities as vulns, vuln_states
+    findings = combine([BASE])
+    settings, tenant = _seed(tmp_path, findings=findings)
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='run-1')
+    original = vulns.list_vulnerabilities(settings, tenant_id=tenant)[0][0]
+    vulns.transition(settings, tenant_id=tenant, vuln_id=original['vuln_id'],
+                     to_state=vuln_states.CLOSED, actor='admin')
+    findings[0]['finding_evidence'] = {'invalid': True}
+    _write_run(settings.output_dir, 'run-1', _HOSTS, findings)
+    assert vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='run-1').reopened == 0
+    current = vulns.get_vulnerability(settings, tenant_id=tenant, vuln_id=original['vuln_id'])
+    assert current['state'] == vuln_states.CLOSED
+    assert current['observation_count'] == 1
+    assert current['finding_evidence']['observation_count'] == 1
+    assert current['finding_evidence']['projection_incomplete']

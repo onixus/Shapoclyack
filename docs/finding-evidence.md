@@ -1,4 +1,4 @@
-# Finding evidence: shadow contract (#449, stage 1)
+# Finding evidence: production integration (#449)
 
 Production reports now retain observations in additive `finding_evidence` fields
 inside each legacy remediation container. `finding_key` remains unchanged:
@@ -38,6 +38,14 @@ all captured risk receipt fields remain unchanged.
 The report chooses a deterministic representative from the latest dated cohort
 (or a deterministic undated representative), without source ranking or a
 strongest-forever rule. All conflicting/undated observations remain available.
+The tracker treats CVE and non-CVE replay identically: replaying already stored
+observation IDs unions raw references without incrementing publication counts,
+appending duplicate events, reopening a closed task or resetting its SLA. A
+strictly older publication for already known precise subjects is stored and
+audited as historical; it does not overwrite the current assessment or lifecycle.
+Unknown timestamps and newly observed precise subjects are never classified as
+historical. A later weaker positive remains actionable.
+
 The tracker unions evidence across runs, idempotently by observation ID, up to
 10,000 observations. Invalid supplied evidence and exhausted history bounds set
 an explicit incomplete marker; they do not fall back to legacy absence.
@@ -168,9 +176,9 @@ re-checked the endpoint (`api/services/verification_coverage.py`,
 
 Engine/ruleset versions missing from source data stay null. A Docker pin is not
 proof of which executable produced an imported file. Likewise, missing
-confidence stays null and explicit zero stays zero. The fixtures are synthetic
-and use the JSONL fields already exercised by `tests/test_nuclei_scan.py`; they
-are **not** advertised as captures from a live pinned Nuclei execution.
+confidence stays null and explicit zero stays zero. The original stage-1 fixtures
+are synthetic. The separate `nuclei_v3_11_1/loopback.jsonl` fixture is real local
+engine output; its README records the capture boundary and provenance limits.
 
 ## Size and privacy limits
 
@@ -208,16 +216,27 @@ keys. The schema is still the unreleased stage-1 v1 contract, not a migration of
 production findings. Re-aggregation alone cannot recover already discarded
 objects, records or references.
 
-## Historical stage-1 scope (superseded by production integration above)
+## Acceptance and validation boundaries
 
-Before switching the default result, agree on a compatibility/migration policy
-for protocol/vhost/object distinctions currently absent from `finding_key`.
-Then replace first-wins in the report and propagate observations through the
-run API, tracker, UI and analytics without multiplying unique finding counters.
-The consumer work must cover idempotent re-publication, old artifacts,
-assignments/SLA/exceptions, temporal conflict handling and incomplete coverage.
-Add actual pinned-engine captures and full consumer integration tests. This
-shadow artifact is deliberately not ingested by existing consumers.
+`tests/test_production_evidence.py` covers report aggregation, temporal conflicts,
+transport/SNI/object separation, authenticated tenant/run rebinding, replay,
+conservative closure, raw access restrictions and bounded history. Its captured
+Nuclei consumer test carries the actual local v3.11.1 JSONL through report export,
+a migrated PostgreSQL tracker, run API projection and ClickHouse row transform.
+It checks one container/observation across consumers, preserves a pre-existing
+legacy finding key and approved exception/SLA, and rejects another tenant's run
+read. The separate tracker test preserves assignee and owner team.
+`web-next/src/components/finding-evidence.test.tsx` verifies distinct subject
+rendering and original-run authenticated downloads with permission failures.
+These tests exercise service projections and UI independently; the ClickHouse
+transform test is not proof of a live ClickHouse insert or browser E2E session.
 
-Rollback of this stage is stopping the explicit command or removing its sidecar;
-no stored finding identity or database migration has been applied.
+A local Python 3.12.15 microbenchmark on 2026-10-20 used 1,000 input rows: 500
+TCP/443 IP/CVE containers with one Pulse and one Nuclei observation each, identical
+2026-10-01 timestamps. Five `combine()` calls with an explicit artifact SHA took
+0.0498–0.0551 seconds (median 0.0504); the serialized output was 1,631,026 bytes.
+The fallback digest is computed once for the input snapshot, rather than once
+per observation. Five calls without an explicit SHA took 0.0504–0.0525 seconds
+(median 0.0515). This measures projection time and payload size on a synthetic
+local workload, not scanning, DB ingestion or end-to-end performance; no overall
+speedup or production latency claim follows from it.

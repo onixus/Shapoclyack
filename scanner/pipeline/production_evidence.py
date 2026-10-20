@@ -7,6 +7,7 @@ from .finding_evidence import EVIDENCE_SCHEMA, aggregate, canonical_json, digest
 
 
 def combine(rows: list[dict], *, artifact_sha: str | None = None) -> list[dict]:
+    source_digest = artifact_sha or digest(rows)
     groups: dict[tuple, list[tuple[int, dict]]] = {}
     for index, row in enumerate(rows):
         issue = str(row.get('cve') or '').upper() or 'script:' + str(row.get('script_id') or '')
@@ -28,7 +29,7 @@ def combine(rows: list[dict], *, artifact_sha: str | None = None) -> list[dict]:
             try:
                 observations.append(observation(mapped, tenant_id='unpublished', run_id='unpublished',
                     source=str(row.get('source') or 'unknown'), artifact_ref={
-                        'path': 'report_sources.json', 'sha256': artifact_sha or digest(rows), 'locator': '/' + str(index)}))
+                        'path': 'report_sources.json', 'sha256': source_digest, 'locator': '/' + str(index)}))
             except (ValueError, TypeError, OverflowError):
                 incomplete = True
         evidence = aggregate(observations)
@@ -260,3 +261,27 @@ def closure_gaps(evidence: Any, *, covered_subjects: list[dict] | None = None) -
         elif len({canonical_json(s) for s in subjects}) > 1:
             reason = 'multiple_subject_coverage_unproven'
     return [{'detector': 'evidence', 'ref': None, 'host': None, 'port': None, 'reason': reason}] if reason else []
+
+
+def publication_disposition(previous: Any, current: dict | None) -> str:
+    """Classify validated scoped evidence without treating unknown time as old.
+
+    A newly seen subject is always actionable. A historical publication requires
+    every incoming observation to predate a known observation of that same
+    precise subject; this never equates different vhosts or transports.
+    """
+    prior = {g['evidence_id']: g for g in (previous or {}).get('findings', [])}
+    incoming = (current or {}).get('findings', [])
+    current_ids = {o['observation_id'] for g in incoming for o in g['observations']}
+    prior_ids = {o['observation_id'] for g in prior.values() for o in g['observations']}
+    if current_ids and current_ids <= prior_ids:
+        return 'replay'
+    if incoming and all(
+        g['evidence_id'] in prior and
+        prior[g['evidence_id']]['assessment']['latest_observed_at'] and
+        all(o['observed_at'] and o['observed_at'] <
+            prior[g['evidence_id']]['assessment']['latest_observed_at'] for o in g['observations'])
+        for g in incoming
+    ):
+        return 'historical'
+    return 'current'
