@@ -1544,9 +1544,12 @@ def register_findings_from_run(
             previous_execution = ((row.risk_assessment or {}).get("risk_assessment") or {}).get("execution_id")
             current_execution = (scored.get("risk_assessment") or {}).get("execution_id")
             distinct_publication = bool(current_execution and current_execution != previous_execution)
+            # Legacy CVE rows have no observation identity: multiple sources
+            # in one pass remain separate observations; the publication
+            # coordinator owns idempotence for those artifacts.
             if disposition == "replay" or (
                     not (evidence or {}).get("observation_count") and row.last_seen_run_id == run_id
-                    and (evidence is not None or not distinct_publication)):
+                    and (evidence is not None or (actionable(entry) and not distinct_publication))):
                 # Captured operation context can change for a distinct
                 # publication using the same run/observations (#453). Refresh
                 # that view without turning identical evidence into a new
