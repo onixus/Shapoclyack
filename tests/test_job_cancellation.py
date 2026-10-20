@@ -68,7 +68,8 @@ def _archive(*names: str) -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
         for name in names:
-            data = b'{"partial": true}\n'
+            # Row files are arrays in a real run; everything else an object.
+            data = b"[]\n" if name in ("findings.json", "vulnerabilities.json") else b'{"partial": true}\n'
             info = tarfile.TarInfo(name=name)
             info.size = len(data)
             tf.addfile(info, io.BytesIO(data))

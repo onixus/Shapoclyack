@@ -291,6 +291,19 @@ class Settings:
     # than the sensor's own request timeout on purpose: the answer should reach
     # the agent while it is still listening. 0 disables the deadline.
     agent_results_ingest_wait_seconds: float = 25.0
+    # Integrity of an uploaded run archive (#366). ``result_schema_mode``:
+    # ``warn`` (default for the first release) counts, logs and audits a
+    # malformed core artifact and accepts the upload; ``enforce`` refuses it;
+    # ``off`` skips the check. ``require_signed_results`` is the transition
+    # switch for ed25519 archive signatures: off (default) accepts an upload
+    # with no signature from a sensor that has no key registered, with a
+    # warning and a metric; on refuses it. A sensor that has a key registered
+    # must always sign, and a wrong signature is always refused.
+    result_schema_mode: str = "warn"
+    # Largest core JSON artifact the schema check will parse; larger is refused
+    # in every mode but ``off``.
+    result_schema_max_file_bytes: int = 256 * 1024 * 1024
+    require_signed_results: bool = False
     # NATS JetStream URL (e.g. nats://shapoclyack-nats-client:4222). Empty disables broker.
     nats_url: str = ""
     # Durable record of publications the broker refused, and the reconciler
@@ -1395,6 +1408,12 @@ def _is_sqlite_url(url: str) -> bool:
     return url.strip().lower().startswith("sqlite")
 
 
+def _choice(raw: str, allowed: tuple[str, ...], default: str) -> str:
+    """``raw`` lower-cased if it is one of ``allowed``, else ``default``."""
+    value = (raw or "").strip().lower()
+    return value if value in allowed else default
+
+
 def _float_env(name: str, default: float) -> float:
     """Float from the environment; an unparsable value warns and keeps the default.
 
@@ -2093,6 +2112,17 @@ def load_settings() -> Settings:
         agent_results_ingest_wait_seconds=max(
             0.0, float(os.environ.get("OCTO_AGENT_RESULTS_INGEST_WAIT_SECONDS", "25") or 0.0)
         ),
+        result_schema_max_file_bytes=max(
+            1024 * 1024,
+            int(os.environ.get("OCTO_RESULT_SCHEMA_MAX_FILE_BYTES", str(256 * 1024 * 1024)) or 0),
+        ),
+        result_schema_mode=_choice(
+            os.environ.get("OCTO_RESULT_SCHEMA_MODE", ""), ("enforce", "warn", "off"), "warn"
+        ),
+        require_signed_results=os.environ.get("OCTO_REQUIRE_SIGNED_RESULTS", "false")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on"),
         nats_url=os.environ.get("OCTO_NATS_URL", "").strip(),
         nats_outbox_enabled=os.environ.get("OCTO_NATS_OUTBOX_ENABLED", "true").lower()
         in ("1", "true", "yes", "on"),

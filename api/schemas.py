@@ -561,6 +561,11 @@ class AgentRegisterRequest(BaseModel):
     capabilities: list[str] | None = None
     # Lariska's deployed wire protocol uses this boolean rather than a list.
     signed_updates: bool | None = None
+    #: The sensor's ed25519 public key for signing run archives (#366): base64
+    #: of the raw 32 bytes. Pinned on the first registration that sends one; a
+    #: different key later is refused (see ``result_key_fingerprint`` in the
+    #: answer) until an operator resets it.
+    result_signing_key: str | None = Field(default=None, max_length=128)
 
 
 class AgentHeartbeatRequest(BaseModel):
@@ -587,6 +592,10 @@ class AgentHeartbeatRequest(BaseModel):
 
 class AgentInfo(BaseModel):
     agent_id: str
+    #: Fingerprint of the result-signing key pinned for this sensor (#366), or
+    #: None. A sensor compares it with its own key's fingerprint to learn that
+    #: its registration was refused as a key change.
+    result_key_fingerprint: str | None = None
     hostname: str = ""
     version: str = ""
     #: ``scanner`` or ``endpoint`` (#358). The fields below that talk about
@@ -1632,6 +1641,10 @@ class ServiceTokenInfo(BaseModel):
     tenant_id: str
     name: str
     token_prefix: str
+    allowed_cidrs: list[str] = Field(default_factory=list)
+    rotated_from_id: str | None = None
+    rotation_expires_at: str | None = None
+    expiry_notice_days: int = 7
     scopes: list[str] = Field(default_factory=list)
     role: Literal["viewer", "operator", "admin"] = "viewer"
     status: Literal["active", "expired", "revoked"] = "active"
@@ -1657,6 +1670,13 @@ class CreateServiceTokenRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     scopes: list[str] = Field(min_length=1, max_length=64)
     role: Literal["viewer", "operator", "admin"] = "viewer"
+    expires_in_days: int | None = Field(default=None, ge=1, le=3650)
+    allowed_cidrs: list[str] = Field(default_factory=list, max_length=64)
+    expiry_notice_days: int = Field(default=7, ge=0, le=3650)
+
+
+class RotateServiceTokenRequest(BaseModel):
+    grace_seconds: int = Field(default=3600, ge=0, le=604800)
     expires_in_days: int | None = Field(default=None, ge=1, le=3650)
 
 
@@ -3864,3 +3884,18 @@ class RetroMatchRefreshResult(BaseModel):
 
     queued: int = 0
     worker_running: bool = False
+
+
+class AssetConnectorRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    base_url: str = Field(max_length=2048)
+    table: str = Field(default="cmdb_ci_computer", min_length=1, max_length=100)
+    field_mapping: dict[str, str] = Field(max_length=32)
+    token: str | None = Field(default=None, min_length=1, max_length=4096, pattern=r"^[^\r\n]+$")
+    enabled: bool = False
+    interval_seconds: int = Field(default=3600, ge=300, le=604800)
+
+
+class AssetConnectorRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dry_run: bool = True

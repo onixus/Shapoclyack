@@ -6,6 +6,7 @@ import {
   createServiceToken,
   fetchServiceTokens,
   revokeServiceToken,
+  rotateServiceToken,
   type Role,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
@@ -26,6 +27,8 @@ export function useCreateServiceToken(tenantId: string) {
       scopes: string[];
       role: Role;
       expires_in_days?: number;
+      allowed_cidrs?: string[];
+      expiry_notice_days?: number;
     }) => createServiceToken(tenantId, body),
     onSuccess: async () => {
       // Deliberately no toast carrying the token: the plaintext belongs in the
@@ -51,6 +54,22 @@ export function useRevokeServiceToken(tenantId: string) {
     },
     onError: (err) => {
       toast.error("Failed to revoke service token", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
+  });
+}
+
+export function useRotateServiceToken(tenantId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ tokenId, graceSeconds }: { tokenId: string; graceSeconds: number }) =>
+      rotateServiceToken(tenantId, tokenId, graceSeconds),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.serviceTokens(tenantId) });
+    },
+    onError: (err) => {
+      toast.error("Failed to rotate service token", {
         description: err instanceof Error ? err.message : undefined,
       });
     },

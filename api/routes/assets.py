@@ -12,6 +12,8 @@ from api.routes._audit import AuditDep
 from api.routes._idempotency import IdempotencyKeyHeader
 from api.routes._pagination import PageParams, build_page
 from api.schemas import (
+    AssetConnectorRequest,
+    AssetConnectorRunRequest,
     AssetContextEventInfo,
     AssetDetail,
     AssetImportReport,
@@ -25,7 +27,7 @@ from api.schemas import (
     Page,
     UpdateAssetRequest,
 )
-from api.services import asset_import
+from api.services import asset_import, asset_connector
 from api.services import asset_services as asset_services_service
 from api.services import assets as assets_service
 from api.services import audit as audit_service
@@ -266,6 +268,45 @@ def get_asset_summary(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> dict:
     return assets_service.summary(settings, principal.tenant_id)
+
+
+@router.get("/import/connector")
+def get_import_connector(
+    principal: Annotated[TenantPrincipal, Depends(require_permission(permission_catalog.ASSET_IMPORT))],
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    return {
+        "servicenow": asset_connector.get(settings, principal.tenant_id),
+        "ldap_ad": {"available": False, "dependency": "#317", "reason": "LDAP/AD computer sync requires directory integration #317"},
+    }
+
+
+@router.put("/import/connector")
+def put_import_connector(
+    body: AssetConnectorRequest,
+    principal: Annotated[TenantPrincipal, Depends(require_permission(permission_catalog.ASSET_IMPORT))],
+    settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
+):
+    try:
+        result = asset_connector.save(settings, principal.tenant_id, body, audit=audit)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return result
+
+
+@router.post("/import/connector/run", response_model=AssetImportReport)
+def run_import_connector(
+    body: AssetConnectorRunRequest,
+    audit: AuditDep,
+    principal: Annotated[TenantPrincipal, Depends(require_permission(permission_catalog.ASSET_IMPORT))],
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    try:
+        return asset_connector.run(settings, principal.tenant_id, dry_run=body.dry_run, actor=principal.username, audit=audit)
+    except (ValueError, asset_import.ImportRace):
+        # Credentials, encrypted values and upstream bodies never cross this boundary.
+        raise HTTPException(status_code=422, detail="ServiceNow import failed; check endpoint, credential, mapping and source limits") from None
 
 
 @router.get("/{asset_id}", response_model=AssetDetail)

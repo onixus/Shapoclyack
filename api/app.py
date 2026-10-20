@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy as copy_module
 import hmac
+import logging
 import re
 import time
 from contextlib import asynccontextmanager
@@ -84,6 +85,7 @@ from api.services import run_publisher
 from api.services.compliance import definitions as compliance_definitions
 from api.services.crypto import startup as crypto_startup
 from api.services.integrations import ticket_sync_worker
+from api.services import asset_connector
 from api.services.integrations import webhook_worker
 from api.services.integrations import channels as channels_service
 from api.services.integrations import webhooks as webhooks_service
@@ -107,9 +109,28 @@ from api.services import users as users_service
 from api.services import wordlists as wordlists_service
 
 
+def warn_if_trusted_proxies_unset(settings) -> bool:
+    """Log once at start that client addresses are the socket peer (#323).
+
+    The login limiter and service-token ``allowed_cidrs`` both use that
+    address; behind an ingress without ``OCTO_TRUSTED_PROXIES`` it is the
+    ingress for every caller. Returns whether the warning was emitted.
+    """
+    if settings.trusted_proxies:
+        return False
+    logging.getLogger("shapoclyack.api").warning(
+        "OCTO_TRUSTED_PROXIES is empty: client addresses are taken from the socket peer. "
+        "Behind an ingress that is the ingress itself, so the login rate limiter shares one "
+        "bucket and service-token allowed_cidrs see the ingress address. Set it to the "
+        "ingress controller's addresses (docs/configuration.md)."
+    )
+    return True
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    warn_if_trusted_proxies_unset(settings)
     if settings.nats_url:
         nats_bus.startup_bus(settings.nats_url)
     if settings.ch_ingest_enabled and settings.nats_url and settings.clickhouse_url:
@@ -163,6 +184,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # back takes no per-row claim, so every replica would poll the same tenant's
     # tickets and write the same lifecycle events (#347).
     ticket_sync_worker.start_worker(settings)
+    asset_connector.start_worker(settings)
     # Every replica, like the run publisher: an approved deletion is claimed
     # with FOR UPDATE SKIP LOCKED and held on a lease its batches renew (#325).
     tenant_purge.start_worker(settings)
@@ -187,6 +209,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ch_ingest_worker.stop_worker()
         nats_outbox.stop_worker()
         nats_bus.shutdown_bus()
+        asset_connector.stop_worker()
 
 
 def _bearer_matches(request: Request, expected: str) -> bool:

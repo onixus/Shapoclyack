@@ -337,6 +337,9 @@ def complete_job(
     idempotency_key: str | None = None,
     attempt: int | None = None,
     cancelled: bool = False,
+    result_signature: str | None = None,
+    result_key_id: str | None = None,
+    audit: Any = None,
 ) -> JobInfo:
     return job_results.complete_job(
         settings,
@@ -350,4 +353,7 @@ def complete_job(
         idempotency_key=idempotency_key,
         attempt=attempt,
         cancelled=cancelled,
+        result_signature=result_signature,
+        result_key_id=result_key_id,
+        audit=audit,
     )

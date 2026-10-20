@@ -508,6 +508,17 @@ from that hop only; it is deliberately ignored otherwise, since a client that
 can write the header can pick its own limiter key. See
 [docs/api-and-rbac.md](../docs/api-and-rbac.md#login-rate-limiting-and-the-auth-audit-trail).
 
+**Upgrading to the release with service-token `allowed_cidrs` (#323).** The address
+that `allowed_cidrs` and the login limiter see is the socket peer, so on an
+installation behind an Ingress that never set `OCTO_TRUSTED_PROXIES` every caller
+now looks like the ingress controller: a CIDR list written for real clients would
+reject them all, and the login bucket stays shared. Before issuing or rotating
+tokens with `allowed_cidrs`, set the variable on the API Deployment to the
+controller's pod/node addresses (for kind, take them from
+`kubectl -n ingress-nginx get pods -o wide`; no default is shipped because the
+range differs per cluster and a too-wide one lets any pod forge `X-Forwarded-For`).
+The API logs `OCTO_TRUSTED_PROXIES is empty` at start while it is unset.
+
 Default RBAC:
 
 | Role | Access |

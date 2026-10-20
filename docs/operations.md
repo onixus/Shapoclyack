@@ -497,7 +497,7 @@ and not the next is not a ceiling:
   the stage that sends HTTP payloads rather than counting SYN/ACKs — ~8.9k
   templates at whatever web interface an engineering station exposes — so a
   fragile run turns it off entirely. It also turns fingerprint HTTP requests
-  and browser screenshots off, and disables only the **direct-handshake
+  and legacy browser capture off, and disables only the **direct-handshake
   fallback** of TLS posture. TLS posture itself stays enabled so it may parse
   certificate evidence already present in NSE/Pulse artifacts without opening
   a new connection. Domain monitoring keeps its DNS lookups but loses the
@@ -507,7 +507,7 @@ and not the next is not a ceiling:
   throttled rather than silenced, `nuclei.rate_limit` is held to
   `per_host_rate` and every active secondary pool
   (`tls_posture.probe_concurrency`, `fingerprint.concurrency`,
-  `screenshots.concurrency`, `discovery.domain_monitor.takeover_http_concurrency`)
+  `discovery.domain_monitor.takeover_http_concurrency`)
   is held to `max_host_concurrency`. The ceiling counts endpoints in flight, not
   connections: the TLS probe makes up to four handshakes per endpoint, one after
   another in the same worker — two of them the TLS 1.0/1.1 checks, which
@@ -1712,7 +1712,7 @@ shorter retention silently shortens the trend line.
 ### Screenshot retention
 
 
-Web screenshots (ROADMAP P4.4) are the other automatic policy. A PNG of a
+Historical screenshot artifacts retain their automatic policy. A PNG of a
 login page can still hold names after the DOM overlay, so pixels must not
 live as long as the rest of a run directory.
 
@@ -1726,11 +1726,10 @@ Several API replicas may sweep the same tree; a missing file is a no-op.
 Disabling `OCTO_SCREENSHOT_RETENTION_ENABLED` stops the worker; existing
 PNGs stay until the run directory is pruned.
 
-The stage itself is off by default (`screenshots.enabled`). Turning it on
-needs Playwright + Chromium on the scanner host (`pip install playwright &&
-playwright install chromium`). Without that binary the stage writes
-`skipped_reason: playwright.unavailable` and no files. Capture is not in
-the default image.
+Screenshot capture is withdrawn from the supported product (#367); published
+images have no Playwright/Chromium runtime or isolated capture worker. The
+legacy scanner configuration is retained for compatibility and defaults to
+disabled. Retention continues to protect existing PNG artifacts.
 
 PNG download is operator-or-higher. A viewer requesting
 `/api/runs/{id}/download/screenshots/…png` gets `404`, same as a missing
@@ -2189,6 +2188,103 @@ the one in `agent.env`. Pass `--agent-id` with a new value instead if the host
 should register as a new sensor under the new key. The SSH push handles this
 order itself, and refuses where revoking would stop other sensors; see
 [SSH push deployment](#ssh-push-deployment).
+
+### Sensor result integrity: schemas and signatures
+
+Two checks sit between a sensor's upload and the run becoming visible
+([#366](https://github.com/onixus/Shapoclyack/issues/366)).
+
+**Schemas.** The core artifacts in the archive are parsed and checked before
+anything is extracted (`api/services/result_integrity.py`). Compatibility
+rules, so an older or newer sensor is not refused for being different:
+unknown properties and unknown files are allowed; a missing file is
+allowed (a failed or cancelled run is partial by nature, and the console already
+shows a run without `summary.json` as having none); a file that is present must
+be valid JSON of the right shape (`summary.json` an object with integer counts,
+`vulnerabilities.json`, `findings.json`, `alive_hosts.json` and the other row
+files arrays of objects each carrying a `host`); `run_meta.json`, when present,
+must name the run the upload is for. A refusal closes the job `failed` with
+`results rejected (schema): <file>: <what>` in its error (it does not leave the
+job for the reaper, which would re-run a scan whose output would be refused
+again) and writes `results.rejected` to the audit trail. That is `enforce`.
+The first release ships `OCTO_RESULT_SCHEMA_MODE=warn`: the upload is accepted,
+and the problem is logged, counted (`outcome="warned"`) and audited as
+`results.schema_warned`. Move to `enforce` after one release cycle in which
+`octo_result_integrity_total{check="schema",outcome="warned"}` stayed at zero
+across every sensor version you run.
+
+**Signatures.** A sensor creates an ed25519 key on first start
+(`OCTO_AGENT_RESULT_KEY_FILE`), sends the public half when it registers, and
+signs every archive: the signature covers the archive's SHA-256 *and* the
+agent id, job id, run id, exit code and attempt, so an archive cannot be moved
+to another job, attempt or sensor, nor its reported outcome flipped. The API
+pins the first key per sensor; a registration that later presents a different
+key still succeeds but the key is not replaced (`agent.result_key_refused`,
+and the sensor logs an error), so holding the bearer token is not enough to
+forge results.
+
+Rolling it out without stopping the fleet:
+
+1. Upgrade the sensors. With `OCTO_REQUIRE_SIGNED_RESULTS=false` (the default)
+   an unsigned upload is accepted and counted.
+2. Watch `octo_result_integrity_total{check="signature",outcome=~"unsigned|unverifiable"}`
+   fall to zero. `verified` is the
+   share that is signed and good.
+3. Set `OCTO_REQUIRE_SIGNED_RESULTS=true`. Unsigned uploads are now refused and
+   the job closed `failed`. Rolling back is setting it to `false`. A replica
+   still on the previous release ignores the setting: finish the rollout first.
+
+A sensor that has a key registered must sign every upload: omitting the
+signature is refused in both modes (otherwise the token alone would be enough
+to downgrade it). A **wrong** signature is refused in both modes too. After a sensor is reinstalled
+without its key file it registers a new key, the API keeps the old one, and its
+archives are refused until an operator resets it:
+
+```bash
+curl -X DELETE "$API/api/agents/edge-01/result-key?reason=reinstalled" -H "$AUTH"
+```
+
+The next registration pins the new key. Closing the job on a wrong signature is
+deliberate (the same sensor would produce the same refusal on every re-run), and
+someone holding the sensor's token could already fail its jobs; what must not
+happen is a *restart* doing it, which is why the key lives on a volume: the
+Kubernetes StatefulSets (`scanner-executor`, the agent example) mount a
+`sensor-key` PVC at `/var/lib/shapoclyack/sensor-key` through
+`OCTO_AGENT_RESULT_KEY_FILE`, and the sensor logs an error at registration when
+the API's pinned key is not its own. To run without signing, do it in this order: first
+`DELETE /api/agents/{id}/result-key` (once a key is pinned an unsigned upload is
+refused whatever the sensor says), and only then `OCTO_AGENT_RESULT_SIGNING=off`.
+A sensor that has lost its key (volume not writable, `cryptography` missing)
+logs an error at registration naming this procedure. Treat an `agent.result_key_refused`
+row you did not expect as what it says: something other than the original
+sensor knows its token. Trust is on first use: a token holder who registers
+before the real sensor ever sends a key pins its own, so register keys at
+install time and rotate the provisioning key if in doubt.
+
+**Upgrading Kubernetes installations.** `volumeClaimTemplates` of an existing
+StatefulSet are immutable, so `kubectl apply -k` on a cluster that already runs
+the scanner-executor fails with "updates to statefulset spec ... forbidden".
+Recreate the StatefulSet without touching its pods, then apply:
+
+```bash
+kubectl -n <executor-namespace> delete statefulset shapoclyack-scanner-executor --cascade=orphan
+kubectl apply -k k8s/shapoclyack/overlays/<overlay>
+```
+
+The pods are replaced by the new template on the next rollout and then get
+their `sensor-key` volume. The claim has no `storageClassName`, so it uses the
+cluster's default class; a cluster without one (typically air-gapped) leaves the
+pod `Pending`. Set the class with a patch on the StatefulSet in your overlay:
+
+```yaml
+- op: add
+  path: /spec/volumeClaimTemplates/0/spec/storageClassName
+  value: <your-class>
+```
+
+Until the pod has the volume, its key is not persistent and a restart would
+produce a key the API refuses; keep `OCTO_AGENT_RESULT_SIGNING=off` in the pod
+during such a gap if it cannot be avoided.
 
 ### Sensor client certificates
 

@@ -94,6 +94,7 @@ ACTION_ROLE_UPDATE = "role.update"
 ACTION_ROLE_DELETE = "role.delete"
 ACTION_SERVICE_TOKEN_CREATE = "service_token.create"
 ACTION_SERVICE_TOKEN_REVOKE = "service_token.revoke"
+ACTION_SERVICE_TOKEN_ROTATE = "service_token.rotate"
 # SCIM provisioning (#316). The token is a credential of its own type, and a
 # group is what the IdP maps to roles: renaming one, or moving people in and
 # out of it, is how access changes from the directory side. The membership,
@@ -125,6 +126,17 @@ ACTION_AGENT_CERT_REFUSED = "agent.certificate_refused"
 # Lifting the lock a revocation puts on enrolment by token alone: the act that
 # lets a host with only the token get a certificate again.
 ACTION_AGENT_CERT_ENROLMENT_RESET = "agent.certificate_enrolment_reset"
+# The ed25519 key a sensor signs its run archives with (#366). ``refused`` is
+# a registration presenting a key other than the pinned one -- a reinstalled
+# sensor, or somebody holding the token trying to swap the key; ``reset`` is the
+# operator act that lets the next registration pin a new key.
+ACTION_AGENT_RESULT_KEY_PIN = "agent.result_key_pin"
+ACTION_AGENT_RESULT_KEY_REFUSED = "agent.result_key_refused"
+ACTION_AGENT_RESULT_KEY_RESET = "agent.result_key_reset"
+# An upload refused on integrity grounds (schema or signature), and one
+# accepted with a schema problem while OCTO_RESULT_SCHEMA_MODE is warn (#366).
+ACTION_RESULTS_REJECTED = "results.rejected"
+ACTION_RESULTS_SCHEMA_WARNED = "results.schema_warned"
 # Agent groups (#361). Membership decides which worker may execute which of a
 # tenant's scans, so moving an agent between groups is an access-control change
 # and belongs in the same trail as granting a membership — "which agent was

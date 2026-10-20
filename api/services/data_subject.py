@@ -203,6 +203,7 @@ SUBJECT_COLUMNS: dict[tuple[str, str], tuple[str, str]] = {
 #: Columns that look like they name an account and do not, so the check in the
 #: test can tell a decision from an omission.
 NOT_SUBJECT_COLUMNS: dict[tuple[str, str], str] = {
+    ("service_tokens", "allowed_cidrs"): "integration source network policy; no console account",
     ("agent_deployments", "username"): "the SSH account on the target host",
     ("assets", "owner_email"): "the asset's owner, tenant business data the tenant edits",
     ("tenant_branding", "contact_email"): "the tenant's published contact address",
@@ -257,6 +258,8 @@ NOT_SUBJECT_COLUMNS: dict[tuple[str, str], str] = {
     ("vulnerabilities", "cwe"): "weakness identifiers",
     ("vulnerabilities", "fp_evidence"): "the scanner evidence a false-positive verdict rests on",
     ("vulnerabilities", "match_evidence"): "why a retro match was made",
+    ("asset_import_connectors", "field_mapping"): "remote field paths mapped to import fields; no source records",
+    ("asset_import_connectors", "last_counts"): "import outcome counters",
     ("webhook_subscriptions", "event_kinds"): "event names",
     ("webhook_subscriptions", "headers"): "HTTP headers for the receiver, set by the tenant",
     ("webhook_subscriptions", "transport_config"): "tracker project/table/test ids",

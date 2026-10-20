@@ -34,7 +34,7 @@ from tests.conftest import approve_scan_scope, make_settings, requires_postgres
 # --------------------------------------------------------------------------
 
 
-def test_the_eight_kinds_are_the_ones_the_issue_names():
+def test_workflow_kinds_include_credential_expiry_notices():
     assert set(workflow_events.WORKFLOW_EVENT_KINDS) == {
         "sla_due_soon",
         "sla_breached",
@@ -44,6 +44,7 @@ def test_the_eight_kinds_are_the_ones_the_issue_names():
         "scan_failed",
         "report_generated",
         "agent_offline",
+        "service_token_expiring",
     }
     # A workflow kind must never collide with a discovery kind: both are a
     # subscription's ``event_kinds`` entries and one token cannot mean two

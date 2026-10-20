@@ -17,6 +17,8 @@ psutil==7.2.2
 # Read the scanner state directory for baseline-preserving run retention.
 PyYAML==6.0.3
 # Checks the release key's signature on a sensor update bundle
-# (agent/update.py, #363). Same pin as the API image. Only the updater imports
-# it; the worker never does.
+# (agent/update.py, #363) and signs run archives with the sensor's own ed25519
+# key (agent/result_signing.py, #366). Same pin as the API image. Without it the
+# sensor still works: it uploads unsigned, which the API accepts or refuses
+# according to OCTO_REQUIRE_SIGNED_RESULTS.
 cryptography==50.0.0

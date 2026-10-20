@@ -287,9 +287,9 @@ def test_live_clickhouse_expands_existing_schema_and_preserves_full_receipt(esta
     settings, a, _, _, _, _, _, _, members = estate
     _register(settings, a)
     rows = ch_transform.vulnerabilities_to_rows({"tenant_id": a, "run_id": "risk-run", "job_id": "risk-job-" + a.removeprefix("risk-a-")}, members, settings=settings)
-    # The legacy analytics table admits IPv4 CVEs only: the exposure and
-    # DNS-only CVE remain in the canonical tracker, outside this projection.
-    assert [(row[1], row[2]) for row in rows] == [("10.42.0.2", "CVE-2020-10000")]
+    # Only the CVE on an IPv4 host reaches the CVE-keyed analytics table: the
+    # pulse exposure has no CVE (#565) and the third entry's host is a name.
+    assert [row[2] for row in rows] == ["CVE-2020-10000"]
     table = "shapoclyack.risk_receipt_test_" + uuid.uuid4().hex[:12]
     client = ch.get_client(url)
     monkeypatch.setattr(ch, "VULN_TABLE", table)
