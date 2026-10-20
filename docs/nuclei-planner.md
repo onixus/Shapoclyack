@@ -114,3 +114,120 @@ loopback listener; it was explicitly excluded and that listener accepted zero
 connections/requests. Runtime comparison uses the same safe template as before.
 `benchmark-historical.json` retains the earlier exploratory measurement without
 exact source/binary provenance; use `benchmark.json` for the final source receipt.
+
+## Completion acceptance: pinned upstream catalog
+
+The plan now gives every eligible template an explicit set membership:
+`safe_http_base` (generic checks, every eligible CVE and custom template), five
+`technology:<name>` sets derived from the documented tag mapping, and
+`safe_http_technology_fallback` for all remaining technology checks. Each target
+names the base, applicable technology sets and fallback. Their union is the
+executed `safe_http_fallback` set. The fallback is bounded by the same catalog
+count/byte policy rather than truncated independently: exceeding the bound
+fails closed. Unknown and incorrect fingerprints therefore retain the same
+eligible checks. Technology mapping is explainable classification; this policy
+explicitly sets `template_reduction_claimed: false`. Only reliable protocol
+selection reduces connections. Future template pruning requires independent
+coverage acceptance and must change this policy explicitly.
+
+`planner_per_host_max_processes` (default 16) and
+`planner_per_host_timeout_seconds` (default 1800) bound all ports and virtual
+hosts of one dial IP. Host time is cumulative actual invocation duration;
+another host's time does not consume it. Each invocation's timeout is the
+smaller remaining host/stage budget. Host exhaustion records target indices
+and reasons and permits later hosts to use remaining global budget. Global
+process limits count processes actually attempted, including failed processes;
+skipping a host does not consume a process slot. Receipts retain the timeout,
+actual duration and remaining host budget. Any skipped target keeps the plan
+incomplete. Catalog parsing now treats upstream `profiles/*.yml` without
+`id`/`info` as metadata; actual templates in that directory retain normal
+validation. This fixes whole-catalog parsing of the repository-pinned v9.9.4.
+
+`scripts/benchmark-nuclei-catalog.py` executes unmodified signed upstream
+checks from v9.9.4 (`f4251b06c100067f230c4f54a1679de59802c7a4`) with actual
+Nuclei v3.11.1 in a `--network none` container. Its reference HTTP and IPv6
+HTTPS response fixtures implement four upstream matcher contracts:
+`apache-server-status`, `nginx-status`, `public-tomcat-manager`, and
+`CVE-2000-0114`. Every expected ID must be observed on **each** endpoint.
+These are controlled response fixtures, not deployed vulnerable appliances;
+in particular the FrontPage detector match does not prove exploitation of a
+FrontPage vulnerability. Known, unknown and intentionally wrong technology
+cases retain all expected matches. Unknown protocol runs retain both schemes.
+Separate actual HTTPS capture verifies distinct Host authorities and TLS SNI
+for `a.fixture.example` and `b.fixture.example` on IPv6.
+
+The same script with `FULL_CATALOG=1` compares the full **policy-eligible,
+scope-proven HTTP subset** of the pinned catalog on one HTTP fixture. It does
+not equate unsupported raw/other-engine templates with checked templates.
+Reports retain every selected template hash, engine/source/script hashes,
+connections, requests, wall/CPU time, child peak RSS and endpoint-specific
+expected IDs. These are single local samples, not a performance SLA. Child RSS
+includes inherited Python catalog memory after fork. The complete fallback
+intentionally does not reduce template counts, and process startup can cost
+more CPU/wall time on small targets. Legacy broad-sweep `checked_count` remains
+zero because it lacks explicit per-template coverage receipts.
+
+Final capture evidence is under
+`tests/fixtures/nuclei_plan/catalog_v9_9_4/` (separate reports and raw archives,
+with SHA256SUMS; private TLS keys are excluded):
+
+| Final single sample | Full eligible legacy | Directed |
+|---|---:|---:|
+| Full catalog: templates / expected detector IDs | 2887 / 4 | 2887 / 4 |
+| Full catalog: accepted connections / HTTP requests | 6637 / 3318 | 3318 / 3318 |
+| Full catalog: wall / child CPU seconds | 6.274 / 5.104 | 8.228 / 5.149 |
+| Full catalog: peak child RSS KiB | 257692 | 237992 |
+| Full catalog: processes / coverage ran | 1 / true | 1 / true |
+| Representative known HTTP+IPv6 HTTPS: connections / requests | 26 / 12 | 12 / 12 |
+| Representative known: processes / expected IDs per endpoint | 1 / 4 | 2 / 4 |
+| Representative known: wall / child CPU seconds | 0.116 / 0.139 | 0.219 / 0.254 |
+
+The unknown protocol representative uses four directed invocations and retains
+26 connections / 12 requests and all four expected IDs on each endpoint.
+The incorrect WordPress fingerprint preserves the Apache/Nginx/Tomcat and CVE
+checks: 12 directed connections / 12 requests with all expected IDs per endpoint.
+The full directed receipt loaded 2887 templates, returned zero, reported no
+dropped targets and completed one target invocation. `executed_checks` remains
+null because these receipts do not establish execution of each HTTP request.
+
+Reproduction uses Python 3.12 with PyYAML 6.0.3 and pydantic 2.12.3. Mount the
+pinned upstream checkout read-only at `/catalog`, this checkout read-only at
+`/work`, the Nuclei binary read-only at `/fixture-bin/nuclei`, and an empty
+writable directory at `/evidence`; run from `/work` with `PYTHONPATH=/work`:
+
+```sh
+# Runtime must have only loopback active; the script rejects other interfaces.
+python scripts/benchmark-nuclei-catalog.py
+# Repeat in a separate empty /evidence directory:
+FULL_CATALOG=1 python scripts/benchmark-nuclei-catalog.py
+```
+
+Use Docker `--network none` for both commands. The captured local runtime image
+ID is `sha256:88923371befdc8bf51239069388714cd4d9aff16b3ea575ccb63cdaec8371e56`.
+The benchmark proves parity for the declared local matcher contracts, protocol
+variants and pinned eligible catalog only. Real vulnerable-application coverage,
+other upstream releases, hostile-target behavior and fleet performance remain
+default-enable gates; this change does not enable directed mode by default.
+
+A fresh reproducible runtime can be built without any pre-existing local image:
+
+```sh
+# From this repository root; download sources only, never scan a remote target.
+git clone --depth 1 --branch v9.9.4 https://github.com/projectdiscovery/nuclei-templates.git /tmp/nuclei-450-catalog
+# This must print f4251b06c100067f230c4f54a1679de59802c7a4:
+git -C /tmp/nuclei-450-catalog rev-parse HEAD
+docker build -f scripts/nuclei-catalog-benchmark.Dockerfile -t nuclei-450-benchmark .
+mkdir -p /tmp/nuclei-450-representative /tmp/nuclei-450-full
+docker run --rm --network none \
+  -v "$PWD:/work:ro" -v /tmp/nuclei-450-catalog:/catalog:ro \
+  -v /tmp/nuclei-450-representative:/evidence nuclei-450-benchmark
+docker run --rm --network none -e FULL_CATALOG=1 \
+  -v "$PWD:/work:ro" -v /tmp/nuclei-450-catalog:/catalog:ro \
+  -v /tmp/nuclei-450-full:/evidence nuclei-450-benchmark
+```
+
+The build pins Nuclei v3.11.1, Python 3.12, PyYAML 6.0.3 and pydantic 2.12.3;
+reports record the resulting binary hash rather than assuming builds with other
+compilers/platforms are byte-identical. Planner settings, including the new host
+budgets, remain scanner-file settings like the existing planner settings; they
+are not silently added to the API/agent override allowlist or SDK contracts.

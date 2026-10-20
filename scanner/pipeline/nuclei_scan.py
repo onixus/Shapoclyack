@@ -803,14 +803,25 @@ def _run_web_sweep(
             codes = []
             plan["process_results"] = []
             attempted = 0
+            host_seconds = {}
+            host_processes = {}
             raw_bytes_left = 8 * 1024 * 1024
             error_bytes_left = 8 * 1024 * 1024
             for index, target in enumerate(plan["targets"]):
-                if index >= config.planner_max_processes:
+                if attempted >= config.planner_max_processes:
                     result["skipped_reason"] = "planner_process_limit"
+                    plan["skipped"].append({"target_index": index, "reason": "planner_process_limit", "count": len(plan["targets"]) - index})
                     break
-                remaining = int(deadline - time.monotonic())
+                host = target["ip"]
+                if host_processes.get(host, 0) >= config.planner_per_host_max_processes:
+                    plan["skipped"].append({"target_index": index, "reason": "per_host_process_limit"})
+                    continue
+                host_remaining = config.planner_per_host_timeout_seconds - host_seconds.get(host, 0)
+                remaining = int(min(deadline - time.monotonic(), host_remaining))
                 if remaining < _MIN_PROCESS_SECONDS:
+                    if host_remaining < _MIN_PROCESS_SECONDS:
+                        plan["skipped"].append({"target_index": index, "reason": "per_host_budget_exhausted"})
+                        continue
                     result["skipped_reason"] = "planner_budget_exhausted"
                     break
                 write_lines(targets_file, [target["url"]])
@@ -825,6 +836,7 @@ def _run_web_sweep(
                 part_errors = output_dir / f"nuclei_plan_{index:04d}_errors.jsonl"
                 part_errors.unlink(missing_ok=True)
                 target_command[target_command.index("-elog") + 1] = str(part_errors)
+                invocation_started = time.monotonic()
                 try:
                     item = run_command(
                         target_command, timeout=remaining, retries=0, check=False
@@ -840,6 +852,9 @@ def _run_web_sweep(
                         else stderr
                     )
                     result["skipped_reason"] = "nuclei_run_failed"
+                elapsed = time.monotonic() - invocation_started
+                host_seconds[host] = host_seconds.get(host, 0) + elapsed
+                host_processes[host] = host_processes.get(host, 0) + 1
                 attempted += 1
                 invocation_loaded = _TEMPLATES_LOADED.findall(stderr_parts[-1])
                 loaded_count = int(invocation_loaded[-1]) if invocation_loaded else None
@@ -854,6 +869,9 @@ def _run_web_sweep(
                 plan["process_results"].append(
                     {
                         "target_index": index,
+                        "duration_seconds": elapsed,
+                        "timeout_seconds": remaining,
+                        "host_budget_seconds_remaining": max(0, config.planner_per_host_timeout_seconds - host_seconds[host]),
                         "returncode": codes[-1],
                         "templates_expected": len(pinned),
                         "templates_loaded": loaded_count,
