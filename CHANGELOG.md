@@ -31,6 +31,17 @@ All notable changes to Shapoclyack are documented in this file.
   (stored under the tenant's own `<tenant>/` prefix, and only together with the manifest) for buckets listed in
   `OCTO_REPORT_S3_BUCKETS`.
   SFTP delivery, key rotation and group distribution in the console are not done.
+- Configurable ticket mapping and GitHub / GitLab Issues transports
+  ([#353](https://github.com/onixus/Shapoclyack/issues/353),
+  [API](docs/api-and-rbac.md)): subject and description templates (plain
+  `{placeholder}` substitution from a closed list, never evaluated), labels,
+  Jira components and custom fields, per-severity priority and `create: false`
+  routing, and project / repository / test selection by the asset's business
+  unit, environment and criticality. `github` and `gitlab` join `jira`,
+  `servicenow` and `defectdojo` as ticket transports, with two-way status sync.
+  Azure DevOps is not included. No migration: the settings live in
+  `transport_config`. Also fixed: a configured `transport_config.auth_mode` was
+  ignored when *creating* a ticket (only the status poll honoured it).
 - Helm chart `charts/shapoclyack/`
   ([#341](https://github.com/onixus/Shapoclyack/issues/341), [Helm chart](docs/helm.md)):
   the kustomize base as a chart, with values for replicas, storage size and class,

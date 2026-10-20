@@ -450,7 +450,7 @@ SLA_ESCALATIONS_TOTAL = Counter(
 )
 WEBHOOK_DELIVERIES_TOTAL = Counter(
     "octo_webhook_deliveries_total",
-    "Webhook deliveries by outcome (queued, delivered, retrying, dead) "
+    "Webhook deliveries by outcome (queued, delivered, skipped, retrying, dead) "
     "(ROADMAP Phase 10.3). outcome=dead is the dead-letter queue.",
     ["outcome"],
     registry=REGISTRY,
