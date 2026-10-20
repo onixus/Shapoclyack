@@ -24,6 +24,7 @@ The bare word "agent" always means the Lariska endpoint Agent; anything that cla
 | Understand components, trust boundaries, and data flow | [Architecture](architecture.md) |
 | Configure scanning, enrichment, and runtime settings | [Configuration](configuration.md) |
 | Deploy or upgrade Kubernetes workloads | [Kubernetes deployment](../k8s/README.md) |
+| Deploy with Helm instead of kustomize: values, existing Secrets, External Secrets, OCI publishing | [Helm chart](helm.md) |
 | Understand host inventory and credentialed-scanning coverage | [Coverage boundaries](operations.md#credentialed-scanning-scope-and-coverage-368) |
 | Operate, monitor, back up, and recover the platform | [Operations](operations.md) |
 | Run a profile that survives a node loss | [High availability](high-availability.md) |

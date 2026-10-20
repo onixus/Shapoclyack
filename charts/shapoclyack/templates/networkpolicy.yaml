@@ -1,0 +1,117 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/component: scanner-executor
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-scanner-executor-ingress
+  namespace: {{ .Values.namespaces.executor.name }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: scanner-executor
+      app.kubernetes.io/name: shapoclyack
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/component: clickhouse
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-clickhouse-ingress
+  namespace: {{ .Release.Namespace }}
+spec:
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: api
+          app.kubernetes.io/name: shapoclyack
+    ports:
+    - port: 8123
+      protocol: TCP
+    - port: 9000
+      protocol: TCP
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: clickhouse-backup
+          app.kubernetes.io/name: shapoclyack
+    ports:
+    - port: 9000
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: clickhouse
+      app.kubernetes.io/name: shapoclyack
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/component: nats
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-nats-ingress
+  namespace: {{ .Release.Namespace }}
+spec:
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: api
+          app.kubernetes.io/name: shapoclyack
+    ports:
+    - port: 4222
+      protocol: TCP
+  - ports:
+    - port: 8222
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: nats
+      app.kubernetes.io/name: shapoclyack
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/component: postgres
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-postgres-ingress
+  namespace: {{ .Release.Namespace }}
+spec:
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: api
+          app.kubernetes.io/name: shapoclyack
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: backup
+          app.kubernetes.io/name: shapoclyack
+    ports:
+    - port: 5432
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: postgres
+      app.kubernetes.io/name: shapoclyack
+  policyTypes:
+  - Ingress
+{{- end }}

@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app.kubernetes.io/component: nats
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-nats
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: nats
+      app.kubernetes.io/name: shapoclyack
+  serviceName: shapoclyack-nats
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: nats
+        app.kubernetes.io/name: shapoclyack
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - args:
+        - --config
+        - /etc/nats/nats.conf
+        env:
+        - name: SERVER_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NATS_API_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: api_password
+              name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "nats" "default" "shapoclyack-nats") }}
+        - name: NATS_AGENT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: agent_password
+              name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "nats" "default" "shapoclyack-nats") }}
+        image: {{ include "shapoclyack.image" .Values.images.nats }}
+        imagePullPolicy: {{ .Values.images.pullPolicy }}
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz?js-enabled-only=true
+            port: monitor
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        name: nats
+        ports:
+        - containerPort: 4222
+          name: client
+        - containerPort: 8222
+          name: monitor
+        - containerPort: 6222
+          name: cluster
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz?js-server-only=true
+            port: monitor
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        resources:
+{{- toYaml .Values.resources.nats | nindent 10 }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - mountPath: /data
+          name: nats-data
+        - mountPath: /etc/nats
+          name: config
+          readOnly: true
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+      - configMap:
+          name: shapoclyack-nats-config
+        name: config
+  volumeClaimTemplates:
+  - metadata:
+      labels:
+        app.kubernetes.io/component: nats
+        app.kubernetes.io/name: shapoclyack
+      name: nats-data
+    spec:
+{{- with .Values.storage.nats.storageClass }}
+      storageClassName: {{ . | quote }}
+{{- end }}
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: {{ .Values.storage.nats.size }}

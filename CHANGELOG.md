@@ -21,6 +21,20 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- Helm chart `charts/shapoclyack/`
+  ([#341](https://github.com/onixus/Shapoclyack/issues/341), [Helm chart](docs/helm.md)):
+  the kustomize base as a chart, with values for replicas, storage size and class,
+  per-credential `existingSecrets`, optional External Secrets and Ingress, images and
+  resources, a NetworkPolicy switch, and optional API spread/HPA as in prod-ha. Rendering
+  refuses the public dev-placeholder credentials unless `existingSecrets`, External Secrets
+  or `devPlaceholders=true` is set, several API replicas on a ReadWriteOnce volume, and an
+  Ingress without TLS for every host. `scripts/ci-helm.sh` runs `helm lint --strict` and
+  fails when the default render differs from `kubectl kustomize k8s/shapoclyack/base` in
+  any object or field (hardening included; `scripts/helm_parity.py`); it runs,
+  with `tests/test_helm_chart.py`, on pull requests that touch `k8s/`/`charts/`
+  (`.github/workflows/helm-chart.yml`); the tests also run in the PR Gate and in the Jenkins
+  pytest cells (helm 3.17.3). Wildcard TLS hosts and an HPA with min above max are handled. OCI publishing to
+  GHCR is described, not set up.
 - Result integrity ([#366](https://github.com/onixus/Shapoclyack/issues/366),
   [operations](docs/operations.md#sensor-result-integrity-schemas-and-signatures)):
   the API validates a run archive's core artifacts against JSON schemas before
