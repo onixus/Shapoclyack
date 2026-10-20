@@ -91,6 +91,7 @@ def test_only_the_test_step_relaxes_the_integration_gate():
     assert envs.pop("./scripts/ci-pytest.sh --maxfail=1") == {
         "OCTO_REQUIRE_INTEGRATION": "0",
         "COV_FAIL_UNDER": "0",
+        "OCTO_REQUIRE_HELM": "1",
     }
     assert all(env is None for env in envs.values()), envs
 

@@ -296,6 +296,7 @@ _INSTALLERS = [
     "Jenkinsfile.publish",
     ".github/workflows/ci.yml",
     ".github/workflows/pr-gate.yml",
+    ".github/workflows/helm-chart.yml",
     ".github/workflows/docker-publish.yml",
     ".github/workflows/load-test.yml",
     ".github/actions/synthetic-load-test/action.yml",

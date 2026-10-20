@@ -25,6 +25,31 @@ All notable changes to Shapoclyack are documented in this file.
   exports and generated Python client/CLI ([#354](https://github.com/onixus/Shapoclyack/issues/354));
   see [API changelog](docs/api-changelog.md) and [integration guide](docs/api-versioning.md).
 
+- Configurable ticket mapping and GitHub / GitLab Issues transports
+  ([#353](https://github.com/onixus/Shapoclyack/issues/353),
+  [API](docs/api-and-rbac.md)): subject and description templates (plain
+  `{placeholder}` substitution from a closed list, never evaluated), labels,
+  Jira components and custom fields, per-severity priority and `create: false`
+  routing, and project / repository / test selection by the asset's business
+  unit, environment and criticality. `github` and `gitlab` join `jira`,
+  `servicenow` and `defectdojo` as ticket transports, with two-way status sync.
+  Azure DevOps is not included. No migration: the settings live in
+  `transport_config`. Also fixed: a configured `transport_config.auth_mode` was
+  ignored when *creating* a ticket (only the status poll honoured it).
+- Helm chart `charts/shapoclyack/`
+  ([#341](https://github.com/onixus/Shapoclyack/issues/341), [Helm chart](docs/helm.md)):
+  the kustomize base as a chart, with values for replicas, storage size and class,
+  per-credential `existingSecrets`, optional External Secrets and Ingress, images and
+  resources, a NetworkPolicy switch, and optional API spread/HPA as in prod-ha. Rendering
+  refuses the public dev-placeholder credentials unless `existingSecrets`, External Secrets
+  or `devPlaceholders=true` is set, several API replicas on a ReadWriteOnce volume, and an
+  Ingress without TLS for every host. `scripts/ci-helm.sh` runs `helm lint --strict` and
+  fails when the default render differs from `kubectl kustomize k8s/shapoclyack/base` in
+  any object or field (hardening included; `scripts/helm_parity.py`); it runs,
+  with `tests/test_helm_chart.py`, on pull requests that touch `k8s/`/`charts/`
+  (`.github/workflows/helm-chart.yml`); the tests also run in the PR Gate and in the Jenkins
+  pytest cells (helm 3.17.3). Wildcard TLS hosts and an HPA with min above max are handled. OCI publishing to
+  GHCR is described, not set up.
 - Result integrity ([#366](https://github.com/onixus/Shapoclyack/issues/366),
   [operations](docs/operations.md#sensor-result-integrity-schemas-and-signatures)):
   the API validates a run archive's core artifacts against JSON schemas before

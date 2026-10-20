@@ -23,7 +23,14 @@ import {
 } from "@/lib/api";
 import { useT, type MsgKey } from "@/lib/i18n";
 
-const TRANSPORTS: WebhookTransport[] = ["webhook", "jira", "servicenow", "defectdojo"];
+const TRANSPORTS: WebhookTransport[] = [
+  "webhook",
+  "jira",
+  "servicenow",
+  "defectdojo",
+  "github",
+  "gitlab",
+];
 const SEVERITIES: WebhookSeverity[] = ["low", "medium", "high", "critical"];
 
 const SELECT_CLASS =
@@ -41,6 +48,8 @@ type FormState = {
   issueType: string;
   table: string;
   testId: string;
+  repository: string;
+  gitlabProject: string;
 };
 
 function configString(subscription: WebhookInfo | null, key: string, fallback = "") {
@@ -64,18 +73,41 @@ function initialState(subscription: WebhookInfo | null): FormState {
     issueType: configString(subscription, "issue_type", "Bug"),
     table: configString(subscription, "table", "incident"),
     testId: configString(subscription, "test_id"),
+    repository: configString(subscription, "repository"),
+    gitlabProject: configString(subscription, "project"),
   };
 }
 
-function transportConfig(form: FormState): Record<string, unknown> | undefined {
+function transportConfig(
+  form: FormState,
+  subscription: WebhookInfo | null,
+): Record<string, unknown> | undefined {
+  // The API replaces `transport_config` wholesale, and this form only knows the
+  // adapter's own knobs. Keys it does not show (auth_mode, templates, severity
+  // and target rules set through the API) are carried over for the same
+  // transport so that saving the form does not silently erase them.
+  const kept =
+    subscription && subscription.transport === form.transport
+      ? { ...(subscription.transport_config ?? {}) }
+      : {};
   if (form.transport === "jira") {
-    return { project_key: form.projectKey.trim(), issue_type: form.issueType.trim() || "Bug" };
+    return {
+      ...kept,
+      project_key: form.projectKey.trim(),
+      issue_type: form.issueType.trim() || "Bug",
+    };
   }
   if (form.transport === "servicenow") {
-    return { table: form.table.trim() || "incident" };
+    return { ...kept, table: form.table.trim() || "incident" };
   }
   if (form.transport === "defectdojo") {
-    return { test_id: form.testId.trim() };
+    return { ...kept, test_id: form.testId.trim() };
+  }
+  if (form.transport === "github") {
+    return { ...kept, repository: form.repository.trim() };
+  }
+  if (form.transport === "gitlab") {
+    return { ...kept, project: form.gitlabProject.trim() };
   }
   return undefined;
 }
@@ -140,7 +172,7 @@ export function WebhookFormDialog({
       min_severity: form.minSeverity || null,
       enabled: form.enabled,
       transport: form.transport,
-      transport_config: transportConfig(form),
+      transport_config: transportConfig(form, subscription),
     };
     if (isEdit) {
       const update: UpdateWebhookBody = { ...shared };
@@ -243,6 +275,32 @@ export function WebhookFormDialog({
                 value={form.table}
                 onChange={(event) => patch({ table: event.target.value })}
                 placeholder="incident"
+              />
+            </div>
+          ) : null}
+
+          {form.transport === "github" ? (
+            <div className="grid gap-1.5 sm:max-w-xs">
+              <Label htmlFor="wh-repository">{t("integrations.field.repository")}</Label>
+              <Input
+                id="wh-repository"
+                value={form.repository}
+                onChange={(event) => patch({ repository: event.target.value })}
+                placeholder="acme/security"
+                required
+              />
+            </div>
+          ) : null}
+
+          {form.transport === "gitlab" ? (
+            <div className="grid gap-1.5 sm:max-w-xs">
+              <Label htmlFor="wh-gitlab-project">{t("integrations.field.gitlabProject")}</Label>
+              <Input
+                id="wh-gitlab-project"
+                value={form.gitlabProject}
+                onChange={(event) => patch({ gitlabProject: event.target.value })}
+                placeholder="acme/security"
+                required
               />
             </div>
           ) : null}

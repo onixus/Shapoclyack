@@ -55,4 +55,7 @@ jobs:
         env:
           OCTO_REQUIRE_INTEGRATION: "0"
           COV_FAIL_UNDER: "0"
+          # ubuntu-latest ships helm and kubectl; if a runner image ever drops
+          # one, tests/test_helm_chart.py must fail, not skip (#341).
+          OCTO_REQUIRE_HELM: "1"
         run: ./scripts/ci-pytest.sh --maxfail=1

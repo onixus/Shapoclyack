@@ -2153,11 +2153,12 @@ timestamp being the `X-Shapoclyack-Timestamp` header) and should treat
 `X-Shapoclyack-Event-Id` as the deduplication key.
 
 `transport` selects the wire: `webhook` (default HMAC POST) or `jira` /
-`servicenow` / `defectdojo`. Ticket transports POST the native create-issue
-body to the instance URL, then link `ticket_key` on the matching tracked
-finding. An operator-set link is not overwritten. `transport_config` holds
-non-secret knobs (`project_key` / `issue_type`, `table`, `test_id`) plus two
-that every ticket transport takes ([#347](https://github.com/onixus/Shapoclyack/issues/347)):
+`servicenow` / `defectdojo` / `github` / `gitlab`. Ticket transports POST the
+native create-issue body to the instance URL, then link `ticket_key` on the
+matching tracked finding. An operator-set link is not overwritten.
+`transport_config` holds non-secret knobs (`project_key` / `issue_type`,
+`table`, `test_id`, `repository` for GitHub, `project` and `confidential` for
+GitLab) plus two that every ticket transport takes ([#347](https://github.com/onixus/Shapoclyack/issues/347)):
 
 - `auth_mode`: `bearer` (default; Jira Data Center PATs), `basic` (Jira Cloud —
   `secret` is then `email:api_token` and is base64'd for the request, never
@@ -2167,6 +2168,90 @@ that every ticket transport takes ([#347](https://github.com/onixus/Shapoclyack/
   tenant's tickets. `0` (default) means the platform's
   `OCTO_TICKET_SYNC_INTERVAL_SECONDS`; anything else must be ≥ 60, and a
   smaller number is `422` rather than a tracker quietly being hammered.
+
+GitHub Issues: `url` is the API root (`https://api.github.com`, or
+`https://ghe.example/api/v3`), `repository` is `owner/repo`, and the `secret` is
+a token with issue write access. GitLab Issues: `url` is the instance root,
+`project` is `group/sub/project` or the numeric id, `confidential: true` opens
+confidential issues. Both link the finding as `<repository>#<number>` (the
+number alone is not unique), and the inbound/outbound status sync works for them
+as for the other trackers: a closed issue closes the finding, closing the
+finding closes the issue, moving it back reopens. An issue that is merely open
+asserts nothing about the lifecycle. **Azure DevOps is not implemented.**
+
+**Mapping** ([#353](https://github.com/onixus/Shapoclyack/issues/353)). All of
+these are optional keys of `transport_config`, on every ticket transport unless
+noted; an invalid one is `422` when the subscription is saved. Without them the
+subject and description are the built-in ones.
+
+- `summary_template`, `description_template`: plain text with `{placeholder}`
+  tokens from a closed list: `kind`, `host`, `port`, `where` (`host:port`),
+  `cve`, `severity`, `cvss`, `script_id`, `run_id`, and, from the asset's
+  business context, `business_unit`, `environment`, `criticality`, `owner`.
+  Substitution only: no expression, attribute or filter syntax is evaluated, and
+  an unknown `{name}` is `422`. Missing values render as `-`; values are stripped
+  of control characters and capped at 500 characters. In the summary and in
+  `custom_fields` newlines and tabs also collapse to a space (Jira rejects a
+  line break there); the description keeps its line breaks. On GitHub and GitLab
+  the scan-derived values in the description are collapsed to one line and
+  Markdown-escaped (`@` becomes `&#64;`; `#`, `[`, `]`, `(`, backticks, `~`, `%`,
+  `$`, `&`, `!` and the like are backslash-escaped; a value starting with `/` is
+  escaped so it cannot act as a GitLab quick action such as `/close`), so banner
+  text cannot ping people, link issues, run quick actions or plant links; the
+  title is plain text and is only whitespace-normalised. Because escaping
+  cannot be done correctly inside code, a GitHub / GitLab `description_template`
+  that combines a backtick with any placeholder is `422`: write the values as
+  plain text. A custom description does
+  **not** carry the built-in "not confirmation that the finding is exploitable"
+  line; put it in the template if you want it.
+- `labels` (Jira, GitHub, GitLab), `components` (Jira): static lists.
+  Jira labels have whitespace replaced with `_`. `labels` (also inside
+  `severity_rules` and `target_rules`) on ServiceNow or DefectDojo is `422`
+  rather than silently ignored, and so is `components` outside Jira.
+- `custom_fields` (Jira): `{"customfield_10010": "{host}", ...}`; values may be
+  templates, numbers, booleans or lists of strings. The fields Shapoclyack owns
+  (`project`, `issuetype`, `summary`, `description`, `priority`, `labels`,
+  `components`) cannot be overridden.
+- `severity_rules`: `{"low": {"create": false}, "critical": {"priority":
+  "Highest", "labels": ["sla-1d"]}}`. `create` must be a JSON boolean (the
+  string `"false"` is `422`). `create: false` closes the delivery out without
+  calling the tracker (no ticket, nothing linked); the delivery row keeps status
+  `delivered` but its `last_error` and the subscription's `last_status` read
+  `skipped: severity <x> is configured not to open tickets`, the dispatcher
+  reports it as `skipped`, and `octo_webhook_deliveries_total{outcome="skipped"}`
+  counts it apart from real deliveries. It complements the subscription-wide
+  `min_severity`. The **Test** event is never skipped, so it always proves the
+  tracker is reachable. `priority` is the Jira priority name or the
+  ServiceNow `urgency` value (`1`, `2` or `3`; anything else is `422`); GitHub, GitLab and DefectDojo have no priority
+  field (DefectDojo already takes the event's severity), so use `labels`.
+- `target_rules`: an ordered list, first match wins, that replaces the Jira
+  `project_key`, GitHub `repository`, GitLab `project` or DefectDojo `test_id`:
+  `{"business_unit": "Payments", "environment": "prod", "min_criticality": 4,
+  "max_criticality": 5, "severities": ["critical"], "target": "PAY", "labels":
+  [...]}`. A rule needs at least one condition; the target is validated like the
+  base one. An asset with no value for a condition never matches it, and an event
+  whose host is not a known asset of the tenant uses the base target. When a
+  host maps to several assets, the asset holding the matching finding decides
+  (the one the created ticket is linked to), else the lowest asset id. If the
+  asset lookup itself *fails*, the delivery is retried with backoff instead of
+  falling back to the base target: a finding is never filed against the wrong
+  project because the database blinked.
+- `confidential` (GitLab) must be a JSON boolean.
+
+**Limits.** Status sync addresses a ticket through the tenant's *newest enabled*
+subscription of that transport: one GitHub (or GitLab, Jira, ...) endpoint per
+tenant is supported. Linking a GitHub or GitLab ticket by hand needs a key of
+the form `owner/repo#12` whose repository is the subscription's `repository` /
+`project` or a `target_rules` target, and an enabled subscription to check it
+against; otherwise `422`, so the subscription's token cannot be aimed at other
+repositories. The check happens once, when the link is made: a link that exists
+keeps syncing even if its repository later leaves the configuration. The
+configuration itself is validated strictly again on every delivery. A second subscription for the same transport does not get its own
+polling: use `target_rules` to cover several repositories through one.
+
+Outgoing requests use the same SSRF-validated, redirect-free, DNS-pinned wire as
+every other webhook delivery; the repository / project path is validated and
+percent-encoded, so it cannot move a request to another host.
 
 Credentials stay in `secret` or `Authorization`. Ticket *creation* needs NATS,
 like any other asset-event consumer; reading tickets back does not — it works

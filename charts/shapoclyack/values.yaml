@@ -1,0 +1,196 @@
+# Default values reproduce k8s/shapoclyack/base (checked by scripts/ci-helm.sh).
+# Placeholders only: no real hosts, registries credentials or secrets belong here.
+
+# The control plane (API, datastores, backups) goes into the release namespace
+# (`helm install -n <ns>`), the scanner-executor into its own, because it needs
+# raw-socket capabilities the API's baseline namespace refuses (docs/k8s-hardening.md).
+namespaces:
+  main:
+    # Render the release namespace with its Pod Security labels. Leave false for
+    # `helm install` (the release record lives in that namespace, so it must exist
+    # first: create and label it yourself, see docs/helm.md). For GitOps tools that
+    # render with `helm template`, true keeps the labels under version control.
+    create: false
+  executor:
+    name: network-scan-executor
+    create: true
+
+# Pull secrets attached to the three ServiceAccounts. The Secret itself is yours
+# to create in each namespace; kubelet ignores a missing one only when the image
+# is public.
+imagePullSecrets:
+  - name: shapoclyack-registry
+
+images:
+  pullPolicy: IfNotPresent
+  api:
+    repository: ghcr.io/onixus/shapoclyack-api
+    tag: shapoclyack-0.46-0922
+    digest: sha256:05f8a602511b5b0c6e04b29c503e5b77a793f4ea7abfc742044b08fd55357f2d
+  # The scanner-executor image (scanner tools baked in).
+  aio:
+    repository: ghcr.io/onixus/shapoclyack-aio
+    tag: shapoclyack-0.46-0922
+    digest: sha256:40a7312b39b46d2fce7e529a2ce7003834b32f880f8579ffff5850c5e2b0b161
+  clickhouse:
+    repository: clickhouse/clickhouse-server
+    tag: 24.8-alpine
+    digest: sha256:b002e56ed5c16e224c312527f6fcba7e77216fec5d7a88a7828f59efc614feb5
+  nats:
+    repository: nats
+    tag: 2.10.24-alpine
+    digest: sha256:fd981e2ab99000964bd15286054e61fcc445732fd907db039f260fc0b824b314
+  postgres:
+    repository: postgres
+    tag: 16-alpine
+    digest: sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+  awscli:
+    repository: amazon/aws-cli
+    tag: 2.17.40
+    digest: sha256:db8d39443ef512d4724becfac59ec9b7c4f8621e7b3c6200be56cd4fc2dc9570
+
+# Only the API and the executor scale out. The datastores are single-replica:
+# NATS/ClickHouse/Postgres clustering needs different configuration, not a
+# number (docs/high-availability.md, k8s/shapoclyack/overlays/prod-ha).
+replicas:
+  api: 1
+  scannerExecutor: 1
+
+storage:
+  # ReadWriteMany is required for api.replicas > 1 (docs/high-availability.md).
+  scannerData:
+    size: 20Gi
+    storageClass: ""
+    accessMode: ReadWriteOnce
+  clickhouse:
+    size: 50Gi
+    storageClass: ""
+  nats:
+    size: 5Gi
+    storageClass: ""
+  postgres:
+    size: 10Gi
+    storageClass: ""
+  # Per-executor PVC for the sensor's result-signing key (#366).
+  sensorKey:
+    size: 16Mi
+    storageClass: ""
+
+resources:
+  api:
+    limits: {cpu: "4", memory: 4Gi}
+    requests: {cpu: 500m, memory: 1Gi}
+  executor:
+    limits: {cpu: "4", ephemeral-storage: 32Gi, memory: 4Gi}
+    requests: {cpu: 500m, ephemeral-storage: 8Gi, memory: 1Gi}
+  clickhouse:
+    limits: {cpu: "4", memory: 8Gi}
+    requests: {cpu: 500m, memory: 2Gi}
+  nats:
+    limits: {cpu: 500m, memory: 512Mi}
+    requests: {cpu: 100m, memory: 128Mi}
+  postgres:
+    limits: {cpu: "2", memory: 2Gi}
+    requests: {cpu: 250m, memory: 512Mi}
+  postgresBackup:
+    upload:
+      limits: {cpu: 500m, memory: 512Mi}
+      requests: {cpu: 50m, memory: 128Mi}
+    dump:
+      limits: {cpu: "1", memory: 1Gi}
+      requests: {cpu: 100m, memory: 128Mi}
+  clickhouseBackup:
+    limits: {cpu: 250m, memory: 256Mi}
+    requests: {cpu: 20m, memory: 64Mi}
+
+api:
+  # Both empty in the base: the API then runs without the JetStream queue and
+  # the ClickHouse ingest. To enable, set (the passwords are expanded from the
+  # env vars NATS_PASSWORD / CLICKHOUSE_PASSWORD, already wired to the Secrets):
+  #   natsUrl: nats://api:$(NATS_PASSWORD)@shapoclyack-nats-client:4222
+  #   clickhouseUrl: http://default:$(CLICKHOUSE_PASSWORD)@shapoclyack-clickhouse-client:8123
+  natsUrl: ""
+  clickhouseUrl: ""
+  # Extra container env entries, appended after the base ones. Never repeat a
+  # name the chart already sets: a duplicate is rejected on server-side apply.
+  extraEnv: []
+  # Placement for replicas > 1, as in overlays/prod-ha (#335). Off by default.
+  spread:
+    enabled: false
+  # HorizontalPodAutoscaler (needs metrics-server). When on, replicas.api is not
+  # written to the Deployment; maxReplicas is what the RWX check uses. The
+  # database pool is sized for 6 replicas (see overlays/prod-ha/api-ha-patch.yaml).
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+
+# Credentials. The kustomize base ships public dev placeholders; this chart
+# refuses to render them unless asked (devPlaceholders). A real install
+# supplies its own, in one of two ways:
+#
+#  * existingSecrets: name a Secret you created (with the same keys the base
+#    uses: jwt_secret; password; password; api_password + agent_password; password).
+#    The chart then renders no placeholder for it and points the workloads at it.
+#  * externalSecrets.enabled: ExternalSecrets Operator creates the Secrets named
+#    as in the base from your secret store.
+#
+# With neither, rendering FAILS: the placeholders are public, and Postgres,
+# ClickHouse and NATS would start with them. devPlaceholders=true renders them
+# anyway, for a throwaway cluster or for the parity check against the base.
+devPlaceholders: false
+
+existingSecrets:
+  api: ""             # key: jwt_secret (optional: jwt_secret_previous)
+  postgres: ""          # key: password
+  clickhouse: ""        # key: password
+  clickhouseBackup: ""  # key: password
+  nats: ""              # keys: api_password, agent_password
+  # Secrets the base expects you to create yourself; override only the name.
+  postgresBackupS3: ""      # base name shapoclyack-backup
+  clickhouseBackupS3: ""    # base name shapoclyack-clickhouse-backup-s3
+  scannerExecutor: ""       # base name shapoclyack-scanner-executor (provisioning_key, agent_id_prefix)
+
+# Optional External Secrets Operator (requires its CRDs). Mirrors
+# k8s/shapoclyack/examples/externalsecret.example.yaml. Renders one
+# ExternalSecret per Secret above that existingSecrets does not name.
+externalSecrets:
+  enabled: false
+  apiVersion: external-secrets.io/v1beta1
+  refreshInterval: 1h
+  secretStoreRef:
+    name: shapoclyack-store
+    kind: ClusterSecretStore
+  # Path prefix inside the store: <prefix>/api, <prefix>/postgres, ...
+  remoteKeyPrefix: shapoclyack
+
+# Optional Ingress for the API and console. TLS is not optional (#309): the
+# console posts credentials and the API carries operator JWTs.
+ingress:
+  enabled: false
+  className: ""
+  # annotations: e.g. cert-manager.io/cluster-issuer, controller redirect rules.
+  annotations: {}
+  hosts:
+    - host: shapoclyack.example.com
+  tls:
+    - secretName: shapoclyack-api-tls
+      hosts:
+        - shapoclyack.example.com
+
+podDisruptionBudget:
+  enabled: true
+
+# Ingress rules for the datastores and the executor namespace. Needs a CNI that
+# enforces NetworkPolicy; without one the objects are inert.
+networkPolicy:
+  enabled: true
+
+backup:
+  postgres:
+    enabled: true
+    schedule: "15 2 * * *"
+  clickhouse:
+    enabled: true
+    schedule: "45 2 * * *"
