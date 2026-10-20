@@ -29,6 +29,7 @@ from api.core import permissions as permission_catalog
 from api.routes._pagination import PageQuery, build_page
 from api.schemas import AuditEventInfo, Page
 from api.services import audit as audit_service
+from api.services.csv_safety import drain, neutralize_cell
 from api.services.pagination import DEFAULT_LIMIT, MAX_LIMIT
 
 router = APIRouter(tags=["audit"])
@@ -65,12 +66,6 @@ def _tenant_scope(principal: TenantPrincipal) -> str | None:
     return principal.tenant_id
 
 
-# Leading characters a spreadsheet reads as the start of a formula rather than
-# as text. Tab and carriage return are here because Excel strips them before
-# deciding, so ``\t=cmd|…`` is a formula too.
-_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
-
-
 def _csv_cell(value: Any) -> Any:
     """Neutralise a cell a spreadsheet would evaluate instead of display.
 
@@ -82,16 +77,14 @@ def _csv_cell(value: Any) -> Any:
     a leading formula character gets an apostrophe in front of it — the
     convention every spreadsheet reads back as literal text.
     """
-    if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES):
-        return "'" + value
-    return value
+    return neutralize_cell(value)
 
 
 def _csv_rows(events: Iterator[dict[str, Any]]) -> Iterator[str]:
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=_CSV_COLUMNS, extrasaction="ignore")
     writer.writeheader()
-    yield _drain(buffer)
+    yield drain(buffer)
     for event in events:
         row = dict(event)
         # The two JSON columns go in as JSON text: a CSV cell holding a Python
@@ -99,14 +92,7 @@ def _csv_rows(events: Iterator[dict[str, Any]]) -> Iterator[str]:
         for key in ("before", "after"):
             row[key] = json.dumps(row[key], default=str) if row.get(key) is not None else ""
         writer.writerow({key: _csv_cell(value) for key, value in row.items()})
-        yield _drain(buffer)
-
-
-def _drain(buffer: io.StringIO) -> str:
-    value = buffer.getvalue()
-    buffer.seek(0)
-    buffer.truncate(0)
-    return value
+        yield drain(buffer)
 
 
 def _ndjson_rows(events: Iterator[dict[str, Any]]) -> Iterator[str]:

@@ -21,6 +21,10 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- API v1 aliases, twelve-month deprecation policy, bounded tenant-scoped CSV/NDJSON
+  exports and generated Python client/CLI ([#354](https://github.com/onixus/Shapoclyack/issues/354));
+  see [API changelog](docs/api-changelog.md) and [integration guide](docs/api-versioning.md).
+
 - Report formats, evidence signatures and S3 delivery
   ([#355](https://github.com/onixus/Shapoclyack/issues/355), [Reports](docs/reports-and-compliance.md)):
   reports render as CSV and XLSX (spreadsheet cells that would run as formulas

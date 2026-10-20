@@ -43,6 +43,9 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall scanner api tests agent
 
+      - name: Generated SDK is current
+        run: ./scripts/ci-sdk.sh
+
       # This is deliberately the infrastructure-free PR gate: the same
       # scripts/ci-pytest.sh as Jenkins, with the integration gate off because
       # PostgreSQL/NATS suites skip here. Coverage measured without them is not

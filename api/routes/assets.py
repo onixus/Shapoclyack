@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Literal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -33,8 +34,33 @@ from api.services import audit as audit_service
 from api.services import bulk_actions
 from api.services import endpoint_inventory as endpoint_inventory_service
 from api.settings import Settings
+from api.routes._export import export_response
+from fastapi.responses import StreamingResponse
 
 router = APIRouter(prefix="/assets", tags=["assets"])
+
+
+@router.get("/export", response_model=None)
+def export_assets(
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: Annotated[Settings, Depends(get_settings)],
+    format: Literal["csv", "ndjson"] = "ndjson",
+    cursor: Annotated[str | None, Query(max_length=2048)] = None,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 1000,
+) -> StreamingResponse:
+    """Stream one bounded, tenant-scoped export page in stable ID order.
+
+    Continue with X-Next-Cursor until that header is absent. Cursors expire
+    after 24 hours. Concurrent changes are visible; this is not a snapshot.
+    """
+    return export_response(
+        settings,
+        tenant_id=principal.tenant_id,
+        resource="assets",
+        format=format,
+        cursor=cursor,
+        limit=limit,
+    )
 
 
 @router.get("", response_model=Page[AssetSummary])
