@@ -56,6 +56,7 @@ from api.core import permissions as permission_catalog
 from api.db import models
 from api.db.engine import get_session
 from api.services import audit as audit_service
+from api.services import saved_views as saved_views_service
 from api.services import rbac as rbac_service
 from api.services import tenants as tenants_service
 from api.settings import Settings
@@ -278,6 +279,9 @@ def revoke(
             _refuse_above(revoked_by, current, "cannot revoke a member holding")
         removed = _to_dict(row)
         session.delete(row)
+        # Personal views are tenant-scoped; losing the tenant loses them, so a
+        # later re-grant does not resurrect the previous holder's views.
+        saved_views_service.delete_owner_views(session, username, tenant_id)
         audit_service.record(
             session,
             audit,

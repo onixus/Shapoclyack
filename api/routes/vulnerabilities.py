@@ -525,8 +525,8 @@ def list_vulnerabilities(
     ] = False,
     severity: Annotated[str | None, Query(description="critical | high | medium | low | unknown")] = None,
     asset_id: str | None = None,
-    finding_type: Literal["cve", "misconfiguration", "exposure"] | None = None,
-    detector_source: Literal["nuclei", "pulse", "pulse-plugin", "nmap-nse"] | None = None,
+    finding_type: vulns_service.FindingType | None = None,
+    detector_source: vulns_service.DetectorSource | None = None,
     source: Annotated[
         str | None,
         Query(
@@ -537,7 +537,7 @@ def list_vulnerabilities(
         ),
     ] = None,
     network_exposure: Annotated[
-        Literal["external", "internal", "unknown"] | None,
+        vulns_service.NetworkExposure | None,
         Query(
             description="external | internal | unknown — where the finding sits "
             "relative to the perimeter. 'unknown' also matches findings scored "

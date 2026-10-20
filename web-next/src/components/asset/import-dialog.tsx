@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, type RefObject } from "react";
 import { AssetConnectorPanel } from "@/components/asset/connector-panel";
 import { Upload } from "lucide-react";
 import { useT, type MsgKey } from "@/lib/i18n";
@@ -82,10 +82,12 @@ export function AssetImportButton() {
   const t = useT();
   const allowed = useAuthStore((state) => can(state.user, { permission: "asset.import" }));
   const [open, setOpen] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
   if (!allowed) return null;
   return (
     <>
       <Button
+        ref={trigger}
         variant="outline"
         size="sm"
         className="h-8 gap-1.5 text-xs"
@@ -94,7 +96,7 @@ export function AssetImportButton() {
         <Upload className="h-3.5 w-3.5" />
         {t("assetImport.button")}
       </Button>
-      {open ? <AssetImportDialog open={open} onOpenChange={setOpen} /> : null}
+      {open ? <AssetImportDialog open={open} onOpenChange={setOpen} returnFocusRef={trigger} /> : null}
     </>
   );
 }
@@ -102,9 +104,11 @@ export function AssetImportButton() {
 export function AssetImportDialog({
   open,
   onOpenChange,
+  returnFocusRef,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  returnFocusRef?: RefObject<HTMLButtonElement>;
 }) {
   const t = useT();
   const preview = useAssetImportPreview();
@@ -184,7 +188,12 @@ export function AssetImportDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl bg-card border-border text-foreground">
+      <DialogContent className="max-w-3xl bg-card border-border text-foreground" onCloseAutoFocus={(event) => {
+        if (returnFocusRef?.current) {
+          event.preventDefault();
+          returnFocusRef.current.focus();
+        }
+      }}>
         <DialogHeader>
           <DialogTitle className="text-foreground">{t("assetImport.title")}</DialogTitle>
           <DialogDescription className="text-xs text-muted-foreground">

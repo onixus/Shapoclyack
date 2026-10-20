@@ -138,7 +138,8 @@ describe("DataTable server pagination", () => {
     // "Count" is not in sortableColumns, so it renders as plain header text.
     expect(screen.queryByRole("button", { name: "Count" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Name" }));
-    expect(onSortChange).toHaveBeenCalledWith("name", "asc");
+    // The controlled server sort starts descending, so the next step clears it.
+    expect(onSortChange).toHaveBeenCalledWith(undefined, "desc");
   });
 
   it("debounces search and reports it to the server instead of filtering the page", async () => {

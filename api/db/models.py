@@ -3447,3 +3447,27 @@ class AssetImportConnector(Base):
     last_counts: Mapped[dict | None] = mapped_column(JSON, default=None)
     # Expiring claim held while a run fetches without an open transaction.
     run_lease_until: Mapped[datetime | None] = mapped_column(default=None)
+
+
+class ConsoleSavedView(Base):
+    """Personal console preferences, scoped to the resolved tenant and account."""
+
+    __tablename__ = "console_saved_views"
+    __table_args__ = (
+        Index("ix_console_saved_views_owner", "tenant_id", "username", "page"),
+        # Case-insensitive uniqueness rests on name_key (name.casefold(), set in
+        # Python), not on SQL lower(), which is locale-dependent.
+        UniqueConstraint(
+            "tenant_id", "username", "page", "name_key", name="uq_console_saved_views_name_key"
+        ),
+    )
+
+    view_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id", ondelete="CASCADE"))
+    username: Mapped[str]
+    page: Mapped[str]
+    name: Mapped[str]
+    name_key: Mapped[str]
+    state: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]

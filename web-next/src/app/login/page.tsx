@@ -173,7 +173,7 @@ export default function LoginPage() {
   const localLogin = sso?.enabled ? sso.local_login : "enabled";
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-muted px-4">
+    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-muted px-4">
       <div className="login-wash pointer-events-none absolute inset-0" aria-hidden />
       <div className="absolute right-4 top-4 z-20">
         <AppearanceControls />
@@ -209,7 +209,7 @@ export default function LoginPage() {
                 required
               />
             </label>
-            {error ? <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p> : null}
+            {error ? <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{error}</p> : null}
             <Button type="submit" className="w-full" disabled={submitting}>
               {submitting ? t("login.mfa.submitting") : t("login.mfa.submit")}
             </Button>
@@ -277,7 +277,7 @@ export default function LoginPage() {
                   required
                 />
               </label>
-              {error ? <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p> : null}
+              {error ? <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{error}</p> : null}
               <Button type="submit" className="w-full" disabled={submitting}>
                 {submitting ? t("login.submitting") : t("login.submit")}
               </Button>
@@ -286,6 +286,6 @@ export default function LoginPage() {
           </>
         )}
       </section>
-    </div>
+    </main>
   );
 }

@@ -13,6 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { SavedViews } from "@/components/saved-views";
 import { DataTable } from "@/components/data-table";
 import { AssetBulkContext } from "@/components/asset/bulk-context";
 import { AssetImportButton } from "@/components/asset/import-dialog";
@@ -245,6 +246,10 @@ function AssetsInner() {
         <AssetImportButton />
       </div>
 
+      <SavedViews page="assets" state={{ version: 1, search: pagination.search, sort: pagination.sort ?? null, order: pagination.order, filters: { status, unowned } }} onApply={(view) => {
+        pagination.setSearch(view.search); pagination.setSort(view.sort ?? undefined, view.order);
+        setStatus((view.filters.status || "") as AssetStatus | ""); setUnowned(view.filters.unowned === true); setSelected([]); pagination.reset();
+      }} />
       <DataTable
         columns={columns}
         data={data}
@@ -263,7 +268,7 @@ function AssetsInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-48">
+              <SelectTrigger aria-label={t("col.status")} className="w-48">
                 <SelectValue placeholder={t("page.assets.filterAllStatuses")} />
               </SelectTrigger>
               <SelectContent>
@@ -280,7 +285,7 @@ function AssetsInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-48">
+              <SelectTrigger aria-label={t("page.assets.filterOwnership")} className="w-48">
                 <SelectValue placeholder={t("page.assets.filterOwnership")} />
               </SelectTrigger>
               <SelectContent>
@@ -309,6 +314,7 @@ function AssetsInner() {
           total,
           onOffsetChange: pagination.setOffset,
           search: pagination.search,
+          searchRevision: pagination.searchRevision,
           onSearchChange: pagination.setSearch,
           sortableColumns: [
             "last_seen",

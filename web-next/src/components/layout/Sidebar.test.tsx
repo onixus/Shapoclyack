@@ -160,4 +160,48 @@ describe("Sidebar", () => {
     expect(await screen.findByText("v0.45")).toBeInTheDocument();
     expect(screen.getByText("Sensor execution")).toBeInTheDocument();
   });
+
+  it("moves focus into the mobile drawer, closes on Escape and returns focus to the toggle", async () => {
+    signIn({ role: "viewer" });
+    renderSidebar();
+    const user = userEvent.setup();
+    const toggle = screen.getByRole("button", { name: "Open navigation" });
+    await user.click(toggle);
+    const drawer = document.getElementById("primary-sidebar") as HTMLElement;
+    expect(drawer.contains(document.activeElement)).toBe(true);
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("button", { name: "Open navigation" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Open navigation" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+  });
+
+  it("sends focus to the main region, not the toggle, after a nav link closes the drawer", async () => {
+    signIn({ role: "viewer" });
+    const main = document.createElement("main");
+    main.id = "main-content";
+    main.tabIndex = -1;
+    document.body.appendChild(main);
+    renderSidebar();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Open navigation" }));
+    await user.click(screen.getByRole("link", { name: "Vulnerabilities" }));
+    expect(screen.getByRole("button", { name: "Open navigation" })).not.toHaveFocus();
+    expect(main).toHaveFocus();
+    main.remove();
+  });
+
+  it("keeps the slide-out animation by transitioning visibility with the transform", () => {
+    signIn({ role: "viewer" });
+    renderSidebar();
+    const drawer = document.getElementById("primary-sidebar") as HTMLElement;
+    expect(drawer.className).toContain("transition-[transform,visibility]");
+  });
+
+  it("does not steal focus on first render", () => {
+    signIn({ role: "viewer" });
+    renderSidebar();
+    expect(document.body).toHaveFocus();
+  });
 });
