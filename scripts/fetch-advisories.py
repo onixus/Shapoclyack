@@ -112,9 +112,9 @@ def main() -> int:
     parser.add_argument(
         "--max-bytes",
         type=int,
-        default=fetch.DEFAULT_MAX_BYTES,
+        default=None,
         help="Hard ceiling on the download, enforced while streaming "
-        f"(default {fetch.DEFAULT_MAX_BYTES})",
+        "(default: dataset-specific; Ubuntu bz2 128 MiB, raw JSON 512 MiB)",
     )
     parser.add_argument(
         "--months",
@@ -160,7 +160,7 @@ def main() -> int:
                 path=staging,
                 months=args.months,
                 timeout=args.timeout,
-                max_bytes=max(args.max_bytes, fetch.MSRC_MAX_BYTES),
+                max_bytes=args.max_bytes if args.max_bytes is not None else fetch.MSRC_MAX_BYTES,
             )
         else:
             written = fetch.refresh(
@@ -175,7 +175,7 @@ def main() -> int:
     # FeedURLError is a mirror variable naming a scheme nothing here opens, and
     # RuntimeError an MSRC index that listed nothing — a mirror that has not
     # synced yet looks exactly like that.
-    except (fetch.FetchTooLargeError, fetch.FeedURLError, RuntimeError, OSError, json.JSONDecodeError) as exc:
+    except (fetch.FetchTooLargeError, fetch.FeedURLError, RuntimeError, OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         staging.unlink(missing_ok=True)
         print(f"error: {args.dataset} fetch failed: {exc}", file=sys.stderr)
         return EXIT_FAILED

@@ -141,11 +141,20 @@ read by the script and by the in-process fetcher that shares the feed.
 | ASN | `ASN_URL` | DB-IP ASN Lite or MaxMind GeoLite2-ASN | As for GeoIP |
 | NVD CVE API 2.0 (CVSS v4 overlay *and* the CPE ranges behind retro matching) | `NVD_API_URL` | `https://services.nvd.nist.gov/rest/json/cves/2.0` | An endpoint that answers the CVE API's query parameters — a caching proxy of NVD, not a static file |
 | Debian security tracker | `DEBIAN_TRACKER_URL` | `https://security-tracker.debian.org/tracker/data/json` | The same JSON |
-| Ubuntu USN | `UBUNTU_USN_URL` | `https://usn.ubuntu.com/usn-db/database.json` | The same JSON |
+| Ubuntu USN | `UBUNTU_USN_URL` | `https://usn.ubuntu.com/usn-db/database.json.bz2` | Full USN JSON, raw or bzip2 |
 | Microsoft Update Guide (CVRF) | `MSRC_CVRF_BASE_URL` | `https://api.msrc.microsoft.com/cvrf/v3.0` | `<base>/updates` and `<base>/cvrf/<month>`, the API's own paths |
 | Exploit-DB index | `EXPLOITDB_CSV_URL` | `https://gitlab.com/exploit-database/exploitdb/-/raw/main/files_exploits.csv` | The same CSV |
 | Metasploit module metadata | `METASPLOIT_MODULES_URL` | `https://raw.githubusercontent.com/rapid7/metasploit-framework/master/db/modules_metadata_base.json` | The same JSON |
 | nuclei templates | `NUCLEI_TEMPLATES_REPO`, `NUCLEI_TEMPLATES_REF`, `NUCLEI_TEMPLATES_COMMIT` | nuclei's own `-update-templates` | A git mirror of `projectdiscovery/nuclei-templates` — see §5 |
+
+Ubuntu refresh uses Canonical's complete bzip2 database, with a 128 MiB transfer
+ceiling and a 512 MiB decoded ceiling. Raw JSON mirrors retain the full coverage
+and use a 512 MiB transfer ceiling by default. `fetch-advisories.py --max-bytes`
+sets an explicit transfer ceiling; the decoded Ubuntu ceiling remains bounded.
+Malformed, truncated, oversized or timed-out downloads leave the last-good
+dataset untouched. Each fetch also has a five-minute total deadline, checked
+between bounded reads, decompression chunks and JSON parsing, in addition to
+the socket timeout.
 
 Notes that matter:
 
