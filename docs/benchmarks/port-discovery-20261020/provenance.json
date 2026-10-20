@@ -1,0 +1,62 @@
+{
+  "pulse": "9e825d76783e5bc35ae66d8c485eb083c0725a53ac2e0d05e94c89bbdc9af529",
+  "naabu": "231b3b89a3695ae874e6f7007c3da37c93cf7bfbf689579eaf0d5d6062b4abb3",
+  "nuclei": "7a2fb8a51e4aa0e0aefc57bf8865ea32c4e307de8f44e125e532884d6129156d",
+  "template": "e6de6a8870f3c329ba43e63443bb76f4412711903394b95c392242fa2f5e996d",
+  "template_source": "projectdiscovery/nuclei-templates v9.9.4 f4251b06c100067f230c4f54a1679de59802c7a4 http/misconfiguration/nginx/nginx-status.yaml",
+  "truth_services": [
+    [
+      "127.20.0.1",
+      8080,
+      "http",
+      "nginx",
+      "1.24.0"
+    ],
+    [
+      "127.20.0.2",
+      8443,
+      "https-alt",
+      "nginx",
+      "1.24.0"
+    ],
+    [
+      "127.20.0.3",
+      2222,
+      "ssh",
+      "OpenSSH",
+      "9.2"
+    ]
+  ],
+  "truth_nuclei_findings": [
+    [
+      "nginx-status",
+      "http://127.20.0.1:8080",
+      "http://127.20.0.1:8080/nginx-status"
+    ],
+    [
+      "nginx-status",
+      "http://127.20.0.1:8080",
+      "http://127.20.0.1:8080/nginx_status"
+    ],
+    [
+      "nginx-status",
+      "https://127.20.0.2:8443",
+      "https://127.20.0.2:8443/nginx-status"
+    ],
+    [
+      "nginx-status",
+      "https://127.20.0.2:8443",
+      "https://127.20.0.2:8443/nginx_status"
+    ]
+  ],
+  "source_sha256": "3d81057cd2c489a989b486978e902e83d4c01518f12d12da7124c764d4cfb1e9",
+  "helper_sha256": "a00020999929f394695b1f27833558be151ee4b30b5faa63526809a9eb1acbbf",
+  "engine_sha256": "3d27d160ae98d42565934bc973b31f4fc6fba6d7764dc3e36231fd6e7be1abe7",
+  "privilege_profile": "all scanner stages UID/GID 65534; no-new-privs; no raw capabilities",
+  "limitations": [
+    "CLI stage sums, not scheduler pipeline",
+    "controlled banners are not real nginx/sshd",
+    "OS fingerprints require classified evidence, equal empty OS arrays are not parity",
+    "no routed topology or installed sensor acceptance"
+  ]
+}

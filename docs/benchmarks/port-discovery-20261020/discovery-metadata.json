@@ -1,0 +1,105 @@
+{
+  "pins": {
+    "pulse": "9e825d76783e5bc35ae66d8c485eb083c0725a53ac2e0d05e94c89bbdc9af529",
+    "naabu": "231b3b89a3695ae874e6f7007c3da37c93cf7bfbf689579eaf0d5d6062b4abb3"
+  },
+  "platform": "Linux-6.12.76-linuxkit-aarch64-with-glibc2.41",
+  "network": "none; loopback only",
+  "truth_open": [
+    [
+      "127.20.0.1",
+      8080,
+      "tcp"
+    ],
+    [
+      "127.20.0.2",
+      8443,
+      "tcp"
+    ],
+    [
+      "127.20.0.3",
+      2222,
+      "tcp"
+    ]
+  ],
+  "truth_services": [
+    [
+      "127.20.0.1",
+      8080,
+      "http",
+      "nginx",
+      "1.24.0"
+    ],
+    [
+      "127.20.0.2",
+      8443,
+      "http",
+      "nginx",
+      "1.24.0"
+    ],
+    [
+      "127.20.0.3",
+      2222,
+      "ssh",
+      "OpenSSH",
+      "9.2"
+    ]
+  ],
+  "truth_closed": [
+    [
+      "127.20.0.1",
+      2222,
+      "tcp"
+    ],
+    [
+      "127.20.0.1",
+      8443,
+      "tcp"
+    ],
+    [
+      "127.20.0.1",
+      8999,
+      "tcp"
+    ],
+    [
+      "127.20.0.2",
+      2222,
+      "tcp"
+    ],
+    [
+      "127.20.0.2",
+      8080,
+      "tcp"
+    ],
+    [
+      "127.20.0.2",
+      8999,
+      "tcp"
+    ],
+    [
+      "127.20.0.3",
+      8080,
+      "tcp"
+    ],
+    [
+      "127.20.0.3",
+      8443,
+      "tcp"
+    ],
+    [
+      "127.20.0.3",
+      8999,
+      "tcp"
+    ]
+  ],
+  "udp_truth": {
+    "8997": "echo responder",
+    "8998": "bound socket silently discards requests",
+    "8999": "unbound closed port"
+  },
+  "cache_definition": "cold=fresh per-command HOME; warm=shared HOME; no page-cache flush",
+  "capture_definition": "AF_PACKET lo includes outgoing/incoming copies; packets are captured frames, bytes sum captured Ethernet wire lengths; no physical-wire claim",
+  "profile": "TCP discovery invocation including engine implicit service probes; pipeline stages use identical banner flags; OS/TLS/CVE options disabled",
+  "rss_definition": "Linux per-child peak RSS in KiB from wait4, including pre-exec fork memory; not binary-only or total concurrent memory",
+  "runner_sha256": "be8cafdb3cec43c18ba4ac7192148aeaab8093b628f579ed0ef9be96b8f18b42"
+}

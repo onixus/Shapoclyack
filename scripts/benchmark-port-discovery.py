@@ -40,13 +40,44 @@ def normalize(tool, stdout):
         return sorted({(r['ip'], int(r['port']), r.get('protocol', 'tcp'))
                       for line in stdout.splitlines() if line.strip()
                       for r in [json.loads(line)]})
-    data = json.loads(stdout)
-    rows = data if isinstance(data, list) else data.get('results', data.get('hosts', []))
+    rows = pulse_rows(stdout)
     found = []
     for row in rows:
         if row.get('state') == 'open':
             found.append((row.get('ip', row.get('host')), int(row['port']), 'tcp' if row.get('protocol', 'tcp') == 'tcpsyn' else row.get('protocol', 'tcp')))
     return sorted(found)
+
+
+def pulse_rows(stdout):
+    """Both pinned fresh and checkpoint reports, refusing unknown envelopes."""
+    data = json.loads(stdout)
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        raise ValueError('unsupported Pulse report envelope')
+    keys = [key for key in ('results', 'hosts', 'open') if key in data]
+    if len(keys) != 1 or not isinstance(data[keys[0]], list):
+        raise ValueError('unsupported or ambiguous Pulse report envelope')
+    return data[keys[0]]
+
+
+def service_observations(outputs):
+    return sorted({(r['ip'], r['port'], r.get('service'), r.get('product'), r.get('version'))
+                   for output in outputs for r in pulse_rows(json.dumps(output))
+                   if r.get('state') == 'open'})
+
+
+def outcome(metrics):
+    """Exit zero alone establishes execution, never coverage or acceptance."""
+    if metrics['timed_out']:
+        return 'incomplete_timeout'
+    if metrics.get('cancellation_requested'):
+        return 'interrupted'
+    if metrics['returncode'] != 0:
+        return 'execution_failed'
+    if not metrics['capture_complete']:
+        return 'incomplete_capture'
+    return 'executed_coverage_unverified'
 
 
 def enrichment_plan(variant, discovered):
@@ -108,7 +139,7 @@ class Capture:
         return received, dropped
 
 
-def run_command(out, argv, profile, servers, engine, home, cancel_after=None):
+def run_command(out, argv, profile, servers, engine, home, cancel_after=None, deadline_seconds=10):
     out.mkdir()
     before = [s.count for s in servers]
     cap = Capture(out / 'traffic.pcap')
@@ -133,7 +164,7 @@ def run_command(out, argv, profile, servers, engine, home, cancel_after=None):
                     pass
             kill_timer = threading.Timer(5, kill)
             kill_timer.start()
-        timer = threading.Timer(cancel_after or 10, expire)
+        timer = threading.Timer(cancel_after or deadline_seconds, expire)
         timer.start()
         try:
             _, status, usage = os.wait4(proc.pid, 0)
@@ -146,7 +177,7 @@ def run_command(out, argv, profile, servers, engine, home, cancel_after=None):
             received, dropped = cap.close()
     stdout = (out / 'stdout').read_text()
     metrics = {'argv': argv, 'returncode': proc.returncode, 'seconds': elapsed, 'cancellation_requested': cancel_after is not None and expired.is_set(),
-               'timed_out': cancel_after is None and expired.is_set(), 'deadline_seconds': cancel_after or 10,
+               'timed_out': cancel_after is None and expired.is_set(), 'deadline_seconds': cancel_after or deadline_seconds,
                'cpu_seconds': usage.ru_utime + usage.ru_stime,
                'peak_rss_kib': usage.ru_maxrss, 'processes': 1,
                'accepted_connections': sum(s.count - c for s, c in zip(servers, before)),
@@ -199,8 +230,11 @@ def main(args):
     servers = [engine.Server(h, p, kind, ctx) for h, p, kind in
                zip(HOSTS, [8080, 8443, 2222], ['http', 'http', 'ssh'])]
     truth = sorted((s.host, s.port, 'tcp') for s in servers)
+    service_truth = sorted([(HOSTS[0], 8080, 'http', 'nginx', '1.24.0'),
+                            (HOSTS[1], 8443, 'http', 'nginx', '1.24.0'),
+                            (HOSTS[2], 2222, 'ssh', 'OpenSSH', '9.2')])
     metadata = {'pins': PINS, 'platform': platform.platform(), 'network': 'none; loopback only',
-                'truth_open': truth, 'truth_closed': [(h, p, 'tcp') for h in HOSTS for p in PORTS if (h, p, 'tcp') not in truth],
+                'truth_open': truth, 'truth_services': service_truth, 'truth_closed': [(h, p, 'tcp') for h in HOSTS for p in PORTS if (h, p, 'tcp') not in truth],
                 'udp_truth': {'8997': 'echo responder', '8998': 'bound socket silently discards requests', '8999': 'unbound closed port'},
                 'cache_definition': 'cold=fresh per-command HOME; warm=shared HOME; no page-cache flush',
                 'capture_definition': 'AF_PACKET lo includes outgoing/incoming copies; packets are captured frames, bytes sum captured Ethernet wire lengths; no physical-wire claim',
@@ -265,15 +299,17 @@ def main(args):
                         outputs.append(json.loads(stdout) if metrics['returncode'] == 0 else {'results': []})
                     combined = stages if variant == 'pulse_reuse' else [discovery, *stages]
                     found = sorted({endpoint for output in outputs for endpoint in normalize('pulse', json.dumps(output))})
-                    services = sorted((r['ip'], r['port'], r.get('service'), r.get('product'), r.get('version'))
-                                      for output in outputs for r in output['results'] if r['state'] == 'open')
+                    services = service_observations(outputs)
                     sample = {'profile': 'unprivileged', 'cache': cache, 'repeat': repeat, 'variant': variant,
                               'seconds': sum(m['seconds'] for m in combined), 'cpu_seconds': sum(m['cpu_seconds'] for m in combined),
                               'accepted_connections': sum(m['accepted_connections'] for m in combined),
                               'packets': sum(m['traffic']['packets'] for m in combined),
                               'wire_bytes': sum(m['traffic']['wire_bytes'] for m in combined),
                               'processes': len(combined), 'peak_rss_kib': max(m['peak_rss_kib'] for m in combined), 'matches_truth': all(m['returncode'] == 0 and not m['timed_out'] and m['capture_complete'] for m in combined) and found == truth, 'endpoints': found,
-                              'services': services, 'stages': combined, 'capture_complete': all(m['capture_complete'] for m in combined)}
+                              'services': services, 'services_match_truth': services == service_truth,
+                              'parity': {'services': 'matched' if services == service_truth else 'mismatch',
+                                         'os': 'not_measured', 'tls': 'not_measured', 'plugins': 'not_measured',
+                                         'nuclei_findings': 'not_measured'}, 'stages': combined, 'capture_complete': all(m['capture_complete'] for m in combined)}
                     pipelines.append(sample)
                     (out / 'pipelines.json').write_text(json.dumps(pipelines, indent=2))
         (out / 'pipeline-summary.json').write_text(json.dumps(summarize(pipelines), indent=2))
@@ -346,7 +382,7 @@ def main(args):
                 case_home.mkdir()
                 case_home.chmod(0o777)
                 metrics, stdout = run_command(out / case, argv, profile, servers, engine, case_home)
-                checks.append({'case': case, 'metrics': metrics})
+                checks.append({'case': case, 'metrics': metrics, 'status': outcome(metrics)})
         finally:
             stop_ipv6.set()
             ipv6_thread.join(1)
@@ -364,7 +400,9 @@ def main(args):
         # Complete the identical bounded scope from its saved checkpoint.
         if checkpoint.exists():
             metrics, stdout = run_command(out / 'pulse_resume', cancel_argv, 'unprivileged', servers, engine, home)
-            checks.append({'case': 'pulse_resume', 'metrics': metrics, 'checkpoint_exists': checkpoint.exists()})
+            checks.append({'case': 'pulse_resume', 'metrics': metrics, 'status': outcome(metrics),
+                           'checkpoint_exists': checkpoint.exists(),
+                           'endpoints': normalize('pulse', stdout) if metrics['returncode'] == 0 else []})
         # Configuration changes are confined to this verified network-none
         # namespace. The fixed lo interface is never obtained from user input.
         shaping = []
@@ -417,13 +455,18 @@ def main(args):
         naabu_cancel = ['naabu', '-host', ','.join(HOSTS), '-p', '1-100,2222,8080,8443', '-s', 'c', '-rate', '100',
                         '-json', '-silent', '-duc', '-no-stdin', '-Pn', '-retries', '1', '-timeout', '150', '-warm-up-time', '1']
         metrics, stdout = run_command(out / 'naabu_cancel', naabu_cancel, 'unprivileged', servers, engine, naabu_home, cancel_after=.3)
+        naabu_partial = normalize('naabu', stdout)
         resume_files = list(naabu_home.rglob('resume.cfg'))
         checks.append({'case': 'naabu_cancel', 'metrics': metrics,
                        'resume_files': [str(p.relative_to(naabu_home)) for p in resume_files]})
         if resume_files:
-            metrics, stdout = run_command(out / 'naabu_resume', ['naabu', '-resume', '-duc', '-no-stdin'],
+            metrics, stdout = run_command(out / 'naabu_resume', [*naabu_cancel, '-resume'],
                                            'unprivileged', servers, engine, naabu_home)
-            checks.append({'case': 'naabu_resume', 'metrics': metrics})
+            resumed = normalize('naabu', stdout) if metrics['returncode'] == 0 else []
+            merged = sorted(set(naabu_partial) | set(resumed))
+            checks.append({'case': 'naabu_resume', 'metrics': metrics, 'status': outcome(metrics),
+                           'endpoints': resumed, 'merged_endpoints': merged,
+                           'merged_open_set_matches_truth': merged == truth})
         (out / 'network-shaping.json').write_text(json.dumps(shaping, indent=2))
         (out / 'capabilities.json').write_text(json.dumps(checks, indent=2))
     finally:
