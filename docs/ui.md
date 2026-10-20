@@ -62,7 +62,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/access` | Roles & members of the selected tenant: the roles it defined for itself (create, edit, rename, delete with reassignment) and its members (grant, change, revoke) | `tenant.member.read` to read, `tenant.member.manage` to change — the tenant's admin, the platform admin, or a tenant role holding them |
 | `/audit` | Administrative audit trail: what was changed, by whom, with the value before and after; filters and CSV/NDJSON export | `audit.read` in the tenant — its admin or its auditor |
 | `/retention` | Data retention for the selected tenant: every category's platform default, bounds, override and window in force; the legal-hold banner; for a platform admin, placing and releasing a hold and the personal-data requests (export, erasure) for console accounts ([data-retention.md](data-retention.md)) | `tenant.retention.read` to read — the tenant's admin or auditor; `tenant.retention.manage` to edit; platform admin for the hold and the requests |
-| `/integrations` | Outbound webhooks and ticket-system transports (Jira, ServiceNow, DefectDojo): subscriptions, test, secret rotation, delivery log with retry | Operator to read; admin to change |
+| `/integrations` | Outbound webhooks and ticket-system transports (Jira, ServiceNow, DefectDojo, GitHub, GitLab): subscriptions, test, secret rotation, delivery log with retry | Operator to read; admin to change |
 | `/service-tokens` | Non-interactive API credentials for the selected tenant | `tenant.credential.manage` — the tenant's admin or a token-admin |
 | `/agents` | **Sensors** — the fleet of sensors (API resource `agents`, `agent_kind = scanner`): live health tiles, a sensor drawer, the SSH deploy dialog and on-request provisioning keys (the page is labelled "Sensors"; the route stays `/agents`) | Operator; `tenant.credential.manage` alone (a `token-admin`) gets the tiles and the **Deploy Sensor** dialog without the fleet list |
 | `/security` | Your own second factor: enrol an authenticator, keep the recovery codes, turn it off | Any role, for the signed-in account only |
@@ -1176,10 +1176,10 @@ moved (`"[unset]"` where a path was not overridden).
 
 `/integrations` exposes the webhook subsystem (`OCTO_WEBHOOKS_ENABLED`; when it
 is off the page says so instead of listing nothing). **Subscriptions**: plain
-webhooks and the Jira / ServiceNow / DefectDojo transports that open tickets
+webhooks and the Jira / ServiceNow / DefectDojo / GitHub / GitLab transports that open tickets
 from the Remediation board and sync status back; per row Test, Rotate secret
 (HMAC transports — the new value is shown once), Edit (including a new
-tracker token via `secret`, left empty to keep the current one) and Delete.
+tracker token via `secret`, left empty to keep the current one) and Delete. The form edits the adapter target only (project, repository, table, test); mapping keys set through the API (templates, labels, severity and target rules, `auth_mode`) are kept when a subscription is saved.
 **Deliveries**: the paged delivery log with Retry on dead deliveries.
 Operators read, admins change.
 

@@ -39,6 +39,7 @@ from scanner.pipeline.non_cve_policy import actionable
 import hashlib
 import ipaddress
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -169,7 +170,8 @@ MIN_FP_SUPPRESS_DAYS = 1
 MAX_FP_SUPPRESS_DAYS = 365
 DEFAULT_FP_SUPPRESS_DAYS = 90
 
-TICKET_SYSTEMS = ("jira", "servicenow", "smax", "defectdojo", "other")
+_ISSUE_KEY = re.compile(r"^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*#\d{1,12}$")
+TICKET_SYSTEMS = ("jira", "servicenow", "smax", "defectdojo", "github", "gitlab", "other")
 
 #: Which observer produced a finding. ``scan`` is this module's own path;
 #: ``endpoint_software`` is ``api/services/software_findings.py``;
@@ -2245,6 +2247,29 @@ def transition(
     return result
 
 
+def _require_configured_repository(
+    settings: Settings, tenant_id: str, system: str, key: str
+) -> None:
+    """A hand-typed GitHub / GitLab key must name a repository the tenant configured.
+
+    The subscription's token is an admin's; the key is typed by anyone who may
+    link tickets. Checked here, once, at link time (status sync trusts what is
+    stored), against the subscription's ``repository`` / ``project`` and its
+    ``target_rules`` targets.
+    """
+    from api.services.integrations.ticket_sync import allowed_issue_repos
+
+    with get_session(settings.postgres_url) as session:
+        endpoint = _ticket_endpoint(session, tenant_id=tenant_id, ticket_system=system)
+    if endpoint is None:
+        raise ValueError(f"No enabled '{system}' subscription is configured for this tenant")
+    repo = key.rpartition("#")[0].lower()
+    if repo not in allowed_issue_repos(endpoint[3]):
+        raise ValueError(
+            f"{system} repository {repo!r} is not one this tenant's subscription is configured for"
+        )
+
+
 def _ticket_endpoint(
     session: Any, *, tenant_id: str, ticket_system: str
 ) -> tuple[str, str | None, dict[str, str], dict[str, Any]] | None:
@@ -4012,8 +4037,13 @@ def set_ticket(
     url: str | None,
     actor: str | None = None,
     note: str | None = None,
+    verify_repository: bool = True,
 ) -> dict[str, Any] | None:
     """Attach an external ticket.
+
+    ``verify_repository=False`` is for the ticket transport linking a key it
+    just built from its own configuration; hand-typed GitHub / GitLab keys are
+    always checked against the subscription.
 
     Operators call this to *link* a ticket they opened by hand. The P2
     ticket transport also calls it after a successful Jira/ServiceNow/
@@ -4023,6 +4053,11 @@ def set_ticket(
     if system not in TICKET_SYSTEMS:
         raise ValueError(f"unknown ticket system {system!r}; expected one of {', '.join(TICKET_SYSTEMS)}")
     key = (key or "").strip() or None
+    if key and system in ("github", "gitlab"):
+        if not _ISSUE_KEY.match(key):
+            raise ValueError(f"{system} ticket key must look like '<repository>#<number>'")
+        if verify_repository:
+            _require_configured_repository(settings, tenant_id, system, key)
     url = (url or "").strip() or None
     if url:
         url = _validate_ticket_url(url)

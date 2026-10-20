@@ -21,10 +21,15 @@ export function canDropOn(from: VulnLifecycleState, to: VulnLifecycleState): boo
   return from !== to && legalTransitions(from).includes(to);
 }
 
-export const TICKET_SYSTEMS: { value: "jira" | "servicenow" | "smax" | "defectdojo" | "other"; label: string }[] = [
+export const TICKET_SYSTEMS: {
+  value: "jira" | "servicenow" | "smax" | "defectdojo" | "github" | "gitlab" | "other";
+  label: string;
+}[] = [
   { value: "jira", label: "Jira" },
   { value: "servicenow", label: "ServiceNow" },
   { value: "smax", label: "SMAX" },
   { value: "defectdojo", label: "DefectDojo" },
+  { value: "github", label: "GitHub Issues" },
+  { value: "gitlab", label: "GitLab Issues" },
   { value: "other", label: "Other" },
 ];
