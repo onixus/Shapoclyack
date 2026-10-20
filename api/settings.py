@@ -544,6 +544,12 @@ class Settings:
     # "encrypted to whoever answered".
     report_smtp_verify_tls: bool = True
     report_smtp_timeout_seconds: int = 20
+    # Buckets a report schedule may deliver to (``s3://bucket/prefix``, #355).
+    # Empty means the S3 transport is off. The write uses the artifact store's
+    # endpoint and credentials, so without this list a tenant admin could aim
+    # the platform's own identity at any bucket it can reach -- the artifact
+    # bucket, holding every tenant's runs, first among them.
+    report_s3_buckets: tuple[str, ...] = ()
     # Lariska endpoint-inventory ingestion (Agent_plan.md S1-S7). Router is
     # only registered when this is true.
     endpoint_inventory_enabled: bool = True
@@ -2273,6 +2279,15 @@ def load_settings() -> Settings:
             5, int(os.environ.get("OCTO_REPORT_DISPATCH_INTERVAL_SECONDS", "60"))
         ),
         report_retention_days=max(0, int(os.environ.get("OCTO_REPORT_RETENTION_DAYS", "365"))),
+        report_s3_buckets=tuple(
+            sorted(
+                {
+                    item.strip().lower()
+                    for item in os.environ.get("OCTO_REPORT_S3_BUCKETS", "").split(",")
+                    if item.strip()
+                }
+            )
+        ),
         report_smtp_host=os.environ.get("OCTO_REPORT_SMTP_HOST", "").strip(),
         report_smtp_port=max(1, int(os.environ.get("OCTO_REPORT_SMTP_PORT", "25"))),
         report_smtp_from=os.environ.get("OCTO_REPORT_SMTP_FROM", "").strip(),

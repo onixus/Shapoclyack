@@ -1,6 +1,6 @@
 """Sending a rendered report to its recipients (Sprint 4).
 
-Two transports, both fail-soft: every recipient gets an entry in the returned
+Three transports (email, webhook, and S3 since #355), all fail-soft: every recipient gets an entry in the returned
 list saying what happened to *it*. A single ``delivered`` boolean would make
 "three of four customers got the report" indistinguishable from success, and
 the one that did not is exactly the one somebody has to be told about.
@@ -10,6 +10,14 @@ HTTP client, so a report URL inherits the SSRF validation, pinned DNS and
 no-redirect rules the event webhooks already use. The target is re-validated
 on every send: a hostname that resolved publicly when the schedule was written
 can resolve to link-local by the time it fires.
+
+**S3** writes the report -- and its manifest and signature, so the bucket holds
+the whole evidence package -- through the artifact store's own S3 client, to
+``s3://<bucket>/<tenant id>/<folder>/<file>``: the tenant id always leads, the
+folder is the tenant's own choice inside it. The
+bucket must be on ``OCTO_REPORT_S3_BUCKETS`` and is never the artifact bucket:
+the credentials are the platform's, and a tenant admin who could name any bucket
+they reach would be writing into other tenants' data with them.
 
 **Email** is plain ``smtplib`` against the configured relay, with the report as
 an attachment. It is deliberately not routed through the scanner's alert
@@ -22,12 +30,14 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import smtplib
 import ssl
 from email.message import EmailMessage
 from typing import Any
 
-from api.services import egress
+from api.services import artifact_store, egress
+from api.services.artifact_store import S3ArtifactStore, S3Config
 from api.services.integrations import delivery as wire
 from api.settings import Settings
 
@@ -42,7 +52,52 @@ _MIME = {
     "pdf": ("application", "pdf"),
     "html": ("text", "html"),
     "json": ("application", "json"),
+    "csv": ("text", "csv"),
+    "xlsx": ("application", "vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
 }
+
+
+_S3_TARGET_RE = re.compile(r"^s3://([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])(?:/(.*))?$")
+
+
+def parse_s3_target(target: str, settings: Settings | None = None) -> tuple[str, str]:
+    """``(bucket, folder)`` for ``s3://bucket[/folder]``; ``ValueError`` if unusable.
+
+    The folder is only a sub-folder of the owning tenant's own area: the object
+    key is always ``<tenant id>/<folder>/<file>`` (see ``_send_s3``), so a
+    target cannot point at another tenant's subtree. It goes through the
+    artifact store's key normaliser, which refuses ``..`` and absolute segments.
+    With ``settings`` the bucket is also checked against the allowlist and the
+    platform must have S3 credentials to use."""
+
+    match = _S3_TARGET_RE.match(target.strip())
+    if not match:
+        raise ValueError("an s3 target must look like s3://bucket or s3://bucket/prefix")
+    bucket = match.group(1)
+    try:
+        raw_prefix = (match.group(2) or "").strip("/")
+        prefix = artifact_store.normalize_prefix(raw_prefix) if raw_prefix else ""
+    except Exception as exc:  # noqa: BLE001 - any refusal is a bad target
+        raise ValueError(f"unusable s3 prefix: {exc}") from exc
+    if settings is not None:
+        if bucket not in settings.report_s3_buckets:
+            raise ValueError(
+                f"bucket {bucket!r} is not allowed; the operator lists permitted buckets "
+                "in OCTO_REPORT_S3_BUCKETS"
+            )
+        if bucket == settings.artifact_s3_bucket.strip().lower():
+            raise ValueError("reports cannot be delivered to the artifact store's own bucket")
+        # Without this the client would fall through to boto3's ambient
+        # credential chain (an instance role, ~/.aws) on an installation that
+        # keeps its artifacts on disk -- credentials nobody configured for this.
+        if settings.artifact_backend != "s3" and not (
+            settings.artifact_s3_access_key_id and settings.artifact_s3_secret_access_key
+        ):
+            raise ValueError(
+                "S3 delivery needs OCTO_ARTIFACT_BACKEND=s3 or explicit "
+                "OCTO_ARTIFACT_S3_ACCESS_KEY_ID / OCTO_ARTIFACT_S3_SECRET_ACCESS_KEY"
+            )
+    return bucket, prefix
 
 
 def _entry(recipient: dict[str, Any], status: str, error: str | None = None) -> dict[str, Any]:
@@ -219,6 +274,54 @@ def _send_webhook(
     return _entry(recipient, "failed", result.error)
 
 
+def _send_s3(
+    settings: Settings,
+    recipient: dict[str, Any],
+    *,
+    report: dict[str, Any],
+    payload: bytes,
+    filename: str,
+    extras: dict[str, bytes],
+) -> dict[str, Any]:
+    # Re-validated on every send, like a webhook: the allowlist may have changed
+    # since the schedule was written.
+    bucket, folder = parse_s3_target(str(recipient["target"]), settings)
+    tenant = str(report.get("tenant_id") or "")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", tenant) or tenant in {".", ".."}:
+        return _entry(recipient, "failed", "report has no usable tenant id")
+    # The tenant id leads the key whatever the target says, so the folder a
+    # tenant admin chose can only ever be inside that tenant's own subtree of a
+    # bucket shared with others.
+    destination = S3ArtifactStore(
+        S3Config(
+            bucket=bucket,
+            prefix=tenant,
+            endpoint_url=settings.artifact_s3_endpoint_url,
+            region=settings.artifact_s3_region,
+            access_key_id=settings.artifact_s3_access_key_id,
+            secret_access_key=settings.artifact_s3_secret_access_key,
+            session_token=settings.artifact_s3_session_token,
+            addressing_style=settings.artifact_s3_addressing_style,
+            verify_tls=settings.artifact_s3_verify_tls,
+        )
+    )
+    if not extras:
+        # The S3 package is report + manifest. Without the manifest nothing
+        # vouches for the file, and it is never re-signed after the fact (see
+        # ``store.read_package_extras``), so nothing is written.
+        return _entry(
+            recipient, "failed", "no manifest exists for this report; refusing to deliver it unsigned"
+        )
+    base = f"{folder}/" if folder else ""
+    media = _MIME.get(str(report.get("format")), ("application", "octet-stream"))
+    # The report first: if the manifest write fails the recipient has the file and
+    # the entry says what is missing, rather than the reverse.
+    destination.put_bytes(f"{base}{filename}", payload, content_type="/".join(media))
+    for name, data in extras.items():
+        destination.put_bytes(f"{base}{name}", data, content_type="application/json")
+    return _entry(recipient, "delivered")
+
+
 def deliver(
     settings: Settings,
     *,
@@ -226,6 +329,7 @@ def deliver(
     payload: bytes,
     filename: str,
     recipients: list[dict[str, Any]],
+    extras: dict[str, bytes] | None = None,
 ) -> list[dict[str, Any]]:
     """Send one rendered report to every recipient; never raises.
 
@@ -251,6 +355,17 @@ def deliver(
                 entries.append(
                     _send_webhook(
                         settings, recipient, report=report, payload=payload, filename=filename
+                    )
+                )
+            elif transport == "s3":
+                entries.append(
+                    _send_s3(
+                        settings,
+                        recipient,
+                        report=report,
+                        payload=payload,
+                        filename=filename,
+                        extras=extras or {},
                     )
                 )
             else:

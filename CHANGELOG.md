@@ -25,6 +25,16 @@ All notable changes to Shapoclyack are documented in this file.
   exports and generated Python client/CLI ([#354](https://github.com/onixus/Shapoclyack/issues/354));
   see [API changelog](docs/api-changelog.md) and [integration guide](docs/api-versioning.md).
 
+- Report formats, evidence signatures and S3 delivery
+  ([#355](https://github.com/onixus/Shapoclyack/issues/355), [Reports](docs/reports-and-compliance.md)):
+  reports render as CSV and XLSX (spreadsheet cells that would run as formulas
+  are escaped; no new dependency), every report gets a SHA-256 manifest signed
+  with the evidence Ed25519 key (`GET /api/reports/{id}/manifest`, `/verify`;
+  unsigned without `OCTO_EVIDENCE_SIGNING_KEY`, and says so; `valid` only for
+  the installation's own key), and schedules can deliver to `s3://bucket/folder`
+  (stored under the tenant's own `<tenant>/` prefix, and only together with the manifest) for buckets listed in
+  `OCTO_REPORT_S3_BUCKETS`.
+  SFTP delivery, key rotation and group distribution in the console are not done.
 - Configurable ticket mapping and GitHub / GitLab Issues transports
   ([#353](https://github.com/onixus/Shapoclyack/issues/353),
   [API](docs/api-and-rbac.md)): subject and description templates (plain

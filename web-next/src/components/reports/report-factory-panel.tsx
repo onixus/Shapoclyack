@@ -33,7 +33,7 @@ import { toast } from "sonner";
 import { downloadGeneratedReport, type GeneratedReportInfo } from "@/lib/api";
 
 type Kind = "executive" | "technical" | "compliance";
-type Format = "pdf" | "html" | "json";
+type Format = "pdf" | "html" | "json" | "csv" | "xlsx";
 
 function Section({
   title,
@@ -176,6 +176,8 @@ export function ReportFactoryPanel() {
                 <SelectItem value="pdf">PDF</SelectItem>
                 <SelectItem value="html">HTML</SelectItem>
                 <SelectItem value="json">JSON</SelectItem>
+                <SelectItem value="csv">CSV</SelectItem>
+                <SelectItem value="xlsx">XLSX</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -326,6 +328,8 @@ export function ReportFactoryPanel() {
               <SelectItem value="pdf">PDF</SelectItem>
               <SelectItem value="html">HTML</SelectItem>
               <SelectItem value="json">JSON</SelectItem>
+              <SelectItem value="csv">CSV</SelectItem>
+              <SelectItem value="xlsx">XLSX</SelectItem>
             </SelectContent>
           </Select>
           <Input
