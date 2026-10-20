@@ -1,0 +1,19 @@
+Shapoclyack {{ .Chart.AppVersion }} installed in namespace {{ .Release.Namespace }}.
+{{ if .Values.devPlaceholders }}
+WARNING: devPlaceholders=true. Postgres, ClickHouse and NATS run with passwords
+that are public in the repository, and the API refuses the placeholder JWT secret
+unless OCTO_ENV=dev. Use existingSecrets.* or externalSecrets.enabled=true for
+anything but a throwaway cluster; see docs/helm.md.
+{{- end }}
+{{- if not .Values.namespaces.main.create }}
+
+The chart does not manage the release namespace. Pod Security labels are part of
+the hardening baseline; apply them once:
+  kubectl label namespace {{ .Release.Namespace }} \
+    pod-security.kubernetes.io/enforce=baseline \
+    pod-security.kubernetes.io/warn=restricted \
+    pod-security.kubernetes.io/audit=restricted --overwrite
+{{- end }}
+
+The scanner-executor starts only once Secret {{ include "shapoclyack.secretName" (dict "root" $ "key" "scannerExecutor" "default" "shapoclyack-scanner-executor") }}
+exists in namespace {{ .Values.namespaces.executor.name }} (docs/k8s-hardening.md, enrolling the executor).

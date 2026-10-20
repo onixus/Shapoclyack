@@ -1,0 +1,174 @@
+{{- if .Values.backup.postgres.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  labels:
+    app.kubernetes.io/component: backup
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-postgres-backup
+  namespace: {{ .Release.Namespace }}
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 3600
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/component: backup
+            app.kubernetes.io/name: shapoclyack
+        spec:
+          automountServiceAccountToken: false
+          containers:
+          - command:
+            - /bin/sh
+            - -ec
+            - |
+              stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+              prefix="${S3_PREFIX#/}"
+              prefix="${prefix%/}"
+              if [ -n "${prefix}" ]; then
+                target="s3://${S3_BUCKET}/${prefix}/${stamp}"
+              else
+                target="s3://${S3_BUCKET}/${stamp}"
+              fi
+
+              aws_s3_cp() {
+                src="$1"
+                dst="$2"
+                if [ -n "${S3_ENDPOINT_URL:-}" ]; then
+                  aws --endpoint-url "${S3_ENDPOINT_URL}" s3 cp "${src}" "${dst}" --only-show-errors
+                else
+                  aws s3 cp "${src}" "${dst}" --only-show-errors
+                fi
+              }
+
+              aws_s3_cp /backup/shapoclyack.dump "${target}/shapoclyack.dump"
+              aws_s3_cp /backup/shapoclyack.dump.sha256 "${target}/shapoclyack.dump.sha256"
+              printf 'backup_success timestamp=%s object_prefix=%s\n' "${stamp}" "${target}"
+            env:
+            - name: HOME
+              value: /tmp
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  key: access_key_id
+                  name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "postgresBackupS3" "default" "shapoclyack-backup") }}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: secret_access_key
+                  name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "postgresBackupS3" "default" "shapoclyack-backup") }}
+            - name: AWS_DEFAULT_REGION
+              valueFrom:
+                secretKeyRef:
+                  key: region
+                  name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "postgresBackupS3" "default" "shapoclyack-backup") }}
+            - name: S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  key: bucket
+                  name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "postgresBackupS3" "default" "shapoclyack-backup") }}
+            - name: S3_PREFIX
+              valueFrom:
+                secretKeyRef:
+                  key: prefix
+                  name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "postgresBackupS3" "default" "shapoclyack-backup") }}
+            - name: S3_ENDPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  key: endpoint_url
+                  name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "postgresBackupS3" "default" "shapoclyack-backup") }}
+                  optional: true
+            image: {{ include "shapoclyack.image" .Values.images.awscli }}
+            imagePullPolicy: {{ .Values.images.pullPolicy }}
+            name: upload
+            resources:
+{{- toYaml .Values.resources.postgresBackup.upload | nindent 14 }}
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
+              readOnlyRootFilesystem: true
+            volumeMounts:
+            - mountPath: /backup
+              name: backup-tmp
+              readOnly: true
+            - mountPath: /tmp
+              name: tmp
+          initContainers:
+          - command:
+            - /bin/sh
+            - -ec
+            - |
+              umask 027
+              archive=/backup/shapoclyack.dump
+              checksum=/backup/shapoclyack.dump.sha256
+
+              pg_dump \
+                --host="${PGHOST}" \
+                --port="${PGPORT}" \
+                --username="${PGUSER}" \
+                --dbname="${PGDATABASE}" \
+                --format=custom \
+                --compress=6 \
+                --no-owner \
+                --no-privileges \
+                --file="${archive}"
+
+              sha256sum "${archive}" > "${checksum}"
+              test -s "${archive}"
+              test -s "${checksum}"
+            env:
+            - name: PGHOST
+              value: shapoclyack-postgres-client
+            - name: PGPORT
+              value: "5432"
+            - name: PGUSER
+              value: octo
+            - name: PGDATABASE
+              value: shapoclyack
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: password
+                  name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "postgres" "default" "shapoclyack-postgres") }}
+            image: {{ include "shapoclyack.image" .Values.images.postgres }}
+            imagePullPolicy: {{ .Values.images.pullPolicy }}
+            name: dump
+            resources:
+{{- toYaml .Values.resources.postgresBackup.dump | nindent 14 }}
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
+              readOnlyRootFilesystem: true
+            volumeMounts:
+            - mountPath: /backup
+              name: backup-tmp
+          restartPolicy: Never
+          securityContext:
+            fsGroup: 1000
+            fsGroupChangePolicy: OnRootMismatch
+            runAsGroup: 1000
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          volumes:
+          - emptyDir:
+              sizeLimit: 10Gi
+            name: backup-tmp
+          - emptyDir:
+              sizeLimit: 64Mi
+            name: tmp
+      ttlSecondsAfterFinished: 86400
+  schedule: {{ .Values.backup.postgres.schedule | quote }}
+  successfulJobsHistoryLimit: 3
+{{- end }}
