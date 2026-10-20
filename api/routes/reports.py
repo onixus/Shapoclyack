@@ -34,6 +34,7 @@ from api.schemas import (
     ReportTemplateInfo,
     ReportTemplateRequest,
     ReportTemplateUpdate,
+    ReportVerifyInfo,
     TenantBrandingInfo,
     TenantBrandingRequest,
 )
@@ -297,6 +298,45 @@ def download_report(
     return artifact_download.respond(
         settings, key, media_type=media_type, filename=filename
     )
+
+
+@router.get("/{report_id}/manifest")
+def download_manifest(
+    report_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: SettingsDep,
+) -> Response:
+    """The signed hash manifest of a report (#355).
+
+    Verifiable without this platform: ``scripts/verify-compliance-evidence.py``
+    checks it with the signing key id pinned out of band. Not audited like the
+    download: it carries hashes and sizes, not the tenant's findings."""
+    resolved = store.resolve_manifest_object(settings, report_id, tenant_id=principal.tenant_id)
+    if resolved is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Manifest not found")
+    key, media_type, filename = resolved
+    return artifact_download.respond(settings, key, media_type=media_type, filename=filename)
+
+
+@router.get("/{report_id}/verify", response_model=ReportVerifyInfo)
+def verify_report(
+    report_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: SettingsDep,
+    expected_key_id: Annotated[str | None, Query(max_length=128)] = None,
+) -> dict[str, Any]:
+    """Re-hash the stored report and check the manifest signature (#355).
+
+    The signer must be this installation's own key for ``valid``.
+    ``expected_key_id`` names an *older* key (after a rotation) the caller
+    trusts; a manifest signed by it answers ``valid_with_supplied_key``, never
+    ``valid``, so a supplied id cannot turn "any key" back into a pass."""
+    result = store.verify_report(
+        settings, report_id, tenant_id=principal.tenant_id, expected_key_id=expected_key_id
+    )
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
+    return result
 
 
 @router.delete("/{report_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -25,6 +25,16 @@ All notable changes to Shapoclyack are documented in this file.
   normalise deep-link filters, and the mobile drawer is keyboard-operable (#357).
   Refusals carry a `detail.code` (`saved_view_limit`, `saved_view_duplicate_name`); names are
   unique by a stored case-folded key; views go with the account and with a revoked membership.
+- Report formats, evidence signatures and S3 delivery
+  ([#355](https://github.com/onixus/Shapoclyack/issues/355), [Reports](docs/reports-and-compliance.md)):
+  reports render as CSV and XLSX (spreadsheet cells that would run as formulas
+  are escaped; no new dependency), every report gets a SHA-256 manifest signed
+  with the evidence Ed25519 key (`GET /api/reports/{id}/manifest`, `/verify`;
+  unsigned without `OCTO_EVIDENCE_SIGNING_KEY`, and says so; `valid` only for
+  the installation's own key), and schedules can deliver to `s3://bucket/folder`
+  (stored under the tenant's own `<tenant>/` prefix, and only together with the manifest) for buckets listed in
+  `OCTO_REPORT_S3_BUCKETS`.
+  SFTP delivery, key rotation and group distribution in the console are not done.
 - Configurable ticket mapping and GitHub / GitLab Issues transports
   ([#353](https://github.com/onixus/Shapoclyack/issues/353),
   [API](docs/api-and-rbac.md)): subject and description templates (plain
