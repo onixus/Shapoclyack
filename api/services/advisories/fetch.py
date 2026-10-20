@@ -285,7 +285,7 @@ def fetch_json(
     if total < 3:
         append(bytes(prefix))
     check_deadline()
-    payload = json.loads(decoded)
+    payload = json.loads(decoded.decode("utf-8"))
     check_deadline()
     return payload
 
