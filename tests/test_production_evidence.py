@@ -395,3 +395,49 @@ def test_incomplete_same_run_replay_marks_gap_without_reopening(tmp_path):
     assert current['observation_count'] == 1
     assert current['finding_evidence']['observation_count'] == 1
     assert current['finding_evidence']['projection_incomplete']
+
+
+@requires_postgres
+def test_live_clickhouse_evidence_roundtrip_replay_and_tenant_counts(tmp_path):
+    """Production insert + FINAL read keeps observations out of unique counts."""
+    import os
+    import uuid
+    from pathlib import Path
+    from api.services import ch_transform, clickhouse_client as ch
+    from api.services.ch_transform import tenant_to_uuid
+    from tests.test_vuln_lifecycle import _seed
+
+    url = os.environ.get('OCTO_CLICKHOUSE_URL', '').strip()
+    if not url:
+        pytest.skip('OCTO_CLICKHOUSE_URL required for actual evidence roundtrip')
+    settings, tenant = _seed(tmp_path, findings=combine(rows()))
+    members = {'vulnerabilities.json': json.dumps(combine(rows())).encode()}
+    payload = {'tenant_id': tenant, 'run_id': 'run-1'}
+    projected = ch_transform.vulnerabilities_to_rows(payload, members, settings=settings, require_captured=False)
+    assert len(projected) == 1
+    table = 'shapoclyack.evidence_test_' + uuid.uuid4().hex[:12]
+    ddl = Path('k8s/shapoclyack/base/clickhouse/init-local.sql').read_text().split(';')[1]
+    ddl = ddl.replace(ch.VULN_TABLE, table).replace('TTL timestamp + INTERVAL 90 DAY', '')
+    client = ch.get_client(url)
+    try:
+        client.command(ddl)
+        assert ch.insert_rows(client, table, ch.VULN_COLUMNS, projected) == 1
+        assert ch.insert_rows(client, table, ch.VULN_COLUMNS, projected) == 1
+        loaded = client.query(f'SELECT tenant_id,cve_id,risk_assessment FROM {table} FINAL').result_rows
+        assert len(loaded) == 1
+        assert str(loaded[0][0]) == str(tenant_to_uuid(tenant))
+        assert loaded[0][1] == BASE['cve']
+        evidence = json.loads(loaded[0][2])['finding_evidence']
+        assert evidence['observation_count'] == 2
+        assert evidence['finding_count'] == 1
+        assert {o['tenant_id'] for g in evidence['findings'] for o in g['observations']} == {tenant}
+        other = tenant + '-other'
+        foreign = ch_transform.vulnerabilities_to_rows({**payload, 'tenant_id': other}, members,
+                                                       settings=settings, require_captured=False)
+        assert ch.insert_rows(client, table, ch.VULN_COLUMNS, foreign) == 1
+        tenant_counts = client.query(f'SELECT tenant_id,count() FROM {table} FINAL GROUP BY tenant_id').result_rows
+        assert {str(key): count for key, count in tenant_counts} == {
+            str(tenant_to_uuid(tenant)): 1, str(tenant_to_uuid(other)): 1}
+    finally:
+        client.command(f'DROP TABLE IF EXISTS {table}')
+        client.close()

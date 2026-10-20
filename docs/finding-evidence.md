@@ -228,8 +228,13 @@ legacy finding key and approved exception/SLA, and rejects another tenant's run
 read. The separate tracker test preserves assignee and owner team.
 `web-next/src/components/finding-evidence.test.tsx` verifies distinct subject
 rendering and original-run authenticated downloads with permission failures.
-These tests exercise service projections and UI independently; the ClickHouse
-transform test is not proof of a live ClickHouse insert or browser E2E session.
+The optional `test_live_clickhouse_evidence_roundtrip_replay_and_tenant_counts`
+also inserts through the production client into a temporary table using the
+production `ReplacingMergeTree` schema. A `FINAL` read verifies replay does not
+increase the inventory count, both observations survive, and tenant inventory
+counts remain separate. It runs when `OCTO_CLICKHOUSE_URL` is configured, including
+the Jenkins integration matrix. Service projections, database consumers and UI
+are tested independently; this is not a browser E2E session.
 
 A local Python 3.12.15 microbenchmark on 2026-10-20 used 1,000 input rows: 500
 TCP/443 IP/CVE containers with one Pulse and one Nuclei observation each, identical
