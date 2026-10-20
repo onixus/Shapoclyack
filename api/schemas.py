@@ -3308,7 +3308,7 @@ class ReportTemplateUpdate(BaseModel):
 
 
 class ReportRecipient(BaseModel):
-    transport: Literal["email", "webhook"]
+    transport: Literal["email", "webhook", "s3"]
     target: str = Field(min_length=3, max_length=500)
 
 
@@ -3332,7 +3332,7 @@ class ReportScheduleRequest(BaseModel):
     template_id: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=200)
     cron: str = Field(min_length=5, max_length=120)
-    format: Literal["pdf", "html", "json"] = "pdf"
+    format: Literal["pdf", "html", "json", "csv", "xlsx"] = "pdf"
     recipients: list[ReportRecipient] = Field(default_factory=list)
     enabled: bool = True
 
@@ -3340,7 +3340,7 @@ class ReportScheduleRequest(BaseModel):
 class ReportScheduleUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     cron: str | None = Field(default=None, min_length=5, max_length=120)
-    format: Literal["pdf", "html", "json"] | None = None
+    format: Literal["pdf", "html", "json", "csv", "xlsx"] | None = None
     recipients: list[ReportRecipient] | None = None
     enabled: bool | None = None
 
@@ -3370,6 +3370,31 @@ class GeneratedReportInfo(BaseModel):
     generated_by: str | None = None
 
 
+class ReportVerifyFile(BaseModel):
+    name: str
+    #: What the manifest says, and what the store holds now.
+    sha256: str | None = None
+    actual_sha256: str | None = None
+    #: ok | modified | missing
+    status: str
+
+
+class ReportVerifyInfo(BaseModel):
+    """Result of re-checking a stored report against its signed manifest (#355)."""
+
+    report_id: str
+    #: valid | valid_with_supplied_key | unsigned (no key on this installation) | untrusted | tampered | missing -- see ``reports.manifest.verify``.
+    status: str
+    signed: bool = False
+    signature_valid: bool | None = None
+    key_id: str | None = None
+    #: Whether the signing key is the one this installation signs with now.
+    #: ``None`` when no key is configured here. A rotated key reads ``false``.
+    key_matches_installation: bool | None = None
+    files: list[ReportVerifyFile] = Field(default_factory=list)
+    detail: str | None = None
+
+
 class GenerateReportRequest(BaseModel):
     """Render now. Either from a stored template, or ad hoc from ``kind``."""
 
@@ -3377,7 +3402,7 @@ class GenerateReportRequest(BaseModel):
     kind: Literal["executive", "technical", "compliance"] = "executive"
     framework_id: str | None = Field(default=None, max_length=64)
     sections: dict[str, bool] | None = None
-    format: Literal["pdf", "html", "json"] = "pdf"
+    format: Literal["pdf", "html", "json", "csv", "xlsx"] = "pdf"
     title: str | None = Field(default=None, max_length=300)
 
 

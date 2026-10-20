@@ -3851,7 +3851,7 @@ export type ReportScheduleInfo = {
   name: string;
   enabled: boolean;
   cron: string;
-  format: "pdf" | "html" | "json";
+  format: "pdf" | "html" | "json" | "csv" | "xlsx";
   recipients: ReportRecipient[];
   next_run_at: string | null;
   last_run_at: string | null;
@@ -3866,7 +3866,7 @@ export type GeneratedReportInfo = {
   template_id: string | null;
   schedule_id: string | null;
   kind: string;
-  format: "pdf" | "html" | "json";
+  format: "pdf" | "html" | "json" | "csv" | "xlsx";
   status: "pending" | "ready" | "failed";
   title: string;
   size_bytes: number;

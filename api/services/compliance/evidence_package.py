@@ -109,6 +109,14 @@ def key_id(key: Ed25519PrivateKey | Ed25519PublicKey) -> str:
     return hashlib.sha256(_KEY_ID_DOMAIN + _raw_public(key)).hexdigest()
 
 
+def current_key_id(environ: dict[str, str] | None = None) -> str | None:
+    """The id of the configured signing key, or ``None`` when there is none."""
+    try:
+        return key_id(_private_key(environ))
+    except SigningUnavailable:
+        return None
+
+
 def sign_payload(
     payload: dict[str, Any],
     *,
@@ -135,6 +143,7 @@ def verify(
     package: dict[str, Any],
     *,
     expected_key_id: str | None = None,
+    expected_kind: str | None = None,
 ) -> dict[str, Any]:
     if not isinstance(package, dict) or package.get("format") != FORMAT or package.get("version") != VERSION:
         raise InvalidEvidencePackage("unsupported evidence package format")
@@ -142,6 +151,15 @@ def verify(
     signature = package.get("signature")
     if not isinstance(payload, dict) or not isinstance(signature, dict):
         raise InvalidEvidencePackage("evidence package is missing payload or signature")
+    # Domain separation: one key signs several kinds of document (#355). A
+    # compliance package carries no ``kind``; anything else, a report manifest
+    # included, must be asked for by name and is refused as the wrong document
+    # otherwise -- the kind sits inside the signed payload, so it cannot be
+    # relabelled.
+    if payload.get("kind") != expected_kind:
+        raise InvalidEvidencePackage(
+            f"document kind is {payload.get('kind')!r}, expected {expected_kind!r}"
+        )
     if signature.get("algorithm") != SIGNATURE_ALGORITHM:
         raise InvalidEvidencePackage("unsupported evidence signature algorithm")
     try:

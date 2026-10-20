@@ -194,7 +194,7 @@ merging three customers' findings would produce a number true of nobody.
 ### What a report is
 
 `api/services/reports/content.py` builds a plain dict; the renderers
-(`render.py`) turn it into PDF, HTML or JSON. The JSON export is therefore *the
+(`render.py`) turn it into PDF, HTML, JSON, CSV or XLSX. The JSON export is therefore *the
 same report* as the PDF rather than a second implementation of it — an MSSP
 piping JSON into its own portal and a customer reading the attached PDF must not
 be able to reach different conclusions about the same month.
@@ -224,6 +224,25 @@ two-page summary is how a report stops being read.
 Every number comes from the tracked-finding tables, the asset registry and the
 compliance engine — never from a run directory. A report about a quarter has to
 render after that quarter's runs were pruned by retention.
+
+### CSV and XLSX
+
+`format: "csv"` and `"xlsx"` ([#355](https://github.com/onixus/Shapoclyack/issues/355)) render the same body as flat tables
+(`api/services/reports/spreadsheet.py`): Report, KPIs, Severity, SLA, Trend,
+Findings, Assets, Risk acceptance and one table per compliance framework, for
+the sections the template switches on. The XLSX gives each table its own
+worksheet with a bold, frozen header row and keeps numbers numeric; the CSV
+prints the tables one after another, each introduced by a one-cell heading row
+and separated by a blank row, UTF-8 with a BOM so Excel reads Cyrillic control
+titles correctly. Both are written with the standard library: no spreadsheet
+dependency was added.
+
+**Formula injection.** A cell whose text starts with `=`, `+`, `-`, `@`, a tab or
+a carriage return is a formula to Excel, and finding titles, banners and asset
+names are attacker-influenced. Every such string cell gets a leading apostrophe
+(`'=1+1` displays as text) in both formats. The apostrophe is visible in the
+CSV text; numbers are never altered, and the XLSX never contains a formula
+element, so the escape there is a second lock.
 
 ### Fonts
 
@@ -261,7 +280,7 @@ month.
   tenant's findings to an address outside the installation on a recurring
   basis; the same bar webhook subscriptions use.
 * **Delivery** — `email` through the configured SMTP relay with the report
-  attached, or `webhook` through the same SSRF-validated, DNS-pinned,
+  attached, `s3` ([#355](https://github.com/onixus/Shapoclyack/issues/355); below), or `webhook` through the same SSRF-validated, DNS-pinned,
   no-redirect wire the event webhooks use. The target is re-validated on every
   send: a hostname that resolved publicly when the schedule was written can
   resolve to link-local by the time it fires. When `OCTO_REPORT_SMTP_STARTTLS`
@@ -269,6 +288,26 @@ month.
   entry says why: continuing would put the relay password and the customer's
   whole vulnerability report on the wire in cleartext. An installation whose
   relay genuinely cannot do TLS sets the flag to `false` and owns that.
+
+**S3** (`{"transport": "s3", "target": "s3://bucket/folder"}`) writes the report
+and its manifest to `<tenant_id>/<folder>/<report_id>.<ext>` and
+`.manifest.json` through the artifact store's S3 client: the same endpoint and
+credentials (`OCTO_ARTIFACT_S3_*`), a different bucket. The **tenant id always
+leads the key**: the folder in the target is only a sub-folder of the owning
+tenant's own area, so a target such as `s3://shared/other-tenant` writes to
+`<tenant>/other-tenant/...`, never into the other tenant's subtree. Because the
+credentials are the platform's, the bucket must be listed in
+`OCTO_REPORT_S3_BUCKETS` (empty, the default, switches the transport off) and can
+never be the artifact store's own bucket, and the platform must have credentials
+for it: `OCTO_ARTIFACT_BACKEND=s3`, or explicit `OCTO_ARTIFACT_S3_ACCESS_KEY_ID` /
+`OCTO_ARTIFACT_S3_SECRET_ACCESS_KEY` -- on a local artifact backend without them
+the transport is refused rather than falling back to whatever ambient AWS
+credentials the pod has. A schedule naming anything else is refused when written
+and again when it fires. The S3 package is report plus manifest: if the manifest is missing the
+recipient's entry is `failed` and nothing is written. A manifest is signed once,
+when the report is generated, and never regenerated afterwards -- re-signing
+whatever is in the store at delivery time would vouch for a swapped report. **SFTP is not implemented**: it needs an SSH client library
+the platform does not ship, and is tracked on #355.
 
 In a `PATCH`, a `null` field means "leave it alone". Clearing recipients is
 `[]`, which is a thing an operator can mean; `null` is what a form sends for a
@@ -311,6 +350,64 @@ from the dispatcher's hourly sweep. A year, because "the quarterly report you
 sent in March" is a thing customers ask for and the scan-retention window would
 not cover it.
 
+### Hash manifest and signature
+
+Every generated report gets a manifest beside it,
+`reports/<tenant>/<report_id>.manifest.json` (`api/services/reports/manifest.py`):
+the SHA-256 and size of each file in the package, signed with Ed25519. It is the
+same envelope and the same key as the signed compliance evidence packages
+below, so `OCTO_EVIDENCE_SIGNING_KEY` signs both and one `key_id` is pinned for
+both; the payload is told apart by `kind: "report-manifest"`. The private key is
+the operator's secret (a Kubernetes Secret, not a database column); this
+feature stores nothing secret. Signing is fail-soft:
+
+* with **no key configured** the manifest is still written, unsigned, and
+  verification answers `unsigned` -- never `valid`;
+* a manifest that cannot be written does not fail the report; verification then
+  answers `missing`.
+
+`GET /api/reports/{id}/verify` re-reads the report from the store, re-hashes it
+and checks the signature. The key embedded in a manifest is whatever its signer
+put there, so the signature alone proves nothing: someone who can write to the
+store could swap the report and sign a matching manifest with their own key.
+`valid` therefore requires the signer to be **this installation's current key**.
+`status` is:
+
+* `valid` -- signed by this installation's key, every file matches, and the
+  manifest names this report and tenant;
+* `valid_with_supplied_key` -- as above, but signed by an older key the caller
+  named with `?expected_key_id=` (after a rotation). A supplied id never yields
+  plain `valid`;
+* `unsigned` -- hashes match, nothing vouches for the manifest, and this
+  installation has no signing key either. On an installation that *does* have a
+  key, an unsigned manifest is `untrusted` (written before the key was set, or
+  its signature was removed);
+* `untrusted` -- intact but signed by a key nobody here vouches for, or no key
+  is configured on this installation to compare with;
+* `tampered` -- a file, the manifest or the signature changed, the manifest lists
+  no files, or it belongs to another report or tenant. Wins over `untrusted`;
+* `missing` -- no manifest, or the report object is gone.
+
+`key_matches_installation` says whether the signing key is the current one.
+The manifest's `payload.kind` (`report-manifest`) is part of the signed bytes and
+is checked by the verifier: a manifest is not accepted as a compliance evidence
+package or the other way round. Offline, without the platform:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -o rpt.manifest.json \
+  "$API/api/reports/$RID/manifest"
+python3 scripts/verify-compliance-evidence.py rpt.manifest.json \
+  --kind report-manifest --key-id "$TRUSTED_KEY_ID"
+sha256sum "$RID".pdf   # compare with payload.files[].sha256
+```
+
+Delivery to S3 carries the manifest with the report; email and webhook deliver
+the report alone (the manifest is one `GET` away). Not done: key rotation tooling (a
+report signed with a retired key reads `key_matches_installation: false`; there
+is no list of previous keys, so `?expected_key_id=` names one old key per request
+and the old key ids have to be kept in the trusted record), per-tenant keys, and a
+detached PGP/cosign signature.
+
 ### API
 
 | Route | Role | Purpose |
@@ -321,6 +418,8 @@ not cover it.
 | `POST /api/reports/generate` | operator | Render one now, from a template or ad hoc |
 | `GET /api/reports`, `GET /{id}` | viewer | Generated reports and their delivery trail |
 | `GET /api/reports/{id}/download` | viewer | The bytes |
+| `GET /api/reports/{id}/manifest` | viewer | The signed hash manifest (JSON) |
+| `GET /api/reports/{id}/verify` | viewer | Re-hash the stored report and check the manifest signature against this installation's key; optional `?expected_key_id=` names an older key |
 | `DELETE /api/reports/{id}` | operator | Remove a report and its file |
 
 ### Configuration
@@ -337,6 +436,7 @@ not cover it.
 | `OCTO_REPORT_SMTP_USERNAME` / `OCTO_REPORT_SMTP_PASSWORD` | *(empty)* | Relay credentials; login is attempted only when a username is set |
 | `OCTO_REPORT_SMTP_STARTTLS` | `true` | Require an encrypted connection. A relay that refuses fails that recipient rather than downgrading to cleartext |
 | `OCTO_REPORT_SMTP_TIMEOUT_SECONDS` | `20` | Per-message budget |
+| `OCTO_REPORT_S3_BUCKETS` | *(empty)* | Comma-separated buckets a schedule may deliver to with `s3://bucket/folder` (keys are `<tenant>/<folder>/...`). Empty switches the S3 transport off. The artifact store's own bucket is always refused; needs `OCTO_ARTIFACT_BACKEND=s3` or explicit `OCTO_ARTIFACT_S3_ACCESS_KEY_ID`/`..._SECRET_ACCESS_KEY` |
 | `OCTO_EVIDENCE_SIGNING_KEY` | *(unset)* | Dedicated 32-byte Ed25519 private seed (base64/hex) required only to create signed compliance evidence packages |
 
 The report relay is deliberately separate from the scanner's alert SMTP
@@ -366,6 +466,9 @@ the `cryptography` package, not the platform:
 TRUSTED_KEY_ID="REPLACE_WITH_INDEPENDENTLY_VERIFIED_KEY_ID"
 python3 scripts/verify-compliance-evidence.py evidence.json --key-id "$TRUSTED_KEY_ID"
 ```
+
+The same script verifies a report manifest with `--kind report-manifest`; the
+kind is inside the signed payload and each side refuses the other's documents.
 
 ---
 

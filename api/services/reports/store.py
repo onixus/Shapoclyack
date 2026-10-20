@@ -33,6 +33,8 @@ from api.db.engine import get_session
 from api.services import artifact_store, legal_hold, retention_policy, workflow_events
 from api.services.compliance import registry as compliance_registry
 from api.services.reports import content as content_builder
+from api.services.reports import delivery as report_delivery
+from api.services.reports import manifest as report_manifest
 from api.services.reports import render as renderer
 from api.settings import Settings
 from scanner.scheduler import next_cron_time, parse_cron
@@ -48,9 +50,9 @@ MAX_TEMPLATES_PER_TENANT = 50
 MAX_SCHEDULES_PER_TENANT = 20
 MAX_RECIPIENTS = 20
 
-TRANSPORTS = ("email", "webhook")
+TRANSPORTS = ("email", "webhook", "s3")
 
-_EXTENSIONS = {"pdf": "pdf", "html": "html", "json": "json"}
+_EXTENSIONS = {"pdf": "pdf", "html": "html", "json": "json", "csv": "csv", "xlsx": "xlsx"}
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
@@ -274,7 +276,9 @@ def _schedule_dict(row: models.ReportSchedule) -> dict[str, Any]:
     }
 
 
-def _validate_recipients(recipients: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+def _validate_recipients(
+    recipients: list[dict[str, Any]] | None, settings: Settings | None = None
+) -> list[dict[str, str]]:
     """Shape and transport check only.
 
     A webhook URL is *not* SSRF-validated here and then trusted at send time:
@@ -299,6 +303,14 @@ def _validate_recipients(recipients: list[dict[str, Any]] | None) -> list[dict[s
             raise ReportError(f"{target!r} is not an email address")
         if transport == "webhook" and not target.lower().startswith(("http://", "https://")):
             raise ReportError("a webhook target must be an http(s) URL")
+        if transport == "s3":
+            # Refused at write time as well as at send time: a schedule that can
+            # never deliver should say so when it is created, not on the first of
+            # the month.
+            try:
+                report_delivery.parse_s3_target(target, settings)
+            except ValueError as exc:
+                raise ReportError(str(exc)) from exc
         cleaned.append({"transport": transport, "target": target})
     return cleaned
 
@@ -321,7 +333,7 @@ def create_schedule(
         parse_cron(cron)
     except ValueError as exc:
         raise ReportError(str(exc)) from exc
-    cleaned = _validate_recipients(recipients)
+    cleaned = _validate_recipients(recipients, settings)
     now = _now()
     with get_session(settings.postgres_url) as session:
         template = session.execute(
@@ -407,7 +419,7 @@ def update_schedule(
                 raise ReportError(f"unknown format {fields['format']!r}")
             row.fmt = fields["format"]
         if fields.get("recipients") is not None:
-            row.recipients = _validate_recipients(fields["recipients"])
+            row.recipients = _validate_recipients(fields["recipients"], settings)
         if fields.get("name"):
             row.name = fields["name"]
         if fields.get("enabled") is not None:
@@ -530,6 +542,34 @@ def _report_key(settings: Settings, tenant_id: str, report_id: str, fmt: str) ->
     return artifact_store.keys.report_key(tenant_id, f"{report_id}.{_EXTENSIONS[fmt]}")
 
 
+def _write_manifest(
+    settings: Settings,
+    key: str,
+    report_id: str,
+    tenant_id: str,
+    generated_at: datetime,
+    payload: bytes,
+) -> None:
+    """Hash (and, with a key configured, sign) the report beside it (#355).
+
+    Fail-soft on purpose: the report itself is already stored, and a manifest
+    that could not be written must not turn a good report into a ``failed`` row
+    the customer never receives. The gap is visible -- verification of this
+    report answers ``missing`` -- and logged here."""
+
+    try:
+        report_manifest.write(
+            settings,
+            report_key=key,
+            report_id=report_id,
+            tenant_id=tenant_id,
+            generated_at=_iso(generated_at),
+            files={key.rsplit("/", 1)[-1]: payload},
+        )
+    except Exception:  # noqa: BLE001 - see docstring
+        LOG.exception("Could not write the manifest for report %s", report_id)
+
+
 def generate(
     settings: Settings,
     *,
@@ -597,6 +637,7 @@ def generate(
         )
         size = len(payload)
         storage_path = key
+        _write_manifest(settings, key, report_id, tenant_id, now, payload)
         row.title = row.title or str(body.get("title") or "")
     except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
         LOG.exception("Report generation failed for tenant %s", tenant_id)
@@ -692,6 +733,62 @@ def resolve_report_object(
     return key, renderer.MEDIA_TYPES[row["format"]], key.rsplit("/", 1)[-1]
 
 
+def resolve_manifest_object(
+    settings: Settings, report_id: str, *, tenant_id: str | None = None
+) -> tuple[str, str, str] | None:
+    """``(key, media_type, filename)`` of a ready report's manifest, or ``None``."""
+
+    resolved = resolve_report_object(settings, report_id, tenant_id=tenant_id)
+    if resolved is None:
+        return None
+    key = report_manifest.manifest_key(resolved[0])
+    if not artifact_store.get_store(settings).exists(key):
+        return None
+    return key, report_manifest.MEDIA_TYPE, key.rsplit("/", 1)[-1]
+
+
+def verify_report(
+    settings: Settings,
+    report_id: str,
+    *,
+    tenant_id: str | None = None,
+    expected_key_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Check a stored report against its manifest; ``None`` for no such report."""
+
+    row = get_report(settings, report_id, tenant_id=tenant_id)
+    if row is None:
+        return None
+    result: dict[str, Any] = {"report_id": report_id}
+    try:
+        key = _report_key(settings, row["tenant_id"], row["report_id"], row["format"])
+    except ReportError:
+        return None
+    return result | report_manifest.verify(
+        settings,
+        report_key=key,
+        report_id=row["report_id"],
+        tenant_id=row["tenant_id"],
+        expected_key_id=expected_key_id,
+    )
+
+
+def read_package_extras(settings: Settings, key: str) -> dict[str, bytes]:
+    """The evidence files that travel with a report: its manifest, if there is one.
+
+    A missing manifest is **not** regenerated here. The manifest is signed once,
+    at generation time, over the bytes that were rendered then; signing it again
+    now would vouch for whatever is in the store at this moment, which is exactly
+    what a swapped report plus a deleted manifest would want. Delivery that
+    promises a manifest refuses to go without one instead."""
+    manifest_key = report_manifest.manifest_key(key)
+    try:
+        data = artifact_store.get_store(settings).get_bytes(manifest_key)
+    except artifact_store.ArtifactNotFound:
+        return {}
+    return {manifest_key.rsplit("/", 1)[-1]: data}
+
+
 def read_report_bytes(settings: Settings, key: str) -> bytes | None:
     """The whole report, or ``None`` when it is not in the store.
 
@@ -720,6 +817,7 @@ def delete_report(
     try:
         key = _report_key(settings, row["tenant_id"], row["report_id"], row["format"])
         artifact_store.get_store(settings).delete(key)
+        report_manifest.delete(settings, key)
     except (ReportError, artifact_store.ArtifactStoreError):
         # The row goes either way. A report whose bytes could not be removed is
         # a leak worth logging, but leaving the row would offer the operator a
@@ -776,6 +874,7 @@ def prune_reports(settings: Settings, *, now: datetime | None = None) -> dict[st
             try:
                 key = _report_key(settings, row.tenant_id, row.report_id, row.fmt)
                 artifact_store.get_store(settings).delete(key)
+                report_manifest.delete(settings, key)
             except (ReportError, OSError, artifact_store.ArtifactStoreError):
                 errors += 1
             session.delete(row)

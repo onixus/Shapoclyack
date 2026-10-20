@@ -975,7 +975,8 @@ is a statement about one organisation. See
 The `/reports` page keeps per-run artifact discovery and adds the report factory
 above it: per-tenant branding (`admin`), templates (`operator`), scheduled
 delivery (`admin`) and on-demand generation (`operator`). A generated report is
-one body rendered as PDF, HTML or JSON, so the JSON an MSSP pipes into its own
+one body rendered as PDF, HTML, JSON, CSV or XLSX (spreadsheet cells that
+would run as formulas are escaped), so the JSON an MSSP pipes into its own
 portal is the same report as the PDF its customer opens. Delivery is recorded
 per recipient rather than per report.
 
