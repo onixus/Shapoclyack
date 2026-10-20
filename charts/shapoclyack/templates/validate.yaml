@@ -1,0 +1,52 @@
+{{- /*
+Refuses combinations that render fine and then fail at runtime or leave the
+install open. Renders nothing.
+*/ -}}
+{{- $v := .Values }}
+
+{{- /* 1. Credentials: no silent public passwords. */}}
+{{- if not $v.devPlaceholders }}
+{{- if not $v.externalSecrets.enabled }}
+{{- $missing := list }}
+{{- range $key := list "api" "postgres" "clickhouse" "clickhouseBackup" "nats" }}
+{{- if not (index $v.existingSecrets $key) }}{{- $missing = append $missing $key }}{{- end }}
+{{- end }}
+{{- if $missing }}
+{{- fail (printf "no credentials for: %s.\nThe dev placeholders in this chart are public (they are in the repository), and Postgres, ClickHouse and NATS would start with them.\nSet existingSecrets.<name> for each, or externalSecrets.enabled=true.\nFor a throwaway cluster only: --set devPlaceholders=true (the API also needs OCTO_ENV=dev)." (join ", " $missing)) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- /* 2. More than one API replica needs shared (RWX) scanner-data. */}}
+{{- $maxApi := int $v.replicas.api }}
+{{- if $v.api.autoscaling.enabled }}
+{{- if lt (int $v.api.autoscaling.minReplicas) 1 }}
+{{- fail "api.autoscaling.minReplicas must be at least 1" }}
+{{- end }}
+{{- if gt (int $v.api.autoscaling.minReplicas) (int $v.api.autoscaling.maxReplicas) }}
+{{- fail (printf "api.autoscaling.minReplicas (%d) is above maxReplicas (%d)" (int $v.api.autoscaling.minReplicas) (int $v.api.autoscaling.maxReplicas)) }}
+{{- end }}
+{{- $maxApi = max $maxApi (int $v.api.autoscaling.minReplicas) (int $v.api.autoscaling.maxReplicas) }}
+{{- end }}
+{{- if and (gt $maxApi 1) (ne $v.storage.scannerData.accessMode "ReadWriteMany") }}
+{{- fail (printf "api runs up to %d replicas but storage.scannerData.accessMode is %q: replicas on different nodes cannot mount a ReadWriteOnce volume. Set storage.scannerData.accessMode=ReadWriteMany and a storageClass that really provides it (the chart cannot check that), see docs/high-availability.md." $maxApi $v.storage.scannerData.accessMode) }}
+{{- end }}
+
+{{- /* 3. Ingress: TLS is not optional (#309), and must cover every host. */}}
+{{- if $v.ingress.enabled }}
+{{- if not $v.ingress.hosts }}
+{{- fail "ingress.enabled needs at least one entry in ingress.hosts: a rule without a host answers for every name" }}
+{{- end }}
+{{- if not $v.ingress.tls }}
+{{- fail "ingress.enabled needs ingress.tls: the console posts credentials and the API carries operator JWTs (#309)" }}
+{{- end }}
+{{- $tlsHosts := list }}
+{{- range $v.ingress.tls }}{{- range .hosts }}{{- $tlsHosts = append $tlsHosts . }}{{- end }}{{- end }}
+{{- range $v.ingress.hosts }}
+{{- /* A wildcard certificate host covers exactly one label: *.example.com matches a.example.com, not a.b.example.com or example.com. */}}
+{{- $parent := regexReplaceAll "^[^.]+\\." .host "" }}
+{{- if not (or (has .host $tlsHosts) (and (not (hasPrefix "*" .host)) (has (printf "*.%s" $parent) $tlsHosts))) }}
+{{- fail (printf "ingress host %q is not covered by any ingress.tls[].hosts (a wildcard covers one label only): it would be served over plain HTTP" .host) }}
+{{- end }}
+{{- end }}
+{{- end }}

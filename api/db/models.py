@@ -1960,6 +1960,15 @@ class Agent(Base):
     # than ``OCTO_AGENT_STALE_SECONDS``; NULL on rows that predate 0056 and are
     # read as a run starting at ``last_seen_at``.
     healthy_since: Mapped[datetime | None] = mapped_column(default=None)
+    # The sensor's ed25519 public key (raw 32 bytes, base64) its run archives
+    # are verified against (#366). Pinned by the first registration that
+    # presents one; a later registration presenting a *different* key is
+    # refused and audited, so holding the bearer token is not enough to swap
+    # the key and forge results. Cleared only by an operator
+    # (``DELETE /agents/{id}/result-key``). NULL: an older sensor, or one that
+    # has not registered a key yet.
+    result_signing_key: Mapped[str | None] = mapped_column(default=None)
+    result_key_pinned_at: Mapped[datetime | None] = mapped_column(default=None)
 
     __table_args__ = (
         Index("ix_agents_tenant_last_seen", "tenant_id", "last_seen_at"),

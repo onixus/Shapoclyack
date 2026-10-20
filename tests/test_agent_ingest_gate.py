@@ -145,7 +145,7 @@ def _agent_headers() -> dict[str, str]:
 def _tiny_archive() -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        payload = b'{"ok": true}\n'
+        payload = b"[]\n"
         info = tarfile.TarInfo(name="findings.json")
         info.size = len(payload)
         tf.addfile(info, io.BytesIO(payload))

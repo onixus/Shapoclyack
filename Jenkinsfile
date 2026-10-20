@@ -42,6 +42,10 @@ def CLICKHOUSE_IMAGE = 'clickhouse/clickhouse-server:24.8@sha256:b002e56ed5c16e2
 // Статический kubectl для рендера оверлеев на Linux-узле (стадия Tests);
 // версия та же, что в образе контроллера (jenkins-local/Dockerfile).
 def KUBECTL_IMAGE = 'registry.k8s.io/kubectl:v1.31.4@sha256:a519329b1bf8f7889e4c902f7147e6933d6a6e1dde25e8171973642396e31f0d'
+// Статический helm для тестов чарта (tests/test_helm_chart.py): берётся из
+// образа так же, как kubectl, и монтируется в ячейки pytest. Мажор 3 — чарт
+// проверяется на нём; на helm 4 его гоняют локально.
+def HELM_IMAGE = 'alpine/helm:3.17.3@sha256:d899e6316789fec04ee95300a18e454b7942539cbb3d89bde3e0655d6ca2e895'
 def NODE_IMAGE = 'node:26-bookworm-slim@sha256:662933cf47f013bc8e4beb31a6116448427a82057ba7c42c97e4c5ba766504c2'
 def TRIVY_IMAGE = 'aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969'
 def SYFT_IMAGE = 'anchore/syft:v1.52.0@sha256:500e2d872ac019436926e8322b4fc1f39441d94d21f6f4046c6ff29b30e8cb02'
@@ -237,6 +241,10 @@ pipeline {
               docker create --name kubectl-${CI_SLUG} ${KUBECTL_IMAGE} >/dev/null
               trap 'docker rm -f kubectl-${CI_SLUG} >/dev/null' EXIT
               docker cp kubectl-${CI_SLUG}:/bin/kubectl "\$BIN/kubectl"
+              docker rm -f helm-${CI_SLUG} >/dev/null 2>&1 || true
+              docker create --name helm-${CI_SLUG} ${HELM_IMAGE} >/dev/null
+              trap 'docker rm -f kubectl-${CI_SLUG} helm-${CI_SLUG} >/dev/null' EXIT
+              docker cp helm-${CI_SLUG}:/usr/bin/helm "\$BIN/helm"
               PATH="\$BIN:\$PATH" OCTO_K8S_RENDER_DIR=.k8s-render k8s/scripts/validate-kustomize.sh
             """
             script {
@@ -294,7 +302,7 @@ pipeline {
                             // зомби на это отвечают «жив», и скрипт висел до таймаута
                             // теста. На Fedor: без --init 4 failed за 85 с, с ним 4 passed
                             // за 9.5 с. На хосте сенсора их подбирает systemd.
-                            docker.image(PYTHON_IMAGES[PY]).inside("--init -u 0:0 --network ${net} ${PIP_CACHE}") {
+                            docker.image(PYTHON_IMAGES[PY]).inside("--init -u 0:0 --network ${net} ${PIP_CACHE} -v ${src}@tmp/ci-bin/helm:/usr/local/bin/helm:ro") {
                               withEnv([
                                 'OCTO_POSTGRES_URL=postgresql+psycopg://octo:octo-ci-secret@pg:5432/shapoclyack',
                                 'OCTO_NATS_URL=nats://nats:4222',
@@ -310,6 +318,10 @@ pipeline {
                                 // Отрендерено выше, до контейнера; путь — от корня
                                 // репозитория, который смонтирован тем же путём.
                                 'OCTO_K8S_RENDER_DIR=.k8s-render',
+                                // helm смонтирован выше; без него тесты чарта падают,
+                                // а не пропускаются. Свой флаг, не общий
+                                // OCTO_REQUIRE_INTEGRATION: тот ставят все ячейки.
+                                'OCTO_REQUIRE_HELM=1',
                               ]) {
                                 withEnv([
                                   "JUNIT_XML=junit-${PY}.xml",

@@ -1,0 +1,227 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: api
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-api
+  namespace: {{ .Release.Namespace }}
+spec:
+  {{- if not .Values.api.autoscaling.enabled }}
+  replicas: {{ .Values.replicas.api }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: api
+      app.kubernetes.io/name: shapoclyack
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        prometheus.io/path: /metrics
+        prometheus.io/port: "8080"
+        prometheus.io/scrape: "true"
+      labels:
+        app.kubernetes.io/component: api
+        app.kubernetes.io/name: shapoclyack
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - env:
+        - name: OCTO_OUTPUT_DIR
+          value: scanner/output
+        - name: OCTO_STATE_DIR
+          value: scanner/state
+        - name: OCTO_CONFIG
+          value: scanner/config/k8s.yaml
+        - name: OCTO_WEB_DIST
+          value: web/dist
+        - name: OCTO_ALLOW_SCAN_START
+          value: "true"
+        - name: OCTO_JOB_EXECUTION_MODE
+          value: agent
+        - name: NATS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: api_password
+              name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "nats" "default" "shapoclyack-nats") }}
+        - name: CLICKHOUSE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: password
+              name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "clickhouse" "default" "shapoclyack-clickhouse") }}
+        - name: OCTO_NATS_URL
+          value: {{ .Values.api.natsUrl | quote }}
+        - name: OCTO_CLICKHOUSE_URL
+          value: {{ .Values.api.clickhouseUrl | quote }}
+        - name: OCTO_TENANT_PURGE_UNUSED_STORES
+          value: clickhouse,jetstream
+        - name: OCTO_CH_INGEST_ENABLED
+          value: "true"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: password
+              name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "postgres" "default" "shapoclyack-postgres") }}
+        - name: OCTO_POSTGRES_URL
+          value: postgresql+psycopg://octo:$(POSTGRES_PASSWORD)@shapoclyack-postgres-client:5432/shapoclyack
+        - name: OCTO_JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              key: jwt_secret
+              name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "api" "default" "shapoclyack-api") }}
+        - name: OCTO_JWT_SECRET_PREVIOUS
+          valueFrom:
+            secretKeyRef:
+              key: jwt_secret_previous
+              name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "api" "default" "shapoclyack-api") }}
+              optional: true
+{{- with .Values.api.extraEnv }}
+{{- toYaml . | nindent 8 }}
+{{- end }}
+        envFrom:
+        - secretRef:
+            name: shapoclyack-api-users
+            optional: true
+        image: {{ include "shapoclyack.image" .Values.images.api }}
+        imagePullPolicy: {{ .Values.images.pullPolicy }}
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - sleep
+              - "5"
+        livenessProbe:
+          httpGet:
+            path: /livez
+            port: http
+          periodSeconds: 20
+        name: api
+        ports:
+        - containerPort: 8080
+          name: http
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: http
+          periodSeconds: 10
+          timeoutSeconds: 5
+        resources:
+{{- toYaml .Values.resources.api | nindent 10 }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /livez
+            port: http
+          periodSeconds: 5
+        volumeMounts:
+        - mountPath: /app/scanner/output
+          name: data
+          subPath: output
+        - mountPath: /app/scanner/state
+          name: data
+          subPath: state
+        - mountPath: /app/scanner/inputs
+          name: inputs
+          readOnly: true
+        - mountPath: /app/scanner/config
+          name: config
+          readOnly: true
+        - mountPath: /tmp
+          name: tmp
+        - mountPath: /home/octo
+          name: home
+      initContainers:
+      - command:
+        - python
+        - -m
+        - api.db.migrate
+        env:
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: password
+              name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "postgres" "default" "shapoclyack-postgres") }}
+        - name: OCTO_POSTGRES_URL
+          value: postgresql+psycopg://octo:$(POSTGRES_PASSWORD)@shapoclyack-postgres-client:5432/shapoclyack
+        image: {{ include "shapoclyack.image" .Values.images.api }}
+        imagePullPolicy: {{ .Values.images.pullPolicy }}
+        name: migrate
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - mountPath: /tmp
+          name: tmp
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: api
+      {{- if .Values.api.spread.enabled }}
+      # Same placement as overlays/prod-ha/api-ha-patch.yaml (#335): preferred
+      # anti-affinity, a hard per-node spread and a best-effort per-zone one.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: api
+                  app.kubernetes.io/name: shapoclyack
+              topologyKey: kubernetes.io/hostname
+            weight: 100
+      topologySpreadConstraints:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: api
+            app.kubernetes.io/name: shapoclyack
+        maxSkew: 1
+        nodeAffinityPolicy: Honor
+        nodeTaintsPolicy: Honor
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: api
+            app.kubernetes.io/name: shapoclyack
+        maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+      {{- end }}
+      terminationGracePeriodSeconds: 45
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: scanner-data
+      - name: inputs
+        secret:
+          optional: true
+          secretName: scan-targets
+      - configMap:
+          name: scanner-config
+        name: config
+      - emptyDir:
+          sizeLimit: 2Gi
+        name: tmp
+      - emptyDir:
+          sizeLimit: 64Mi
+        name: home

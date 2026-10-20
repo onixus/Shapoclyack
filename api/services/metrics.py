@@ -113,6 +113,17 @@ JOB_LEASE_EXPIRED_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+RESULT_INTEGRITY_TOTAL = Counter(
+    "octo_result_integrity_total",
+    "Integrity checks on sensor result uploads (#366), by check (schema, "
+    "signature) and outcome: ok, rejected, warned (schema mode warn), "
+    "verified, unsigned and unverifiable (accepted while "
+    "OCTO_REQUIRE_SIGNED_RESULTS is off \u2014 a non-zero rate is the "
+    "sensors still to upgrade).",
+    ["check", "outcome"],
+    registry=REGISTRY,
+)
+
 JOB_CANCELLATIONS_TOTAL = Counter(
     "octo_job_cancellations_total",
     "Scans stopped on an operator's request, by how the stop ended (#360): "

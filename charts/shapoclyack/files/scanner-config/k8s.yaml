@@ -1,0 +1,239 @@
+# Scanner config for Kubernetes (mounted at /app/scanner/config/k8s.yaml).
+# Prefer vuln-offline in-cluster unless the pod has egress for vulners.com.
+
+runtime:
+  mode: balanced
+  output_dir: scanner/output
+  state_dir: scanner/state
+  logs_dir: scanner/output/logs
+  retries: 2
+  timeout_seconds: 7200
+  nse_timeout_seconds: 600
+  discover_concurrency: 2
+  ports_concurrency: 2
+  skip_nse: false
+  keep_intermediate: true
+  per_run_output: true
+  log_max_bytes: 10485760
+  log_backup_count: 5
+
+profiles:
+  # Pulse is the only service-probe backend; profiles.<mode>.pulse.* sets its pace.
+  safe:
+    discover_rate: 1000
+    port_rate: 1000
+    top_ports: 100
+    pulse:
+      concurrency: 300
+      rate: 500
+      host_parallel: 4
+      os_mode: sinfp
+  balanced:
+    discover_rate: 2000
+    port_rate: 2000
+    top_ports: 1000
+    pulse:
+      concurrency: 800
+      rate: 2000
+      host_parallel: 16
+      os_mode: sinfp
+  fast:
+    discover_rate: 5000
+    port_rate: 5000
+    top_ports: 1000
+    pulse:
+      concurrency: 1200
+      rate: 5000
+      host_parallel: 32
+      os_mode: sinfp
+  # Smoke-test profile — prove the pipeline end-to-end in minutes. Coverage is
+  # deliberately traded for turnaround; do not use it for real assessments.
+  # See scanner/config/default.yaml for the per-knob reasoning.
+  test:
+    discover_rate: 4000
+    port_rate: 3000
+    top_ports: 100
+    pulse:
+      concurrency: 800
+      rate: 2000
+      host_parallel: 16
+      os_mode: sinfp
+    nuclei:
+      severities: [critical, high]
+      concurrency: 50
+      rate_limit: 300
+      timeout_seconds: 5
+      overall_timeout_seconds: 300
+
+batching:
+  enabled: true
+  # Finer /24 batches (from realistic bench) for better resume on large CIDRs.
+  ipv4_prefix: 24
+  ipv6_prefix: 120
+  max_ipv6_batches: 4096
+  max_targets_per_batch: 1024
+
+# Resolvers for every dnsx run. Empty = the pod's /etc/resolv.conf, i.e. the
+# cluster DNS, the only resolver examples/networkpolicy-agent.example.yaml
+# lets a sensor reach. See scanner/config/default.yaml before setting it.
+dns:
+  resolvers: []
+
+discovery:
+  source: naabu
+  profile: auto
+  skip_discovery: false
+  skip_known_alive: true
+  disjoint_batches: true
+  adaptive:
+    enabled: true
+    # Explicit wave-2 rate validated in discovery-bench-realistic.
+    wave2_rate: 2500
+    min_gap: 1
+  exclude_alive: []
+  exclude_last_octets: []
+  verify:
+    # Second-pass verify reduces missed alive hosts (realistic bench default).
+    enabled: true
+    rate: 1250
+  icmp:
+    enabled: false
+    tool: fping
+    timeout_ms: 500
+    retries: 1
+  # Directly attached IPv4 segments only. ARP discovers silent hosts; the
+  # optional UDP pass records mDNS/NetBIOS names. Empty networks derives only
+  # in-scope private/link-local ranges and still honours max_hosts.
+  l2:
+    enabled: false
+    networks: []
+    interface: ""
+    mdns: true
+    netbios: true
+    max_hosts: 4096
+    max_rate: 1000
+    timeout_seconds: 120
+  tcp_probe:
+    enabled: false
+    ports: [80, 443, 22]
+  probe_order: [icmp, tcp, naabu]
+  hostnames:
+    forward: true
+    reverse: true
+  cloudflare:
+    enabled: false
+    api_token: ""
+    zones: []
+    include_proxied: true
+    include_unproxied: true
+    flag_unproxied_a: true
+    timeout_seconds: 30
+  ct:
+    enabled: false
+    providers: [crtsh]
+    domains: []
+    max_subdomains: 5000
+    timeout_seconds: 45
+    brute_force:
+      enabled: false
+      wordlist_file: ""
+      concurrency: 20
+      max_candidates: 2000
+      timeout_seconds: 5
+  asn:
+    enabled: false
+    domains: []
+    max_total_ips: 4096
+    timeout_seconds: 15
+  cloud:
+    enabled: false
+    domains: []
+    providers: [s3, gcs]
+    wordlist_file: ""
+    concurrency: 10
+    max_candidates: 500
+    timeout_seconds: 8
+    azure_container_probes: 10
+  seed_alive_file: ""
+  delta:
+    enabled: false
+    previous_run_dir: ""
+    refresh_rate: 0.1
+    refresh_seed: 0
+
+ports:
+  source: naabu
+  protocol: tcp
+  custom_ports_file: scanner/inputs/ports.txt
+  custom_udp_ports_file: scanner/inputs/ports_udp.txt
+  top_udp_ports: 100
+  udp_probes: true
+
+# Pulse is the only service-probe backend (docs/nmap-migration.md).
+# Image bakes /usr/local/bin/pulse; NVD key via NVD_API_KEY secret if cve_online.
+service_probe:
+  backend: pulse
+  pulse:
+    concurrency: 500
+    rate: 2000
+    adaptive: true
+    host_parallel: 8
+    banner: true
+    os_detect: true
+    os_mode: sinfp
+    cve: true
+    cve_online: false
+
+reporting:
+  markdown_summary: true
+  html_summary: true
+  csv_export: true
+  json_export: true
+  diff:
+    enabled: true
+    previous_run_dir: ""
+    markdown: true
+
+enrichment:
+  cvss4:
+    enabled: true
+    database: scanner/data/cvss4/cvss4.json
+  geoip:
+    enabled: true
+    database: scanner/data/geoip/geoip.mmdb
+
+alerts:
+  enabled: false
+  min_severity: high
+  on_diff_only: false
+  slack:
+    enabled: false
+    webhook_url: ""
+  telegram:
+    enabled: false
+    bot_token: ""
+    chat_id: ""
+  smtp:
+    enabled: false
+    host: "127.0.0.1"
+    port: 25
+    from_addr: ""
+    to_addrs: []
+    username: ""
+    password: ""
+    use_starttls: false
+    timeout_seconds: 30
+    dkim_selector: ""
+    require_dkim: false
+    require_ptr: false
+    ptr_hostname: ""
+
+scheduler:
+  enabled: false
+  cron: "0 2 * * *"
+  interval_seconds: 0
+  mode: null
+  delta: false
+  skip_nse: false
+  notify: false
+  max_runs: 0

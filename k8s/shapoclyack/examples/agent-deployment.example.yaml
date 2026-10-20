@@ -94,6 +94,13 @@ spec:
                   key: OCTO_AGENT_ID_PREFIX
             - name: OCTO_AGENT_ID
               value: $(OCTO_AGENT_ID_PREFIX)-$(POD_NAME)
+            # The sensor's result-signing key (#366). On a volume that
+            # survives the pod, never under $HOME (an emptyDir): a fresh key
+            # after a restart is refused by the API, which keeps the first one
+            # it was given, and every upload would be rejected until an
+            # operator resets it (DELETE /api/agents/{id}/result-key).
+            - name: OCTO_AGENT_RESULT_KEY_FILE
+              value: /var/lib/shapoclyack/sensor-key/result-signing.key
             - name: OCTO_CONFIG
               value: scanner/config/k8s.yaml
             - name: OCTO_OUTPUT_DIR
@@ -151,6 +158,8 @@ spec:
               mountPath: /tmp
             - name: home
               mountPath: /home/octo
+            - name: sensor-key
+              mountPath: /var/lib/shapoclyack/sensor-key
       volumes:
         # A ConfigMap of that name in this namespace: the scanner config
         # (k8s/shapoclyack/base/config/k8s.yaml or your own).
@@ -178,3 +187,17 @@ spec:
         - name: home
           emptyDir:
             sizeLimit: 1Gi
+  # One small volume per pod for the result-signing key (#366), the only state
+  # an executor keeps. fsGroup (1000) makes it writable for the worker.
+  volumeClaimTemplates:
+    - metadata:
+        name: sensor-key
+        labels:
+          app.kubernetes.io/name: shapoclyack
+          app.kubernetes.io/component: agent
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 16Mi

@@ -49,7 +49,10 @@ def _load_json(path: Path) -> Any | None:
         return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
+        # ValueError covers bad JSON and undecodable bytes; RecursionError a
+        # document nested past the parser's stack. A run already stored that way
+        # must not take the run listing down with it.
         return None
 
 

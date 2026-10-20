@@ -4,12 +4,56 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Upgrade notes
+
+- The `scanner-executor` StatefulSet (every overlay) and the agent example gain a
+  `sensor-key` `volumeClaimTemplate`. Kubernetes forbids changing those on an
+  existing StatefulSet: run `kubectl -n <ns> delete statefulset
+  shapoclyack-scanner-executor --cascade=orphan` and apply again. The claim uses
+  the default StorageClass; on a cluster without one (air-gapped) patch
+  `storageClassName` in, see
+  [operations](docs/operations.md#sensor-result-integrity-schemas-and-signatures).
+
+### Security
+
+- `aiohttp` is locked at 3.14.5 (from 3.14.3) in the scanner, API and CI locks
+  for CVE-2026-111064 / GHSA-2g87-pp6c-29x5, fixed in 3.14.4.
+
 ### Added
 
 - Personal saved views in the console refuse duplicate names (409), explain every refusal,
   normalise deep-link filters, and the mobile drawer is keyboard-operable (#357).
   Refusals carry a `detail.code` (`saved_view_limit`, `saved_view_duplicate_name`); names are
   unique by a stored case-folded key; views go with the account and with a revoked membership.
+- Helm chart `charts/shapoclyack/`
+  ([#341](https://github.com/onixus/Shapoclyack/issues/341), [Helm chart](docs/helm.md)):
+  the kustomize base as a chart, with values for replicas, storage size and class,
+  per-credential `existingSecrets`, optional External Secrets and Ingress, images and
+  resources, a NetworkPolicy switch, and optional API spread/HPA as in prod-ha. Rendering
+  refuses the public dev-placeholder credentials unless `existingSecrets`, External Secrets
+  or `devPlaceholders=true` is set, several API replicas on a ReadWriteOnce volume, and an
+  Ingress without TLS for every host. `scripts/ci-helm.sh` runs `helm lint --strict` and
+  fails when the default render differs from `kubectl kustomize k8s/shapoclyack/base` in
+  any object or field (hardening included; `scripts/helm_parity.py`); it runs,
+  with `tests/test_helm_chart.py`, on pull requests that touch `k8s/`/`charts/`
+  (`.github/workflows/helm-chart.yml`); the tests also run in the PR Gate and in the Jenkins
+  pytest cells (helm 3.17.3). Wildcard TLS hosts and an HPA with min above max are handled. OCI publishing to
+  GHCR is described, not set up.
+- Result integrity ([#366](https://github.com/onixus/Shapoclyack/issues/366),
+  [operations](docs/operations.md#sensor-result-integrity-schemas-and-signatures)):
+  the API validates a run archive's core artifacts against JSON schemas before
+  extracting it (fail-closed with the file and path in the job's error; unknown
+  fields allowed; ships as `OCTO_RESULT_SCHEMA_MODE=warn` for the first release, `enforce` to refuse), and verifies an
+  ed25519 signature made by the sensor over the archive plus agent, job, run,
+  exit code and attempt. The sensor generates its key, registers the public half
+  (pinned on first use, replaced only by `DELETE /api/agents/{id}/result-key`),
+  and signs. `OCTO_REQUIRE_SIGNED_RESULTS` (default off) turns an unsigned upload
+  from a warning and metric (`octo_result_integrity_total`) into a refusal; a sensor
+  that has registered a key must always sign, and a wrong signature is always
+  refused. The sensor keeps its key on a PVC in the Kubernetes manifests. Migration `0095`
+  adds two columns to `agents`. The sensor can also serve `/healthz` and
+  `/metrics` on `OCTO_AGENT_METRICS_ADDR` (off by default; see
+  [observability](docs/observability.md#sensor-healthz-and-metrics)).
 - Service tokens support linked rotation with a bounded overlap, inherited source CIDR
   restrictions and deduplicated advance expiry notifications through workflow subscriptions (#323).
 - Tenant ServiceNow CMDB connectors feed the existing CSV/JSON import planner with
@@ -221,6 +265,14 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- Two tests that only run against live Postgres and ClickHouse were red on
+  `main` since the non-CVE and finding-evidence work landed (#565), which kept
+  every Jenkins run from reaching the image and Trivy stages. The data-subject
+  register now classifies `vulnerabilities.non_cve` and
+  `vulnerabilities.finding_evidence` (sensor observations of the target, no
+  console account), and the ClickHouse receipt test expects the one CVE row the
+  CVE-keyed analytics table now gets, since findings without a CVE are kept out
+  of it deliberately.
 - `tls_posture` mis-parsed Nmap's `ssl-enum-ciphers` output in two ways. Real
   output indents every version header and the parser was anchored at column 0,
   so only the first protocol block was read and TLSv1.0/1.1 behind another
