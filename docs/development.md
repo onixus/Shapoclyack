@@ -287,19 +287,25 @@ The screenshot process is documented in [ui.md](ui.md).
 
 The full CI runs on a **local Jenkins** — `.github/workflows/ci.yml` is kept as
 a manually runnable reference, its automatic triggers removed to save GitHub
-Actions minutes. The jobs build from the working copy on disk, so they do not
-depend on anything being pushed to GitHub.
+Actions minutes. The macOS stages use the local SCM checkout; the Linux
+`gaming-amd64` stages fetch the selected immutable revision from GitHub. Push
+that revision before running those stages. Confirm the Jenkinsfile revision
+and every stage checkout SHA when using a build as acceptance evidence.
 
-The one workflow GitHub runs by itself is the **PR gate**,
+The required automatic check is the **PR gate**,
 `.github/workflows/pr-gate.yml` (check `Python lint and unit tests`, on
 `pull_request` to `main`, `merge_group` and by hand). It is deliberately cheap:
 one Python 3.12 job with no PostgreSQL, NATS, images or web build —
-`scripts/ci-lint.sh`, `compileall`, and `scripts/ci-pytest.sh` with
+`scripts/ci-lint.sh`, `compileall`, `scripts/ci-sdk.sh` and `scripts/ci-pytest.sh` with
 `OCTO_REQUIRE_INTEGRATION=0 COV_FAIL_UNDER=0`, because the database suites skip
 there and the 85% coverage gate is about the run that includes them. It proves
 less than Jenkins and does not replace it; see
 [`.github/PR_GATE.md`](../.github/PR_GATE.md). Python 3.11 is not run in the
-gate: `ruff.toml` sets `target-version = "py311"`, the oldest version in the
+gate. Helm and kubectl are required in this runner (`OCTO_REQUIRE_HELM=1`)
+for chart parity tests. A separate path-filtered
+[Helm workflow](../.github/workflows/helm-chart.yml) runs chart lint/render/parity
+checks on relevant PRs and pushes; see [the chart guide](helm.md).
+`ruff.toml` sets `target-version = "py311"`, the oldest version in the
 Jenkins matrix, so Ruff rejects 3.12-only syntax on the gate's 3.12 runner.
 `tests/test_pr_gate.py` compares the workflow's triggers, permissions and
 commands against the expected ones in full, so `|| true`, `continue-on-error`
@@ -308,7 +314,8 @@ or a widened token fails it.
 **The checks themselves live in `scripts/`, not in any pipeline.** Lint, the
 test run, the web-next gate and the Semgrep scan are `scripts/ci-lint.sh`,
 `scripts/ci-pytest.sh`, `scripts/ci-web.sh` and `scripts/ci-semgrep.sh`, and
-the Jenkinsfile and `ci.yml` both call them; the PR gate calls the first two.
+the Jenkinsfile and `ci.yml` both call them; the PR gate calls the first two
+and checks the generated SDK with `scripts/ci-sdk.sh`.
 Spelled out twice they had drifted — Ruff `0.15.22` here against `0.15.20`
 there, `agent/` linted by neither, Semgrep and the Prometheus-rules validation
 in Jenkins only. `tests/test_ci_checks.py` fails if a pipeline starts spelling

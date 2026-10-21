@@ -49,7 +49,7 @@ Choose an installation path; commands run from a checked repository root.
 |---|---|---|
 | Install prebuilt images on one Linux server | [Server installation](docs/server-install.ru.md) | Python 3.9+, Docker Engine, Compose v2, HTTPS reverse proxy |
 | Evaluate locally with image builds | [Getting started](docs/getting-started.md) | Docker, kind, kubectl, OpenSSL, at least 4 GB free RAM; Pulse release access for builds |
-| Deploy or upgrade Kubernetes workloads | [Kubernetes deployment](k8s/README.md) | Cluster, registry access, secrets and storage configured for the selected overlay |
+| Deploy or upgrade Kubernetes workloads | [Kubernetes / Kustomize](k8s/README.md), [Helm](docs/helm.md) | Cluster, registry access, secrets and storage configured for the selected overlay |
 
 For a server installation without building on the host:
 
@@ -78,9 +78,10 @@ Scan only infrastructure you own or are authorized to assess. A fresh installati
 
 | Area | Authoritative guide |
 |---|---|
-| Discovery, inventory, asset ownership and CMDB/AD file import | [Architecture](docs/architecture.md), [asset context](docs/asset-context.md) |
+| Discovery, inventory, ownership, CMDB/AD file import and ServiceNow sync | [Architecture](docs/architecture.md), [asset context](docs/asset-context.md) |
 | Vulnerability triage, SLA, verification, risk acceptance | [Vulnerability lifecycle](docs/vulnerability-lifecycle.md) |
 | Tenants, RBAC, MFA, OIDC, SCIM and service tokens | [API and RBAC](docs/api-and-rbac.md) |
+| API versions, CSV/NDJSON exports and Python integrations | [API v1 and SDK](docs/api-versioning.md) |
 | Reports, compliance signals and signed evidence packages | [Reports and compliance](docs/reports-and-compliance.md), [custom compliance](docs/custom-compliance.md) |
 | Sensor fleet and endpoint inventory | [Operations](docs/operations.md), [endpoint design record](Agent_plan.md) |
 | Current console routes and workflows | [Web interface](docs/ui.md) |

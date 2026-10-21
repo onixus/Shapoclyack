@@ -19,6 +19,12 @@ All notable changes to Shapoclyack are documented in this file.
 - `aiohttp` is locked at 3.14.5 (from 3.14.3) in the scanner, API and CI locks
   for CVE-2026-111064 / GHSA-2g87-pp6c-29x5, fixed in 3.14.4.
 
+### Changed
+
+- Reconcile README, documentation index, enterprise roadmap, trust boundaries and
+  CI guidance with `main` at `633065de` and the 2026-10-21 PR review. Separate
+  merged features, the historical RC snapshot, stable release and pending #577.
+
 ### Added
 
 - Personal saved views in the console refuse duplicate names (409), explain every refusal,
