@@ -817,7 +817,9 @@ def _run_web_sweep(
                     plan["skipped"].append({"target_index": index, "reason": "per_host_process_limit"})
                     continue
                 host_remaining = config.planner_per_host_timeout_seconds - host_seconds.get(host, 0)
-                remaining = int(min(deadline - time.monotonic(), host_remaining))
+                stage_remaining = deadline - time.monotonic()
+                host_limited = host_remaining < stage_remaining
+                remaining = int(min(stage_remaining, host_remaining))
                 if remaining < _MIN_PROCESS_SECONDS:
                     if host_remaining < _MIN_PROCESS_SECONDS:
                         plan["skipped"].append({"target_index": index, "reason": "per_host_budget_exhausted"})
@@ -837,6 +839,7 @@ def _run_web_sweep(
                 part_errors.unlink(missing_ok=True)
                 target_command[target_command.index("-elog") + 1] = str(part_errors)
                 invocation_started = time.monotonic()
+                host_timeout = False
                 try:
                     item = run_command(
                         target_command, timeout=remaining, retries=0, check=False
@@ -844,6 +847,7 @@ def _run_web_sweep(
                     codes.append(item.returncode)
                     stderr_parts.append(item.stderr or "")
                 except Exception as exc:  # noqa: BLE001
+                    host_timeout = host_limited and isinstance(exc, subprocess.TimeoutExpired)
                     codes.append(None)
                     stderr = getattr(exc, "stderr", "") or ""
                     stderr_parts.append(
@@ -927,8 +931,12 @@ def _run_web_sweep(
                         raw_bytes_left -= len(encoded) + 1
                         projected.append(encoded.decode("utf-8"))
                     raw_parts.append("\n".join(projected))
-                # One deadline, no automatic retry of a timed out invocation.
-                if codes[-1] is None:
+                # A host deadline must not consume another host's budget.
+                # Preserve the failed receipt and partial matches without retrying;
+                # global expiry and other execution failures still stop the sweep.
+                if codes[-1] is None and not (
+                    host_timeout and deadline - time.monotonic() >= _MIN_PROCESS_SECONDS
+                ):
                     break
             jsonl_file.write_text("\n".join(raw_parts), encoding="utf-8")
             errors_file.write_text("\n".join(error_parts), encoding="utf-8")

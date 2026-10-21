@@ -466,6 +466,127 @@ def test_distinct_risk_receipt_refresh_does_not_reopen_identical_evidence(tmp_pa
 
 
 @requires_postgres
+@pytest.mark.parametrize("same_run", [False, True])
+def test_republished_old_cohort_cannot_replace_current_assessment(tmp_path, monkeypatch, same_run):
+    from tests.test_vuln_lifecycle import _seed, _write_run, _HOSTS
+    from api.services import vulnerabilities as vulns, risk_context
+
+    assess = risk_context.score_batch
+    execution = ["publication:old"]
+    def with_execution(*args, **kwargs):
+        scores = copy.deepcopy(assess(*args, **kwargs))
+        for score in scores:
+            score["risk_assessment"]["execution_id"] = execution[0]
+        return scores
+    monkeypatch.setattr(risk_context, "score_batch", with_execution)
+    old = combine([{**BASE, "observed_at": "2026-10-01T00:00:00Z", "severity": "low", "cvss": 2}])
+    settings, tenant = _seed(tmp_path, findings=old)
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id="run-1")
+    newer_run = "run-1" if same_run else "run-new"
+    newer = combine([{**BASE, "observed_at": "2026-10-10T00:00:00Z", "severity": "critical", "cvss": 9.5}])
+    execution[0] = "publication:new"
+    _write_run(settings.output_dir, newer_run, _HOSTS, newer)
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id=newer_run)
+    current = vulns.list_vulnerabilities(settings, tenant_id=tenant)[0][0]
+    events_before = vulns.list_events(settings, tenant_id=tenant, vuln_id=current["vuln_id"])[1]
+    execution[0] = "publication:republished-old"
+    _write_run(settings.output_dir, "run-1", _HOSTS, old)
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id="run-1")
+    after = vulns.get_vulnerability(settings, tenant_id=tenant, vuln_id=current["vuln_id"])
+    for field in ("severity", "cvss", "risk_assessment", "last_seen_run_id", "last_seen_at",
+                  "detectors", "observation_count", "due_at", "state"):
+        assert after[field] == current[field], field
+    assert after["finding_evidence"]["observation_count"] == 2
+    assert vulns.list_events(settings, tenant_id=tenant, vuln_id=current["vuln_id"])[1] == events_before
+
+
+@requires_postgres
+def test_current_undated_run_refresh_ignores_other_run_dated_history(tmp_path, monkeypatch):
+    from tests.test_vuln_lifecycle import _seed, _write_run, _HOSTS
+    from api.services import vulnerabilities as vulns, risk_context, vuln_states
+
+    assess = risk_context.score_batch
+    execution = ["publication:dated"]
+    def with_execution(*args, **kwargs):
+        scores = copy.deepcopy(assess(*args, **kwargs))
+        for score in scores:
+            score["risk_assessment"]["execution_id"] = execution[0]
+        return scores
+    monkeypatch.setattr(risk_context, "score_batch", with_execution)
+    settings, tenant = _seed(tmp_path, findings=combine([
+        {**BASE, "observed_at": "2026-10-10T00:00:00Z"},
+    ]))
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id="run-1")
+    execution[0] = "publication:undated"
+    _write_run(settings.output_dir, "run-undated", _HOSTS, combine([BASE]))
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id="run-undated")
+    current = vulns.list_vulnerabilities(settings, tenant_id=tenant)[0][0]
+    closed = vulns.transition(settings, tenant_id=tenant, vuln_id=current["vuln_id"],
+                              to_state=vuln_states.CLOSED, actor="admin")
+    event_count = vulns.list_events(settings, tenant_id=tenant, vuln_id=current["vuln_id"])[1]
+    execution[0] = "publication:refreshed-undated"
+    assert vulns.register_findings_from_run(settings, tenant_id=tenant, run_id="run-undated").reopened == 0
+    after = vulns.get_vulnerability(settings, tenant_id=tenant, vuln_id=current["vuln_id"])
+    assert after["risk_assessment"]["execution_id"] == execution[0]
+    for field in ("state", "observation_count", "last_seen_at", "last_seen_run_id",
+                  "due_at", "closed_at", "detectors", "finding_evidence"):
+        assert after[field] == closed[field], field
+    assert vulns.list_events(settings, tenant_id=tenant, vuln_id=current["vuln_id"])[1] == event_count
+
+
+@requires_postgres
+@pytest.mark.parametrize("signal", ["severity", "in_kev", "network_exposure", "exploit_maturity"])
+def test_current_replay_material_escalation_overrides_false_positive_without_new_observation(
+    tmp_path, monkeypatch, signal,
+):
+    from tests.test_vuln_lifecycle import _seed, _write_run, _HOSTS
+    from api.services import vulnerabilities as vulns, risk_context, vuln_states
+
+    assess = risk_context.score_batch
+    execution = ["publication:first"]
+    elevated = [False]
+    def with_execution(*args, **kwargs):
+        scores = copy.deepcopy(assess(*args, **kwargs))
+        for score in scores:
+            score["risk_assessment"]["execution_id"] = execution[0]
+            score["exploit_active"] = signal == "in_kev" and elevated[0]
+            score["network_exposure"] = "external" if signal == "network_exposure" and elevated[0] else "internal"
+            score["exploit_maturity"] = "weaponized" if signal == "exploit_maturity" and elevated[0] else "none"
+        return scores
+    monkeypatch.setattr(risk_context, "score_batch", with_execution)
+    findings = combine([{**BASE, "observed_at": "2026-10-10T00:00:00Z", "severity": "medium"}])
+    settings, tenant = _seed(tmp_path, findings=findings)
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id="run-1")
+    original = vulns.list_vulnerabilities(settings, tenant_id=tenant)[0][0]
+    closed = vulns.mark_false_positive(settings, tenant_id=tenant, vuln_id=original["vuln_id"],
+        reason="Reviewed the evidence before the intelligence changed", actor="admin", suppress_days=30)
+    execution[0] = "publication:second"
+    elevated[0] = True
+    if signal == "severity":
+        # Receipt metadata changes while the exact raw observations remain stored.
+        findings[0]["severity"] = "critical"
+        _write_run(settings.output_dir, "run-1", _HOSTS, findings)
+    stats = vulns.register_findings_from_run(settings, tenant_id=tenant, run_id="run-1")
+    after = vulns.get_vulnerability(settings, tenant_id=tenant, vuln_id=original["vuln_id"])
+    assert stats.fp_overridden == stats.reopened == 1
+    assert after["state"] == vuln_states.OPEN
+    assert after["fp_suppress_until"] is None
+    assert after["closure_reason"] is None
+    assert after["observation_count"] == closed["observation_count"] == 1
+    assert after["finding_evidence"]["observation_count"] == 1
+    assert after["last_seen_at"] == closed["last_seen_at"]
+    assert after["detectors"] == closed["detectors"]
+    events, count = vulns.list_events(settings, tenant_id=tenant, vuln_id=original["vuln_id"])
+    override = next(event for event in events if event["kind"] == "fp_overridden")
+    assert signal in override["detail"]["changed"]
+    assert override["detail"]["replay"] is True
+    assert sum(event["kind"] == "reopened" for event in events) == 1
+    # Repeating that same execution/evidence cannot create another reopen/event.
+    assert vulns.register_findings_from_run(settings, tenant_id=tenant, run_id="run-1").reopened == 0
+    assert vulns.list_events(settings, tenant_id=tenant, vuln_id=original["vuln_id"])[1] == count
+
+
+@requires_postgres
 def test_live_clickhouse_evidence_roundtrip_replay_and_tenant_counts(tmp_path):
     """Production insert + FINAL read keeps observations out of unique counts."""
     import os
