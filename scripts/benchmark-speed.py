@@ -324,7 +324,9 @@ def run_tool(tool, plan, rate, out_dir, label, router_mac):
     started = time.monotonic()
     # nsenter execs the tool in place, so wait4 reports the tool's own usage.
     with open(stderr_path, 'wb') as stderr:
-        proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=stderr)
+        # naabu reads targets from stdin whenever stdin is not a terminal, and
+        # fails with "Timeout" when nothing arrives; give it an empty one.
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr)
         timed_out = False
         while True:
             pid, status, usage = os.wait4(proc.pid, os.WNOHANG)

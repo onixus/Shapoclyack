@@ -87,10 +87,21 @@ the library it sends the SYNs, sees no replies, exits 0 and reports nothing.
 In the farm with no libpcap, `naabu-syn` had recall 0 in every repetition
 while `naabu-connect` had recall 1.0. With libpcap present, `naabu-syn` found
 between 0.57 and 0.85 of the open ports at 1–10 kpps, with misses scattered
-across hosts. The cause of that remaining gap is not established yet. The
-harness records whether libpcap was found (`metadata.json` → `host.libpcap`)
+across hosts. That gap is on the receive side, inside the scanner process:
+the farm's TCP counters show every probe arriving and every SYN-ACK sent, and
+the scanner namespace's counters show every SYN-ACK arriving (and answered with
+a RST), but naabu's debug log shows its transport reader receiving only the
+ports it then reports. `-retries 3` brings recall to 0.99–1.0 at three times
+the wall time. Those runs used a libpcap build from PyPI, not Debian's
+`libpcap0.8`, so the stand has to repeat them with the library the image would
+ship before anything is concluded. The harness records whether libpcap was found (`metadata.json` → `host.libpcap`)
 and warns when `naabu-syn` runs without it. The 2026-10-15 port discovery
 benchmark recorded the same empty root SYN result on loopback.
+
+**naabu reads stdin when it is not a terminal.** Started with an inherited
+pipe as stdin, naabu waits for targets on it and sometimes fails with `Could
+not run enumeration: Timeout` and no results. The harness gives every tool an
+empty stdin.
 
 **netem is not in every kernel.** `--impaired` stops with a clear error when
 the kernel has no netem qdisc.
