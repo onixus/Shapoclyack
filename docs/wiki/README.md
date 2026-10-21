@@ -45,7 +45,8 @@ API-ресурса `agents` и переменных `OCTO_AGENT_*` сохран�
 | Задача | Руководство |
 |---|---|
 | Установить готовый образ на Linux-сервер | [Установка без сборки](../server-install.ru.md) |
-| Развернуть Kubernetes-профиль | [Kubernetes / Kustomize](../../k8s/README.md) |
+| Развернуть Kubernetes-профиль | [Kubernetes / Kustomize](../../k8s/README.md), [Helm](../helm.md) |
+| Интегрировать API и выгрузки CSV/NDJSON | [API v1 и Python SDK](../api-versioning.md) |
 | Понять компоненты и потоки данных | [Архитектура](../architecture.md) |
 | Передать требования сетевой команде | [Сетевые требования](../network-requirements.md) |
 | Настроить доступ и управление тенантами | [API и RBAC](../api-and-rbac.md) |

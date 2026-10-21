@@ -30,7 +30,7 @@ Self-hosted платформа обнаружения внешней повер�
 |---|---|---|
 | Один Linux-сервер, готовые образы | [Установка без сборки](docs/server-install.ru.md) | Python 3.9+, Docker Engine, Compose v2, HTTPS reverse proxy |
 | Локальная оценка со сборкой | [Getting started](docs/getting-started.md) | Docker, kind, kubectl, OpenSSL, от 4 ГБ свободной RAM; доступ к релизам Pulse |
-| Кластерное развёртывание | [Kubernetes / Kustomize](k8s/README.md) | Кластер, registry, секреты и хранилища выбранного профиля |
+| Кластерное развёртывание | [Kubernetes / Kustomize](k8s/README.md), [Helm](docs/helm.md) | Кластер, registry, секреты и хранилища выбранного профиля |
 
 Подготовка серверной установки и запуск:
 
@@ -68,6 +68,7 @@ curl --fail --cacert .dev-tls/ca.crt https://127.0.0.1:8080/api/health
 | Ролевые сценарии, процессы ИБ и план внедрения на 12 недель | [Корпоративная Wiki](docs/wiki/README.md) |
 | Архитектура и потоки данных | [Архитектура](docs/architecture.md) |
 | Тенанты, RBAC, MFA, OIDC, SCIM и сервисные токены | [API и RBAC](docs/api-and-rbac.md) |
+| Версии API, экспорт CSV/NDJSON и Python-клиент | [API v1 и SDK](docs/api-versioning.md) |
 | Отчёты, комплаенс и подписанные пакеты доказательств | [Отчёты](docs/reports-and-compliance.md), [пользовательский комплаенс](docs/custom-compliance.md) |
 | Текущие экраны и рабочие процессы | [Web UI](docs/ui.md) |
 | Сенсоры, агенты, мониторинг и резервирование | [Эксплуатация](docs/operations.md) |

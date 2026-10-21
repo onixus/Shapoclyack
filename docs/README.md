@@ -23,7 +23,7 @@ The bare word "agent" always means the Lariska endpoint Agent; anything that cla
 | Read the Enterprise Wiki & role scenarios | [Enterprise Wiki (База знаний)](wiki/README.md) 🇷🇺 |
 | Understand components, trust boundaries, and data flow | [Architecture](architecture.md) |
 | Configure scanning, enrichment, and runtime settings | [Configuration](configuration.md) |
-| Deploy or upgrade Kubernetes workloads | [Kubernetes deployment](../k8s/README.md) |
+| Deploy or upgrade Kubernetes workloads | [Kubernetes / Kustomize](../k8s/README.md), [Helm chart](helm.md) |
 | Deploy with Helm instead of kustomize: values, existing Secrets, External Secrets, OCI publishing | [Helm chart](helm.md) |
 | Understand host inventory and credentialed-scanning coverage | [Coverage boundaries](operations.md#credentialed-scanning-scope-and-coverage-368) |
 | Operate, monitor, back up, and recover the platform | [Operations](operations.md) |
@@ -32,7 +32,7 @@ The bare word "agent" always means the Lariska endpoint Agent; anything that cla
 | Harden the Kubernetes deployment: Pod Security levels, the scanner-executor exception, Kyverno/Gatekeeper | [Kubernetes hardening](k8s-hardening.md) |
 | Use the Web UI | [Web interface](ui.md) |
 | Diagnose failures | [Troubleshooting](troubleshooting.md) |
-| Integrate with the API and understand tenant/RBAC rules | [API and RBAC](api-and-rbac.md) |
+| Integrate with the API and understand tenant/RBAC rules | [API and RBAC](api-and-rbac.md), [API v1, exports and Python client](api-versioning.md) |
 | Hand the firewall team what sensors and the API open | [Network requirements](network-requirements.md) |
 | Develop or review changes | [Development](development.md) |
 | Maintain README, wiki, roadmap and installer guidance | [Documentation maintenance](documentation-maintenance.md) |
@@ -61,8 +61,10 @@ on `main` after `shapoclyack-0.46-0922` and included in the prepared
 
 What these do **not** cover yet is recorded in
 [ROADMAP.md § Enterprise-readiness review](../ROADMAP.md#enterprise-readiness-review-epic-370) —
-among others, Lariska cannot present a client certificate, sensor updates are
-operator-run unless you enable a timer, and there is no SAML or LDAP.
+among others, sensor updates are operator-run unless you enable a timer, and
+there is no SAML or LDAP. Lariska builds with client-certificate support must
+be deployed and accepted across the fleet before requiring mTLS; see
+[Sensor client certificates](operations.md#sensor-client-certificates).
 
 ## Product and UX direction
 
@@ -111,7 +113,7 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | [Web fingerprinting](web-fingerprinting.md) | The one-GET technology catalogue: categories, versions, CPE keys, exposed consoles and remote-access gateways, and what earns the CDN/WAF risk discount |
 | [Reports and compliance](reports-and-compliance.md) | Branded report factory (templates, schedules, delivery) and PCI DSS / CIS / ISO 27001 / ФСТЭК / ГОСТ Р 57580.1 control mapping, with what it deliberately does not claim |
 | [Custom compliance catalogues](custom-compliance.md) | A customer's own control catalogue mapped onto the platform's evidence signals (W11 / #356), БДУ provenance and signed evidence packages |
-| [Asset business context](asset-context.md) | Owner, service, environment, classification, exposure; CMDB/AD file import (`POST /api/assets/import`) and audit trail |
+| [Asset business context](asset-context.md) | Owner, service, environment, classification, exposure; CMDB/AD file import, bounded ServiceNow preview/scheduled sync and audit trail |
 | [Asset identity](asset-identity.md) | When an IP observation and an FQDN observation are treated as one asset, and when they deliberately are not |
 | [Troubleshooting](troubleshooting.md) | Startup, authentication, scanner, broker, database, UI diagnostics |
 | [Pulse backend](pulse-backend.md) | Pulse service-probe backend (the only one) and the Nmap comparison corpus |
@@ -126,6 +128,9 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 |---|---|
 | [Architecture](architecture.md) | Components, control-plane behavior, trust boundaries, storage, messaging |
 | [API and RBAC](api-and-rbac.md) | Authentication, roles, tenant isolation, principals, endpoint groups |
+| [API v1 and integrations](api-versioning.md) | Compatibility/deprecation policy, tenant-scoped CSV/NDJSON export pages, generated Python client and CLI |
+| [API changelog](api-changelog.md) | Versioned API changes and compatibility notes |
+| [Helm chart](helm.md) | Source chart, credential/TLS/storage guards, Kustomize parity and publishing limitations |
 | [Tenant isolation in the database](tenant-isolation.md) | Row-level security as the second line behind every tenant predicate, `OCTO_TENANT_RLS`, grants, diagnostics |
 | [Third-party components](third-party.md) | Runtime dependencies, data sources, licenses, redistribution notes |
 | [Supply chain](supply-chain.md) | Signed release images and provenance, verifying them, admission policies, hash-locked Python dependencies, digest-pinned images, Renovate |
@@ -137,12 +142,13 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | Guide | Scope |
 |---|---|
 | [Development](development.md) | Toolchains, local setup, tests, builds, review checklist |
-| [Architecture decision records](adr/README.md) | Cross-component decisions and their status — currently the proposed Pulse distribution model |
+| [Architecture decision records](adr/README.md) | Pulse distribution (proposed), Nmap replacement (accepted), discovery backend decision (proposed on main) |
 | [FSTEC certification roadmap](fstec-certification.ru.md) 🇷🇺 | Certified boundary, УД4 planning baseline, evidence set, supply-chain and test traceability |
 | [Architecture review — 2026-09-18](architecture-review-2026-09-18.ru.md) 🇷🇺 | Source-based assessment, ingestion risks, priorities, and local validation limits |
 | [Scale profile](scale-profile.md) | Measured behavior at 1k/10k/50k assets and resulting fixes |
 | [Sizing calibration](sizing-calibration.md) | Checking stand calibration artifacts for the sizing model (#337) — preparation, not the calibration itself |
-| [Finding evidence: shadow contract](finding-evidence.md) | Stage 1 of #449: an offline evidence projection beside the production first-wins path, not a replacement for it |
+| [Finding evidence](finding-evidence.md) | Additive production observations, precise subjects, provenance, bounded history and conservative closure; historical sidecar compatibility |
+| [Directed Nuclei planner](nuclei-planner.md) | Opt-in planning, exact endpoint/Host/SNI receipts, budgets and explicit coverage limitations; legacy remains default |
 | [Scan performance](scan-performance.md) | Faster scans without more hardware: stage timings, intents, delta |
 | [UI/UX redesign roadmap](ui-ux-redesign-roadmap.md) | Planned VM/Exposure Management UI and backend dependencies |
 | [Endpoint inventory design record](../Agent_plan.md) | Lariska integration history and design decisions; not the general product roadmap |
@@ -203,8 +209,9 @@ Documentation is part of the feature definition. A behavior change is incomplete
 
 ## Version scope
 
-This documentation index was reconciled with source baseline `main @ 577bd547` plus the CRL change (#534)
-on **2026-10-09**. The documented published baseline is
+This documentation index was reconciled with source baseline
+`main @ 633065dec3b6b097235f88b85b6b3724f3c9b245` and the open PR diff
+on **2026-10-21**. The latest published stable release verified on that date is
 `shapoclyack-0.46-0922` (2026-09-22). Downloading that release does not install
 every feature described on `main`. Use the tagged documentation and
 [CHANGELOG.md](../CHANGELOG.md) for its release contract.
@@ -215,7 +222,8 @@ release-preparation change on **2026-10-09**. See
 The stable-release references remain `0.46-0922` until a stable successor is
 published.
 
-Recent additions included in the candidate:
+The candidate remains a historical release-preparation snapshot, not a rolling
+build of current `main`. Additions documented at candidate preparation time:
 
 | Area | Current guide |
 |---|---|
@@ -234,10 +242,44 @@ migrations `0080`/`0081`). Unsigned executable uploads, offers and downloads
 are prohibited, including releases stored by older API versions (#513).
 Caller-owned bulk idempotency is contracted by migration `0082` (#517), and
 maintenance windows are rechecked when queued work starts (#516).
-Signed native **sensor** bundles use a separate update path. Lariska client
-certificates remain tracked by #514. Issuer-scoped TLS-terminator CRLs (#515)
+Signed native **sensor** bundles use a separate update path. Lariska builds
+with client-certificate support use the enrollment/recovery contract described
+in [Operations](operations.md#sensor-client-certificates); installing such builds
+and accepting their fleet rollout remains necessary before `required`.
+Issuer-scoped TLS-terminator CRLs (#515)
 are included; deployments must configure publication, refresh and session
 handling as described in [Operations](operations.md#tls-revocation-with-a-signed-crl-515). See [the remaining roadmap](../ROADMAP.md).
+
+### Changes after candidate preparation
+
+These features are in the reviewed `main` baseline and are **unreleased**:
+
+| Area | Guide and delivered scope |
+|---|---|
+| Scanner contracts (#561, #563–#565) | [Nmap migration](nmap-migration.md), [shared execution](shared-scan-execution.md), [evidence](finding-evidence.md), [non-CVE workflow](non-cve-findings.md), [Nuclei planning](nuclei-planner.md) |
+| Service credentials and CMDB (#566, included through #570) | [Token rotation and CIDRs](api-and-rbac.md#service-tokens), [ServiceNow synchronization](asset-context.md#cmdb--ad); LDAP/AD and live customer acceptance remain open |
+| Sensor integrity (#570) | [Schema and signature rollout](operations.md#sensor-result-integrity-schemas-and-signatures); schema mode defaults to `warn`, signing is mandatory once a key is pinned |
+| Deployment (#573) | [Helm chart](helm.md), including parity with the Kustomize base; OCI publication is not set up |
+| Ticket integration (#571) | [API contract](api-and-rbac.md): configurable mapping and GitHub/GitLab transports; Azure DevOps remains open |
+| Reports (#572) | [Reports](reports-and-compliance.md): CSV/XLSX, signed manifests when a signing key is configured, allowlisted S3 delivery; SFTP remains open |
+| API and console (#568–#569) | [API v1 / exports / SDK](api-versioning.md), [personal saved views](ui.md#saved-views) and keyboard accessibility; these are not a complete WCAG certification |
+
+### Open PR scope at this review
+
+[PR #577](https://github.com/onixus/Shapoclyack/pull/577), head
+`b324b0ddfbb6cf74e2cadc846fe6c8fd209c2ae0`, is **open, not merged**. Its diff
+adds evidence lifecycle/analytics repairs, directed-catalog and benchmark
+acceptance, and an accepted Naabu-retention ADR. It also replaces the API and
+all-in-one SSH client with a shared checksum-pinned OpenSSH 10.6p1 build and
+switches Ubuntu USN refresh to the complete bzip2 database with bounded transfer,
+decoding and last-good publication. These changes are not instructions for the
+current `main` images or the published stable release. The acceptance map lives
+[at that PR revision](https://github.com/onixus/Shapoclyack/blob/b324b0ddfbb6cf74e2cadc846fe6c8fd209c2ae0/docs/issues-448-452-acceptance.md).
+
+The PR description records completed CI for that immutable head. This documentation
+refresh did not rerun or independently audit those builds. No merge, release,
+production deployment, installed-sensor acceptance or fleet-sizing acceptance
+follows from this review. Refresh PR state and head before relying on it.
 
 A source-tree review establishes documented behavior, not a successful
 deployment or CI run. Check the exact revision and completed validation for

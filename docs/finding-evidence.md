@@ -1,4 +1,4 @@
-# Finding evidence: shadow contract (#449, stage 1)
+# Finding evidence: production observations and historical sidecar (#449)
 
 Production reports now retain observations in additive `finding_evidence` fields
 inside each legacy remediation container. `finding_key` remains unchanged:

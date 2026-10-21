@@ -14,8 +14,10 @@ ignored and nothing is quietly turned into a Pulse setting: a profile that said
 `nmap_timing: T2` meant "scan gently", and loading it as Pulse's defaults would
 scan harder than the operator asked for.
 
-`shapoclyack-0.47-1009-rc1` was the last release with `-nmap` image tags; the
-published images have carried no Nmap, NSE data, `nmap-vulners` or Vulscan since
+The prepared `0.47-1009-rc1` snapshot still described optional `-nmap` image
+tags. Current `main` has removed that build path; this is an unreleased source
+change, not evidence that candidate images were published. Published stable
+images exclude Nmap, NSE data, `nmap-vulners` and Vulscan
 ([issue #97](https://github.com/onixus/Shapoclyack/issues/97), NPSL). See
 [Third-party components](third-party.md).
 

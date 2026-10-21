@@ -2207,9 +2207,14 @@ must name the run the upload is for. A refusal closes the job `failed` with
 `results rejected (schema): <file>: <what>` in its error (it does not leave the
 job for the reaper, which would re-run a scan whose output would be refused
 again) and writes `results.rejected` to the audit trail. That is `enforce`.
-The first release ships `OCTO_RESULT_SCHEMA_MODE=warn`: the upload is accepted,
-and the problem is logged, counted (`outcome="warned"`) and audited as
-`results.schema_warned`. Move to `enforce` after one release cycle in which
+Current unreleased code defaults to `OCTO_RESULT_SCHEMA_MODE=warn`: readable
+documents with shape mismatches are accepted, and the problem is logged, counted
+(`outcome="warned"`) and audited as `results.schema_warned`. Invalid JSON or
+encoding, excessive nesting and oversized core artifacts are refused even in
+`warn`; only `off` skips these schema checks. The default per-file ceiling is
+256 MiB (`OCTO_RESULT_SCHEMA_MAX_FILE_BYTES`), with a 512 MiB total checked-file
+ceiling. These checks do not establish the truth of a sensor observation.
+Move to `enforce` after one release cycle in which
 `octo_result_integrity_total{check="schema",outcome="warned"}` stayed at zero
 across every sensor version you run.
 
