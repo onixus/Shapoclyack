@@ -114,3 +114,47 @@ def test_archived_raw_evidence_hashes_and_capture_counters():
             assert metrics['peak_rss_kib'] > 0
     metadata = json.loads((folder / 'metadata.json').read_text())
     assert hashlib.sha256(files['sources/benchmark-port-discovery.py']).hexdigest() == metadata['runner_sha256']
+
+
+def test_checkpoint_open_envelope_preserves_endpoints_and_service_observations():
+    row = {'ip': '127.20.0.1', 'port': 8080, 'protocol': 'tcpsyn', 'state': 'open',
+           'service': 'http', 'product': 'nginx', 'version': '1.24.0'}
+    for key in ('results', 'open', 'hosts'):
+        report = {key: [row]}
+        assert BENCH.normalize('pulse', json.dumps(report)) == [('127.20.0.1', 8080, 'tcp')]
+        assert BENCH.service_observations([report]) == [
+            ('127.20.0.1', 8080, 'http', 'nginx', '1.24.0')]
+
+
+@pytest.mark.parametrize('report', [{}, {'findings': []}, {'results': None},
+                                     {'open': [], 'results': []}, 12])
+def test_unknown_resume_schema_cannot_be_silent_empty_success(report):
+    with pytest.raises(ValueError, match='Pulse report envelope'):
+        BENCH.normalize('pulse', json.dumps(report))
+
+
+def test_service_parity_preserves_missing_version_as_a_mismatch():
+    report = {'results': [{'ip': '127.20.0.1', 'port': 8080, 'state': 'open', 'service': 'http'}]}
+    assert BENCH.service_observations([report]) == [('127.20.0.1', 8080, 'http', None, None)]
+
+
+@pytest.mark.parametrize('changes,status', [
+    ({}, 'executed_coverage_unverified'),
+    ({'timed_out': True}, 'incomplete_timeout'),
+    ({'returncode': 1}, 'execution_failed'),
+    ({'capture_complete': False}, 'incomplete_capture'),
+    ({'cancellation_requested': True, 'returncode': -2}, 'interrupted'),
+])
+def test_capability_execution_status_does_not_imply_coverage(changes, status):
+    metrics = {'timed_out': False, 'returncode': 0, 'capture_complete': True, **changes}
+    assert BENCH.outcome(metrics) == status
+
+
+def test_archived_real_resume_report_is_parseable():
+    import tarfile
+
+    folder = ROOT / 'docs/benchmarks/port-discovery-20261015'
+    with tarfile.open(folder / 'raw-outputs.tar.gz') as archive:
+        stdout = archive.extractfile('pulse_resume/stdout').read().decode()
+    assert BENCH.normalize('pulse', stdout) == [
+        ('127.20.0.1', 8080, 'tcp'), ('127.20.0.2', 8443, 'tcp'), ('127.20.0.3', 2222, 'tcp')]

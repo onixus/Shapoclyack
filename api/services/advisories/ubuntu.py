@@ -6,8 +6,8 @@ these binary packages on these releases") and per-release OVAL definitions. Both
 reduce to the same tuple, so both are normalized here into the flat dataset the
 offline loader reads.
 
-USN is the shape this milestone converts, because it is a single small file
-covering every supported release, whereas OVAL is one large XML document per
+USN is the shape this milestone converts, because it is a single database
+covering every release, whereas OVAL is one large XML document per
 release. ``normalize_usn_json`` is the whole conversion, and the notable part is
 that it maps **binary** package names back to the **source** package the USN
 names — ``libssl1.1`` is fixed by an ``openssl`` USN, and a matcher that looked

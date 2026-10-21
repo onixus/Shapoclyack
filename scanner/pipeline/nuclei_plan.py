@@ -79,7 +79,12 @@ def catalog(
             document = yaml.safe_load(content)
         except yaml.YAMLError:
             return key, [], "catalog_invalid_yaml"
-        metadata = any(part.startswith(".") for part in Path(relative).parts)
+        metadata = any(part.startswith(".") for part in Path(relative).parts) or (
+            Path(relative).parts[0] == "profiles"
+            and isinstance(document, dict)
+            and "id" not in document
+            and "info" not in document
+        )
         template_like = isinstance(document, dict) and any(
             key in document
             for key in (
@@ -229,6 +234,15 @@ def build_plan(
         and (not config.tags or set(t["tags"]) & set(config.tags))
     ]
     ids = sorted(t["id"] for t in eligible)
+    # Each eligible check has an explicit role. CVE checks and custom templates
+    # always stay in the base; technology hints classify checks and never veto them.
+    technology_sets = {
+        name: sorted(t["id"] for t in eligible if set(t["tags"]) & tags)
+        for name, tags in TECHNOLOGIES.items()
+    }
+    mapped = {item for members in technology_sets.values() for item in members}
+    base = sorted(t["id"] for t in eligible
+                  if t["id"] not in mapped or t["cve"] or t["origin"] == "custom")
     targets = []
     seen = set()
     skipped = []
@@ -302,6 +316,13 @@ def build_plan(
                             if r.get("protocol_observation")
                         ],
                         "template_set": "safe_http_fallback",
+                        "template_selection": {
+                            "base": "safe_http_base",
+                            "technology_sets": ["technology:" + name for name in technologies],
+                            "fallback": "safe_http_technology_fallback",
+                            "reason": "technology_mapping_with_complete_misfingerprint_fallback"
+                            if technologies else "unknown_technology_complete_bounded_fallback",
+                        },
                     }
                 )
     considered = len(targets)
@@ -315,7 +336,15 @@ def build_plan(
         "mode": "directed",
         "catalog_sha256": digest,
         "template_policy": "safe_http_fallback_preserves_all_eligible_http_templates",
-        "template_sets": {"safe_http_fallback": ids},
+        "template_sets": {
+            "safe_http_fallback": ids,
+            "safe_http_base": base,
+            "safe_http_technology_fallback": sorted(mapped - set(base)),
+            **{"technology:" + name: members for name, members in technology_sets.items()},
+        },
+        "technology_mapping": {name: sorted(tags) for name, tags in TECHNOLOGIES.items()},
+        "template_selection_policy": "base_plus_technology_plus_complete_bounded_fallback",
+        "template_reduction_claimed": False,
         "catalog": eligible,
         "targets": targets,
         "targets_considered": considered,

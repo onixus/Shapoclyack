@@ -263,23 +263,7 @@ These features are in the reviewed `main` baseline and are **unreleased**:
 | Ticket integration (#571) | [API contract](api-and-rbac.md): configurable mapping and GitHub/GitLab transports; Azure DevOps remains open |
 | Reports (#572) | [Reports](reports-and-compliance.md): CSV/XLSX, signed manifests when a signing key is configured, allowlisted S3 delivery; SFTP remains open |
 | API and console (#568–#569) | [API v1 / exports / SDK](api-versioning.md), [personal saved views](ui.md#saved-views) and keyboard accessibility; these are not a complete WCAG certification |
-
-### Open PR scope at this review
-
-[PR #577](https://github.com/onixus/Shapoclyack/pull/577), head
-`b324b0ddfbb6cf74e2cadc846fe6c8fd209c2ae0`, is **open, not merged**. Its diff
-adds evidence lifecycle/analytics repairs, directed-catalog and benchmark
-acceptance, and an accepted Naabu-retention ADR. It also replaces the API and
-all-in-one SSH client with a shared checksum-pinned OpenSSH 10.6p1 build and
-switches Ubuntu USN refresh to the complete bzip2 database with bounded transfer,
-decoding and last-good publication. These changes are not instructions for the
-current `main` images or the published stable release. The acceptance map lives
-[at that PR revision](https://github.com/onixus/Shapoclyack/blob/b324b0ddfbb6cf74e2cadc846fe6c8fd209c2ae0/docs/issues-448-452-acceptance.md).
-
-The PR description records completed CI for that immutable head. This documentation
-refresh did not rerun or independently audit those builds. No merge, release,
-production deployment, installed-sensor acceptance or fleet-sizing acceptance
-follows from this review. Refresh PR state and head before relying on it.
+| Scanner acceptance and runtime repairs (#577) | [Acceptance map](issues-448-452-acceptance.md), [ADR-0003](adr/0003-port-discovery-backend.md) retaining Naabu; shared checksum-pinned OpenSSH 10.6p1 client in the API and all-in-one images; complete Ubuntu USN refresh with bounded transfer/decoding. Directed Nuclei planning stays opt-in |
 
 A source-tree review establishes documented behavior, not a successful
 deployment or CI run. Check the exact revision and completed validation for

@@ -270,7 +270,11 @@ pipeline {
                 set -eu
                 mkdir -p .publish
                 rm -f .publish/${m.name}.json
-                docker buildx build --builder ${builder} \
+                set --
+                if [ -s "\${NVD_API_KEY_FILE:-/run/secrets/nvd_api_key}" ]; then
+                  set -- --secret "id=nvd_api_key,src=\${NVD_API_KEY_FILE:-/run/secrets/nvd_api_key}"
+                fi
+                docker buildx build "\$@" --builder ${builder} \
                   --platform ${platforms} \
                   -f ${m.dockerfile} \
                   --build-arg PULSE_VERSION=${PULSE_VERSION} \

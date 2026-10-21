@@ -2724,7 +2724,27 @@ mint a tenant provisioning key, unless the host keeps the one it has → run the
 installer on the target, feeding it the new key, if any, on stdin → revoke the sensor's
 previous key if the run moved it (below) → wait up to 30 s for the sensor's
 first heartbeat. The API runs the OpenSSH client (`ssh`,
-`ssh-keyscan`); the `api` and `aio` images install `openssh-client` for it.
+`ssh-keyscan`). The `api` and `aio` images build the same checksum-pinned
+OpenSSH client from `scripts/build-openssh-client.sh`, using the runtime's
+pinned Debian base for ABI compatibility. Debian trixie's `openssh-client`
+currently lacks the CVE-2026-60002 reexchange fix, so it is not installed in
+these images. The source build retains password/askpass, batch key login,
+GSSAPI, FIDO/PKCS11, SCP and SFTP clients; it installs no SSH server or setuid
+signing helper. Client settings use `/etc/ssh/ssh_config` and
+`/etc/ssh/ssh_config.d/*.conf`. Build provenance lives at
+`/usr/share/shapoclyack/openssh-build.txt`, with the upstream licence under
+`/usr/share/doc/openssh-client/copyright`.
+
+For a source refresh, update the version and SHA256 together in the shared
+script using the checksum in the OpenSSH release notes (published checksums
+are base64; the script uses hexadecimal). Both Dockerfiles' runtime version
+assertions must follow the update. Base image stages remain digest-pinned
+and tracked by Renovate; archive version/checksum updates require this manual
+review. Rebuild and scan both images and exercise host-key refusal,
+password/key authentication, stdin, SCP/SFTP and bulk transfers that force
+real key reexchanges. A version banner or clean package inventory alone does
+not validate those transport behaviors. Return to the Debian client package
+once a supported vendor update carries the fix and passes those same checks.
 Images before `0.43-0828` inclusive shipped no SSH client at all, and every
 deployment from them failed at the host-key probe with `HostKeyUnavailable`.
 Paramiko is used instead when it happens to be installed, but it is not a

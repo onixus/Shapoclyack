@@ -1,0 +1,98 @@
+[
+  {
+    "argv": [
+      "/sbin/tc",
+      "qdisc",
+      "add",
+      "dev",
+      "lo",
+      "clsact"
+    ],
+    "returncode": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "/sbin/tc",
+      "filter",
+      "add",
+      "dev",
+      "lo",
+      "egress",
+      "protocol",
+      "ip",
+      "flower",
+      "dst_ip",
+      "127.20.0.1",
+      "ip_proto",
+      "tcp",
+      "dst_port",
+      "8998",
+      "action",
+      "drop"
+    ],
+    "returncode": 2,
+    "stdout": "",
+    "stderr": "Error: TC classifier not found.\nWe have an error talking to the kernel\n"
+  },
+  {
+    "argv": [
+      "/sbin/tc",
+      "qdisc",
+      "del",
+      "dev",
+      "lo",
+      "clsact"
+    ],
+    "returncode": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "/sbin/tc",
+      "qdisc",
+      "add",
+      "dev",
+      "lo",
+      "root",
+      "netem",
+      "delay",
+      "10ms",
+      "loss",
+      "5%",
+      "seed",
+      "452"
+    ],
+    "returncode": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "/sbin/tc",
+      "-s",
+      "qdisc",
+      "show",
+      "dev",
+      "lo"
+    ],
+    "returncode": 0,
+    "stdout": "qdisc netem 8004: root refcnt 2 limit 1000 delay 10ms loss 5% seed 452\n Sent 45774 bytes 624 pkt (dropped 36, overlimits 0 requeues 0) \n backlog 0b 0p requeues 0\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "/sbin/tc",
+      "qdisc",
+      "del",
+      "dev",
+      "lo",
+      "root"
+    ],
+    "returncode": 0,
+    "stdout": "",
+    "stderr": ""
+  }
+]

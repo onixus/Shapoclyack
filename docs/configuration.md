@@ -360,6 +360,30 @@ which is how a newer baseline reaches a volume that already has one — the seed
 "floor" in `fetch-enrichment.sh` only fires when the file is absent, and an
 incremental run only adds recently-modified CVEs.
 
+### NVD key during image builds
+
+Scanner and all-in-one builds accept an optional BuildKit secret named
+`nvd_api_key` for their enrichment refresh. Set `NVD_API_KEY_FILE` to a protected
+key file outside the checkout, then pass its path without printing its contents:
+
+```sh
+docker build --secret id=nvd_api_key,src="$NVD_API_KEY_FILE" -t shapoclyack-scanner .
+docker build --secret id=nvd_api_key,src="$NVD_API_KEY_FILE" -f Dockerfile.allinone -t shapoclyack-aio .
+```
+
+The mounted file supplies `NVD_API_KEY` only during the enrichment `RUN`; it is
+not copied into the image or saved as an image environment variable. Do not
+pass the key through build arguments or enable shell tracing around it.
+Without a nonempty secret, refresh uses NVD's anonymous rate limit.
+GitHub Actions accepts the repository secret `NVD_API_KEY` for both image CI
+and publication; an absent secret leaves the anonymous path available. Jenkins
+accepts the build-client file through `NVD_API_KEY_FILE`, configured outside
+the repository, or the default `/run/secrets/nvd_api_key` on its build agent.
+Protect that file with mode `0600`; temporary provisioning must remove it after
+the build. Runtime refresh jobs still need their own `NVD_API_KEY`.
+BuildKit secret changes do not invalidate cached enrichment layers: use a fresh
+build or invalidate that layer when verifying a newly supplied key.
+
 ### NVD API: known traps
 
 Every one of these cost real debugging time. They are the reason the fetcher
@@ -378,10 +402,10 @@ looks more defensive than a paging loop ought to.
   four is the shipped default.
 - **HTTP 503 is routine**, not an outage. It appears mid-run under load and
   clears on backoff, so it is retried like 429 rather than treated as fatal.
-- **Deep pagination is slow.** A 2000-CVE page is ~9 MB and takes NVD around
-  20 seconds to render, so a serial full rebuild is roughly an hour. Wall-clock
-  is dominated by that latency, not by the request rate — an API key raises the
-  ceiling from 5 to 50 req/30s but only cuts about a quarter off a serial run.
+- **Large pages can exceed the body deadline.** The fetcher defaults to 500
+  CVEs per page to reduce response size. `--page-size` accepts 1 through 2000
+  for full and incremental harvests; page offsets always use the selected size.
+  Request pacing, retry limits, and the 120-second body deadline still apply.
 - **Most older CVEs have no v4 score at all.** `CVE-2014-0160`, `CVE-2021-44228`
   and friends carry only `cvssMetricV31`/`cvssMetricV2`. CVSS v3.x is
   deliberately never substituted, since these scores are consumed downstream as

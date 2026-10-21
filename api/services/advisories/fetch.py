@@ -27,10 +27,12 @@ refresh job and expects every fetcher to follow. docs/air-gap.md has the table.
 
 from __future__ import annotations
 
+import bz2
 import json
 import logging
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
@@ -44,11 +46,16 @@ from api.services.advisories import debian, msrc, ubuntu
 LOG = logging.getLogger("shapoclyack.advisories.fetch")
 
 DEBIAN_TRACKER_URL = "https://security-tracker.debian.org/tracker/data/json"
-UBUNTU_USN_URL = "https://usn.ubuntu.com/usn-db/database.json"
+UBUNTU_USN_URL = "https://usn.ubuntu.com/usn-db/database.json.bz2"
 
 #: Ceiling on a single download. The Debian tracker JSON is ~50 MB uncompressed.
 DEFAULT_MAX_BYTES = 128 * 1024 * 1024
 DEFAULT_TIMEOUT_SECONDS = 60.0
+DEFAULT_DEADLINE_SECONDS = 300.0
+# Canonical's complete USN database was 353,793,362 bytes on 2026-10-20,
+# or 44,819,883 as bz2. Keep the shared network cap, and allow bounded
+# expansion for Ubuntu only; Debian and MSRC retain their existing ceilings.
+UBUNTU_MAX_DECODED_BYTES = 512 * 1024 * 1024
 
 #: dataset name → (url, normalizer, default output path, source label).
 SOURCES: dict[str, tuple[str, Callable[[Any], Iterable[dict[str, Any]]], str, str]] = {
@@ -184,6 +191,9 @@ def fetch_json(
     max_bytes: int = DEFAULT_MAX_BYTES,
     opener: Callable[..., Any] | None = None,
     headers: dict[str, str] | None = None,
+    max_decoded_bytes: int | None = None,
+    allow_bzip2: bool = False,
+    deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
 ) -> Any:
     """GET ``url`` and parse it as JSON, refusing to read past ``max_bytes``.
 
@@ -201,13 +211,44 @@ def fetch_json(
     request_headers = {"User-Agent": "shapoclyack-advisories"}
     request_headers.update(headers or {})
     request = urllib.request.Request(url, headers=request_headers)
-    chunks: list[bytes] = []
+    if max_bytes <= 0 or timeout <= 0 or deadline_seconds <= 0:
+        raise ValueError("fetch byte and time limits must be positive")
+    decoded_limit = max_bytes if max_decoded_bytes is None else max_decoded_bytes
+    if decoded_limit <= 0:
+        raise ValueError("decoded byte limit must be positive")
+    deadline = time.monotonic() + deadline_seconds
+    decoded = bytearray()
     total = 0
-    # The URL is a SOURCES default or a mirror override feed_url() already
-    # limited to https/http/file; the opener refuses a downgrading redirect.
-    with opener(request, timeout=timeout) as response:  # noqa: S310
+    decoder: bz2.BZ2Decompressor | None = None
+    prefix = bytearray()
+
+    def check_deadline() -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"{redact_url(url)} exceeded its fetch deadline")
+        return remaining
+
+    def append(data: bytes) -> None:
+        if len(decoded) + len(data) > decoded_limit:
+            raise FetchTooLargeError(
+                f"{redact_url(url)} exceeded the {decoded_limit} decoded byte ceiling; aborted"
+            )
+        decoded.extend(data)
+
+    # Bound both compressed input and expanded output. Detect magic rather than
+    # the URL suffix: existing raw JSON mirrors (including file://) still work.
+    with opener(request, timeout=min(timeout, deadline_seconds)) as response:  # noqa: S310
+        # read1 avoids waiting for a whole buffer from a trickling peer. Limit
+        # each socket wait to the remaining deadline, as scripts/feed_fetch.py.
+        read = getattr(response, "read1", None) or response.read
         while True:
-            chunk = response.read(1024 * 256)
+            remaining = check_deadline()
+            raw = getattr(getattr(response, "fp", None), "raw", None)
+            sock = getattr(raw, "_sock", None)
+            if sock is not None:
+                sock.settimeout(min(timeout, remaining))
+            chunk = read(min(256 * 1024, max_bytes - total + 1))
+            check_deadline()
             if not chunk:
                 break
             total += len(chunk)
@@ -215,8 +256,38 @@ def fetch_json(
                 raise FetchTooLargeError(
                     f"{redact_url(url)} exceeded the {max_bytes} byte ceiling; aborted"
                 )
-            chunks.append(chunk)
-    return json.loads(b"".join(chunks).decode("utf-8"))
+            if len(prefix) < 3:
+                prefix.extend(chunk)
+                if len(prefix) < 3:
+                    continue
+                chunk = bytes(prefix)
+                if allow_bzip2 and chunk.startswith(b"BZh"):
+                    decoder = bz2.BZ2Decompressor()
+            if decoder is None:
+                append(chunk)
+                continue
+            if decoder.eof:
+                raise RuntimeError("unexpected data after bzip2 feed")
+            while True:
+                check_deadline()
+                append(decoder.decompress(chunk, max_length=min(
+                    256 * 1024, decoded_limit - len(decoded) + 1
+                )))
+                if decoder.eof:
+                    if decoder.unused_data:
+                        raise RuntimeError("unexpected data after bzip2 feed")
+                    break
+                if decoder.needs_input:
+                    break
+                chunk = b""
+    if decoder is not None and not decoder.eof:
+        raise RuntimeError("truncated bzip2 feed")
+    if total < 3:
+        append(bytes(prefix))
+    check_deadline()
+    payload = json.loads(decoded.decode("utf-8"))
+    check_deadline()
+    return payload
 
 
 def build_dataset(
@@ -246,7 +317,7 @@ def refresh(
     *,
     path: Path | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
-    max_bytes: int = DEFAULT_MAX_BYTES,
+    max_bytes: int | None = None,
     opener: Callable[..., Any] | None = None,
 ) -> int:
     """Download, normalize and write one advisory dataset. Returns the entry count.
@@ -262,7 +333,21 @@ def refresh(
         raise ValueError(f"unknown advisory dataset: {name!r} (known: {sorted(SOURCES)})")
     _, normalize, default_path, source = SOURCES[name]
     url = source_url(name)
-    payload = fetch_json(url, timeout=timeout, max_bytes=max_bytes, opener=opener)
+    ubuntu_source = name == "ubuntu"
+    # A raw JSON mirror needs the decoded allowance on the wire too. The
+    # compressed official URL uses the smaller shared transfer ceiling.
+    byte_limit = max_bytes
+    if byte_limit is None:
+        byte_limit = (
+            UBUNTU_MAX_DECODED_BYTES
+            if ubuntu_source and not urlsplit(url).path.endswith(".bz2")
+            else DEFAULT_MAX_BYTES
+        )
+    payload = fetch_json(
+        url, timeout=timeout, max_bytes=byte_limit, opener=opener,
+        allow_bzip2=ubuntu_source,
+        max_decoded_bytes=UBUNTU_MAX_DECODED_BYTES if ubuntu_source else byte_limit,
+    )
     dataset = build_dataset(normalize(payload), source=source, origin_url=redact_url(url))
     written = write_dataset(Path(path) if path else Path(default_path), dataset)
     LOG.info("advisories: refreshed %s (%d entries) from %s", name, written, redact_url(url))

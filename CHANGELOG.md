@@ -23,7 +23,7 @@ All notable changes to Shapoclyack are documented in this file.
 
 - Reconcile README, documentation index, enterprise roadmap, trust boundaries and
   CI guidance with `main` at `633065de` and the 2026-10-21 PR review. Separate
-  merged features, the historical RC snapshot, stable release and pending #577.
+  merged features, the historical RC snapshot, stable release and #577.
 
 ### Added
 

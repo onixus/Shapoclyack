@@ -1020,6 +1020,8 @@ class NucleiConfig(BaseModel):
     planner_max_templates: int = Field(default=20000, ge=1, le=50000)
     planner_max_processes: int = Field(default=64, ge=1, le=1000)
     planner_min_confidence: int = Field(default=90, ge=0, le=100)
+    planner_per_host_timeout_seconds: int = Field(default=1800, ge=1, le=86400)
+    planner_per_host_max_processes: int = Field(default=16, ge=1, le=1000)
     templates_dir: str = "/usr/share/nuclei-templates"
     custom_templates_dir: str = ""
     template_ids: list[str] = Field(default_factory=list, max_length=MAX_NUCLEI_TEMPLATE_IDS)

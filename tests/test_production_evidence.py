@@ -272,3 +272,367 @@ def test_explicit_http_authority_keeps_original_transport_subject_hashes():
     assert vhost['host'] == old['host']
     assert vhost['authority'] == 'a.example:443'
     assert vhost['object_id'] != old['object_id']
+
+
+@requires_postgres
+def test_cve_replay_and_out_of_order_publication_preserve_workflow(tmp_path):
+    from tests.test_vuln_lifecycle import _seed, _write_run, _HOSTS
+    from api.services import vulnerabilities as vulns, vuln_states
+
+    latest = combine([{**BASE, 'observed_at': '2026-10-10T00:00:00Z', 'severity': 'medium'}])
+    settings, tenant = _seed(tmp_path, findings=latest)
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='run-1')
+    original = vulns.list_vulnerabilities(settings, tenant_id=tenant)[0][0]
+    closed = vulns.transition(settings, tenant_id=tenant, vuln_id=original['vuln_id'],
+                              to_state=vuln_states.CLOSED, actor='admin')
+    events_before = vulns.list_events(settings, tenant_id=tenant, vuln_id=original['vuln_id'])[1]
+    assert vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='run-1').reopened == 0
+    replay = vulns.get_vulnerability(settings, tenant_id=tenant, vuln_id=original['vuln_id'])
+    assert replay['state'] == vuln_states.CLOSED
+    assert replay['observation_count'] == 1
+    assert vulns.list_events(settings, tenant_id=tenant, vuln_id=original['vuln_id'])[1] == events_before
+
+    historical = combine([{**BASE, 'observed_at': '2026-10-01T00:00:00Z', 'severity': 'critical'}])
+    _write_run(settings.output_dir, 'old-run', _HOSTS, historical)
+    stats = vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='old-run')
+    assert stats.reopened == 0
+    current = vulns.get_vulnerability(settings, tenant_id=tenant, vuln_id=original['vuln_id'])
+    for field in ('state', 'severity', 'last_seen_run_id', 'due_at', 'closed_at', 'finding_key'):
+        assert current[field] == closed[field]
+    assert current['observation_count'] == 2
+    assert current['finding_evidence']['observation_count'] == 2
+    assert current['detectors'] == closed['detectors']
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='old-run')
+    assert vulns.get_vulnerability(settings, tenant_id=tenant, vuln_id=original['vuln_id'])['observation_count'] == 2
+    events, _ = vulns.list_events(settings, tenant_id=tenant, vuln_id=original['vuln_id'])
+    assert sum(e['detail'].get('historical', False) for e in events) == 1
+
+    # A genuinely later weaker positive may reopen; no strongest-forever rule.
+    newer = combine([{**BASE, 'observed_at': '2026-10-11T00:00:00Z', 'severity': 'low'}])
+    _write_run(settings.output_dir, 'new-run', _HOSTS, newer)
+    assert vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='new-run').reopened == 1
+    current = vulns.get_vulnerability(settings, tenant_id=tenant, vuln_id=original['vuln_id'])
+    assert current['severity'] == 'low'
+    assert current['finding_evidence']['observation_count'] == 3
+
+
+@pytest.mark.parametrize('change', [{'protocol': 'udp'}, {'sni': 'new.example'},
+                                  {'affected_object': 'new'}, {'observed_at': None}])
+def test_historical_publication_requires_same_known_subject_and_time(change):
+    from scanner.pipeline.production_evidence import publication_disposition
+    prior = scoped(combine([{**BASE, 'observed_at': '2026-10-10T00:00:00Z'}])[0]['finding_evidence'],
+                   tenant_id='t', run_id='current')
+    incoming = scoped(combine([{**BASE, 'observed_at': '2026-10-01T00:00:00Z', **change}])[0]['finding_evidence'],
+                      tenant_id='t', run_id='incoming')
+    assert publication_disposition(prior, incoming) == 'current'
+
+
+@requires_postgres
+def test_captured_nuclei_report_reaches_consumers_without_changing_legacy_workflow(tmp_path):
+    from pathlib import Path
+    from datetime import UTC, datetime, timedelta
+    from tests.test_vuln_lifecycle import _seed, _write_run
+    from api.services import vulnerabilities as vulns, runs, ch_transform, assets
+
+    raw_dir = tmp_path / 'captured'
+    raw_dir.mkdir()
+    capture = Path('tests/fixtures/finding_evidence/nuclei_v3_11_1/loopback.jsonl').read_bytes()
+    raw_record = json.loads(capture)
+    (raw_dir / 'nuclei_raw.jsonl').write_bytes(capture)
+    host, port = raw_record['ip'], str(raw_record['port'])
+    legacy = {**BASE, 'host': host, 'port': port, 'cve': 'CVE-2099-9999',
+              'source': 'nuclei', 'script_id': 'nuclei:local-fixture-cve'}
+    settings, tenant = _seed(tmp_path, findings=[])
+    hosts = [{'host': host}]
+    _write_run(settings.output_dir, 'legacy', hosts, [legacy])
+    assets.upsert_assets_from_run(settings, tenant_id=tenant, run_id='legacy')
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='legacy')
+    original = vulns.list_vulnerabilities(settings, tenant_id=tenant)[0][0]
+    assert original['finding_evidence'] is None
+    vulns.request_exception(settings, tenant_id=tenant, vuln_id=original['vuln_id'],
+                            until=datetime.now(UTC) + timedelta(days=30), reason='vendor window', actor='requester')
+    approved = vulns.approve_exception(settings, tenant_id=tenant, vuln_id=original['vuln_id'], actor='approver')
+
+    build_reports(raw_dir, 1, [host], [], raw_dir / 'nmap', False, False, False, True,
+                  extra_vulnerabilities=[legacy], cvss4_enabled=False, geoip_enabled=False, asn_enabled=False)
+    exported = json.loads((raw_dir / 'vulnerabilities.json').read_text())
+    _write_run(settings.output_dir, 'captured', hosts, exported)
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='captured')
+    api_rows = runs.get_vulnerabilities(settings, 'captured', tenant_id=tenant)
+    tracker, total = vulns.list_vulnerabilities(settings, tenant_id=tenant)
+    ch_rows = ch_transform.vulnerabilities_to_rows({'tenant_id': tenant, 'run_id': 'captured'},
+                {'vulnerabilities.json': (raw_dir / 'vulnerabilities.json').read_bytes()},
+                settings=settings, require_captured=False)
+    assert len(exported) == len(api_rows) == total == len(ch_rows) == 1
+    for field in ('finding_key', 'due_at', 'exception_state', 'exception_reason', 'exception_until', 'exception_by'):
+        assert tracker[0][field] == approved[field]
+    for evidence in (tracker[0]['finding_evidence'], api_rows[0].finding_evidence,
+                     json.loads(ch_rows[0][-1])['finding_evidence']):
+        assert evidence['observation_count'] == evidence['finding_count'] == 1
+        observation = evidence['findings'][0]['observations'][0]
+        assert (observation['tenant_id'], observation['run_id']) == (tenant, 'captured')
+        assert {r['path'] for r in observation['artifact_refs']} == {'nuclei_raw.jsonl', 'report_sources.json'}
+        assert not evidence['findings'][0]['assessment']['machine_verified']
+    # Another authenticated tenant cannot retrieve the run projection.
+    assert runs.get_vulnerabilities(settings, 'captured', tenant_id='unrelated-tenant') is None
+
+
+@requires_postgres
+def test_incomplete_same_run_replay_marks_gap_without_reopening(tmp_path):
+    from tests.test_vuln_lifecycle import _seed, _write_run, _HOSTS
+    from api.services import vulnerabilities as vulns, vuln_states
+    findings = combine([BASE])
+    settings, tenant = _seed(tmp_path, findings=findings)
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='run-1')
+    original = vulns.list_vulnerabilities(settings, tenant_id=tenant)[0][0]
+    vulns.transition(settings, tenant_id=tenant, vuln_id=original['vuln_id'],
+                     to_state=vuln_states.CLOSED, actor='admin')
+    findings[0]['finding_evidence'] = {'invalid': True}
+    _write_run(settings.output_dir, 'run-1', _HOSTS, findings)
+    assert vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='run-1').reopened == 0
+    current = vulns.get_vulnerability(settings, tenant_id=tenant, vuln_id=original['vuln_id'])
+    assert current['state'] == vuln_states.CLOSED
+    assert current['observation_count'] == 1
+    assert current['finding_evidence']['observation_count'] == 1
+    assert current['finding_evidence']['projection_incomplete']
+
+
+def test_clickhouse_inventory_folds_port_subjects_before_replacing_merge(monkeypatch):
+    from api.services import ch_transform
+    # Stub only risk scoring; exercise real scope validation, bounded evidence
+    # union and full production ClickHouse row serialization.
+    def assess(settings, *, entries, **kwargs):
+        return [dict(contextual_score=float(r['cvss']), base_cvss=float(r['cvss']),
+                     epss_score=0, asset_criticality=3, exploit_active=False,
+                     cisa_decision='Track', scoring_model_version='fixture',
+                     receipt_id='receipt-port-' + r['port']) for r in entries]
+    monkeypatch.setattr(ch_transform.risk_context, 'assess_operation', assess)
+    members = [combine([{**BASE, 'port': '80', 'cvss': 9.0}])[0],
+               combine([{**BASE, 'port': '443', 'cvss': 5.0}])[0]]
+    payload = {'tenant_id': 'owner', 'run_id': 'published'}
+    expected = None
+    for permutation in itertools.permutations(members):
+        for replay in (1, 2):
+            archive = {'vulnerabilities.json': json.dumps(list(permutation) * replay).encode(),
+                       'run_meta.json': b'{"started_at":"2026-10-20T00:00:00Z"}'}
+            projected = ch_transform.vulnerabilities_to_rows(payload, archive, require_captured=False)
+            assert len(projected) == 1
+            assessment = json.loads(projected[0][-1])
+            assert assessment['receipt_id'] == 'receipt-port-80'
+            assert assessment['inventory_projection']['container_count'] == 2
+            evidence = assessment['finding_evidence']
+            assert evidence['finding_count'] == evidence['observation_count'] == 2
+            observations = [o for g in evidence['findings'] for o in g['observations']]
+            assert {o['subject']['port'] for o in observations} == {80, 443}
+            assert {(o['tenant_id'], o['run_id']) for o in observations} == {('owner', 'published')}
+            if expected is None:
+                expected = projected
+            assert projected == expected
+    invalid = copy.deepcopy(members[1])
+    invalid['finding_evidence'] = {'malformed': True}
+    projected = ch_transform.vulnerabilities_to_rows(payload,
+        {'vulnerabilities.json': json.dumps([members[0], invalid]).encode()}, require_captured=False)
+    evidence = json.loads(projected[0][-1])['finding_evidence']
+    assert evidence['observation_count'] == 1
+    assert evidence['projection_incomplete']
+
+
+@requires_postgres
+def test_distinct_risk_receipt_refresh_does_not_reopen_identical_evidence(tmp_path, monkeypatch):
+    from tests.test_vuln_lifecycle import _seed
+    from api.services import vulnerabilities as vulns, vuln_states, risk_context
+    assess = risk_context.score_batch
+    execution = ['publication:first']
+    def with_execution(*args, **kwargs):
+        scores = copy.deepcopy(assess(*args, **kwargs))
+        for scored in scores:
+            scored['risk_assessment']['execution_id'] = execution[0]
+        return scores
+    monkeypatch.setattr(risk_context, 'score_batch', with_execution)
+    settings, tenant = _seed(tmp_path, findings=combine([BASE]))
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='run-1')
+    original = vulns.list_vulnerabilities(settings, tenant_id=tenant)[0][0]
+    closed = vulns.transition(settings, tenant_id=tenant, vuln_id=original['vuln_id'],
+                              to_state=vuln_states.CLOSED, actor='admin')
+    execution[0] = 'publication:second'
+    assert vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='run-1').reopened == 0
+    current = vulns.get_vulnerability(settings, tenant_id=tenant, vuln_id=original['vuln_id'])
+    assert current['risk_assessment']['execution_id'] == 'publication:second'
+    assert current['state'] == vuln_states.CLOSED
+    assert current['observation_count'] == 1
+    assert current['finding_evidence']['observation_count'] == 1
+    assert current['due_at'] == closed['due_at']
+    assert current['closed_at'] == closed['closed_at']
+
+
+@requires_postgres
+@pytest.mark.parametrize("same_run", [False, True])
+def test_republished_old_cohort_cannot_replace_current_assessment(tmp_path, monkeypatch, same_run):
+    from tests.test_vuln_lifecycle import _seed, _write_run, _HOSTS
+    from api.services import vulnerabilities as vulns, risk_context
+
+    assess = risk_context.score_batch
+    execution = ["publication:old"]
+    def with_execution(*args, **kwargs):
+        scores = copy.deepcopy(assess(*args, **kwargs))
+        for score in scores:
+            score["risk_assessment"]["execution_id"] = execution[0]
+        return scores
+    monkeypatch.setattr(risk_context, "score_batch", with_execution)
+    old = combine([{**BASE, "observed_at": "2026-10-01T00:00:00Z", "severity": "low", "cvss": 2}])
+    settings, tenant = _seed(tmp_path, findings=old)
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id="run-1")
+    newer_run = "run-1" if same_run else "run-new"
+    newer = combine([{**BASE, "observed_at": "2026-10-10T00:00:00Z", "severity": "critical", "cvss": 9.5}])
+    execution[0] = "publication:new"
+    _write_run(settings.output_dir, newer_run, _HOSTS, newer)
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id=newer_run)
+    current = vulns.list_vulnerabilities(settings, tenant_id=tenant)[0][0]
+    events_before = vulns.list_events(settings, tenant_id=tenant, vuln_id=current["vuln_id"])[1]
+    execution[0] = "publication:republished-old"
+    _write_run(settings.output_dir, "run-1", _HOSTS, old)
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id="run-1")
+    after = vulns.get_vulnerability(settings, tenant_id=tenant, vuln_id=current["vuln_id"])
+    for field in ("severity", "cvss", "risk_assessment", "last_seen_run_id", "last_seen_at",
+                  "detectors", "observation_count", "due_at", "state"):
+        assert after[field] == current[field], field
+    assert after["finding_evidence"]["observation_count"] == 2
+    assert vulns.list_events(settings, tenant_id=tenant, vuln_id=current["vuln_id"])[1] == events_before
+
+
+@requires_postgres
+def test_current_undated_run_refresh_ignores_other_run_dated_history(tmp_path, monkeypatch):
+    from tests.test_vuln_lifecycle import _seed, _write_run, _HOSTS
+    from api.services import vulnerabilities as vulns, risk_context, vuln_states
+
+    assess = risk_context.score_batch
+    execution = ["publication:dated"]
+    def with_execution(*args, **kwargs):
+        scores = copy.deepcopy(assess(*args, **kwargs))
+        for score in scores:
+            score["risk_assessment"]["execution_id"] = execution[0]
+        return scores
+    monkeypatch.setattr(risk_context, "score_batch", with_execution)
+    settings, tenant = _seed(tmp_path, findings=combine([
+        {**BASE, "observed_at": "2026-10-10T00:00:00Z"},
+    ]))
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id="run-1")
+    execution[0] = "publication:undated"
+    _write_run(settings.output_dir, "run-undated", _HOSTS, combine([BASE]))
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id="run-undated")
+    current = vulns.list_vulnerabilities(settings, tenant_id=tenant)[0][0]
+    closed = vulns.transition(settings, tenant_id=tenant, vuln_id=current["vuln_id"],
+                              to_state=vuln_states.CLOSED, actor="admin")
+    event_count = vulns.list_events(settings, tenant_id=tenant, vuln_id=current["vuln_id"])[1]
+    execution[0] = "publication:refreshed-undated"
+    assert vulns.register_findings_from_run(settings, tenant_id=tenant, run_id="run-undated").reopened == 0
+    after = vulns.get_vulnerability(settings, tenant_id=tenant, vuln_id=current["vuln_id"])
+    assert after["risk_assessment"]["execution_id"] == execution[0]
+    for field in ("state", "observation_count", "last_seen_at", "last_seen_run_id",
+                  "due_at", "closed_at", "detectors", "finding_evidence"):
+        assert after[field] == closed[field], field
+    assert vulns.list_events(settings, tenant_id=tenant, vuln_id=current["vuln_id"])[1] == event_count
+
+
+@requires_postgres
+@pytest.mark.parametrize("signal", ["severity", "in_kev", "network_exposure", "exploit_maturity"])
+def test_current_replay_material_escalation_overrides_false_positive_without_new_observation(
+    tmp_path, monkeypatch, signal,
+):
+    from tests.test_vuln_lifecycle import _seed, _write_run, _HOSTS
+    from api.services import vulnerabilities as vulns, risk_context, vuln_states
+
+    assess = risk_context.score_batch
+    execution = ["publication:first"]
+    elevated = [False]
+    def with_execution(*args, **kwargs):
+        scores = copy.deepcopy(assess(*args, **kwargs))
+        for score in scores:
+            score["risk_assessment"]["execution_id"] = execution[0]
+            score["exploit_active"] = signal == "in_kev" and elevated[0]
+            score["network_exposure"] = "external" if signal == "network_exposure" and elevated[0] else "internal"
+            score["exploit_maturity"] = "weaponized" if signal == "exploit_maturity" and elevated[0] else "none"
+        return scores
+    monkeypatch.setattr(risk_context, "score_batch", with_execution)
+    findings = combine([{**BASE, "observed_at": "2026-10-10T00:00:00Z", "severity": "medium"}])
+    settings, tenant = _seed(tmp_path, findings=findings)
+    vulns.register_findings_from_run(settings, tenant_id=tenant, run_id="run-1")
+    original = vulns.list_vulnerabilities(settings, tenant_id=tenant)[0][0]
+    closed = vulns.mark_false_positive(settings, tenant_id=tenant, vuln_id=original["vuln_id"],
+        reason="Reviewed the evidence before the intelligence changed", actor="admin", suppress_days=30)
+    execution[0] = "publication:second"
+    elevated[0] = True
+    if signal == "severity":
+        # Receipt metadata changes while the exact raw observations remain stored.
+        findings[0]["severity"] = "critical"
+        _write_run(settings.output_dir, "run-1", _HOSTS, findings)
+    stats = vulns.register_findings_from_run(settings, tenant_id=tenant, run_id="run-1")
+    after = vulns.get_vulnerability(settings, tenant_id=tenant, vuln_id=original["vuln_id"])
+    assert stats.fp_overridden == stats.reopened == 1
+    assert after["state"] == vuln_states.OPEN
+    assert after["fp_suppress_until"] is None
+    assert after["closure_reason"] is None
+    assert after["observation_count"] == closed["observation_count"] == 1
+    assert after["finding_evidence"]["observation_count"] == 1
+    assert after["last_seen_at"] == closed["last_seen_at"]
+    assert after["detectors"] == closed["detectors"]
+    events, count = vulns.list_events(settings, tenant_id=tenant, vuln_id=original["vuln_id"])
+    override = next(event for event in events if event["kind"] == "fp_overridden")
+    assert signal in override["detail"]["changed"]
+    assert override["detail"]["replay"] is True
+    assert sum(event["kind"] == "reopened" for event in events) == 1
+    # Repeating that same execution/evidence cannot create another reopen/event.
+    assert vulns.register_findings_from_run(settings, tenant_id=tenant, run_id="run-1").reopened == 0
+    assert vulns.list_events(settings, tenant_id=tenant, vuln_id=original["vuln_id"])[1] == count
+
+
+@requires_postgres
+def test_live_clickhouse_evidence_roundtrip_replay_and_tenant_counts(tmp_path):
+    """Production insert + FINAL read keeps observations out of unique counts."""
+    import os
+    import uuid
+    from pathlib import Path
+    from api.services import ch_transform, clickhouse_client as ch
+    from api.services.ch_transform import tenant_to_uuid
+    from tests.test_vuln_lifecycle import _seed
+
+    url = os.environ.get('OCTO_CLICKHOUSE_URL', '').strip()
+    if not url:
+        pytest.skip('OCTO_CLICKHOUSE_URL required for actual evidence roundtrip')
+    source_rows = rows() + [{**row, 'port': '80'} for row in rows()]
+    findings = combine(source_rows)
+    assert len(findings) == 2
+    settings, tenant = _seed(tmp_path, findings=findings)
+    members = {'vulnerabilities.json': json.dumps(findings).encode()}
+    payload = {'tenant_id': tenant, 'run_id': 'run-1'}
+    projected = ch_transform.vulnerabilities_to_rows(payload, members, settings=settings, require_captured=False)
+    assert len(projected) == 1
+    table = 'shapoclyack.evidence_test_' + uuid.uuid4().hex[:12]
+    ddl = Path('k8s/shapoclyack/base/clickhouse/init-local.sql').read_text().split(';')[1]
+    ddl = ddl.replace(ch.VULN_TABLE, table).replace('TTL timestamp + INTERVAL 90 DAY', '')
+    client = ch.get_client(url)
+    try:
+        client.command(ddl)
+        assert ch.insert_rows(client, table, ch.VULN_COLUMNS, projected) == 1
+        assert ch.insert_rows(client, table, ch.VULN_COLUMNS, projected) == 1
+        loaded = client.query(f'SELECT tenant_id,cve_id,risk_assessment FROM {table} FINAL').result_rows
+        assert len(loaded) == 1
+        assert str(loaded[0][0]) == str(tenant_to_uuid(tenant))
+        assert loaded[0][1] == BASE['cve']
+        receipt = json.loads(loaded[0][2])
+        assert receipt['inventory_projection']['container_count'] == 2
+        evidence = receipt['finding_evidence']
+        assert evidence['observation_count'] == 4
+        assert evidence['finding_count'] == 2
+        assert {o['subject']['port'] for g in evidence['findings'] for o in g['observations']} == {80, 443}
+        assert {o['tenant_id'] for g in evidence['findings'] for o in g['observations']} == {tenant}
+        other = tenant + '-other'
+        foreign = ch_transform.vulnerabilities_to_rows({**payload, 'tenant_id': other}, members,
+                                                       settings=settings, require_captured=False)
+        assert ch.insert_rows(client, table, ch.VULN_COLUMNS, foreign) == 1
+        tenant_counts = client.query(f'SELECT tenant_id,count() FROM {table} FINAL GROUP BY tenant_id').result_rows
+        assert {str(key): count for key, count in tenant_counts} == {
+            str(tenant_to_uuid(tenant)): 1, str(tenant_to_uuid(other)): 1}
+    finally:
+        client.command(f'DROP TABLE IF EXISTS {table}')
+        client.close()

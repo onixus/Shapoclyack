@@ -1539,39 +1539,84 @@ def register_findings_from_run(
                     )
                 ).scalar_one()
 
-            if actionable(entry):
-                # Replaying a published observation must not inflate counts,
-                # reopen a manually closed task or roll latest state backwards.
-                def observation_ids(data):
-                    return {o.get("observation_id") for g in (data or {}).get("findings", [])
-                            for o in g.get("observations", [])}
-                current_ids = observation_ids(evidence)
-                if (current_ids and current_ids <= observation_ids(row.finding_evidence)) or (
-                        not current_ids and row.last_seen_run_id == run_id):
+            from scanner.pipeline.production_evidence import publication_disposition
+            disposition = publication_disposition(row.finding_evidence, evidence)
+            previous_execution = ((row.risk_assessment or {}).get("risk_assessment") or {}).get("execution_id")
+            current_execution = (scored.get("risk_assessment") or {}).get("execution_id")
+            distinct_publication = bool(current_execution and current_execution != previous_execution)
+            # Legacy CVE rows have no observation identity: multiple sources
+            # in one pass remain separate observations; the publication
+            # coordinator owns idempotence for those artifacts.
+            replay_escalation = False
+            if disposition == "replay" or (
+                    not (evidence or {}).get("observation_count") and row.last_seen_run_id == run_id
+                    and (evidence is not None or (actionable(entry) and not distinct_publication))):
+                # A replay may refresh the current operation's context, but
+                # cannot promote an older retained cohort back to current.
+                prior_dates = [observation["observed_at"]
+                               for group in (row.finding_evidence or {}).get("findings", [])
+                               for observation in group["observations"]
+                               if observation["run_id"] == run_id and observation["observed_at"]]
+                incoming_dates = [g["assessment"]["latest_observed_at"]
+                                  for g in (evidence or {}).get("findings", [])
+                                  if g["assessment"]["latest_observed_at"]]
+                current_cohort = row.last_seen_run_id == run_id and (
+                    not prior_dates or bool(incoming_dates) and max(incoming_dates) >= max(prior_dates)
+                )
+                if distinct_publication and current_cohort:
+                    # New intelligence can invalidate a false-positive verdict
+                    # even when the raw observation did not change. Compare
+                    # before writing: otherwise the escalation baseline is lost.
+                    if _fp_suppressed(row, now) and _fp_escalations(row, latest):
+                        outcome = weigh_fp_verdict(
+                            session, row, latest, tenant_id=tenant_id, now=now,
+                            detail={"run_id": run_id, "severity": severity, "replay": True},
+                        )
+                        replay_escalation = True
+                    else:
+                        for field, value in latest.items():
+                            setattr(row, field, value)
+                        row.updated_at = now
+                # Retain newly available raw references and incomplete markers.
+                row.finding_evidence = merge(row.finding_evidence, evidence)
+                if not replay_escalation:
                     reobserved += 1
                     continue
+            if disposition == "historical":
+                row.finding_evidence = merge(row.finding_evidence, evidence)
+                # Existing receipts are newer. Retain historical new detector
+                # identities/vantages without replacing their current run/time.
+                row.detectors = merge_detectors(observed, row.detectors or [])
+                row.observation_count += 1
+                row.updated_at = now
+                reobserved += 1
+                _record_event(session, vuln_id=row.vuln_id, tenant_id=tenant_id,
+                              kind="observed", occurred_at=now,
+                              detail={"run_id": run_id, "historical": True})
+                continue
 
             # Weighed before ``latest`` is written over the row: an escalation
             # is a difference between what the verdict was made on and what
             # this run says. Shared with the endpoint-software observer.
-            outcome = weigh_fp_verdict(
-                session,
-                row,
-                latest,
-                tenant_id=tenant_id,
-                now=now,
-                detail={"run_id": run_id, "severity": severity},
-            )
+            if not replay_escalation:
+                outcome = weigh_fp_verdict(
+                    session,
+                    row,
+                    latest,
+                    tenant_id=tenant_id,
+                    now=now,
+                    detail={"run_id": run_id, "severity": severity},
+                )
 
             for field, value in latest.items():
                 setattr(row, field, value)
-            row.last_seen_at = now
-            row.last_seen_run_id = run_id
-            # A new list, not an in-place edit: the JSON column is not a
-            # mutable type, so only an assignment is written back.
-            row.detectors = merge_detectors(row.detectors, observed)
-            row.finding_evidence = merge(row.finding_evidence, evidence)
-            row.observation_count += 1
+            if not replay_escalation:
+                row.last_seen_at = now
+                row.last_seen_run_id = run_id
+                # A new list, not an in-place edit: JSON mutations are not tracked.
+                row.detectors = merge_detectors(row.detectors, observed)
+                row.finding_evidence = merge(row.finding_evidence, evidence)
+                row.observation_count += 1
             row.updated_at = now
             reobserved += 1
             if row.source == "retro_match":

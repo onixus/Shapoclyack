@@ -407,9 +407,9 @@ pipeline {
       // reachable from this agent.
       //
       // apt is deliberate and retried: python:3.12-slim has no ssh client,
-      // and the client under test has to be the one Debian ships in the api
-      // and aio images, not a stub. Three attempts before a deb.debian.org
-      // hiccup fails the stage.
+      // for this early deployer-argv compatibility control. The API and
+      // all-in-one security stage separately tests their actual shipped client.
+      // Three attempts before a deb.debian.org hiccup fails this control.
       agent any
       steps {
         script {
@@ -484,7 +484,11 @@ pipeline {
             withCredentials([string(credentialsId: 'GENDEC_READ_TOKEN', variable: 'GH_TOKEN')]) {
               sh """
                 set -eu
-                DOCKER_BUILDKIT=1 docker build \
+                set --
+                if [ -s "\${NVD_API_KEY_FILE:-/run/secrets/nvd_api_key}" ]; then
+                  set -- --secret "id=nvd_api_key,src=\${NVD_API_KEY_FILE:-/run/secrets/nvd_api_key}"
+                fi
+                DOCKER_BUILDKIT=1 docker build "\$@" \
                   --secret id=github_token,env=GH_TOKEN \
                   -t ${IMAGE_TAG} .
               """
@@ -625,8 +629,20 @@ pipeline {
                 def tag = "${IMAGE_TAG}-${kind}"
                 try {
                   withCredentials([string(credentialsId: 'GENDEC_READ_TOKEN', variable: 'GH_TOKEN')]) {
-                    sh "docker build --secret id=github_token,env=GH_TOKEN -f Dockerfile.${kind} -t ${tag} ."
+                    sh """
+                      set -eu
+                      set --
+                      if [ -s "\${NVD_API_KEY_FILE:-/run/secrets/nvd_api_key}" ]; then
+                        set -- --secret "id=nvd_api_key,src=\${NVD_API_KEY_FILE:-/run/secrets/nvd_api_key}"
+                      fi
+                      docker build "\$@" --secret id=github_token,env=GH_TOKEN -f Dockerfile.${kind} -t ${tag} .
+                    """
                   }
+                  sh """
+                    set -eu
+                    mkdir -p "\$WORKSPACE/.ssh-client-tmp"
+                    TMPDIR="\$WORKSPACE/.ssh-client-tmp" scripts/ci-ssh-client.sh ${tag} ${SSHD_IMAGE}
+                  """
                   sh """
                     set -eu
                     mkdir -p "\$WORKSPACE/.trivy-cache"
@@ -643,6 +659,13 @@ pipeline {
                       -v "\$WORKSPACE":/reports ${TRIVY_IMAGE} image \
                       --format json --output /reports/trivy-${kind}.json \
                       --severity CRITICAL,HIGH,MEDIUM --exit-code 0 ${tag}
+
+                    # This client vulnerability must be absent even when a distro
+                    # still classifies it as unfixed. Never hide it with ignore-unfixed.
+                    if grep -q 'CVE-2026-60002' "\$WORKSPACE/trivy-${kind}.json"; then
+                      echo 'Vulnerable OpenSSH client remains in the runtime image' >&2
+                      exit 1
+                    fi
 
                     # Гейт — падаем на исправимых HIGH и CRITICAL
                     docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \

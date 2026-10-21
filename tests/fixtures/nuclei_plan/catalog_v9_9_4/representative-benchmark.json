@@ -1,0 +1,308 @@
+{
+  "network": "none; loopback only",
+  "active_interfaces": [
+    "lo"
+  ],
+  "architecture": "aarch64",
+  "catalog_ref": "v9.9.4",
+  "catalog_commit": "f4251b06c100067f230c4f54a1679de59802c7a4",
+  "catalog_sha256": "47ba5161869e8f0001bdcdbd259db176f7fea1dd820491ae28b9d394f46495ea",
+  "catalog_rows": 8968,
+  "selection": "four upstream matcher contracts",
+  "selected_templates": 4,
+  "expected_ids": [
+    "CVE-2000-0114",
+    "apache-server-status",
+    "nginx-status",
+    "public-tomcat-manager"
+  ],
+  "engine": "[\u001b[34mINF\u001b[0m] Nuclei Engine Version: v3.11.1\n[\u001b[34mINF\u001b[0m] Nuclei Config Directory: /root/.config/nuclei\n[\u001b[34mINF\u001b[0m] Nuclei Cache Directory: /root/.cache/nuclei\n[\u001b[34mINF\u001b[0m] PDCP Directory: /root/.pdcp",
+  "engine_sha256": "7a2fb8a51e4aa0e0aefc57bf8865ea32c4e307de8f44e125e532884d6129156d",
+  "instrumentation_sha256": "db55f26455eb0b5d37b77034e263f50993f0a4d76bc92192bec1e8907d05a2e3",
+  "source_sha256": {
+    "scanner/pipeline/nuclei_plan.py": "d51a9240fb52d50892648ba938e6f583a536e32b9a617e5d4a75649e9adbc2a6",
+    "scanner/pipeline/nuclei_scan.py": "5cbc7f1a08f59d4f9495c2b31209d22186ac299f27eb56912813d2d73cc5c129",
+    "scanner/pipeline/config_schema.py": "f1de6a45297e46a6bea55557bb103013c159688f4015a5ea30b67c7a5a6c624b"
+  },
+  "template_sha256": {
+    "CVE-2000-0114": "3325e23669322933d3ac7214a2bcec8678315d1dc3732acb5990e3a2ae782eb4",
+    "public-tomcat-manager": "a82555330e2ba71b2e565f400fdd77d65e99fc830caa224a7104c2be47b30953",
+    "apache-server-status": "077fa74b547e1f7aa6aa7ce3f5dc0c6c5caa8fa5802c70a1c02b5d2cb7de10c6",
+    "nginx-status": "e6de6a8870f3c329ba43e63443bb76f4412711903394b95c392242fa2f5e996d"
+  },
+  "runs": [
+    {
+      "scenario": "known",
+      "mode": "legacy",
+      "wall_seconds": 0.11608070798683912,
+      "cpu_seconds": 0.13857199999999997,
+      "peak_rss_kib": 184408,
+      "processes": 1,
+      "selected_templates": 4,
+      "connections": 26,
+      "requests": 12,
+      "found_ids": [
+        "CVE-2000-0114",
+        "apache-server-status",
+        "nginx-status",
+        "public-tomcat-manager"
+      ],
+      "expected_found": [
+        "CVE-2000-0114",
+        "apache-server-status",
+        "nginx-status",
+        "public-tomcat-manager"
+      ],
+      "expected_preserved": true,
+      "endpoint_findings": {
+        "127.0.0.1": [
+          "CVE-2000-0114",
+          "apache-server-status",
+          "nginx-status",
+          "public-tomcat-manager"
+        ],
+        "::1": [
+          "CVE-2000-0114",
+          "apache-server-status",
+          "nginx-status",
+          "public-tomcat-manager"
+        ]
+      },
+      "checked_count": 0,
+      "coverage_ran": true,
+      "skipped_reason": null
+    },
+    {
+      "scenario": "known",
+      "mode": "directed",
+      "wall_seconds": 0.21922541595995426,
+      "cpu_seconds": 0.25414499999999995,
+      "peak_rss_kib": 184408,
+      "processes": 2,
+      "selected_templates": 4,
+      "connections": 12,
+      "requests": 12,
+      "found_ids": [
+        "CVE-2000-0114",
+        "apache-server-status",
+        "nginx-status",
+        "public-tomcat-manager"
+      ],
+      "expected_found": [
+        "CVE-2000-0114",
+        "apache-server-status",
+        "nginx-status",
+        "public-tomcat-manager"
+      ],
+      "expected_preserved": true,
+      "endpoint_findings": {
+        "127.0.0.1": [
+          "CVE-2000-0114",
+          "apache-server-status",
+          "nginx-status",
+          "public-tomcat-manager"
+        ],
+        "::1": [
+          "CVE-2000-0114",
+          "apache-server-status",
+          "nginx-status",
+          "public-tomcat-manager"
+        ]
+      },
+      "checked_count": 2,
+      "coverage_ran": true,
+      "skipped_reason": null
+    },
+    {
+      "scenario": "unknown",
+      "mode": "legacy",
+      "wall_seconds": 0.10891699988860637,
+      "cpu_seconds": 0.12989499999999998,
+      "peak_rss_kib": 184408,
+      "processes": 1,
+      "selected_templates": 4,
+      "connections": 26,
+      "requests": 12,
+      "found_ids": [
+        "CVE-2000-0114",
+        "apache-server-status",
+        "nginx-status",
+        "public-tomcat-manager"
+      ],
+      "expected_found": [
+        "CVE-2000-0114",
+        "apache-server-status",
+        "nginx-status",
+        "public-tomcat-manager"
+      ],
+      "expected_preserved": true,
+      "endpoint_findings": {
+        "127.0.0.1": [
+          "CVE-2000-0114",
+          "apache-server-status",
+          "nginx-status",
+          "public-tomcat-manager"
+        ],
+        "::1": [
+          "CVE-2000-0114",
+          "apache-server-status",
+          "nginx-status",
+          "public-tomcat-manager"
+        ]
+      },
+      "checked_count": 0,
+      "coverage_ran": true,
+      "skipped_reason": null
+    },
+    {
+      "scenario": "unknown",
+      "mode": "directed",
+      "wall_seconds": 0.371456875000149,
+      "cpu_seconds": 0.45818,
+      "peak_rss_kib": 184408,
+      "processes": 4,
+      "selected_templates": 4,
+      "connections": 26,
+      "requests": 12,
+      "found_ids": [
+        "CVE-2000-0114",
+        "apache-server-status",
+        "nginx-status",
+        "public-tomcat-manager"
+      ],
+      "expected_found": [
+        "CVE-2000-0114",
+        "apache-server-status",
+        "nginx-status",
+        "public-tomcat-manager"
+      ],
+      "expected_preserved": true,
+      "endpoint_findings": {
+        "127.0.0.1": [
+          "CVE-2000-0114",
+          "apache-server-status",
+          "nginx-status",
+          "public-tomcat-manager"
+        ],
+        "::1": [
+          "CVE-2000-0114",
+          "apache-server-status",
+          "nginx-status",
+          "public-tomcat-manager"
+        ]
+      },
+      "checked_count": 4,
+      "coverage_ran": true,
+      "skipped_reason": null
+    },
+    {
+      "scenario": "wrong_technology",
+      "mode": "legacy",
+      "wall_seconds": 0.0995172499679029,
+      "cpu_seconds": 0.125977,
+      "peak_rss_kib": 184408,
+      "processes": 1,
+      "selected_templates": 4,
+      "connections": 26,
+      "requests": 12,
+      "found_ids": [
+        "CVE-2000-0114",
+        "apache-server-status",
+        "nginx-status",
+        "public-tomcat-manager"
+      ],
+      "expected_found": [
+        "CVE-2000-0114",
+        "apache-server-status",
+        "nginx-status",
+        "public-tomcat-manager"
+      ],
+      "expected_preserved": true,
+      "endpoint_findings": {
+        "127.0.0.1": [
+          "CVE-2000-0114",
+          "apache-server-status",
+          "nginx-status",
+          "public-tomcat-manager"
+        ],
+        "::1": [
+          "CVE-2000-0114",
+          "apache-server-status",
+          "nginx-status",
+          "public-tomcat-manager"
+        ]
+      },
+      "checked_count": 0,
+      "coverage_ran": true,
+      "skipped_reason": null
+    },
+    {
+      "scenario": "wrong_technology",
+      "mode": "directed",
+      "wall_seconds": 0.2012702499050647,
+      "cpu_seconds": 0.23124699999999998,
+      "peak_rss_kib": 184408,
+      "processes": 2,
+      "selected_templates": 4,
+      "connections": 12,
+      "requests": 12,
+      "found_ids": [
+        "CVE-2000-0114",
+        "apache-server-status",
+        "nginx-status",
+        "public-tomcat-manager"
+      ],
+      "expected_found": [
+        "CVE-2000-0114",
+        "apache-server-status",
+        "nginx-status",
+        "public-tomcat-manager"
+      ],
+      "expected_preserved": true,
+      "endpoint_findings": {
+        "127.0.0.1": [
+          "CVE-2000-0114",
+          "apache-server-status",
+          "nginx-status",
+          "public-tomcat-manager"
+        ],
+        "::1": [
+          "CVE-2000-0114",
+          "apache-server-status",
+          "nginx-status",
+          "public-tomcat-manager"
+        ]
+      },
+      "checked_count": 2,
+      "coverage_ran": true,
+      "skipped_reason": null
+    }
+  ],
+  "vhosts": {
+    "authorities": [
+      "[::1]:36753",
+      "a.fixture.example:36753",
+      "b.fixture.example:36753"
+    ],
+    "expected_findings_by_authority": {
+      "a.fixture.example": [
+        "CVE-2000-0114",
+        "apache-server-status",
+        "nginx-status",
+        "public-tomcat-manager"
+      ],
+      "b.fixture.example": [
+        "CVE-2000-0114",
+        "apache-server-status",
+        "nginx-status",
+        "public-tomcat-manager"
+      ]
+    },
+    "snis": [
+      "a.fixture.example",
+      "b.fixture.example"
+    ],
+    "complete": true,
+    "raw_rows": 18
+  }
+}

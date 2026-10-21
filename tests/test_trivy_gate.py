@@ -15,17 +15,22 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def trivy_shell(source: str, stage_name: str = "Trivy") -> str:
     stage = source.split(f"stage('{stage_name}')", 1)[1].split("stage('SBOM')", 1)[0]
-    shell = re.search(r'sh """(.*?)"""', stage, re.S).group(1)
+    shell = next(match.group(1) for match in re.finditer(r'sh """(.*?)"""', stage, re.S)
+                 if '--severity' in match.group(1))
     return shell.replace('\\\\', '\\').replace('\\$', '$')
 
 
-def run_gate(tmp_path, source, severity, fixed, stage_name="Trivy"):
+def run_gate(tmp_path, source, severity, fixed, stage_name="Trivy", finding_id="CVE-EXAMPLE"):
     stub = tmp_path / 'docker'
     stub.write_text(
         f'#!{sys.executable}\n'
-        'import os, sys\n'
+        'import json, os, sys\n'
+        'from pathlib import Path\n'
         'args = sys.argv[1:]\n'
         'def value(key): return args[args.index(key) + 1]\n'
+        'if "--output" in args:\n'
+        '    report = [{"Vulnerabilities": [{"VulnerabilityID": os.environ["FINDING_ID"]}]}]\n'
+        '    (Path(os.environ["WORKSPACE"]) / Path(value("--output")).name).write_text(json.dumps(report))\n'
         'selected = os.environ["FINDING_SEVERITY"] in value("--severity").split(",")\n'
         'ignored = "--ignore-unfixed" in args and os.environ["FINDING_FIXED"] == "0"\n'
         'sys.exit(int(value("--exit-code")) if selected and not ignored else 0)\n'
@@ -35,7 +40,7 @@ def run_gate(tmp_path, source, severity, fixed, stage_name="Trivy"):
         ['bash', '-c', trivy_shell(source, stage_name)], capture_output=True, text=True,
         env=dict(os.environ, PATH=f'{tmp_path}:{os.environ["PATH"]}', WORKSPACE=str(tmp_path),
                  TRIVY_IMAGE='trivy:test', IMAGE_TAG='scanner:test', tag='api:test', kind='api',
-                 FINDING_SEVERITY=severity, FINDING_FIXED='1' if fixed else '0'),
+                 FINDING_SEVERITY=severity, FINDING_FIXED='1' if fixed else '0', FINDING_ID=finding_id),
         check=False,
     )
     assert result.returncode in (0, 1), result.stderr
@@ -49,6 +54,13 @@ def run_gate(tmp_path, source, severity, fixed, stage_name="Trivy"):
 @pytest.mark.parametrize('stage_name', ['Trivy', 'API and all-in-one security'])
 def test_jenkins_blocks_fixable_high_and_critical(tmp_path, severity, fixed, expected, stage_name):
     assert run_gate(tmp_path, (ROOT / 'Jenkinsfile').read_text(), severity, fixed, stage_name) == expected
+
+
+@pytest.mark.parametrize('fixed', [False, True])
+def test_jenkins_rejects_vulnerable_ssh_even_when_unfixed(tmp_path, fixed):
+    source = (ROOT / 'Jenkinsfile').read_text()
+    assert run_gate(tmp_path, source, 'CRITICAL', fixed, 'API and all-in-one security',
+                    finding_id='CVE-2026-60002') == 1
 
 
 @pytest.mark.parametrize('before,after', [

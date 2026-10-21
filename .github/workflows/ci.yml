@@ -202,6 +202,7 @@ jobs:
           # GenDec releases/packages are public.
           secrets: |
             github_token=${{ secrets.GENDEC_READ_TOKEN || secrets.GITHUB_TOKEN }}
+            nvd_api_key=${{ secrets.NVD_API_KEY }}
           # No PULSE_VERSION override -- follow the Dockerfile's own ARG
           # default (see docker-publish.yml for why this must not be pinned
           # here).

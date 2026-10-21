@@ -803,14 +803,27 @@ def _run_web_sweep(
             codes = []
             plan["process_results"] = []
             attempted = 0
+            host_seconds = {}
+            host_processes = {}
             raw_bytes_left = 8 * 1024 * 1024
             error_bytes_left = 8 * 1024 * 1024
             for index, target in enumerate(plan["targets"]):
-                if index >= config.planner_max_processes:
+                if attempted >= config.planner_max_processes:
                     result["skipped_reason"] = "planner_process_limit"
+                    plan["skipped"].append({"target_index": index, "reason": "planner_process_limit", "count": len(plan["targets"]) - index})
                     break
-                remaining = int(deadline - time.monotonic())
+                host = target["ip"]
+                if host_processes.get(host, 0) >= config.planner_per_host_max_processes:
+                    plan["skipped"].append({"target_index": index, "reason": "per_host_process_limit"})
+                    continue
+                host_remaining = config.planner_per_host_timeout_seconds - host_seconds.get(host, 0)
+                stage_remaining = deadline - time.monotonic()
+                host_limited = host_remaining < stage_remaining
+                remaining = int(min(stage_remaining, host_remaining))
                 if remaining < _MIN_PROCESS_SECONDS:
+                    if host_remaining < _MIN_PROCESS_SECONDS:
+                        plan["skipped"].append({"target_index": index, "reason": "per_host_budget_exhausted"})
+                        continue
                     result["skipped_reason"] = "planner_budget_exhausted"
                     break
                 write_lines(targets_file, [target["url"]])
@@ -825,6 +838,8 @@ def _run_web_sweep(
                 part_errors = output_dir / f"nuclei_plan_{index:04d}_errors.jsonl"
                 part_errors.unlink(missing_ok=True)
                 target_command[target_command.index("-elog") + 1] = str(part_errors)
+                invocation_started = time.monotonic()
+                host_timeout = False
                 try:
                     item = run_command(
                         target_command, timeout=remaining, retries=0, check=False
@@ -832,6 +847,7 @@ def _run_web_sweep(
                     codes.append(item.returncode)
                     stderr_parts.append(item.stderr or "")
                 except Exception as exc:  # noqa: BLE001
+                    host_timeout = host_limited and isinstance(exc, subprocess.TimeoutExpired)
                     codes.append(None)
                     stderr = getattr(exc, "stderr", "") or ""
                     stderr_parts.append(
@@ -840,6 +856,9 @@ def _run_web_sweep(
                         else stderr
                     )
                     result["skipped_reason"] = "nuclei_run_failed"
+                elapsed = time.monotonic() - invocation_started
+                host_seconds[host] = host_seconds.get(host, 0) + elapsed
+                host_processes[host] = host_processes.get(host, 0) + 1
                 attempted += 1
                 invocation_loaded = _TEMPLATES_LOADED.findall(stderr_parts[-1])
                 loaded_count = int(invocation_loaded[-1]) if invocation_loaded else None
@@ -854,6 +873,9 @@ def _run_web_sweep(
                 plan["process_results"].append(
                     {
                         "target_index": index,
+                        "duration_seconds": elapsed,
+                        "timeout_seconds": remaining,
+                        "host_budget_seconds_remaining": max(0, config.planner_per_host_timeout_seconds - host_seconds[host]),
                         "returncode": codes[-1],
                         "templates_expected": len(pinned),
                         "templates_loaded": loaded_count,
@@ -909,8 +931,12 @@ def _run_web_sweep(
                         raw_bytes_left -= len(encoded) + 1
                         projected.append(encoded.decode("utf-8"))
                     raw_parts.append("\n".join(projected))
-                # One deadline, no automatic retry of a timed out invocation.
-                if codes[-1] is None:
+                # A host deadline must not consume another host's budget.
+                # Preserve the failed receipt and partial matches without retrying;
+                # global expiry and other execution failures still stop the sweep.
+                if codes[-1] is None and not (
+                    host_timeout and deadline - time.monotonic() >= _MIN_PROCESS_SECONDS
+                ):
                     break
             jsonl_file.write_text("\n".join(raw_parts), encoding="utf-8")
             errors_file.write_text("\n".join(error_parts), encoding="utf-8")
