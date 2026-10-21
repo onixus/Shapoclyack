@@ -159,6 +159,71 @@ RUN npm ci
 COPY web-next/ ./
 RUN npm run build
 
+# Enrichment data (GeoIP, CVSS4, EPSS, KEV, vendor advisories) is the same bytes
+# on every architecture, so it is fetched once per build, on the build host's
+# own platform, and the final stage copies the result in. Fetched inside the
+# final stage it ran once per target platform, and the NVD walk alone is ~57
+# pages: a multi-arch publish paged it four times in parallel and NVD throttled
+# them into timeouts.
+#
+# This stage is byte-for-byte the same in Dockerfile and Dockerfile.allinone
+# (tests/test_enrichment_stage.py holds them to it), so the second image of a
+# build takes it from the BuildKit cache instead of fetching again. api/ and
+# agent/ are here only for scripts/fetch-advisories.py; the scanner image ships
+# the fetched advisories along with the rest rather than fork the stage. The
+# fetch scripts are stdlib-only, so nothing is pip-installed here.
+#
+# Two failures live here and they are not the same (#246):
+#   - a source was unreachable (exit 1). The previous data is still in place and
+#     still usable; a foreign server having a bad day must not fail a build, so
+#     this stays a warning in every build. The manifest the script writes records
+#     which datasets were left behind, and GET /api/system reports it — that is
+#     what stops a degraded image from looking identical to a fresh one.
+#   - a required dataset is missing or is a stub (exit 2). The risk model would
+#     be scoring blind. ENRICHMENT_STRICT=1 refuses to build such an image; the
+#     release pipeline (Jenkinsfile.publish) sets it, because a published image
+#     is the one that outlives the operator's memory of this build log. A dev or
+#     branch build keeps warning, so nobody is blocked by a bad network.
+#
+# Uses the keyless DB-IP provider (no license key to leak into image layers).
+FROM --platform=$BUILDPLATFORM python:3.12-slim@sha256:dddfd7e07f9d15aeeca61529320492139d21cac7f0070c00609243e51e4e0016 AS enrichment
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+WORKDIR /app
+COPY scanner /app/scanner
+# The seed floor fetch-enrichment.sh reads; each final stage keeps its own copy
+# at the same path for the runtime refresh.
+COPY scanner/data /opt/shapoclyack/seed-data
+COPY api /app/api
+COPY agent /app/agent
+COPY scripts /app/scripts
+ARG ENRICHMENT_STRICT=0
+# Vendor advisories are the one enrichment source that is opt-in at runtime
+# (api/services/advisories/fetch.py refuses without it), and an image build is
+# exactly the place the opt-in belongs: the alternative is shipping the
+# committed seeds, and a seed cannot assess a real host. It covers a handful of
+# statements, so a Windows endpoint matched against it reads as far cleaner
+# than it is -- which is the worst way for a security tool to be wrong.
+#
+# ADVISORY_FETCH=0 turns it back off for a build with no route to the vendors'
+# feeds; the image then carries the seeds and says so on the System page.
+ARG ADVISORY_FETCH=1
+# Optional NVD key is available only to this enrichment step, never an image ENV.
+RUN --mount=type=secret,id=nvd_api_key,required=false \
+    set -eu; \
+    if [ -s /run/secrets/nvd_api_key ]; then \
+      NVD_API_KEY="$(cat /run/secrets/nvd_api_key)"; export NVD_API_KEY; \
+    fi; \
+    export OCTO_ADVISORY_FETCH_ENABLED="$( [ "${ADVISORY_FETCH}" = "1" ] && echo true || echo false )"; \
+    status=0; bash scripts/fetch-enrichment.sh || status=$?; \
+    if [ "$status" -ge 2 ]; then \
+      if [ "${ENRICHMENT_STRICT}" = "1" ]; then \
+        echo "ENRICHMENT_STRICT=1: refusing to publish an image whose enrichment data is missing or stubbed" >&2; \
+        exit 1; \
+      fi; \
+      echo "warning: enrichment data is missing or stubbed; continuing (ENRICHMENT_STRICT=0)" >&2; \
+    fi
+
 # Pinned by multi-arch index digest for reproducible, supply-chain-safe builds.
 # python:3.12-slim
 # Shared source/checksum pin and install allowlist for the SSH deployment client.
@@ -300,47 +365,9 @@ COPY agent /app/agent
 COPY scripts /app/scripts
 COPY --from=web-build /web/out /app/web/dist
 
-# Bake real GeoIP/CVSS4/EPSS/KEV data into the image so a fresh deployment
-# isn't limited to whatever the repo committed. Uses the keyless DB-IP provider
-# (no license key to leak into image layers).
-#
-# Two failures live here and they are not the same (#246):
-#   - a source was unreachable (exit 1). The previous data is still in place and
-#     still usable; a foreign server having a bad day must not fail a build, so
-#     this stays a warning in every build. The manifest the script writes records
-#     which datasets were left behind, and GET /api/system reports it — that is
-#     what stops a degraded image from looking identical to a fresh one.
-#   - a required dataset is missing or is a stub (exit 2). The risk model would
-#     be scoring blind. ENRICHMENT_STRICT=1 refuses to build such an image; the
-#     release pipeline (Jenkinsfile.publish) sets it, because a published image
-#     is the one that outlives the operator's memory of this build log. A dev or
-#     branch build keeps warning, so nobody is blocked by a bad network.
-ARG ENRICHMENT_STRICT=0
-# Vendor advisories are the one enrichment source that is opt-in at runtime
-# (api/services/advisories/fetch.py refuses without it), and an image build is
-# exactly the place the opt-in belongs: the alternative is shipping the
-# committed seeds, and a seed cannot assess a real host. It covers a handful of
-# statements, so a Windows endpoint matched against it reads as far cleaner
-# than it is -- which is the worst way for a security tool to be wrong.
-#
-# ADVISORY_FETCH=0 turns it back off for a build with no route to the vendors'
-# feeds; the image then carries the seeds and says so on the System page.
-ARG ADVISORY_FETCH=1
-# Optional NVD key is available only to this enrichment step, never an image ENV.
-RUN --mount=type=secret,id=nvd_api_key,required=false \
-    set -eu; \
-    if [ -s /run/secrets/nvd_api_key ]; then \
-      NVD_API_KEY="$(cat /run/secrets/nvd_api_key)"; export NVD_API_KEY; \
-    fi; \
-    export OCTO_ADVISORY_FETCH_ENABLED="$( [ "${ADVISORY_FETCH}" = "1" ] && echo true || echo false )"; \
-    status=0; bash scripts/fetch-enrichment.sh || status=$?; \
-    if [ "$status" -ge 2 ]; then \
-      if [ "${ENRICHMENT_STRICT}" = "1" ]; then \
-        echo "ENRICHMENT_STRICT=1: refusing to publish an image whose enrichment data is missing or stubbed" >&2; \
-        exit 1; \
-      fi; \
-      echo "warning: enrichment data is missing or stubbed; continuing (ENRICHMENT_STRICT=0)" >&2; \
-    fi
+# Fetched once per build in the enrichment stage above; laid over the
+# committed seed copied with scanner/.
+COPY --from=enrichment /app/scanner/data /app/scanner/data
 
 # Best-effort: refresh nuclei-templates beyond whatever was bundled at the
 # pinned NUCLEI_TEMPLATES_REF above (nuclei's own -update-templates flag,
