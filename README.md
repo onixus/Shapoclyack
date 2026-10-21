@@ -12,11 +12,10 @@ Shapoclyack turns external discovery into a verifiable remediation workflow. It 
 
 **[Getting Started](docs/getting-started.md)** · **[Closed-loop Demo](docs/demo-remediation-loop.md)** · **[Architecture](docs/architecture.md)** · **[Web UI](docs/ui.md)** · **[Documentation](docs/README.md)** · **[Русская версия](README.ru.md)** · **[Changelog](CHANGELOG.md)** · **[Roadmap](ROADMAP.md)**
 
-> Documentation describes `main`, including changes after the documented
-> release baseline `shapoclyack-0.46-0922`. See
-> [version scope](docs/README.md#version-scope) and the
-> [0.47-1009-rc1 candidate notes](docs/releases/0.47-1009-rc1.md)
-> before applying these instructions to a release installation.
+> Documentation describes `main`. The current release is
+> `shapoclyack-0.48-1021`; see its [release notes](docs/releases/0.48-1021.md)
+> and [version scope](docs/README.md#version-scope) before applying these
+> instructions to a release installation.
 
 ## Why Shapoclyack
 

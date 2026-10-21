@@ -4,6 +4,15 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+## [0.48-1021] — 2026-10-21
+
+Stable successor to `0.46-0922`. API and sensor versions are `0.48-1021`; Pulse
+is pinned at signed `v1.4.0`; the database head is `0096_console_saved_views`.
+The `0.47-1009-rc1` candidate is superseded and has no stable `0.47` release.
+Three images are published (scanner, api, aio) and, as a stable release, move
+`latest`; no `-nmap` variants are built. Upgrade notes and the publication
+checklist are in [docs/releases/0.48-1021.md](docs/releases/0.48-1021.md).
+
 ### Upgrade notes
 
 - The `scanner-executor` StatefulSet (every overlay) and the agent example gain a
@@ -16,6 +25,16 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- The API and all-in-one images ship a checksum-pinned upstream OpenSSH 10.6p1
+  client instead of Debian trixie's, which still carried CVE-2026-60002 (#577).
+  SSH/SCP/SFTP, GSSAPI/FIDO, configs and helpers are preserved; no server or
+  privileged signing helper is shipped. Both images gate the shipped client as
+  a non-root user and reject CVE-2026-60002 in unfiltered Trivy output,
+  independent of the ignore-unfixed policy.
+- dnsx, naabu and nuclei are rebuilt on Go 1.26.10 with klauspost/compress
+  1.18.7; `certifi` 2026.10.19 and Pillow 13.0.0 are pinned in the scanner, API
+  and development locks. These remediate the fixable HIGH image findings; tool
+  versions are unchanged.
 - `aiohttp` is locked at 3.14.5 (from 3.14.3) in the scanner, API and CI locks
   for CVE-2026-111064 / GHSA-2g87-pp6c-29x5, fixed in 3.14.4.
 
@@ -26,6 +45,22 @@ All notable changes to Shapoclyack are documented in this file.
   merged features, the historical RC snapshot, stable release and #577.
 
 ### Added
+
+- Scanner acceptance for #448–#452 (#564, #565, #577). Production evidence
+  replay preserves manual closure, workflow identity and current assessment, and
+  port evidence reaches the legacy ClickHouse inventory per tenant. Directed
+  Nuclei planning (opt-in; legacy stays the default) keeps every eligible
+  template with per-IP process/time limits and truthful skip receipts, and a
+  per-host timeout no longer stops later IPs. [ADR-0003](docs/adr/0003-port-discovery-backend.md)
+  is accepted: Naabu stays the port backend and Pulse promotion remains gated.
+  See the [acceptance map](docs/issues-448-452-acceptance.md).
+- Ubuntu USN refresh uses Canonical's complete bzip2 database with independent
+  128 MiB transfer and 512 MiB decoded limits, a deadline and atomic last-good
+  publication. NVD harvest pages default to 500 records (`1..2000`).
+- An optional NVD API key reaches scanner/all-in-one enrichment as an ephemeral
+  BuildKit secret: a protected key file in Jenkins or the `NVD_API_KEY`
+  repository secret in image workflows. It is never a build argument, image
+  environment variable or checkout file.
 
 - Personal saved views in the console refuse duplicate names (409), explain every refusal,
   normalise deep-link filters, and the mobile drawer is keyboard-operable (#357).
@@ -278,6 +313,9 @@ All notable changes to Shapoclyack are documented in this file.
   writer, and probe scheduling and port scanning were reworked, so scans can
   differ in timing and in what is reported on busy hosts. Verified against a
   live `127.0.0.1:8081/tcp` probe with `run_pulse_probe`.
+  #561 then moved the pin to signed `v1.4.0` (byte-preserving plugin I/O, raw
+  SSLv2–TLS 1.3 suite enumeration, native SMB/RDP/VNC/SSH helpers), which is the
+  version this release ships.
 - The L2 discovery and NSE stages now log a warning that points to
   the Nmap note (now `docs/nmap-migration.md`) when `nmap` is not on `PATH`.
 
