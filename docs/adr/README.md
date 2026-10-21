@@ -9,6 +9,7 @@ rather than how one feature works. Feature design stays in its own guide.
 | [0001](0001-pulse-distribution-model.md) | Distribution model for the default Pulse backend | **Proposed** — decision by the owner | [#340](https://github.com/onixus/Shapoclyack/issues/340) |
 | [0002](0002-replacing-nmap-functions.md) | Where the functions Nmap provided move to | **Accepted** — onixus, 2026-10-10 | [#549](https://github.com/onixus/Shapoclyack/issues/549) |
 | [0003](0003-port-discovery-backend.md) | Retain Naabu pending discovery-backend acceptance | **Proposed** — existing default unchanged | [#452](https://github.com/onixus/Shapoclyack/issues/452) |
+| [0004](0004-local-operator.md) | Local operator with explicit provider and tool boundaries | **Accepted** — onixus, 2026-10-21; implementation requested, hardware acceptance pending | [#584](https://github.com/onixus/Shapoclyack/issues/584) |
 
 Decisions taken before this directory existed are recorded where they were
 made: the endpoint-inventory decisions in

@@ -768,6 +768,8 @@ OCTO_LOGIN_RATE_LIMIT_IP_MAX_FAILURES
 OCTO_LOGIN_RATE_LIMIT_MAX_FAILURES
 OCTO_LOGIN_RATE_LIMIT_WINDOW_SECONDS
 OCTO_MAX_BODY_BYTES
+OCTO_MCP_ALLOWED_ORIGINS
+OCTO_MCP_ENABLED
 OCTO_METRICS_TENANT_TOP_N
 OCTO_METRICS_TOKEN
 OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS
@@ -803,6 +805,16 @@ OCTO_OIDC_SCOPES
 OCTO_OIDC_STATE_TTL_SECONDS
 OCTO_OIDC_TENANT_CLAIM
 OCTO_OIDC_USERNAME_CLAIM
+OCTO_OPERATOR_ALLOW_EXTERNAL
+OCTO_OPERATOR_API_KEY
+OCTO_OPERATOR_BASE_URL
+OCTO_OPERATOR_ENABLED
+OCTO_OPERATOR_MAX_INPUT_CHARS
+OCTO_OPERATOR_MAX_OUTPUT_TOKENS
+OCTO_OPERATOR_MAX_RESPONSE_BYTES
+OCTO_OPERATOR_MODEL
+OCTO_OPERATOR_PROVIDER
+OCTO_OPERATOR_TIMEOUT_SECONDS
 OCTO_OTEL_EXPORTER_OTLP_ENDPOINT
 OCTO_OTEL_SERVICE_NAME
 OCTO_OTEL_TRACES_SAMPLER_RATIO
@@ -1690,3 +1702,33 @@ The client certificate rides the same proxy-aware connection as everything
 else (`OCTO_HTTPS_PROXY`, `OCTO_CA_BUNDLE`). A TLS-inspecting proxy re-signs
 the connection and cannot forward a client certificate — put the API's host in
 `OCTO_NO_PROXY` or exempt it from inspection.
+
+
+### Optional AI operator and MCP
+
+The local operator architecture and remaining acceptance gates are in
+[local-operator.md](local-operator.md). Provider configuration is in
+[local-operator-providers.md](local-operator-providers.md); the authenticated,
+read-only MCP transport is in [mcp.md](mcp.md). Both features default to off.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_OPERATOR_ENABLED` | `false` | Enable operator provider configuration and authenticated configuration status. Does not enable a durable analysis workflow. |
+| `OCTO_OPERATOR_PROVIDER` | `local` | `local`, `openrouter`, or `omnirouter`; no automatic provider fallback. |
+| `OCTO_OPERATOR_BASE_URL` | *(empty)* | Local defaults to `http://127.0.0.1:8080/v1`, OpenRouter to `https://openrouter.ai/api/v1`; OmniRouter requires an explicit administrator-owned URL. |
+| `OCTO_OPERATOR_MODEL` | `Qwen3.5-9B-Q4_K_M` | Model alias passed to the server; this name does not verify installed weights or provenance. Select a provider model explicitly for hosted mode. |
+| `OCTO_OPERATOR_API_KEY` | *(empty)* | Deployment secret, required for hosted providers; redacted by the settings CLI. |
+| `OCTO_OPERATOR_ALLOW_EXTERNAL` | `false` | Explicitly permit hosted inference. Local mode never falls back to it. |
+| `OCTO_OPERATOR_TIMEOUT_SECONDS` | `120` | Total request deadline, positive and at most 120 seconds. |
+| `OCTO_OPERATOR_MAX_RESPONSE_BYTES` | `262144` | Maximum decoded provider response, at most 1 MiB. |
+| `OCTO_OPERATOR_MAX_INPUT_CHARS` | `24000` | Input character budget; does not replace tokenizer-based context validation in the future worker. |
+| `OCTO_OPERATOR_MAX_OUTPUT_TOKENS` | `1024` | Requested generation cap, at most 8192. The final worker must reserve this inside its 8192-token total context. |
+| `OCTO_MCP_ENABLED` | `false` | Expose authenticated read-only tools at `/api/mcp`. Independent of inference enablement. |
+| `OCTO_MCP_ALLOWED_ORIGINS` | *(empty)* | Exact comma-separated browser origins permitted at the MCP endpoint. Native clients may omit Origin. |
+
+`GET /api/operator/status` requires a tenant-authenticated viewer. It reports
+configuration only, with `runtime_status=not_checked`,
+`analysis_available=false`, and `durable_sessions_available=false`. It makes
+no provider request and returns no endpoint address or credential. Disabled
+returns 404; invalid enabled configuration returns 503. Startup validates an
+enabled provider configuration before accepting traffic.

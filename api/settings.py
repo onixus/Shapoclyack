@@ -131,6 +131,20 @@ class Settings:
     # load_settings() validates — Settings constructed directly (tests, tools)
     # are trusted, since whoever writes the field is stating the value.
     env: str = ENV_PROD
+    # Optional AI operator. Hosted inference requires a separate, explicit
+    # egress opt-in; none of these credentials belongs in scanner YAML/UI.
+    operator_enabled: bool = False
+    operator_provider: str = "local"
+    operator_base_url: str = ""
+    operator_model: str = "Qwen3.5-9B-Q4_K_M"
+    operator_api_key: str = field(default="", repr=False)
+    operator_allow_external: bool = False
+    operator_timeout_seconds: float = 120.0
+    operator_max_response_bytes: int = 262144
+    operator_max_input_chars: int = 24000
+    operator_max_output_tokens: int = 1024
+    mcp_enabled: bool = False
+    mcp_allowed_origins: list[str] = field(default_factory=list)
     jwt_secret: str = DEFAULT_JWT_SECRET
     jwt_algorithm: str = ALLOWED_JWT_ALGORITHMS[0]
     # The absolute lifetime of a console sign-in (OCTO_JWT_EXPIRE_MINUTES).
@@ -2058,6 +2072,24 @@ def load_settings() -> Settings:
 
     settings = Settings(
         env=env,
+        operator_enabled=os.environ.get("OCTO_OPERATOR_ENABLED", "false").strip().lower()
+        in {"1", "true", "yes"},
+        operator_provider=os.environ.get("OCTO_OPERATOR_PROVIDER", "local").strip(),
+        operator_base_url=os.environ.get("OCTO_OPERATOR_BASE_URL", "").strip(),
+        operator_model=os.environ.get("OCTO_OPERATOR_MODEL", "Qwen3.5-9B-Q4_K_M").strip(),
+        operator_api_key=os.environ.get("OCTO_OPERATOR_API_KEY", "").strip(),
+        operator_allow_external=os.environ.get("OCTO_OPERATOR_ALLOW_EXTERNAL", "false").strip().lower()
+        in {"1", "true", "yes"},
+        operator_timeout_seconds=float(os.environ.get("OCTO_OPERATOR_TIMEOUT_SECONDS", "120")),
+        operator_max_response_bytes=int(os.environ.get("OCTO_OPERATOR_MAX_RESPONSE_BYTES", "262144")),
+        operator_max_input_chars=int(os.environ.get("OCTO_OPERATOR_MAX_INPUT_CHARS", "24000")),
+        operator_max_output_tokens=int(os.environ.get("OCTO_OPERATOR_MAX_OUTPUT_TOKENS", "1024")),
+        mcp_enabled=os.environ.get("OCTO_MCP_ENABLED", "false").strip().lower()
+        in {"1", "true", "yes"},
+        mcp_allowed_origins=[
+            origin.strip() for origin in os.environ.get("OCTO_MCP_ALLOWED_ORIGINS", "").split(",")
+            if origin.strip()
+        ],
         jwt_secret=os.environ.get("API_SECRET_KEY", "").strip()
         or os.environ.get("OCTO_JWT_SECRET", DEFAULT_JWT_SECRET),
         jwt_algorithm=algorithm,
@@ -2620,6 +2652,14 @@ def load_settings() -> Settings:
             if item.strip()
         ],
     )
+
+    if settings.operator_enabled:
+        from api.services.local_operator.config import OperatorConfig
+
+        try:
+            OperatorConfig.from_settings(settings)
+        except ValueError as exc:
+            raise InsecureConfigurationError("Invalid operator configuration: " + str(exc)) from None
 
     if settings.idp_authoritative and not (settings.oidc_role_map or settings.idp_group_map):
         # Not a refusal, and not obeyed either: with nothing mapped, every SSO

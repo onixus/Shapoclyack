@@ -795,6 +795,23 @@ and [evidence-aware run comparisons (#580)](https://github.com/onixus/Shapoclyac
 The existing finding list, saved views and run comparison do not establish
 completion of those issues.
 
+### Local Operator and AI integration (#583)
+
+[EPIC #583](https://github.com/onixus/Shapoclyack/issues/583) is in progress.
+[Architecture #584](https://github.com/onixus/Shapoclyack/issues/584) now has
+[strict version 1 contracts and an acceptance specification](docs/local-operator.md)
+and [ADR 0004](docs/adr/0004-local-operator.md). Optional inference-provider and
+MCP read adapters ([#597](https://github.com/onixus/Shapoclyack/issues/597),
+[#596](https://github.com/onixus/Shapoclyack/issues/596)) are implemented in this
+change; local runtime, a durable
+worker, authorized retrieval, analysis, confirmed scan/remediation execution,
+console and security/quality acceptance (#585–#593) remain planned. The default
+is local offline operation with the optional inference adapter disabled;
+OpenRouter and an explicitly configured OmniRouter-compatible endpoint require
+hosted-provider opt-in. Qwen3.5-9B Q4_K_M / 8 GiB CUDA / 8192 context is a candidate
+baseline, **hardware-unverified**. Adapter and contract tests do not establish
+model quality, live provider access or deployed assistant acceptance.
+
 ### Not doing, and why
 
 - **No DAST of our own** (katana + interactsh, scenarios 3–4 of

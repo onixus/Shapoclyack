@@ -4,6 +4,11 @@ This directory is the stable entry point for Shapoclyack documentation. Use it b
 
 Commands assume the repository root unless a guide explicitly says otherwise.
 
+Optional AI operator: [architecture and acceptance](local-operator.md),
+[local/OpenRouter/OmniRouter providers](local-operator-providers.md), and
+[authenticated read-only MCP](mcp.md). These adapters precede the planned
+durable worker and operator console; runtime/GPU acceptance remains pending.
+
 ## Terminology
 
 Three words are used precisely throughout these guides:
