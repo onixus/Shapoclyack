@@ -538,3 +538,91 @@ def test_pinned_upstream_runtime_receipts_preserve_each_fixture_endpoint():
             assert all(p['returncode'] == 0 and p['templates_loaded'] == p['templates_expected']
                        and p['complete'] for p in plan['process_results'])
             assert len(plan['template_sets']['safe_http_fallback']) == report['selected_templates']
+
+
+def test_host_timeout_keeps_partial_matches_and_attempts_later_ip(tmp_path, monkeypatch):
+    template(tmp_path / "templates")
+    clock = [100.0]
+    seen = []
+
+    def run(cmd, **kwargs):
+        target = Path(cmd[cmd.index("-list") + 1]).read_text().strip()
+        seen.append((target, kwargs["timeout"]))
+        assert kwargs["retries"] == 0
+        output = Path(cmd[cmd.index("-jsonl-export") + 1])
+        if len(seen) == 1:
+            output.write_text(json.dumps({
+                "template-id": "fixture-cve", "host": "127.0.0.1",
+                "port": "80", "info": {"severity": "high"},
+            }) + "\n")
+            clock[0] += kwargs["timeout"]
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"], stderr=b"partial stderr")
+        output.write_text("")
+        return subprocess.CompletedProcess(cmd, 0, "", "[INF] Templates loaded for current scan: 1")
+
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", lambda _: "nuclei")
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", run)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.time.monotonic", lambda: clock[0])
+    result = run_nuclei_scan(
+        ["127.0.0.1:80/tcp", "127.0.0.2:80/tcp"],
+        NucleiConfig(planner_mode="directed", templates_dir=str(tmp_path / "templates"),
+                     network_templates=False, planner_per_host_timeout_seconds=10,
+                     overall_timeout_seconds=60), tmp_path,
+    )
+    assert seen == [("http://127.0.0.1:80/", 10),
+                    ("http://127.0.0.2:80/", 10), ("https://127.0.0.2:80/", 10)]
+    plan = result["coverage"]["plan"]
+    assert plan["processes_attempted"] == 3
+    assert plan["skipped"] == [{"target_index": 1, "reason": "per_host_budget_exhausted"}]
+    assert [r["returncode"] for r in plan["process_results"]] == [None, 0, 0]
+    assert not plan["process_results"][0]["complete"]
+    assert result["findings"][0]["template_id"] == "fixture-cve"
+    assert not plan["complete"] and not result["coverage"]["ran"]
+    assert result["checked_count"] == 0
+
+
+def test_global_timeout_still_aborts_later_hosts(tmp_path, monkeypatch):
+    template(tmp_path / "templates")
+    clock = [100.0]
+    seen = []
+
+    def run(cmd, **kwargs):
+        seen.append(kwargs["timeout"])
+        clock[0] += kwargs["timeout"]
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", lambda _: "nuclei")
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", run)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.time.monotonic", lambda: clock[0])
+    result = run_nuclei_scan(
+        ["127.0.0.1:80/tcp", "127.0.0.2:80/tcp"],
+        NucleiConfig(planner_mode="directed", templates_dir=str(tmp_path / "templates"),
+                     network_templates=False, planner_per_host_timeout_seconds=120,
+                     overall_timeout_seconds=60), tmp_path,
+    )
+    assert seen == [60]
+    assert result["coverage"]["plan"]["processes_attempted"] == 1
+    assert not result["coverage"]["plan"]["complete"]
+    assert not result["coverage"]["ran"] and result["checked_count"] == 0
+
+
+def test_spawn_failure_still_aborts_later_hosts(tmp_path, monkeypatch):
+    template(tmp_path / "templates")
+    seen = []
+
+    def run(cmd, **kwargs):
+        seen.append(kwargs["timeout"])
+        raise OSError("cannot spawn nuclei")
+
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", lambda _: "nuclei")
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", run)
+    result = run_nuclei_scan(
+        ["127.0.0.1:80/tcp", "127.0.0.2:80/tcp"],
+        NucleiConfig(planner_mode="directed", templates_dir=str(tmp_path / "templates"),
+                     network_templates=False, planner_per_host_timeout_seconds=10,
+                     overall_timeout_seconds=60), tmp_path,
+    )
+    assert seen == [10]
+    assert result["coverage"]["plan"]["processes_attempted"] == 1
+    assert result["skipped_reason"] == "nuclei_run_failed"
+    assert not result["coverage"]["ran"] and result["checked_count"] == 0
