@@ -11,7 +11,8 @@ policy, and customer-side verification. It does not repeat what other pages own:
 |---|---|
 | Which release lines are supported, and how to report a vulnerability | [Security policy](../.github/SECURITY.md) |
 | What changed in a release | [CHANGELOG.md](../CHANGELOG.md) |
-| Preparing and validating `0.47-1009-rc1` | [Candidate notes and checklist](releases/0.47-1009-rc1.md) |
+| Preparing and publishing `0.48-1021` | [Release notes and checklist](releases/0.48-1021.md) |
+| The superseded `0.47-1009-rc1` candidate | [Candidate notes](releases/0.47-1009-rc1.md) |
 | Every bundled tool and dataset, with its licence | [Third-party components](third-party.md) |
 | How Pulse runs inside a scan | [Pulse backend](pulse-backend.md) |
 | How Pulse will be distributed | [ADR 0001](adr/0001-pulse-distribution-model.md) — **proposed, not yet decided** |
@@ -74,8 +75,8 @@ the build when they disagree or the version has no pin.
 |---|---|---|
 | `shapoclyack-0.45-0916` | `v1.1.0` | against the release's own `checksums.txt`; there is no pin file at this tag |
 | `shapoclyack-0.46-0922` | `v1.1.0` | against the pinned digest; the pin itself was taken unsigned, because `v1.1.0` predates GenDec's release signing |
-| `shapoclyack-0.47-1009-rc1` (candidate in preparation) | `v1.1.0` | against the pinned digest, and the image records it (below) |
-| next release (`main`) | `v1.3.0` | against the pinned digest (signed release, signature verified by `pulse-pin.sh`), and the image records it |
+| `shapoclyack-0.47-1009-rc1` (superseded candidate) | `v1.1.0` | against the pinned digest, and the image records it (below) |
+| `shapoclyack-0.48-1021` | `v1.4.0` | against the pinned digest (signed release, signature verified by `pulse-pin.sh`), and the image records it |
 
 A support window for a release line ([SECURITY.md](../.github/SECURITY.md#supported-versions))
 covers its Pulse the same way it covers everything else in its images.

@@ -43,8 +43,7 @@ The bare word "agent" always means the Lariska endpoint Agent; anything that cla
 
 Where the procedures for the enterprise features live. Each row links the
 operator procedure first, then the API contract and the variables; all of it is
-on `main` after `shapoclyack-0.46-0922` and included in the prepared
-`0.47-1009-rc1` candidate (see the changelog).
+on `main` and included in `shapoclyack-0.48-1021` (see the changelog).
 
 | Task | Procedure | API and configuration |
 |---|---|---|
@@ -209,21 +208,16 @@ Documentation is part of the feature definition. A behavior change is incomplete
 
 ## Version scope
 
-This documentation index was reconciled with source baseline
-`main @ 633065dec3b6b097235f88b85b6b3724f3c9b245` and the open PR diff
-on **2026-10-21**. The latest published stable release verified on that date is
-`shapoclyack-0.46-0922` (2026-09-22). Downloading that release does not install
-every feature described on `main`. Use the tagged documentation and
-[CHANGELOG.md](../CHANGELOG.md) for its release contract.
+This documentation index was reconciled with `main @ b86aea66` (after #577)
+on **2026-10-21**. The release prepared from it is `shapoclyack-0.48-1021`; see
+[release notes and publication checklist](releases/0.48-1021.md). Until its
+tag and images are published, the latest published stable release is
+`shapoclyack-0.46-0922` (2026-09-22). Use the tagged documentation and
+[CHANGELOG.md](../CHANGELOG.md) for a release's contract.
 
-The `0.47-1009-rc1` candidate is prepared from `main` at `274310a1` plus the
-release-preparation change on **2026-10-09**. See
-[candidate notes and validation checklist](releases/0.47-1009-rc1.md).
-The stable-release references remain `0.46-0922` until a stable successor is
-published.
-
-The candidate remains a historical release-preparation snapshot, not a rolling
-build of current `main`. Additions documented at candidate preparation time:
+The `0.47-1009-rc1` candidate (2026-10-09, [notes](releases/0.47-1009-rc1.md))
+is superseded by `0.48-1021` and has no stable release. Additions documented
+at its preparation time:
 
 | Area | Current guide |
 |---|---|
@@ -252,7 +246,7 @@ handling as described in [Operations](operations.md#tls-revocation-with-a-signed
 
 ### Changes after candidate preparation
 
-These features are in the reviewed `main` baseline and are **unreleased**:
+These features were added after the candidate and ship in `0.48-1021`:
 
 | Area | Guide and delivered scope |
 |---|---|
