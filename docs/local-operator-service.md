@@ -51,7 +51,7 @@ naming its ID. A missing resource and a foreign resource both return 404.
 | `GET /tasks/{task_id}` | Viewer, own task | Durable outcome for polling/reconnect; no repeated action |
 | `POST /tasks/{task_id}/cancel` | Operator, own task | Queued work cancels immediately; running work is cooperatively stopped |
 
-The only admitted task body is:
+An admitted summary task body is:
 
 ```json
 {"tool":"summarize_run","run_id":"approved-run-id","language":"ru"}
@@ -68,14 +68,29 @@ an explicit failure without contacting a model.
 Only five whitelisted nonnegative integer counts may enter inference. Run IDs,
 tenant IDs, usernames, raw banners, findings, arbitrary summary fields, secrets
 and metadata do not enter the prompt. Source bytes are limited to 64 KiB, marker
-to 8 KiB. This narrow reader is not the full hybrid retrieval pipeline of #587.
+to 8 KiB. These limits describe `summarize_run`.
+
+The same endpoint also accepts `tool=analyze_run`. It refreshes the bounded
+[published evidence index](local-operator-retrieval.md), selects at most ten
+finding observations within a 12,000-character context envelope, and submits
+only normalized public identifiers, severity, service and port plus opaque
+source references. IPs, hostnames, package/version strings and arbitrary prose
+are excluded from analysis inference. Missing or empty findings produce a
+deterministic abstention without contacting a provider. Every disclosed source
+is checked again after inference. Structured output permits fixed labels only;
+the server supplies localized text and citations. See the
+[contract evaluation boundary](local-operator-eval.md). Semantic search remains
+unsupported and real model quality remains unverified. Status exposes
+`analysis_task_supported=true`; `analysis_available=false` and
+`runtime_status=not_checked` continue to distinguish implementation from runtime
+acceptance.
 
 ## Queue, recovery and cancellation
 
 Task state is `queued`, `running`, `succeeded`, `failed`, `cancelled` or
 `interrupted`. Admission serializes on the tenant row and enforces
 `OCTO_OPERATOR_QUEUE_LIMIT` across all that tenant's queued/running tasks. The
-same idempotency key and exact session/run/language return the existing task;
+same idempotency key and exact session/run/language/tool return the existing task;
 changed arguments return 409. This does not create a scan or install a patch.
 
 A PostgreSQL advisory leader lock (registered ID 9) selects the worker; a
@@ -122,7 +137,9 @@ Every enabled leader runs a bounded history sweep (20 sessions, once per minute)
 It uses the existing tenant `runs` retention window and honors legal hold, taking
 the tenant lock before rechecking disposition. Queued/running sessions are kept.
 Deleting a session cascades its messages/tasks/reserved proposals/executions.
-Tenant purge lists all five tables explicitly, children before parents.
+Tenant purge lists the five personal-state tables and two shared evidence tables
+explicitly, children before parents. The worker also checks up to 20 derived
+snapshots per sweep, removing invalid sources while honoring legal hold.
 
 Account data-subject export includes only that username's operator records; it
 refuses oversized exports instead of silently omitting records. Erasure removes

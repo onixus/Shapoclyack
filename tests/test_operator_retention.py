@@ -57,3 +57,20 @@ def test_per_tenant_keep_policy_is_used(env):
             updated_at=datetime.now(UTC).replace(tzinfo=None), updated_by="admin"))
     assert retention.sweep(settings) == 0
     assert store.get_session(settings, "default", "operator", session_id)
+
+
+def test_evidence_cleanup_runs_bounded_without_changing_session_count(env, monkeypatch):
+    settings, session_id, _ = env
+    calls = []
+
+    def prune(settings_arg, *, limit):
+        assert settings_arg is settings
+        calls.append(limit)
+        return 17
+
+    monkeypatch.setattr(retention.retrieval, "prune_invalid", prune)
+    assert retention.sweep(settings, limit=100) == 1
+    assert store.get_session(settings, "default", "operator", session_id) is None
+    assert calls == [20]
+    assert retention.sweep(settings, limit=100) == 0
+    assert calls == [20, 20]

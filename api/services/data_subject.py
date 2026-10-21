@@ -215,6 +215,7 @@ SUBJECT_COLUMNS: dict[tuple[str, str], tuple[str, str]] = {
 #: Columns that look like they name an account and do not, so the check in the
 #: test can tell a decision from an omission.
 NOT_SUBJECT_COLUMNS: dict[tuple[str, str], str] = {
+    ("operator_evidence_documents", "content"): "derived allowlisted tenant scan facts; no console identity, conversation or raw source text",
     ("service_tokens", "allowed_cidrs"): "integration source network policy; no console account",
     ("agent_deployments", "username"): "the SSH account on the target host",
     ("assets", "owner_email"): "the asset's owner, tenant business data the tenant edits",

@@ -3513,7 +3513,7 @@ class OperatorTask(Base):
             name="uq_operator_task_idempotency",
         ),
         Index("ix_operator_tasks_queue", "status", "created_at"),
-        CheckConstraint("kind = 'summarize_run'", name="ck_operator_task_kind"),
+        CheckConstraint("kind IN ('summarize_run', 'analyze_run')", name="ck_operator_task_kind"),
         CheckConstraint("language IN ('ru', 'en')", name="ck_operator_task_language"),
         CheckConstraint(
             "status IN ('queued','running','succeeded','failed','cancelled','interrupted')",
@@ -3580,3 +3580,37 @@ class OperatorExecution(Base):
     __table_args__ = (
         CheckConstraint("status = 'reserved'", name="ck_operator_execution_reserved"),
     )
+
+
+class OperatorEvidenceSnapshot(Base):
+    """One atomically replaced, tenant-owned evidence index per published run."""
+
+    __tablename__ = "operator_evidence_snapshots"
+    __table_args__ = (UniqueConstraint("tenant_id", "run_id", name="uq_operator_evidence_run"),)
+    snapshot_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True)
+    run_id: Mapped[str]
+    publication_snapshot: Mapped[str]
+    summary_hash: Mapped[str]
+    findings_hash: Mapped[str]
+    state: Mapped[str]
+    indexed_at: Mapped[datetime]
+    last_checked_at: Mapped[datetime]
+
+
+class OperatorEvidenceDocument(Base):
+    __tablename__ = "operator_evidence_documents"
+    __table_args__ = (
+        ForeignKeyConstraint(["snapshot_id"], ["operator_evidence_snapshots.snapshot_id"], ondelete="CASCADE"),
+        Index("ix_operator_evidence_document_snapshot", "tenant_id", "snapshot_id"),
+    )
+    source_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True)
+    snapshot_id: Mapped[str]
+    source_hash: Mapped[str]
+    document_hash: Mapped[str]
+    artifact: Mapped[str]
+    content: Mapped[str] = mapped_column(Text)
+    cve: Mapped[str]
+    package: Mapped[str]
+    observed_at: Mapped[datetime]

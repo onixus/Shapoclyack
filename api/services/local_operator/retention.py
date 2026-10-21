@@ -6,6 +6,7 @@ from sqlalchemy import delete, exists, select
 from api.db import models, tenant_scope
 from api.db.engine import get_session
 from api.services import audit, legal_hold, retention_policy
+from api.services.local_operator import retrieval
 
 
 def sweep(settings, *, limit=20):
@@ -41,4 +42,8 @@ def sweep(settings, *, limit=20):
                     audit.record(db, audit.system_context("operator-retention"), action="operator.session.expire",
                                  resource_type="operator", resource_id=session_id, tenant_id=tenant_id)
                     removed += int(deleted)
+        # Derived scan chunks expire with their authoritative sources, even
+        # when no personal conversation is old enough to expire. Keep the
+        # return value specific to deleted personal sessions.
+        retrieval.prune_invalid(settings, limit=20)
         return removed

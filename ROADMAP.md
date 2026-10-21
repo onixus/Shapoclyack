@@ -803,9 +803,10 @@ completion of those issues.
 and [ADR 0004](docs/adr/0004-local-operator.md). Optional inference-provider and
 MCP read adapters ([#597](https://github.com/onixus/Shapoclyack/issues/597),
 [#596](https://github.com/onixus/Shapoclyack/issues/596)) are implemented in this
-change; local runtime, a durable
-worker, authorized retrieval, analysis, confirmed scan/remediation execution,
-console and security/quality acceptance (#585–#593) remain planned. The default
+change. A durable worker, exact/full-text retrieval and selection-only analysis
+are implemented as bounded pilots; local runtime, semantic retrieval, measured
+model quality, confirmed scan/remediation execution, console and final acceptance
+(#585–#593) remain open. The default
 is local offline operation with the optional inference adapter disabled;
 OpenRouter and an explicitly configured OmniRouter-compatible endpoint require
 hosted-provider opt-in. Qwen3.5-9B Q4_K_M / 8 GiB CUDA / 8192 context is a candidate
@@ -891,6 +892,10 @@ places is a status that will disagree with itself. This file links; the issues d
 Operator delivery continuation (#586): durable personal sessions/tasks, PostgreSQL
 queue serialization and fencing, separate worker, bounded count-summary pilot,
 current-authority/source rechecks, legal-hold-aware retention and personal-data
-export/deletion. See [service boundary](docs/local-operator-service.md). Full hybrid
-retrieval, analysis evaluation, scan proposals/actions, UI and physical runtime
-acceptance remain with #585 and #587–#593.
+export/deletion. See [service boundary](docs/local-operator-service.md).
+Continuation #587/#588 adds a tenant-scoped published evidence index, exact CVE
+and package lookup, PostgreSQL full-text search, source-bound evidence API and
+selection-only RU/EN analysis. Frozen contract cases validate rejection and
+binding; they do not measure actual Qwen accuracy. Semantic embeddings, real
+model evaluation, scan proposals/actions, UI and physical runtime acceptance
+remain with #585 and #587–#593.

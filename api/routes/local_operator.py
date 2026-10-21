@@ -100,6 +100,7 @@ class OperatorStatus(BaseModel):
     external_inference: bool
     runtime_status: Literal["not_checked"] = "not_checked"
     analysis_available: bool = False
+    analysis_task_supported: bool = True
     task_submission_enabled: bool = False
     durable_sessions_available: bool = True
     quality_status: Literal["quality_unverified"] = "quality_unverified"
@@ -111,7 +112,7 @@ class CreateSession(BaseModel):
 
 class SubmitTask(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    tool: Literal["summarize_run"]
+    tool: Literal["summarize_run", "analyze_run"]
     run_id: Identifier
     language: Literal["ru", "en"] = "ru"
 
@@ -228,6 +229,7 @@ def submit_task(
         settings,
         principal,
         "submit_task",
+        kind=body.tool,
         session_id=session_id,
         run_id=body.run_id,
         language=body.language,

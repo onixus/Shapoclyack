@@ -151,6 +151,9 @@ def read_evidence(settings, principal, run_id):
 async def execute_task(settings, task):
     if not settings.operator_enabled or not settings.operator_worker_enabled:
         raise GatewayError("operator_disabled")
+    if task.get("kind") == "analyze_run" and task.get("language") in {"ru", "en"}:
+        from .analyzer_gateway import execute
+        return await execute(settings, task)
     if task.get("kind") != "summarize_run" or task.get("language") not in {"ru", "en"}:
         raise GatewayError("operator_unsupported_task")
     principal = await run_in_threadpool(authorize_actor, settings, task)

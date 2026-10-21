@@ -220,9 +220,11 @@ def submit_task(
     idempotency_key,
     *,
     auth_session_id=None,
+    kind="summarize_run",
 ):
     if (
-        language not in {"ru", "en"}
+        kind not in {"summarize_run", "analyze_run"}
+        or language not in {"ru", "en"}
         or not run_id
         or len(run_id) > 256
         or not idempotency_key
@@ -245,10 +247,11 @@ def submit_task(
             )
         )
         if previous is not None:
-            if (previous.session_id, previous.run_id, previous.language) != (
+            if (previous.session_id, previous.run_id, previous.language, previous.kind) != (
                 session_id,
                 run_id,
                 language,
+                kind,
             ):
                 raise OperatorStoreError("idempotency_conflict")
             return _dict(previous)
@@ -270,7 +273,7 @@ def submit_task(
             username=username,
             session_id=session_id,
             actor_token_version=user.token_version if user else 0,
-            kind="summarize_run",
+            kind=kind,
             run_id=run_id,
             language=language,
             idempotency_key=idempotency_key,
