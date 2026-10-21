@@ -391,3 +391,123 @@ def test_build_reports_geoip_mmdb_fixture(tmp_path: Path):
     assert geo["81.2.69.142"]["latitude"] == pytest.approx(51.51, abs=0.1)
     alive = json.loads((out / "alive_hosts.json").read_text(encoding="utf-8"))
     assert alive[0]["longitude"] == pytest.approx(-0.09, abs=0.1)
+
+
+@pytest.fixture
+def cvss4_fetcher():
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "fetch-cvss4-db.py"
+    spec = importlib.util.spec_from_file_location("cvss4_pagination_tests", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _pagination_rows(total):
+    return [
+        {"cve": {"id": f"CVE-2026-{10000 + index}", "metrics": {
+            "cvssMetricV40": [{"cvssData": {
+                "baseScore": 8.0, "version": "4.0", "vectorString": "CVSS:4.0/test",
+            }}],
+        } if index % 2 == 0 else {}}}
+        for index in range(total)
+    ]
+
+
+@pytest.mark.parametrize("total", [0, 1, 2, 5, 6])
+def test_nvd_selected_page_size_covers_every_offset(cvss4_fetcher, monkeypatch, total):
+    from urllib.parse import parse_qs, urlsplit
+
+    rows = _pagination_rows(total)
+    calls = []
+    covered = []
+
+    def request(url, key):
+        params = parse_qs(urlsplit(url).query)
+        offset, size = int(params["startIndex"][0]), int(params["resultsPerPage"][0])
+        assert size == 2
+        assert params["lastModStartDate"] == ["test-window"]
+        calls.append(offset)
+        page = rows[offset:offset + size]
+        covered.extend(page)
+        return {"totalResults": total, "startIndex": offset, "vulnerabilities": page}
+
+    monkeypatch.setattr(cvss4_fetcher, "_request_json", request)
+    entries, complete = cvss4_fetcher.harvest(
+        {"lastModStartDate": "test-window"}, None, 0,
+        label="range", page_size=2,
+    )
+    assert calls == (list(range(0, total, 2)) or [0])
+    assert covered == rows  # Includes CVEs without v4: filtering cannot shift offsets.
+    assert set(entries) == {row["cve"]["id"] for row in rows if row["cve"]["metrics"]}
+    assert complete
+
+
+def test_nvd_parallel_pages_equal_serial_union(cvss4_fetcher, monkeypatch):
+    import threading
+    from urllib.parse import parse_qs, urlsplit
+
+    rows = _pagination_rows(13)
+    results = []
+    for workers in (1, 4):
+        completed = []
+        later_page = threading.Event()
+
+        def request(url, key):
+            params = parse_qs(urlsplit(url).query)
+            offset, size = int(params["startIndex"][0]), int(params["resultsPerPage"][0])
+            assert size == 3
+            if workers == 4 and offset == 3:
+                assert later_page.wait(3), "parallel worker did not fetch the later page"
+            completed.append(offset)
+            if offset == 9:
+                later_page.set()
+            return {"totalResults": len(rows), "startIndex": offset,
+                    "vulnerabilities": rows[offset:offset + size]}
+
+        monkeypatch.setattr(cvss4_fetcher, "_request_json", request)
+        entries, complete = cvss4_fetcher.harvest(
+            {}, None, 0, label="parallel", workers=workers, page_size=3,
+        )
+        assert complete
+        assert sorted(completed) == [0, 3, 6, 9, 12]
+        if workers == 4:
+            assert completed.index(9) < completed.index(3)
+        results.append(entries)
+    assert results[0] == results[1]
+    assert len(results[0]) == 7
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "2001", "abc", "1.5"])
+def test_nvd_cli_rejects_invalid_page_size_before_fetch(cvss4_fetcher, monkeypatch, value):
+    monkeypatch.setattr("sys.argv", ["fetch-cvss4-db.py", f"--page-size={value}"])
+    monkeypatch.setattr(cvss4_fetcher, "nvd_url", lambda: pytest.fail("must reject before network setup"))
+    with pytest.raises(SystemExit) as exc:
+        cvss4_fetcher.main()
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("mode", ["full", "incremental"])
+@pytest.mark.parametrize("value,expected", [(None, 500), ("1", 1), ("2000", 2000)])
+def test_nvd_cli_passes_selected_page_size_to_harvest(
+    cvss4_fetcher, monkeypatch, tmp_path, value, expected, mode,
+):
+    args = ["fetch-cvss4-db.py", "--sleep", "0",
+            "--output", str(tmp_path / "cvss4.json")]
+    args.extend(["--full"] if mode == "full" else ["--last-mod-days", "1"])
+    if value is not None:
+        args.extend(["--page-size", value])
+    monkeypatch.setattr("sys.argv", args)
+    monkeypatch.delenv("NVD_API_KEY", raising=False)
+    monkeypatch.setattr(cvss4_fetcher, "nvd_url", lambda: "https://nvd.example/cves")
+    calls = []
+
+    def harvest(params, api_key, sleep_seconds, **kwargs):
+        calls.append(kwargs["page_size"])
+        assert ("lastModStartDate" in params) == (mode == "incremental")
+        return {}, True
+
+    monkeypatch.setattr(cvss4_fetcher, "harvest", harvest)
+    assert cvss4_fetcher.main() == 0
+    assert calls == [expected]

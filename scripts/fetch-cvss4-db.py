@@ -72,12 +72,13 @@ def nvd_url() -> str:
     """The CVE API endpoint this run talks to: ``$NVD_API_URL`` or NVD itself."""
     return feed_fetch.feed_url(NVD_URL_VAR, NVD_URL)
 
-# NVD's documented maximum for the CVE API.
-PAGE_SIZE = 2000
+# Smaller pages reduce response size under the existing body deadline.
+PAGE_SIZE = 500
+MAX_PAGE_SIZE = 2000
 
 # NVD asks for >=6s between anonymous requests (5 req/30s) and tolerates ~0.6s
 # with a key (50 req/30s). Both are padded slightly: a 429 costs far more than
-# the padding does, and --full issues ~190 requests back to back.
+# the padding does, and --full issues many requests back to back.
 SLEEP_ANONYMOUS = 6.5
 SLEEP_KEYED = 0.8
 
@@ -312,17 +313,20 @@ def harvest(
     *,
     label: str,
     workers: int = 1,
+    page_size: int = PAGE_SIZE,
 ) -> tuple[dict, bool]:
     """Page through a CVE query, keeping only CVEs that carry a real v4 metric.
 
     Returns (entries, complete). `complete` is False when any page failed, which
     the caller uses to refuse a destructive overwrite from partial data.
     """
+    if not 1 <= page_size <= MAX_PAGE_SIZE:
+        raise ValueError(f"page_size must be between 1 and {MAX_PAGE_SIZE}")
     pacer = _Pacer(sleep_seconds)
 
     def fetch_at(start_index: int) -> dict | None:
         params = dict(base_params)
-        params.update({"resultsPerPage": PAGE_SIZE, "startIndex": start_index})
+        params.update({"resultsPerPage": page_size, "startIndex": start_index})
         pacer.wait()
         return _request_json(f"{nvd_url()}?{urllib.parse.urlencode(params)}", api_key)
 
@@ -334,7 +338,7 @@ def harvest(
         return {}, False
 
     total = int(first.get("totalResults") or 0)
-    page_count = (total + PAGE_SIZE - 1) // PAGE_SIZE
+    page_count = (total + page_size - 1) // page_size
     print(f"==> {label}: {total} CVEs to scan ({page_count} pages, "
           # flush: this runs for many minutes with stdout redirected to a log
           # or captured by kubectl, where block buffering would hide progress
@@ -349,7 +353,7 @@ def harvest(
     def run_page(start_index: int) -> tuple[dict | None, int]:
         return fetch_at(start_index), start_index
 
-    offsets = [i * PAGE_SIZE for i in range(1, page_count)]
+    offsets = [i * page_size for i in range(1, page_count)]
     if offsets:
         with futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             for payload, start_index in pool.map(run_page, offsets):
@@ -365,6 +369,16 @@ def harvest(
                           f"{len(entries)} with CVSS v4", flush=True)
 
     return entries, complete
+
+
+def _page_size_arg(value: str) -> int:
+    try:
+        size = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("page size must be an integer") from exc
+    if not 1 <= size <= MAX_PAGE_SIZE:
+        raise argparse.ArgumentTypeError(f"page size must be between 1 and {MAX_PAGE_SIZE}")
+    return size
 
 
 def main() -> int:
@@ -398,6 +412,12 @@ def main() -> int:
         default=None,
         help="Minimum spacing between request starts "
              "(default: 6.5s anonymous, 0.8s with NVD_API_KEY)",
+    )
+    parser.add_argument(
+        "--page-size",
+        type=_page_size_arg,
+        default=PAGE_SIZE,
+        help=f"CVEs per page, 1..{MAX_PAGE_SIZE} (default: {PAGE_SIZE})",
     )
     parser.add_argument(
         "--workers",
@@ -509,7 +529,8 @@ def main() -> int:
             label = f"last {args.last_mod_days}d"
 
         harvested, complete = harvest(
-            params, api_key, sleep_seconds, label=label, workers=workers
+            params, api_key, sleep_seconds, label=label, workers=workers,
+            page_size=args.page_size,
         )
 
         # A full rebuild that came back empty means the run failed, not that NVD
