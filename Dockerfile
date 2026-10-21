@@ -287,7 +287,12 @@ COPY scripts /app/scripts
 #     is the one that outlives the operator's memory of this build log. A dev or
 #     branch build keeps warning, so nobody is blocked by a bad network.
 ARG ENRICHMENT_STRICT=0
-RUN set -eu; \
+# Optional NVD key is available only to this enrichment step, never an image ENV.
+RUN --mount=type=secret,id=nvd_api_key,required=false \
+    set -eu; \
+    if [ -s /run/secrets/nvd_api_key ]; then \
+      NVD_API_KEY="$(cat /run/secrets/nvd_api_key)"; export NVD_API_KEY; \
+    fi; \
     status=0; bash scripts/fetch-enrichment.sh || status=$?; \
     if [ "$status" -ge 2 ]; then \
       if [ "${ENRICHMENT_STRICT}" = "1" ]; then \

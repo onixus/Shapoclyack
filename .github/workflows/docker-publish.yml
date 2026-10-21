@@ -128,6 +128,7 @@ jobs:
           # Private GenDec release assets for Pulse binary stage.
           secrets: |
             github_token=${{ secrets.GENDEC_READ_TOKEN || secrets.GITHUB_TOKEN }}
+            nvd_api_key=${{ secrets.NVD_API_KEY }}
           # Release images pin component versions here so the matrix for this
           # Shapoclyack release is explicit.
           build-args: |

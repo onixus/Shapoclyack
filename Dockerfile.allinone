@@ -319,7 +319,12 @@ ARG ENRICHMENT_STRICT=0
 # ADVISORY_FETCH=0 turns it back off for a build with no route to the vendors'
 # feeds; the image then carries the seeds and says so on the System page.
 ARG ADVISORY_FETCH=1
-RUN set -eu; \
+# Optional NVD key is available only to this enrichment step, never an image ENV.
+RUN --mount=type=secret,id=nvd_api_key,required=false \
+    set -eu; \
+    if [ -s /run/secrets/nvd_api_key ]; then \
+      NVD_API_KEY="$(cat /run/secrets/nvd_api_key)"; export NVD_API_KEY; \
+    fi; \
     export OCTO_ADVISORY_FETCH_ENABLED="$( [ "${ADVISORY_FETCH}" = "1" ] && echo true || echo false )"; \
     status=0; bash scripts/fetch-enrichment.sh || status=$?; \
     if [ "$status" -ge 2 ]; then \

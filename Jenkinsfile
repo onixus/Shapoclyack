@@ -484,7 +484,11 @@ pipeline {
             withCredentials([string(credentialsId: 'GENDEC_READ_TOKEN', variable: 'GH_TOKEN')]) {
               sh """
                 set -eu
-                DOCKER_BUILDKIT=1 docker build \
+                set --
+                if [ -s "\${NVD_API_KEY_FILE:-/run/secrets/nvd_api_key}" ]; then
+                  set -- --secret "id=nvd_api_key,src=\${NVD_API_KEY_FILE:-/run/secrets/nvd_api_key}"
+                fi
+                DOCKER_BUILDKIT=1 docker build "\$@" \
                   --secret id=github_token,env=GH_TOKEN \
                   -t ${IMAGE_TAG} .
               """
@@ -625,7 +629,14 @@ pipeline {
                 def tag = "${IMAGE_TAG}-${kind}"
                 try {
                   withCredentials([string(credentialsId: 'GENDEC_READ_TOKEN', variable: 'GH_TOKEN')]) {
-                    sh "docker build --secret id=github_token,env=GH_TOKEN -f Dockerfile.${kind} -t ${tag} ."
+                    sh """
+                      set -eu
+                      set --
+                      if [ -s "\${NVD_API_KEY_FILE:-/run/secrets/nvd_api_key}" ]; then
+                        set -- --secret "id=nvd_api_key,src=\${NVD_API_KEY_FILE:-/run/secrets/nvd_api_key}"
+                      fi
+                      docker build "\$@" --secret id=github_token,env=GH_TOKEN -f Dockerfile.${kind} -t ${tag} .
+                    """
                   }
                   sh """
                     set -eu

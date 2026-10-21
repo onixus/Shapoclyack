@@ -360,6 +360,30 @@ which is how a newer baseline reaches a volume that already has one — the seed
 "floor" in `fetch-enrichment.sh` only fires when the file is absent, and an
 incremental run only adds recently-modified CVEs.
 
+### NVD key during image builds
+
+Scanner and all-in-one builds accept an optional BuildKit secret named
+`nvd_api_key` for their enrichment refresh. Set `NVD_API_KEY_FILE` to a protected
+key file outside the checkout, then pass its path without printing its contents:
+
+```sh
+docker build --secret id=nvd_api_key,src="$NVD_API_KEY_FILE" -t shapoclyack-scanner .
+docker build --secret id=nvd_api_key,src="$NVD_API_KEY_FILE" -f Dockerfile.allinone -t shapoclyack-aio .
+```
+
+The mounted file supplies `NVD_API_KEY` only during the enrichment `RUN`; it is
+not copied into the image or saved as an image environment variable. Do not
+pass the key through build arguments or enable shell tracing around it.
+Without a nonempty secret, refresh uses NVD's anonymous rate limit.
+GitHub Actions accepts the repository secret `NVD_API_KEY` for both image CI
+and publication; an absent secret leaves the anonymous path available. Jenkins
+accepts the build-client file through `NVD_API_KEY_FILE`, configured outside
+the repository, or the default `/run/secrets/nvd_api_key` on its build agent.
+Protect that file with mode `0600`; temporary provisioning must remove it after
+the build. Runtime refresh jobs still need their own `NVD_API_KEY`.
+BuildKit secret changes do not invalidate cached enrichment layers: use a fresh
+build or invalidate that layer when verifying a newly supplied key.
+
 ### NVD API: known traps
 
 Every one of these cost real debugging time. They are the reason the fetcher
