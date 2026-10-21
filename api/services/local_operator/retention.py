@@ -14,10 +14,16 @@ def sweep(settings, *, limit=20):
     with tenant_scope.system("operator history retention"):
         with get_session(settings.postgres_url) as db:
             plan = retention_policy.load_plan(settings, "runs", session=db)
+            active = exists(select(models.OperatorTask.task_id).where(
+                models.OperatorTask.session_id == models.OperatorSession.session_id,
+                models.OperatorTask.status.in_(["queued", "running"])))
             candidates = db.execute(select(models.OperatorSession.session_id, models.OperatorSession.tenant_id)
+                .join(models.Tenant, models.Tenant.tenant_id == models.OperatorSession.tenant_id)
                 .where(retention_policy.expired_clause(plan, tenant_column=models.OperatorSession.tenant_id,
-                    time_column=models.OperatorSession.updated_at, now=moment))
-                .order_by(models.OperatorSession.updated_at).limit(max(1, min(limit, 100)))).all()
+                    time_column=models.OperatorSession.updated_at, now=moment),
+                    models.Tenant.status == "active", ~active)
+                .order_by(models.OperatorSession.updated_at, models.OperatorSession.session_id)
+                .limit(max(1, min(limit, 100)))).all()
         removed = 0
         for session_id, tenant_id in candidates:
             with get_session(settings.postgres_url) as db:

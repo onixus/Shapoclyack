@@ -34,7 +34,10 @@ be available; its deployment and measured GPU behavior remain #585/#593.
 Every operator request requires an authenticated **console** user and an explicit
 nonblank `tenant_id` query parameter, including for platform administrators.
 Scoped service tokens fail closed. Personal reads and mutations recheck the
-console session family under an account-row lock inside the database transaction;
+console session family and current tenant role inside the database transaction.
+Authority lookup sees all memberships, so another tenant's grant cannot restore
+the legacy `default` fallback. With PostgreSQL RLS enabled, the same transaction
+then drops to the tenant role before accessing personal data, retaining its account/session locks;
 a request paused before account deletion cannot resume into a recreated account.
 Session/task ownership is always the pair
 `tenant_id + username`: an administrator cannot read another user's history by
@@ -133,7 +136,10 @@ Audit rows omit raw prompts, generated answer bodies and upstream exception text
 Provider failures use a closed set of safe operational error codes. Personal
 answer bodies live in the tenant/actor-scoped task and message tables.
 
-Every enabled leader runs a bounded history sweep (20 sessions, once per minute).
+Every enabled leader runs a bounded history sweep (20 eligible sessions, once per minute).
+Suspended tenants and queued/running sessions are excluded before the batch limit,
+so they cannot indefinitely block another tenant's expired history. Protection is
+checked again before deletion.
 It uses the existing tenant `runs` retention window and honors legal hold, taking
 the tenant lock before rechecking disposition. Queued/running sessions are kept.
 Deleting a session cascades its messages/tasks/reserved proposals/executions.

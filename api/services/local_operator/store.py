@@ -5,12 +5,14 @@ not requeued; a running cancellation retains its slot until worker cleanup.
 """
 
 import json
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from uuid import uuid4
 
 from sqlalchemy import delete, func, select, text
 
+from api.db import tenant_scope
 from api.db.engine import get_session as get_session_db
 from api.db.models import (
     OperatorMessage,
@@ -19,8 +21,9 @@ from api.db.models import (
     SessionFamily,
     Tenant,
     User,
+    UserTenant,
 )
-from api.services import audit, legal_hold
+from api.services import audit, legal_hold, rbac
 from api.services.leader_lock import LOCK_CLASS_ID, OPERATOR_QUEUE_LOCK_ID
 
 
@@ -105,6 +108,44 @@ def _lock_tenant(db, tenant_id):
         raise OperatorStoreError("not_found")
 
 
+def _require_current_role(db, user, tenant_id, minimum_rank):
+    if user.role == "admin":
+        return
+    # All memberships matter: another tenant's grant disables the legacy
+    # no-membership default fallback. Resolve before narrowing this transaction.
+    grants = dict(db.execute(select(UserTenant.tenant_id, UserTenant.role).where(
+        UserTenant.username == user.username)).all())
+    role = grants.get(tenant_id)
+    if role is None and not grants and tenant_id == "default":
+        role = user.role
+    if role is None:
+        raise OperatorStoreError("access_revoked")
+    resolved = rbac.role_in_session(db, tenant_id, role)
+    # Match the route's coarse reader contract for deleted/unknown custom roles:
+    # rank 1 with no permissions, never operator authority.
+    rank = resolved.rank if resolved is not None else 1
+    if rank < minimum_rank:
+        raise OperatorStoreError("access_revoked")
+
+
+@contextmanager
+def _personal_db(settings, tenant_id, username, auth_session_id, *, writer=False):
+    # SID-less calls are trusted internal callers, not console entry points.
+    scope = (tenant_scope.system("operator current console authority")
+             if auth_session_id is not None else nullcontext())
+    with scope, get_session_db(settings.postgres_url) as db:
+        if writer or auth_session_id is not None:
+            user = _lock_actor(db, settings, username, auth_session_id)
+        if writer:
+            _lock_tenant(db, tenant_id)
+        if auth_session_id is not None:
+            _require_current_role(db, user, tenant_id, 2 if writer else 1)
+            # Keep RLS on personal data, without a second connection or a commit
+            # between the fresh authority check and the protected operation.
+            tenant_scope.narrow_transaction(db, tenant_id)
+        yield db
+
+
 def _queue_lock(db):
     if db.get_bind().dialect.name == "postgresql":
         db.execute(
@@ -150,9 +191,7 @@ def _audit(db, row, action):
 
 
 def create_session(settings, tenant_id, username, *, auth_session_id=None):
-    with get_session_db(settings.postgres_url) as db:
-        _lock_actor(db, settings, username, auth_session_id)
-        _lock_tenant(db, tenant_id)
+    with _personal_db(settings, tenant_id, username, auth_session_id, writer=True) as db:
         now = _now()
         row = OperatorSession(
             session_id=str(uuid4()),
@@ -170,9 +209,7 @@ def create_session(settings, tenant_id, username, *, auth_session_id=None):
 def list_sessions(
     settings, tenant_id, username, limit=20, offset=0, *, auth_session_id=None
 ):
-    with get_session_db(settings.postgres_url) as db:
-        if auth_session_id is not None:
-            _lock_actor(db, settings, username, auth_session_id)
+    with _personal_db(settings, tenant_id, username, auth_session_id) as db:
         query = _owned(OperatorSession, tenant_id, username)
         total = db.scalar(select(func.count()).select_from(query.subquery()))
         rows = db.scalars(
@@ -186,9 +223,7 @@ def list_sessions(
 
 
 def get_session(settings, tenant_id, username, session_id, *, auth_session_id=None):
-    with get_session_db(settings.postgres_url) as db:
-        if auth_session_id is not None:
-            _lock_actor(db, settings, username, auth_session_id)
+    with _personal_db(settings, tenant_id, username, auth_session_id) as db:
         row = db.scalar(
             _owned(OperatorSession, tenant_id, username).where(
                 OperatorSession.session_id == session_id
@@ -231,9 +266,7 @@ def submit_task(
         or len(idempotency_key) > 128
     ):
         raise OperatorStoreError("invalid_input")
-    with get_session_db(settings.postgres_url) as db:
-        _lock_actor(db, settings, username, auth_session_id)
-        _lock_tenant(db, tenant_id)
+    with _personal_db(settings, tenant_id, username, auth_session_id, writer=True) as db:
         conversation = db.scalar(
             _owned(OperatorSession, tenant_id, username)
             .where(OperatorSession.session_id == session_id)
@@ -290,9 +323,7 @@ def submit_task(
 
 
 def get_task(settings, tenant_id, username, task_id, *, auth_session_id=None):
-    with get_session_db(settings.postgres_url) as db:
-        if auth_session_id is not None:
-            _lock_actor(db, settings, username, auth_session_id)
+    with _personal_db(settings, tenant_id, username, auth_session_id) as db:
         row = db.scalar(
             _owned(OperatorTask, tenant_id, username).where(
                 OperatorTask.task_id == task_id
@@ -302,9 +333,7 @@ def get_task(settings, tenant_id, username, task_id, *, auth_session_id=None):
 
 
 def cancel_task(settings, tenant_id, username, task_id, *, auth_session_id=None):
-    with get_session_db(settings.postgres_url) as db:
-        _lock_actor(db, settings, username, auth_session_id)
-        _lock_tenant(db, tenant_id)
+    with _personal_db(settings, tenant_id, username, auth_session_id, writer=True) as db:
         row = db.scalar(
             _owned(OperatorTask, tenant_id, username)
             .where(OperatorTask.task_id == task_id)
@@ -322,9 +351,7 @@ def cancel_task(settings, tenant_id, username, task_id, *, auth_session_id=None)
 
 
 def delete_session(settings, tenant_id, username, session_id, *, auth_session_id=None):
-    with get_session_db(settings.postgres_url) as db:
-        _lock_actor(db, settings, username, auth_session_id)
-        _lock_tenant(db, tenant_id)
+    with _personal_db(settings, tenant_id, username, auth_session_id, writer=True) as db:
         row = db.scalar(
             _owned(OperatorSession, tenant_id, username)
             .where(OperatorSession.session_id == session_id)
