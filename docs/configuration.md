@@ -814,7 +814,11 @@ OCTO_OPERATOR_MAX_OUTPUT_TOKENS
 OCTO_OPERATOR_MAX_RESPONSE_BYTES
 OCTO_OPERATOR_MODEL
 OCTO_OPERATOR_PROVIDER
+OCTO_OPERATOR_QUEUE_LIMIT
 OCTO_OPERATOR_TIMEOUT_SECONDS
+OCTO_OPERATOR_WORKER_ENABLED
+OCTO_OPERATOR_WORKER_LEASE_SECONDS
+OCTO_OPERATOR_WORKER_POLL_SECONDS
 OCTO_OTEL_EXPORTER_OTLP_ENDPOINT
 OCTO_OTEL_SERVICE_NAME
 OCTO_OTEL_TRACES_SAMPLER_RATIO
@@ -1713,7 +1717,7 @@ read-only MCP transport is in [mcp.md](mcp.md). Both features default to off.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OCTO_OPERATOR_ENABLED` | `false` | Enable operator provider configuration and authenticated configuration status. Does not enable a durable analysis workflow. |
+| `OCTO_OPERATOR_ENABLED` | `false` | Enable operator configuration, personal durable sessions/history and the bounded pilot task API. The separate worker requires its own flag. |
 | `OCTO_OPERATOR_PROVIDER` | `local` | `local`, `openrouter`, or `omnirouter`; no automatic provider fallback. |
 | `OCTO_OPERATOR_BASE_URL` | *(empty)* | Local defaults to `http://127.0.0.1:8080/v1`, OpenRouter to `https://openrouter.ai/api/v1`; OmniRouter requires an explicit administrator-owned URL. |
 | `OCTO_OPERATOR_MODEL` | `Qwen3.5-9B-Q4_K_M` | Model alias passed to the server; this name does not verify installed weights or provenance. Select a provider model explicitly for hosted mode. |
@@ -1728,7 +1732,21 @@ read-only MCP transport is in [mcp.md](mcp.md). Both features default to off.
 
 `GET /api/operator/status` requires a tenant-authenticated viewer. It reports
 configuration only, with `runtime_status=not_checked`,
-`analysis_available=false`, and `durable_sessions_available=false`. It makes
+`analysis_available=false`, `task_submission_enabled` as a configuration switch, `quality_status=quality_unverified`, and `durable_sessions_available=true`. This does not prove a worker or model is reachable. It makes
 no provider request and returns no endpoint address or credential. Disabled
 returns 404; invalid enabled configuration returns 503. Startup validates an
 enabled provider configuration before accepting traffic.
+
+
+### Standalone operator service
+
+[Durable operator service](local-operator-service.md) documents migration, API,
+separate worker, cancellations, recovery and retention. No worker starts in the API
+process.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_OPERATOR_WORKER_ENABLED` | `false` | Permit the separate worker and pilot task admission. Requires `OCTO_OPERATOR_ENABLED=true`. |
+| `OCTO_OPERATOR_WORKER_POLL_SECONDS` | `2` | Poll period, finite and positive, at most 60 seconds. In-flight cancellation checks occur at most 2 seconds apart. |
+| `OCTO_OPERATOR_WORKER_LEASE_SECONDS` | `180` | Claim lease; must exceed provider timeout by at least 30 seconds and be at most 3600 seconds. Expired work becomes interrupted, never automatically replayed. |
+| `OCTO_OPERATOR_QUEUE_LIMIT` | `20` | Per-tenant total queued plus running tasks, 1..100. Replay of the same request does not consume another slot. |

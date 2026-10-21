@@ -886,3 +886,11 @@ opt-in OTLP on the API). Agent_plan Track D (S8/S10) is merged, so no Track A it
 
 **Track B and C statuses live in their issues**, not here — a status duplicated in two
 places is a status that will disagree with itself. This file links; the issues decide.
+
+
+Operator delivery continuation (#586): durable personal sessions/tasks, PostgreSQL
+queue serialization and fencing, separate worker, bounded count-summary pilot,
+current-authority/source rechecks, legal-hold-aware retention and personal-data
+export/deletion. See [service boundary](docs/local-operator-service.md). Full hybrid
+retrieval, analysis evaluation, scan proposals/actions, UI and physical runtime
+acceptance remain with #585 and #587–#593.

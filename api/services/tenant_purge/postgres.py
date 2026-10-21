@@ -54,6 +54,12 @@ OUTBOX_TABLES = ("nats_outbox", "run_publications")
 #: cascades from its parent it is still listed, and first: the cascade would
 #: work, in one statement the size of the tenant.
 POSTGRES_TABLES = (
+    # Operator state: journals and tasks before their personal sessions.
+    "operator_executions",
+    "operator_proposals",
+    "operator_messages",
+    "operator_tasks",
+    "operator_sessions",
     # Findings and their history.
     "vulnerability_events",
     "software_cve_matches",

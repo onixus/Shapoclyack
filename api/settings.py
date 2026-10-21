@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import socket
 from dataclasses import dataclass, field
@@ -143,6 +144,11 @@ class Settings:
     operator_max_response_bytes: int = 262144
     operator_max_input_chars: int = 24000
     operator_max_output_tokens: int = 1024
+    # Orchestration is a separate process; enabling the API never starts it.
+    operator_worker_enabled: bool = False
+    operator_worker_poll_seconds: float = 2.0
+    operator_worker_lease_seconds: int = 180
+    operator_queue_limit: int = 20
     mcp_enabled: bool = False
     mcp_allowed_origins: list[str] = field(default_factory=list)
     jwt_secret: str = DEFAULT_JWT_SECRET
@@ -2084,6 +2090,11 @@ def load_settings() -> Settings:
         operator_max_response_bytes=int(os.environ.get("OCTO_OPERATOR_MAX_RESPONSE_BYTES", "262144")),
         operator_max_input_chars=int(os.environ.get("OCTO_OPERATOR_MAX_INPUT_CHARS", "24000")),
         operator_max_output_tokens=int(os.environ.get("OCTO_OPERATOR_MAX_OUTPUT_TOKENS", "1024")),
+        operator_worker_enabled=os.environ.get("OCTO_OPERATOR_WORKER_ENABLED", "false").strip().lower()
+        in {"1", "true", "yes"},
+        operator_worker_poll_seconds=float(os.environ.get("OCTO_OPERATOR_WORKER_POLL_SECONDS", "2")),
+        operator_worker_lease_seconds=int(os.environ.get("OCTO_OPERATOR_WORKER_LEASE_SECONDS", "180")),
+        operator_queue_limit=int(os.environ.get("OCTO_OPERATOR_QUEUE_LIMIT", "20")),
         mcp_enabled=os.environ.get("OCTO_MCP_ENABLED", "false").strip().lower()
         in {"1", "true", "yes"},
         mcp_allowed_origins=[
@@ -2660,6 +2671,14 @@ def load_settings() -> Settings:
             OperatorConfig.from_settings(settings)
         except ValueError as exc:
             raise InsecureConfigurationError("Invalid operator configuration: " + str(exc)) from None
+
+    if settings.operator_worker_enabled:
+        if (not settings.operator_enabled
+                or not math.isfinite(settings.operator_worker_poll_seconds)
+                or not 0 < settings.operator_worker_poll_seconds <= 60
+                or not settings.operator_timeout_seconds + 30 <= settings.operator_worker_lease_seconds <= 3600
+                or not 1 <= settings.operator_queue_limit <= 100):
+            raise InsecureConfigurationError("Invalid operator worker configuration")
 
     if settings.idp_authoritative and not (settings.oidc_role_map or settings.idp_group_map):
         # Not a refusal, and not obeyed either: with nothing mapped, every SSO

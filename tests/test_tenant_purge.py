@@ -125,6 +125,11 @@ def _forget_custom_roles(settings: Settings) -> None:
 #: below would violate: one allowed value each.
 _CHECKED_VALUES: dict[tuple[str, str], Any] = {
     ("agent_client_certs", "source"): "csr",
+    ("operator_tasks", "kind"): "summarize_run",
+    ("operator_tasks", "language"): "ru",
+    ("operator_tasks", "status"): "succeeded",
+    ("operator_proposals", "status"): "reserved",
+    ("operator_executions", "status"): "reserved",
 }
 
 

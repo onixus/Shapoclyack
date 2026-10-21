@@ -6,8 +6,8 @@ Commands assume the repository root unless a guide explicitly says otherwise.
 
 Optional AI operator: [architecture and acceptance](local-operator.md),
 [local/OpenRouter/OmniRouter providers](local-operator-providers.md), and
-[authenticated read-only MCP](mcp.md). These adapters precede the planned
-durable worker and operator console; runtime/GPU acceptance remains pending.
+[authenticated read-only MCP](mcp.md). The [durable session/queue/worker pilot](local-operator-service.md) adds one
+read-only summary flow. The operator console and runtime/GPU acceptance remain pending.
 
 ## Terminology
 

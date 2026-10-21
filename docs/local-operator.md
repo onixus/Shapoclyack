@@ -8,8 +8,10 @@ under [EPIC #583](https://github.com/onixus/Shapoclyack/issues/583). Decision:
 
 This change supplies strict version 1 exchange contracts, evidence-quality
 fixtures, an optional inference-provider adapter and an MCP read adapter. It
-does not deliver a running autonomous operator, durable inference worker,
-retrieval pipeline, scan/remediation executor or console assistant. Provider
+now includes a durable personal session/queue service and separate worker with a
+read-only count-summary pilot ([service guide](local-operator-service.md)). It does
+not deliver an autonomous operator, general retrieval pipeline, scan/remediation
+executor or console assistant. Provider
 HTTP mocks and MCP unit tests establish adapter behavior only. The authenticated `GET /api/operator/status` reports configured enablement and
 provider with `runtime_status: "not_checked"`; it does not perform inference and
 returns 404 while the operator is disabled.
@@ -21,7 +23,7 @@ accepted. Later work must preserve this distinction in status and UI.
 |---|---|---|
 | Architecture, contracts and acceptance specification | #584 | Defined here; contract fixtures implemented |
 | Pinned local inference runtime and model supply chain | #585 | Planned; real runtime and hardware report required |
-| Durable queue, worker, bounded loop, cancellation and recovery | #586 | Planned; crash/restart and tenant-isolation tests required |
+| Durable sessions, queue, worker, cancellation and recovery | #586 | Pilot implemented; PostgreSQL concurrency/isolation/recovery tests; deployment drill and broader tool orchestration pending |
 | Authorized retrieval and fixed-source citation resolution | #587 | Planned; ownership, retention, freshness and deletion tests required |
 | Evidence-aware analysis | #588 | Planned; quality corpus and empty/partial/stale behavior required |
 | Scan proposal, preview, confirmation and execution | #589 | Planned; existing scope/policy/quota gates required |
@@ -37,8 +39,8 @@ accepted. Later work must preserve this distinction in status and UI.
 ```mermaid
 flowchart LR
     U[Authenticated console or MCP client] --> A[API: session and tenant authorization]
-    A --> Q[Durable tenant-bound queue: planned]
-    Q --> W[Separate bounded worker: planned]
+    A --> Q[Durable personal queue: implemented pilot]
+    Q --> W[Separate bounded worker: implemented pilot]
     W --> R[Authorized snapshot retrieval: planned]
     R --> D[(Tenant evidence stores)]
     W --> L[Local inference: disabled until configured]
@@ -57,7 +59,7 @@ connection, tenant bypass, arbitrary URL, SQL or shell command. Source lookup
 must resolve IDs inside the current tenant and return no cross-tenant existence
 information. The model never receives database or service-token credentials.
 
-The future worker runs separately from API request workers and scanner sensors.
+The pilot worker runs separately from API request workers and scanner sensors.
 Its durable record binds tenant, actor, request, source snapshot and deadline;
 retries cannot change these bindings. Membership and tenant status are checked
 again on execution and result retrieval. Evidence, chat and queue retention must
@@ -67,13 +69,13 @@ policy denies the operation.
 
 Bounded-loop design: at most 8 model turns and 16 tool calls, one inference at a
 time, a 180-second job deadline, per-call timeout, bounded input/output and queue
-admission. These are proposed worker ceilings, not currently enforced worker
-settings. Persist progress before dispatching each effect. Cancellation is a
+admission. These are design ceilings for the future general loop. The delivered pilot uses
+one evidence read and one inference with its own stricter deadline; see the service guide. Persist progress before dispatching each effect. Cancellation is a
 durable state observed before every dispatch and after inference; it cancels
 pending work and reports an already committed effect truthfully. A model timeout,
 invalid structured output, worker crash or queue retry must never become an
-implicit scan retry or hosted-provider fallback. Worker delivery must include
-leases, heartbeat/reaping, idempotent recovery and terminal-state tests.
+implicit scan retry or hosted-provider fallback. The pilot includes leases, terminal-state tests and recovery to interrupted without
+automatic replay. General effectful orchestration remains pending.
 
 ## Version 1 exchange contracts
 

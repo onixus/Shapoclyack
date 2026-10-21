@@ -34,6 +34,19 @@ def test_default_loader_never_enables_inference_or_mcp(clean_operator_env):
     assert not settings.mcp_enabled
 
 
+@pytest.mark.parametrize("name,value", [
+    ("OCTO_OPERATOR_WORKER_LEASE_SECONDS", "120"),
+    ("OCTO_OPERATOR_WORKER_POLL_SECONDS", "nan"),
+    ("OCTO_OPERATOR_QUEUE_LIMIT", "101"),
+])
+def test_loader_refuses_unsafe_worker_limits(clean_operator_env, name, value):
+    clean_operator_env.setenv("OCTO_OPERATOR_ENABLED", "true")
+    clean_operator_env.setenv("OCTO_OPERATOR_WORKER_ENABLED", "true")
+    clean_operator_env.setenv(name, value)
+    with pytest.raises(InsecureConfigurationError, match="worker configuration"):
+        load_settings()
+
+
 def test_hosted_loader_needs_explicit_egress_permission(clean_operator_env):
     clean_operator_env.setenv("OCTO_OPERATOR_ENABLED", "true")
     clean_operator_env.setenv("OCTO_OPERATOR_PROVIDER", "openrouter")
@@ -50,17 +63,24 @@ def test_hosted_loader_needs_explicit_egress_permission(clean_operator_env):
 
 def test_loader_binds_mcp_origins(clean_operator_env):
     clean_operator_env.setenv("OCTO_MCP_ENABLED", "true")
-    clean_operator_env.setenv("OCTO_MCP_ALLOWED_ORIGINS", "https://console.example, https://other.example")
+    clean_operator_env.setenv(
+        "OCTO_MCP_ALLOWED_ORIGINS", "https://console.example, https://other.example"
+    )
     settings = load_settings()
     assert settings.mcp_enabled
-    assert settings.mcp_allowed_origins == ["https://console.example", "https://other.example"]
+    assert settings.mcp_allowed_origins == [
+        "https://console.example",
+        "https://other.example",
+    ]
 
 
 def _client(settings):
     app = FastAPI()
     app.include_router(router, prefix="/api")
     app.dependency_overrides[get_settings] = lambda: settings
-    app.dependency_overrides[operator_principal] = lambda: SimpleNamespace(tenant_id="tenant-a")
+    app.dependency_overrides[operator_principal] = lambda: SimpleNamespace(
+        tenant_id="tenant-a"
+    )
     return TestClient(app)
 
 
@@ -72,7 +92,8 @@ def test_status_does_not_claim_model_readiness_or_expose_credentials():
     body = response.json()
     assert body["runtime_status"] == "not_checked"
     assert body["analysis_available"] is False
-    assert body["durable_sessions_available"] is False
+    assert body["durable_sessions_available"] is True
+    assert body["quality_status"] == "quality_unverified"
     assert "never-show-me" not in response.text
     assert "base_url" not in body
 
@@ -80,7 +101,9 @@ def test_status_does_not_claim_model_readiness_or_expose_credentials():
 def test_disabled_and_misconfigured_states_are_distinct():
     with _client(Settings()) as client:
         assert client.get("/api/operator/status").status_code == 404
-    with _client(Settings(operator_enabled=True, operator_provider="unknown")) as client:
+    with _client(
+        Settings(operator_enabled=True, operator_provider="unknown")
+    ) as client:
         assert client.get("/api/operator/status").status_code == 503
 
 
