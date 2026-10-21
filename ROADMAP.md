@@ -781,17 +781,12 @@ enforcement; deployments must enable and operate its publisher/verifier.
 ### Scanner acceptance and subsequent product work
 
 The production evidence, exact-endpoint/resume, opt-in directed Nuclei and
-non-CVE workflow changes in #564/#565 are merged. Issues
-[#448](https://github.com/onixus/Shapoclyack/issues/448),
-[#449](https://github.com/onixus/Shapoclyack/issues/449),
-[#450](https://github.com/onixus/Shapoclyack/issues/450) and
-[#452](https://github.com/onixus/Shapoclyack/issues/452) remain open for the
-integrated follow-up in [PR #577](https://github.com/onixus/Shapoclyack/pull/577).
-At review its head is `b324b0ddfbb6cf74e2cadc846fe6c8fd209c2ae0` and it is not
-merged. The accepted Naabu-retention ADR, runtime OpenSSH repair and complete
-Ubuntu USN refresh belong to that pending diff; on this `main` baseline ADR-0003
-is still proposed. See [version scope](docs/README.md#open-pr-scope-at-this-review)
-for the exact boundary and CI evidence attribution.
+non-CVE workflow changes in #564/#565 and their integrated acceptance in
+[PR #577](https://github.com/onixus/Shapoclyack/pull/577) are merged, closing
+#448, #449, #450 and #452. [ADR-0003](docs/adr/0003-port-discovery-backend.md)
+is accepted: Naabu stays the port backend and Pulse promotion remains gated.
+See the [acceptance map](docs/issues-448-452-acceptance.md). No load or
+fleet-sizing acceptance follows from it; that stays with #337.
 
 New product work remains planned: [dynamic asset groups and context rules
 (#578)](https://github.com/onixus/Shapoclyack/issues/578), [aggregated problems
