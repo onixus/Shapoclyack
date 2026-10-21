@@ -1,0 +1,130 @@
+"""Contracts for the isolated speed benchmark (scripts/benchmark-speed.py)."""
+import importlib.util
+import ipaddress
+import json
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location('speed_benchmark', ROOT / 'scripts/benchmark-speed.py')
+BENCH = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(BENCH)
+
+
+@pytest.mark.parametrize('scenario', sorted(BENCH.SCENARIOS))
+@pytest.mark.parametrize('scale', ['small', 'full'])
+def test_plans_are_deterministic_and_stay_in_the_benchmark_range(scenario, scale):
+    plan = BENCH.make_plan(scenario, scale, seed=7)
+    assert plan == BENCH.make_plan(scenario, scale, seed=7)
+    assert ipaddress.ip_network(plan['cidr']).subnet_of(BENCH.TARGET_NET)
+    assert plan['hosts']
+    assert BENCH.make_plan(scenario, scale, seed=8)['hosts'] != plan['hosts']
+
+
+def test_impairment_is_part_of_the_plan():
+    assert BENCH.make_plan('dense', 'small', 1)['impairment'] is None
+    assert BENCH.make_plan('dense', 'small', 1, impaired=True)['impairment'] == BENCH.IMPAIRMENT
+
+
+@pytest.mark.parametrize('cidr', ['10.0.0.0/24', '198.18.0.0/30', '0.0.0.0/0', '198.18.0.0/15'])
+def test_plans_outside_the_benchmark_range_are_refused(cidr):
+    plan = BENCH.make_plan('dense', 'small', 1)
+    with pytest.raises(ValueError, match='outside'):
+        BENCH.validate_plan(dict(plan, cidr=cidr))
+
+
+def test_hosts_and_ports_outside_the_plan_are_refused():
+    plan = BENCH.make_plan('dense', 'small', 1)
+    with pytest.raises(ValueError, match='outside'):
+        BENCH.validate_plan(dict(plan, hosts={'198.19.200.1': [80]}))
+    first = next(iter(plan['hosts']))
+    with pytest.raises(ValueError, match='port outside'):
+        BENCH.validate_plan(dict(plan, hosts={first: [65535]}))
+
+
+def test_unknown_scenario_is_refused():
+    with pytest.raises(ValueError, match='unknown scenario'):
+        BENCH.make_plan('internet', 'full', 1)
+
+
+def test_score_counts_misses_and_extras():
+    truth = {('198.19.0.1', 22), ('198.19.0.1', 80), ('198.19.0.2', 443), ('198.19.0.3', 25)}
+    found = {('198.19.0.1', 22), ('198.19.0.2', 443), ('198.19.0.9', 8080)}
+    assert BENCH.score(found, truth) == {
+        'expected': 4, 'found': 3, 'true_positives': 2, 'missing': 2, 'unexpected': 1,
+        'recall': 0.5, 'precision': 0.666667}
+
+
+def test_empty_result_has_zero_recall_not_a_silent_pass():
+    truth = {('198.19.0.1', 22)}
+    assert BENCH.score(set(), truth)['recall'] == 0.0
+
+
+def test_naabu_parser_deduplicates_events():
+    event = json.dumps({'ip': '198.19.0.1', 'port': 22, 'protocol': 'tcp'})
+    assert BENCH.parse_naabu(f'{event}\n\n{event}\n') == {('198.19.0.1', 22)}
+
+
+def test_masscan_parser_reads_list_output():
+    text = '#masscan\nopen tcp 443 198.19.0.2 1761066000\nopen tcp 22 198.19.0.1 1761066001\n# end\n'
+    assert BENCH.parse_masscan(text) == {('198.19.0.2', 443), ('198.19.0.1', 22)}
+
+
+@pytest.mark.parametrize('tool', BENCH.TOOLS)
+def test_every_tool_scans_only_the_plan_at_the_requested_rate(tool):
+    plan = BENCH.make_plan('dense', 'small', 1)
+    argv = BENCH.command(tool, plan, 5000, Path('/tmp/out'), router_mac='02:00:00:00:00:01')
+    assert plan['cidr'] in argv
+    assert '1-1024' in argv
+    assert '5000' in argv
+    assert tool in BENCH.PARSERS
+
+
+def test_naabu_modes_differ_only_in_scan_technique():
+    plan = BENCH.make_plan('dense', 'small', 1)
+    syn = BENCH.command('naabu-syn', plan, 1000, Path('/tmp/out'))
+    connect = BENCH.command('naabu-connect', plan, 1000, Path('/tmp/out'))
+    assert syn[syn.index('-s') + 1] == 's'
+    assert connect[connect.index('-s') + 1] == 'c'
+    assert [a for a in syn if a != 's'] == [a for a in connect if a != 'c']
+
+
+def test_masscan_needs_the_farm_as_router():
+    with pytest.raises(ValueError, match='router'):
+        BENCH.command('masscan', BENCH.make_plan('dense', 'small', 1), 1000, Path('/tmp/out'))
+
+
+@pytest.mark.parametrize('count', [-1, 0, 4, 101])
+def test_repetitions_must_support_reported_spread(count):
+    with pytest.raises(ValueError, match='5..100'):
+        BENCH.validate_repeats(count)
+
+
+@pytest.mark.parametrize('rate', [0, 99, 10_000_001])
+def test_rate_must_be_bounded(rate):
+    with pytest.raises(ValueError):
+        BENCH.validate_rate(rate)
+
+
+def test_deadline_scales_with_the_sweep():
+    plan = BENCH.make_plan('dense', 'small', 1)
+    probes = 64 * 1024
+    assert BENCH.deadline_seconds(plan, 1000) == pytest.approx(5 * probes / 1000 + 120)
+
+
+def test_summary_separates_failures_from_samples():
+    rows = [{'tool': 'naabu-syn', 'exit_code': 0, 'seconds': s, 'recall': r}
+            for s, r in [(1.0, 1.0), (3.0, 0.5), (2.0, 0.75)]]
+    rows.append({'tool': 'naabu-syn', 'exit_code': -9, 'seconds': 99.0})
+    (entry,) = BENCH.summarize(rows)
+    assert entry['samples'] == 3
+    assert entry['failed'] == 1
+    assert (entry['seconds_median'], entry['seconds_min'], entry['seconds_max']) == (2.0, 1.0, 3.0)
+    assert entry['recall_min'] == 0.5
+
+
+def test_cli_takes_no_targets():
+    # The only addresses a run can touch are the ones make_plan draws from TARGET_NET.
+    with pytest.raises(SystemExit):
+        BENCH.main(['run', '--scenario', 'dense', '--output', '/tmp/x', '--target', '192.0.2.1'])
