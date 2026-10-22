@@ -25,13 +25,13 @@ images:
   pullPolicy: IfNotPresent
   api:
     repository: ghcr.io/onixus/shapoclyack-api
-    tag: shapoclyack-0.46-0922
-    digest: sha256:05f8a602511b5b0c6e04b29c503e5b77a793f4ea7abfc742044b08fd55357f2d
+    tag: shapoclyack-0.48-1021
+    digest: sha256:57ff1ab42e82cb6f12bacbc98f85c2a8ab2ac3909623f8dc5983bcbd94541341
   # The scanner-executor image (scanner tools baked in).
   aio:
     repository: ghcr.io/onixus/shapoclyack-aio
-    tag: shapoclyack-0.46-0922
-    digest: sha256:40a7312b39b46d2fce7e529a2ce7003834b32f880f8579ffff5850c5e2b0b161
+    tag: shapoclyack-0.48-1021
+    digest: sha256:70ac7f954fa68de9c99025cc584817fc35db71fd1f4dc6c4a7118066c66d10d4
   clickhouse:
     repository: clickhouse/clickhouse-server
     tag: 24.8-alpine

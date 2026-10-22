@@ -181,10 +181,10 @@ package install (the Debian base brought `su`, `passwd`, `mount`, `chfn` and
 the like, `openssh-client` `ssh-keysign`), sets `fping`'s capability itself
 (its package falls back to setuid root when its own `setcap` fails), and fails
 the build if `fping` is left without it. What escalation remains is the
-scanners' `cap_net_raw,cap_net_admin` and nothing more. **The image these
-manifests pin, `shapoclyack-0.46-0922`, predates this and still carries them**;
-and CI builds `Dockerfile`, not `Dockerfile.allinone`, so these lines first run
-in the release pipeline.
+scanners' `cap_net_raw,cap_net_admin` and nothing more. The manifests pin
+`shapoclyack-0.48-1021`, the first release built with this. CI builds
+`Dockerfile`, not `Dockerfile.allinone`, so these lines run only in the release
+pipeline.
 
 ### `shapoclyack-scanner-executor` in `overlays/prod` — `hostNetwork: true`
 
@@ -254,12 +254,12 @@ it by accident, not against a compromised tool: the scan runs as the same user
 (1000, `fsGroup` 1000), which can read the key file and `/proc/1/environ`.
 Separating them needs the scan under another uid, which it is not today.
 
-**The pinned image predates both.** The worker in `shapoclyack-0.46-0922` does
-not know `OCTO_AGENT_PROVISIONING_KEY_FILE` and exits without a key, so the
-StatefulSet also passes the same Secret key as `OCTO_AGENT_PROVISIONING_KEY`
-until the pin moves past that release — a current worker prefers the file. It
-does not declare the config overlay either; the API of that release does not
-send one, so the two pins agree. Bump the two images together. Its configuration is `scanner-config`, generated
+The pinned worker, `shapoclyack-0.48-1021`, reads
+`OCTO_AGENT_PROVISIONING_KEY_FILE` and declares the config overlay, so the
+StatefulSet passes the key only as the file. The releases up to
+`shapoclyack-0.46-0922` know neither; an executor pinned to one of those needs
+`OCTO_AGENT_PROVISIONING_KEY` from the same Secret key, and an API of the same
+release. Bump the two images together. Its configuration is `scanner-config`, generated
 from the same `base/config/k8s.yaml` as network-scan's copy, so the two cannot
 drift. It does **not** use NATS: HTTP claiming is a supported mode and not a
 degraded one, and leaving NATS out keeps the broker's `agent` password out of

@@ -3,24 +3,24 @@
 This guide deploys Shapoclyack with Kustomize. For architecture, configuration,
 and operational context, start at [../docs/README.md](../docs/README.md).
 
-Primary cluster runtime for **shapoclyack-0.46-0922+**. Default control plane is the **all-in-one**
+Primary cluster runtime for **shapoclyack-0.48-1021+**. Default control plane is the **all-in-one**
 image with Web UI scan start enabled.
 
 | Image | Tag | Digest | Role |
 |-------|-----|--------|------|
-| `ghcr.io/onixus/shapoclyack-aio` | `shapoclyack-0.46-0922` | `sha256:40a7312b…b0b161` | API + UI + scanner (**default** Deployment / Job / CronJob) |
-| `ghcr.io/onixus/shapoclyack-scanner` | `shapoclyack-0.46-0922` | `sha256:7eb82c8d…f44fa66` | Scanner-only (lighter Job/CronJob alternative) |
-| `ghcr.io/onixus/shapoclyack-api` | `shapoclyack-0.46-0922` | `sha256:05f8a602…357f2d` | Thin API + UI (results-only overlay) |
+| `ghcr.io/onixus/shapoclyack-aio` | `shapoclyack-0.48-1021` | `sha256:70ac7f95…6d10d4` | API + UI + scanner (**default** Deployment / Job / CronJob) |
+| `ghcr.io/onixus/shapoclyack-scanner` | `shapoclyack-0.48-1021` | `sha256:395ba591…2fa526e` | Scanner-only (lighter Job/CronJob alternative) |
+| `ghcr.io/onixus/shapoclyack-api` | `shapoclyack-0.48-1021` | `sha256:57ff1ab4…541341` | Thin API + UI (results-only overlay) |
 
 Manifests reference these as `name:tag@sha256:…`. A GHCR tag is mutable — the
-publish job can move `shapoclyack-0.46-0922` onto a different build, and every
+publish job can move `shapoclyack-0.48-1021` onto a different build, and every
 pod that restarts afterwards would silently run something other than what was
 reviewed. The tag stays in the reference so the manifests remain readable; the
 digest is what is actually pulled. When bumping a release, replace both halves
 together: `docker manifest inspect ghcr.io/onixus/shapoclyack-aio:<tag>` or
 
 ```bash
-crane digest ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.46-0922
+crane digest ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.48-1021
 ```
 
 Never hand-edit one half. The same release pins live outside `k8s/` and are

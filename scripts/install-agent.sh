@@ -22,7 +22,7 @@ BUNDLE_URL="${BUNDLE_URL:-}"
 # the container restarts for good. The release re-pins it along with them and
 # with SENSOR_IMAGE in api/services/agents.py, which the console's deployment
 # snippets print (tests/test_agent_install_pins.py keeps the two equal).
-AGENT_IMAGE="${AGENT_IMAGE:-ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.46-0922@sha256:7eb82c8dab4071517ee7af8825bb8df58d7706afac4eb6e1da6ca4759f44fa66}"
+AGENT_IMAGE="${AGENT_IMAGE:-ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.48-1021@sha256:395ba59100a425c3a2a1a0e1420d42965c07e56d222bee53b21b618742fa526e}"
 
 log() {
     echo -e "\033[1;34m[INFO]\033[0m $*"

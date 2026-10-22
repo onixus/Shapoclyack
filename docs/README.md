@@ -210,9 +210,9 @@ Documentation is part of the feature definition. A behavior change is incomplete
 
 This documentation index was reconciled with `main @ b86aea66` (after #577)
 on **2026-10-21**. The release prepared from it is `shapoclyack-0.48-1021`; see
-[release notes and publication checklist](releases/0.48-1021.md). Until its
-tag and images are published, the latest published stable release is
-`shapoclyack-0.46-0922` (2026-09-22). Use the tagged documentation and
+[release notes and publication checklist](releases/0.48-1021.md). Its tag
+and the three images were published on 2026-10-22, and the deployment pins
+point at them. Use the tagged documentation and
 [CHANGELOG.md](../CHANGELOG.md) for a release's contract.
 
 The `0.47-1009-rc1` candidate (2026-10-09, [notes](releases/0.47-1009-rc1.md))

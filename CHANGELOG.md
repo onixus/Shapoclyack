@@ -4,6 +4,14 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Deployment pins move to the published `shapoclyack-0.48-1021` images
+  (`k8s/`, the Helm chart, `scripts/install-server.py`,
+  `scripts/install-agent.sh`, `SENSOR_IMAGE`). The scanner-executor no longer
+  gets `OCTO_AGENT_PROVISIONING_KEY` as a variable: the pinned worker reads
+  the key file. `SECURITY.md` makes `0.48` the supported line.
+
 ## [0.48-1021] — 2026-10-21
 
 Stable successor to `0.46-0922`. API and sensor versions are `0.48-1021`; Pulse
