@@ -27,6 +27,15 @@ def test_impairment_is_part_of_the_plan():
     assert BENCH.make_plan('dense', 'small', 1, impaired=True)['impairment'] == BENCH.IMPAIRMENT
 
 
+def test_netem_queue_holds_the_delay_at_the_fastest_rate():
+    # netem keeps delayed packets in its queue; a full queue drops them, and
+    # that loss is the stand's, not the path's.
+    with pytest.raises(ValueError):
+        BENCH.validate_rate(10_000_001)
+    in_flight = 10_000_000 * BENCH.IMPAIRMENT['delay_ms'] / 1000
+    assert BENCH.IMPAIRMENT['queue_limit'] >= 2 * in_flight
+
+
 @pytest.mark.parametrize('cidr', ['10.0.0.0/24', '198.18.0.0/30', '0.0.0.0/0', '198.18.0.0/15'])
 def test_plans_outside_the_benchmark_range_are_refused(cidr):
     plan = BENCH.make_plan('dense', 'small', 1)

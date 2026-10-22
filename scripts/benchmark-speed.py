@@ -58,8 +58,12 @@ SCENARIOS = {
     },
 }
 # Applied on both veth ends, so the round trip gets twice the delay and about
-# twice the loss: 50 ms RTT and ~1 % loss.
-IMPAIRMENT = {'delay_ms': 25, 'loss_pct': 0.5}
+# twice the loss: 50 ms RTT and ~1 % loss. netem models the delay as a queue
+# that holds 1000 packets by default; a scanner that sends in bursts overflowed
+# it and lost most of its probes there (52537 of 65536 for naabu SYN at
+# 10000 pps), which is not what a path with 25 ms of propagation delay does.
+# queue_limit leaves room for the fastest rate the harness accepts.
+IMPAIRMENT = {'delay_ms': 25, 'loss_pct': 0.5, 'queue_limit': 1_000_000}
 
 
 def validate_repeats(value):
@@ -274,7 +278,7 @@ class Namespaces:
                 if impairment:
                     try:
                         ns.tc('add', 'netem', index=index, handle='1:', delay=impairment['delay_ms'] * 1000,
-                              loss=impairment['loss_pct'])
+                              loss=impairment['loss_pct'], limit=impairment['queue_limit'])
                     except NetlinkError as error:
                         raise SystemExit(f'--impaired needs netem (CONFIG_NET_SCH_NETEM): {error}') from None
 
