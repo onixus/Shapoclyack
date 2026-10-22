@@ -42,6 +42,15 @@ ADDED_LATER = {
     "run_risk_assessments",  # Created by 0086, with its own tenant RLS policy.
     "asset_import_connectors",  # Created by 0090 with its own tenant policy.
     "console_saved_views",  # Created by 0092 with its own tenant policy.
+    # Personal operator state arrives in 0097, with its own tenant policies.
+    "operator_sessions",
+    "operator_messages",
+    "operator_tasks",
+    "operator_proposals",
+    "operator_executions",
+    # Published evidence index arrives in 0098, also with its own policies.
+    "operator_evidence_snapshots",
+    "operator_evidence_documents",
 }
 
 

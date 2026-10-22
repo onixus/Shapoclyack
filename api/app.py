@@ -38,6 +38,9 @@ from api.routes import auth as auth_routes
 from api.routes import endpoint_inventory as endpoint_inventory_routes
 from api.routes import jobs as jobs_routes
 from api.routes import maintenance as maintenance_routes
+from api.routes import local_operator as local_operator_routes
+from api.routes import operator_evidence as operator_evidence_routes
+from api.routes import mcp as mcp_routes
 from api.routes import mfa as mfa_routes
 from api.routes import passkeys as passkeys_routes
 from api.routes import promoted_domains as promoted_domains_routes
@@ -583,6 +586,9 @@ def create_app() -> FastAPI:
         app.include_router(router, prefix="/api")
 
     include_api_router(auth_routes.router)
+    include_api_router(local_operator_routes.router)
+    include_api_router(operator_evidence_routes.router)
+    include_api_router(mcp_routes.router)
     include_api_router(runs_routes.router)
     include_api_router(jobs_routes.router)
     include_api_router(agents_routes.router)

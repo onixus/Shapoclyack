@@ -795,6 +795,24 @@ and [evidence-aware run comparisons (#580)](https://github.com/onixus/Shapoclyac
 The existing finding list, saved views and run comparison do not establish
 completion of those issues.
 
+### Local Operator and AI integration (#583)
+
+[EPIC #583](https://github.com/onixus/Shapoclyack/issues/583) is in progress.
+[Architecture #584](https://github.com/onixus/Shapoclyack/issues/584) now has
+[strict version 1 contracts and an acceptance specification](docs/local-operator.md)
+and [ADR 0004](docs/adr/0004-local-operator.md). Optional inference-provider and
+MCP read adapters ([#597](https://github.com/onixus/Shapoclyack/issues/597),
+[#596](https://github.com/onixus/Shapoclyack/issues/596)) are implemented in this
+change. A durable worker, exact/full-text retrieval and selection-only analysis
+are implemented as bounded pilots; local runtime, semantic retrieval, measured
+model quality, confirmed scan/remediation execution, console and final acceptance
+(#585–#593) remain open. The default
+is local offline operation with the optional inference adapter disabled;
+OpenRouter and an explicitly configured OmniRouter-compatible endpoint require
+hosted-provider opt-in. Qwen3.5-9B Q4_K_M / 8 GiB CUDA / 8192 context is a candidate
+baseline, **hardware-unverified**. Adapter and contract tests do not establish
+model quality, live provider access or deployed assistant acceptance.
+
 ### Not doing, and why
 
 - **No DAST of our own** (katana + interactsh, scenarios 3–4 of
@@ -869,3 +887,15 @@ opt-in OTLP on the API). Agent_plan Track D (S8/S10) is merged, so no Track A it
 
 **Track B and C statuses live in their issues**, not here — a status duplicated in two
 places is a status that will disagree with itself. This file links; the issues decide.
+
+
+Operator delivery continuation (#586): durable personal sessions/tasks, PostgreSQL
+queue serialization and fencing, separate worker, bounded count-summary pilot,
+current-authority/source rechecks, legal-hold-aware retention and personal-data
+export/deletion. See [service boundary](docs/local-operator-service.md).
+Continuation #587/#588 adds a tenant-scoped published evidence index, exact CVE
+and package lookup, PostgreSQL full-text search, source-bound evidence API and
+selection-only RU/EN analysis. Frozen contract cases validate rejection and
+binding; they do not measure actual Qwen accuracy. Semantic embeddings, real
+model evaluation, scan proposals/actions, UI and physical runtime acceptance
+remain with #585 and #587–#593.

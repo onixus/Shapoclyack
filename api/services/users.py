@@ -820,7 +820,7 @@ def count_active_admins(exclude: str | None = None) -> int:
 def delete_user(username: str, *, audit: "audit_service.AuditContext | None" = None) -> bool:
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
-        row = session.get(models.User, username)
+        row = session.scalar(select(models.User).where(models.User.username == username).with_for_update())
         if row is None:
             return False
         _refuse_erased(row)
@@ -828,6 +828,11 @@ def delete_user(username: str, *, audit: "audit_service.AuditContext | None" = N
         # "what did the account we deleted have", including the tenants whose
         # membership rows go with it.
         removed = _with_tenants(session, row)
+        from api.services.local_operator import store as operator_store
+
+        # Personal state has no username FK: remove it before the name can be
+        # recreated, preserving held sessions even after membership revocation.
+        operator_store.delete_owner_sessions(session, username)
         # Memberships cascade (FK from migration 0013), so no orphan grant
         # survives to be silently re-attached if the name is recreated later.
         session.delete(row)
