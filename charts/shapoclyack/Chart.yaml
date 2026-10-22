@@ -4,7 +4,7 @@ description: Network scanning and vulnerability management platform (control pla
 type: application
 # Chart version: bump on any template or values change. appVersion mirrors the
 # image tag in values.yaml (images.api.tag).
-version: 0.1.0
+version: 0.1.1
 appVersion: "shapoclyack-0.48-1021"
 kubeVersion: ">=1.27.0-0"
 home: https://github.com/onixus/Shapoclyack

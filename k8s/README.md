@@ -3,7 +3,7 @@
 This guide deploys Shapoclyack with Kustomize. For architecture, configuration,
 and operational context, start at [../docs/README.md](../docs/README.md).
 
-Primary cluster runtime for **shapoclyack-0.46-0922+**. Default control plane is the **all-in-one**
+Primary cluster runtime for **shapoclyack-0.48-1021+**. Default control plane is the **all-in-one**
 image with Web UI scan start enabled.
 
 | Image | Tag | Digest | Role |
