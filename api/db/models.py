@@ -3471,3 +3471,146 @@ class ConsoleSavedView(Base):
     state: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
+
+
+class OperatorSession(Base):
+    """Personal durable operator conversation; ownership never follows admin role."""
+
+    __tablename__ = "operator_sessions"
+    __table_args__ = (Index("ix_operator_sessions_owner", "tenant_id", "username"),)
+    session_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE")
+    )
+    username: Mapped[str]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class OperatorMessage(Base):
+    __tablename__ = "operator_messages"
+    message_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    username: Mapped[str]
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("operator_sessions.session_id", ondelete="CASCADE"), index=True
+    )
+    task_id: Mapped[str]
+    role: Mapped[str]
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime]
+
+
+class OperatorTask(Base):
+    __tablename__ = "operator_tasks"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "username",
+            "idempotency_key",
+            name="uq_operator_task_idempotency",
+        ),
+        Index("ix_operator_tasks_queue", "status", "created_at"),
+        CheckConstraint("kind IN ('summarize_run', 'analyze_run')", name="ck_operator_task_kind"),
+        CheckConstraint("language IN ('ru', 'en')", name="ck_operator_task_language"),
+        CheckConstraint(
+            "status IN ('queued','running','succeeded','failed','cancelled','interrupted')",
+            name="ck_operator_task_status",
+        ),
+    )
+    task_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    username: Mapped[str]
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("operator_sessions.session_id", ondelete="CASCADE"), index=True
+    )
+    actor_token_version: Mapped[int] = mapped_column(default=0)
+    kind: Mapped[str] = mapped_column(default="summarize_run")
+    run_id: Mapped[str]
+    language: Mapped[str]
+    idempotency_key: Mapped[str]
+    status: Mapped[str] = mapped_column(default="queued")
+    cancel_requested: Mapped[bool] = mapped_column(default=False)
+    lease_owner: Mapped[str | None] = mapped_column(default=None)
+    lease_until: Mapped[datetime | None] = mapped_column(default=None)
+    result: Mapped[dict | None] = mapped_column(JSON, default=None)
+    error: Mapped[str | None] = mapped_column(default=None)
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class OperatorProposal(Base):
+    """Reserved persisted proposal contract. No application/effects path exists."""
+
+    __tablename__ = "operator_proposals"
+    proposal_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    username: Mapped[str]
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("operator_sessions.session_id", ondelete="CASCADE")
+    )
+    payload: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(default="reserved")
+    created_at: Mapped[datetime]
+    __table_args__ = (
+        CheckConstraint("status = 'reserved'", name="ck_operator_proposal_reserved"),
+    )
+
+
+class OperatorExecution(Base):
+    """Reserved execution evidence; deliberately cannot enter an effectful state."""
+
+    __tablename__ = "operator_executions"
+    execution_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    username: Mapped[str]
+    proposal_id: Mapped[str] = mapped_column(
+        ForeignKey("operator_proposals.proposal_id", ondelete="CASCADE")
+    )
+    status: Mapped[str] = mapped_column(default="reserved")
+    created_at: Mapped[datetime]
+    __table_args__ = (
+        CheckConstraint("status = 'reserved'", name="ck_operator_execution_reserved"),
+    )
+
+
+class OperatorEvidenceSnapshot(Base):
+    """One atomically replaced, tenant-owned evidence index per published run."""
+
+    __tablename__ = "operator_evidence_snapshots"
+    __table_args__ = (UniqueConstraint("tenant_id", "run_id", name="uq_operator_evidence_run"),)
+    snapshot_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True)
+    run_id: Mapped[str]
+    publication_snapshot: Mapped[str]
+    summary_hash: Mapped[str]
+    findings_hash: Mapped[str]
+    state: Mapped[str]
+    indexed_at: Mapped[datetime]
+    last_checked_at: Mapped[datetime]
+
+
+class OperatorEvidenceDocument(Base):
+    __tablename__ = "operator_evidence_documents"
+    __table_args__ = (
+        ForeignKeyConstraint(["snapshot_id"], ["operator_evidence_snapshots.snapshot_id"], ondelete="CASCADE"),
+        Index("ix_operator_evidence_document_snapshot", "tenant_id", "snapshot_id"),
+    )
+    source_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True)
+    snapshot_id: Mapped[str]
+    source_hash: Mapped[str]
+    document_hash: Mapped[str]
+    artifact: Mapped[str]
+    content: Mapped[str] = mapped_column(Text)
+    cve: Mapped[str]
+    package: Mapped[str]
+    observed_at: Mapped[datetime]

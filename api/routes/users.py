@@ -244,8 +244,8 @@ def delete_user(
         )
     try:
         deleted = users_service.delete_user(username, audit=audit)
-    except users_service.AccountErased as exc:
-        # The tombstone is what keeps the name from being reissued (#332).
+    except (users_service.AccountErased, legal_hold.LegalHoldActive) as exc:
+        # The tombstone prevents name reuse; legal hold preserves personal AI history.
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if not deleted:
         raise _not_found(username)

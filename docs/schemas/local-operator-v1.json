@@ -1,0 +1,456 @@
+{
+  "$defs": {
+    "ActionProposal": {
+      "additionalProperties": false,
+      "description": "Server-issued proposal record, not a callable model command.",
+      "properties": {
+        "arguments": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Arguments",
+          "type": "object"
+        },
+        "arguments_hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Arguments Hash",
+          "type": "string"
+        },
+        "citations": {
+          "items": {
+            "$ref": "#/$defs/Citation"
+          },
+          "title": "Citations",
+          "type": "array"
+        },
+        "context": {
+          "$ref": "#/$defs/ServerContext"
+        },
+        "expected_effect": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Expected Effect",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "proposal_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Proposal Id",
+          "type": "string"
+        },
+        "requires_confirmation": {
+          "const": true,
+          "default": true,
+          "title": "Requires Confirmation",
+          "type": "boolean"
+        },
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "tool_name": {
+          "enum": [
+            "scan.start",
+            "scan.cancel",
+            "remediation.create"
+          ],
+          "title": "Tool Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "context",
+        "proposal_id",
+        "tool_name",
+        "arguments",
+        "arguments_hash",
+        "expected_effect",
+        "citations",
+        "idempotency_key",
+        "expires_at"
+      ],
+      "title": "ActionProposal",
+      "type": "object"
+    },
+    "AnswerPayload": {
+      "additionalProperties": false,
+      "description": "Untrusted model output. Resolve and authorize every citation on the server.",
+      "properties": {
+        "citations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Citation"
+          },
+          "title": "Citations",
+          "type": "array"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "complete",
+            "empty",
+            "partial",
+            "incomplete",
+            "unknown",
+            "unsupported",
+            "stale",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "summary": {
+          "maxLength": 16000,
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "summary"
+      ],
+      "title": "AnswerPayload",
+      "type": "object"
+    },
+    "Citation": {
+      "additionalProperties": false,
+      "properties": {
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "source_hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Source Hash",
+          "type": "string"
+        },
+        "source_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_type": {
+          "enum": [
+            "asset",
+            "finding",
+            "run",
+            "coverage",
+            "document",
+            "audit"
+          ],
+          "title": "Source Type",
+          "type": "string"
+        },
+        "status": {
+          "default": "current",
+          "enum": [
+            "current",
+            "partial",
+            "stale"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "source_type",
+        "source_hash",
+        "snapshot_id",
+        "observed_at"
+      ],
+      "title": "Citation",
+      "type": "object"
+    },
+    "ExecutionResult": {
+      "additionalProperties": false,
+      "description": "Server result after confirmation and fresh route/service authorization.",
+      "properties": {
+        "arguments_hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Arguments Hash",
+          "type": "string"
+        },
+        "context": {
+          "$ref": "#/$defs/ServerContext"
+        },
+        "idempotency_key": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "proposal_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Proposal Id",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "resource_ids": {
+          "default": [],
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Resource Ids",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "succeeded",
+            "denied",
+            "failed",
+            "cancelled",
+            "expired",
+            "conflict"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "context",
+        "proposal_id",
+        "arguments_hash",
+        "idempotency_key",
+        "status"
+      ],
+      "title": "ExecutionResult",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "OperatorAnswer": {
+      "additionalProperties": false,
+      "properties": {
+        "answer": {
+          "$ref": "#/$defs/AnswerPayload"
+        },
+        "context": {
+          "$ref": "#/$defs/ServerContext"
+        },
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "context",
+        "answer"
+      ],
+      "title": "OperatorAnswer",
+      "type": "object"
+    },
+    "ServerContext": {
+      "additionalProperties": false,
+      "description": "Server-owned provenance; never pass model-supplied values as authority.",
+      "properties": {
+        "actor_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Actor Id",
+          "type": "string"
+        },
+        "captured_at": {
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "request_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "tenant_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Tenant Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "actor_id",
+        "request_id",
+        "snapshot_id",
+        "captured_at"
+      ],
+      "title": "ServerContext",
+      "type": "object"
+    },
+    "ToolResult": {
+      "additionalProperties": false,
+      "properties": {
+        "citations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Citation"
+          },
+          "title": "Citations",
+          "type": "array"
+        },
+        "context": {
+          "$ref": "#/$defs/ServerContext"
+        },
+        "data": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "complete",
+            "empty",
+            "partial",
+            "incomplete",
+            "unknown",
+            "unsupported",
+            "stale",
+            "denied",
+            "failed",
+            "cancelled"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "tool_name": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Tool Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "context",
+        "tool_name",
+        "status"
+      ],
+      "title": "ToolResult",
+      "type": "object"
+    }
+  },
+  "anyOf": [
+    {
+      "$ref": "#/$defs/ServerContext"
+    },
+    {
+      "$ref": "#/$defs/Citation"
+    },
+    {
+      "$ref": "#/$defs/AnswerPayload"
+    },
+    {
+      "$ref": "#/$defs/OperatorAnswer"
+    },
+    {
+      "$ref": "#/$defs/ToolResult"
+    },
+    {
+      "$ref": "#/$defs/ActionProposal"
+    },
+    {
+      "$ref": "#/$defs/ExecutionResult"
+    }
+  ]
+}
