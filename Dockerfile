@@ -203,12 +203,18 @@ ARG ENRICHMENT_STRICT=0
 # ADVISORY_FETCH=0 turns it back off for a build with no route to the vendors'
 # feeds; the image then carries the seeds and says so on the System page.
 ARG ADVISORY_FETCH=1
+# Builds consume the parked, checksummed NVD snapshot, independent of layer cache.
+# Runtime refresh remains enabled. Opt in only for a deliberate live build.
+ARG NVD_FETCH=0
 # Optional NVD key is available only to this enrichment step, never an image ENV.
 RUN --mount=type=secret,id=nvd_api_key,required=false \
     set -eu; \
     if [ -s /run/secrets/nvd_api_key ]; then \
       NVD_API_KEY="$(cat /run/secrets/nvd_api_key)"; export NVD_API_KEY; \
     fi; \
+    python3 scripts/nvd_snapshot.py verify /opt/shapoclyack/seed-data/cvss4/cvss4.json; \
+    case "${NVD_FETCH}" in 0|1) ;; *) echo "NVD_FETCH must be 0 or 1" >&2; exit 2 ;; esac; \
+    export OCTO_CVSS4_FETCH_ENABLED="${NVD_FETCH}"; \
     export OCTO_ADVISORY_FETCH_ENABLED="$( [ "${ADVISORY_FETCH}" = "1" ] && echo true || echo false )"; \
     status=0; bash scripts/fetch-enrichment.sh || status=$?; \
     if [ "$status" -ge 2 ]; then \

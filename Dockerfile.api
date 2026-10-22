@@ -102,6 +102,7 @@ COPY --from=web-build /web/out /app/web/dist
 # would have the risk model scoring blind.
 ARG ENRICHMENT_STRICT=0
 RUN set -eu; \
+    python3 scripts/nvd_snapshot.py verify /opt/shapoclyack/seed-data/cvss4/cvss4.json; \
     refreshed=""; failed=""; \
     if bash scripts/fetch-epss-db.sh; then refreshed="$refreshed,epss"; else failed="$failed,epss"; fi; \
     if bash scripts/fetch-kev-db.sh; then refreshed="$refreshed,kev"; else failed="$failed,kev"; fi; \

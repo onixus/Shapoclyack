@@ -18,3 +18,13 @@ enrichment-bundle:
 # Check a bundle the way the loader will, without installing it.
 enrichment-bundle-verify:
 	python3 scripts/enrichment_bundle.py verify "$(ENRICHMENT_BUNDLE)"
+
+# Deliberate network refresh; a partial/failed harvest leaves the parked copy intact.
+.PHONY: nvd-snapshot-refresh nvd-snapshot-verify
+nvd-snapshot-refresh:
+	@set -eu; snapshot_tmp=$$(mktemp); trap 'rm -f "$$snapshot_tmp" "$$snapshot_tmp.tmp"' EXIT; \
+		python3 scripts/fetch-cvss4-db.py --full -o "$$snapshot_tmp"; \
+		python3 scripts/nvd_snapshot.py park "$$snapshot_tmp" scanner/data/cvss4/cvss4.json
+
+nvd-snapshot-verify:
+	python3 scripts/nvd_snapshot.py verify scanner/data/cvss4/cvss4.json

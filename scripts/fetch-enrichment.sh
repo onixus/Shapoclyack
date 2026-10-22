@@ -220,6 +220,8 @@ ASN_MMDB="$DEST/asn/asn.mmdb"
 run asn "asn (${MMDB_PROVIDER})" "$ROOT/scripts/fetch-asn-db.sh" \
   --provider "$MMDB_PROVIDER" -o "$ASN_MMDB"
 
+# Runtime refresh is on by default; image builds explicitly use the versioned
+# NVD snapshot instead. Skipping does not label the data freshly fetched.
 # Incremental, not --full: the committed scanner/data/cvss4/cvss4.json (baked
 # into every image) is the baseline, and this only layers on what NVD changed
 # recently. A --full rebuild pages the entire 370k-CVE corpus and belongs in a
@@ -230,8 +232,14 @@ run asn "asn (${MMDB_PROVIDER})" "$ROOT/scripts/fetch-asn-db.sh" \
 # a database: the floor above only fires when the file is absent, so without
 # this an upgrade to an image with a bigger baseline would never reach an
 # existing volume. Existing entries always win over the baseline.
-run cvss4 "cvss4" python3 "$ROOT/scripts/fetch-cvss4-db.py" --last-mod-days 8 \
-  --seed "$SEED_DIR/cvss4/cvss4.json" -o "$DEST/cvss4/cvss4.json"
+case "${OCTO_CVSS4_FETCH_ENABLED:-true}" in
+  true|1)
+    run cvss4 "cvss4" python3 "$ROOT/scripts/fetch-cvss4-db.py" --last-mod-days 8 \
+      --seed "$SEED_DIR/cvss4/cvss4.json" -o "$DEST/cvss4/cvss4.json"
+    ;;
+  false|0) echo "==> cvss4: using existing snapshot (no NVD request)" ;;
+  *) echo "error: OCTO_CVSS4_FETCH_ENABLED must be true/false or 1/0" >&2; exit 2 ;;
+esac
 run epss "epss" "$ROOT/scripts/fetch-epss-db.sh" -o "$DEST/epss/epss-overlay.json"
 run kev "kev" "$ROOT/scripts/fetch-kev-db.sh" -o "$DEST/kev/kev-overlay.json"
 
