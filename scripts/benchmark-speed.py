@@ -155,6 +155,18 @@ def parse_masscan(stdout):
 
 
 PARSERS = {'naabu-syn': parse_naabu, 'naabu-connect': parse_naabu, 'masscan': parse_masscan}
+# masscan's receive thread sleeps in libpcap until a packet arrives (TPACKET_V3
+# has no timeout on an empty block), and it only notices its --wait window is
+# over when it wakes. A real network always has some traffic; the stand's veth
+# pair has none, so masscan sat there for up to two minutes after the window
+# ("waiting -128-secs") and was timed for it. While masscan runs, the farm
+# sends its side of the link a stray UDP datagram ten times a second.
+WAKE_INTERVAL = 0.1
+WAKE_PORT = 9
+# Should it hang past the window anyway, this many seconds is a failure, not a
+# sample: kill it instead of waiting for the deadline.
+MASSCAN_OVERRUN = re.compile(rb'waiting -([0-9]+)-secs')
+MASSCAN_OVERRUN_LIMIT = 15
 
 
 def command(tool, plan, rate, output, router_mac=None):
@@ -316,35 +328,71 @@ def deadline_seconds(plan, rate):
     return 5 * probes / rate + 120
 
 
+def masscan_overrun(stderr_tail):
+    """Seconds masscan's status line shows past its --wait window, else 0."""
+    counts = [int(value) for value in MASSCAN_OVERRUN.findall(stderr_tail)]
+    return max(counts, default=0)
+
+
+def stderr_tail(path, size=512):
+    with open(path, 'rb') as handle:
+        handle.seek(max(0, os.path.getsize(path) - size))
+        return handle.read()
+
+
+def wake_receiver():
+    """Stray datagrams from the farm to the scanner's end of the link."""
+    code = ('import socket, time\n'
+            's = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n'
+            'while True:\n'
+            f'    s.sendto(b"wake", ({LINK["scan"]!r}, {WAKE_PORT}))\n'
+            f'    time.sleep({WAKE_INTERVAL})\n')
+    return subprocess.Popen(in_netns('farm', [sys.executable, '-c', code]),
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def run_tool(tool, plan, rate, out_dir, label, router_mac):
     raw = out_dir / f'{label}.{tool}.out'
     stderr_path = out_dir / f'{label}.{tool}.stderr'
     argv = in_netns('scan', command(tool, plan, rate, raw, router_mac))
     deadline = deadline_seconds(plan, rate)
+    waker = wake_receiver() if tool == 'masscan' else None
     started = time.monotonic()
+    stalled = False
     # nsenter execs the tool in place, so wait4 reports the tool's own usage.
     with open(stderr_path, 'wb') as stderr:
         # naabu reads targets from stdin whenever stdin is not a terminal, and
         # fails with "Timeout" when nothing arrives; give it an empty one.
         proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr)
         timed_out = False
-        while True:
-            pid, status, usage = os.wait4(proc.pid, os.WNOHANG)
-            if pid:
-                break
-            if time.monotonic() - started > deadline:
-                timed_out = True
-                proc.kill()
-                _, status, usage = os.wait4(proc.pid, 0)
-                break
-            time.sleep(0.02)
+        next_check = started
+        try:
+            while True:
+                pid, status, usage = os.wait4(proc.pid, os.WNOHANG)
+                if pid:
+                    break
+                now = time.monotonic()
+                if tool == 'masscan' and now >= next_check:
+                    next_check = now + 0.5
+                    stalled = masscan_overrun(stderr_tail(stderr_path)) >= MASSCAN_OVERRUN_LIMIT
+                if stalled or now - started > deadline:
+                    timed_out = True
+                    proc.kill()
+                    _, status, usage = os.wait4(proc.pid, 0)
+                    break
+                time.sleep(0.02)
+        finally:
+            if waker:
+                waker.kill()
+                waker.wait()
     seconds = time.monotonic() - started
     proc.returncode = os.waitstatus_to_exitcode(status)
     row = {'tool': tool, 'label': label, 'argv': argv, 'exit_code': proc.returncode,
            'seconds': round(seconds, 6), 'cpu_seconds': round(usage.ru_utime + usage.ru_stime, 6),
            'peak_rss_kib': usage.ru_maxrss}
     if timed_out:
-        row['error'] = [f'killed after the {round(deadline)} s deadline']
+        row['error'] = [f'killed {MASSCAN_OVERRUN_LIMIT} s past its --wait window' if stalled
+                        else f'killed after the {round(deadline)} s deadline']
         return row, set()
     if proc.returncode != 0:
         row['error'] = stderr_path.read_text(errors='replace').strip().splitlines()[-5:]

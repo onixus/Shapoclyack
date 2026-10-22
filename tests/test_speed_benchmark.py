@@ -124,6 +124,83 @@ def test_summary_separates_failures_from_samples():
     assert entry['recall_min'] == 0.5
 
 
+@pytest.mark.parametrize('tail, seconds', [
+    (b'rate:  0.00-kpps, 100.00% done, waiting 2-secs, found=346       \r', 0),
+    (b'rate:  0.00-kpps, 100.00% done, waiting 0-secs, found=346       \r', 0),
+    (b'rate:  0.00-kpps, 100.00% done, waiting -1-secs, found=346       \r', 1),
+    (b'waiting -127-secs, found=278       \rrate:  0.00-kpps, 100.00% done, waiting -128-secs, found=278   \r', 128),
+    (b'rate:  9.97-kpps, 74.14% done, 0:00:07 remaining, found=260       \r', 0),
+])
+def test_masscan_overrun_is_read_from_its_status_line(tail, seconds):
+    assert BENCH.masscan_overrun(tail) == seconds
+
+
+def test_the_wake_up_traffic_goes_from_the_farm_to_the_scanner_end_only(monkeypatch):
+    argv = []
+    monkeypatch.setattr(BENCH.subprocess, 'Popen', lambda a, **kwargs: argv.extend(a))
+    BENCH.wake_receiver()
+    assert argv[:2] == ['nsenter', f'--net=/var/run/netns/{BENCH.NETNS["farm"]}']
+    assert repr(BENCH.LINK['scan']) in argv[-1]
+    # Nothing else in the code it runs names an address.
+    assert ipaddress.ip_address(BENCH.LINK['scan']) not in BENCH.TARGET_NET
+
+
+# A stand-in for masscan 1.3.2 on a silent link: writes its findings, then
+# counts its --wait window below zero and never exits on its own.
+FAKE_MASSCAN = r'''
+import sys, time
+with open(sys.argv[1], 'w') as handle:
+    handle.write('#masscan\nopen tcp 22 198.19.0.1 1761066000\n')
+for left in range(2, -600, -1):
+    sys.stderr.write(f'rate:  0.00-kpps, 100.00% done, waiting {left}-secs, found=1       \r')
+    sys.stderr.flush()
+    time.sleep(0.05)
+'''
+
+
+class FakeWaker:
+    started = killed = 0
+
+    def __init__(self):
+        FakeWaker.started += 1
+
+    def kill(self):
+        FakeWaker.killed += 1
+
+    def wait(self):
+        return 0
+
+
+def test_masscan_stalled_past_its_window_is_a_failure_not_a_sample(monkeypatch, tmp_path):
+    import sys
+    FakeWaker.started = FakeWaker.killed = 0
+    monkeypatch.setattr(BENCH, 'in_netns', lambda side, argv: argv)
+    monkeypatch.setattr(BENCH, 'command', lambda tool, plan, rate, output, mac=None:
+                        [sys.executable, '-c', FAKE_MASSCAN, str(output)])
+    monkeypatch.setattr(BENCH, 'wake_receiver', FakeWaker)
+    monkeypatch.setattr(BENCH, 'MASSCAN_OVERRUN_LIMIT', 3)
+    plan = BENCH.make_plan('dense', 'small', 1)
+    row, found = BENCH.run_tool('masscan', plan, 100000, tmp_path, 'r0', '02:00:00:00:00:01')
+    assert row['error'] == ['killed 3 s past its --wait window']
+    assert found == set()
+    # Killed on the overrun, long before the 123 s deadline.
+    assert row['seconds'] < 5
+    assert (FakeWaker.started, FakeWaker.killed) == (1, 1)
+
+
+def test_naabu_runs_without_wake_up_traffic(monkeypatch, tmp_path):
+    import sys
+    FakeWaker.started = 0
+    monkeypatch.setattr(BENCH, 'in_netns', lambda side, argv: argv)
+    monkeypatch.setattr(BENCH, 'command', lambda tool, plan, rate, output, mac=None:
+                        [sys.executable, '-c', 'pass'])
+    monkeypatch.setattr(BENCH, 'wake_receiver', FakeWaker)
+    plan = BENCH.make_plan('dense', 'small', 1)
+    row, _ = BENCH.run_tool('naabu-syn', plan, 100000, tmp_path, 'r0', None)
+    assert row['exit_code'] == 0
+    assert FakeWaker.started == 0
+
+
 def test_cli_takes_no_targets():
     # The only addresses a run can touch are the ones make_plan draws from TARGET_NET.
     with pytest.raises(SystemExit):
