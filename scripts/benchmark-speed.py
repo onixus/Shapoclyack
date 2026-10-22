@@ -138,6 +138,7 @@ def score(found, truth):
 
 def parse_naabu(stdout):
     found = set()
+    unparsed = 0
     for line in stdout.splitlines():
         line = line.strip()
         if line:
@@ -146,8 +147,13 @@ def parse_naabu(stdout):
             except json.JSONDecodeError:
                 # A warning or a torn last write is not a finding; one such
                 # line must not cost the whole scenario its scores.
+                unparsed += 1
                 continue
             found.add((row['ip'], int(row['port'])))
+    if unparsed and not found:
+        # Nothing but unreadable lines is a changed format, not a scan that
+        # found nothing: fail the run rather than score it as recall 0.
+        raise ValueError(f'no naabu JSON in {unparsed} line(s) of output')
     return found
 
 
@@ -350,11 +356,17 @@ def serve(plan_path, ready_path):
                 conn.close()
 
 
-def deadline_seconds(plan, rate):
-    """Five times the sweep at the configured rate, plus two minutes of slack."""
+# Packets a tool sends per requested probe, where that is not one. masscan
+# sent 3.8-4.5 per probe on the stand and paced at ~0.91 of --rate, i.e. about
+# five sweeps' worth of time; without this its deadline left a 10 % margin.
+SEND_FACTOR = {'masscan': 5}
+
+
+def deadline_seconds(plan, rate, tool=None):
+    """Five times the tool's sweep at the configured rate, plus two minutes of slack."""
     low, high = plan['ports']
     probes = ipaddress.ip_network(plan['cidr']).num_addresses * (high - low + 1)
-    return 5 * probes / rate + 120
+    return 5 * probes * SEND_FACTOR.get(tool, 1) / rate + 120
 
 
 def masscan_overrun(stderr_tail):
@@ -384,7 +396,7 @@ def run_tool(tool, plan, rate, out_dir, label, router_mac):
     raw = out_dir / f'{label}.{tool}.out'
     stderr_path = out_dir / f'{label}.{tool}.stderr'
     argv = in_netns('scan', command(tool, plan, rate, raw, router_mac))
-    deadline = deadline_seconds(plan, rate)
+    deadline = deadline_seconds(plan, rate, tool)
     started = time.monotonic()
     stalled = False
     # nsenter execs the tool in place, so wait4 reports the tool's own usage.
@@ -396,12 +408,16 @@ def run_tool(tool, plan, rate, out_dir, label, router_mac):
         next_check = started
         # Started once the scanner is, so a scanner that cannot start leaves
         # no waker behind; it is only needed at the end of masscan's run.
-        waker = status = None
+        waker = None
+        # wait4 with WNOHANG reports status 0 for a child still running, so
+        # whether it has been reaped is tracked on its own.
+        reaped = False
         try:
             waker = wake_receiver() if tool == 'masscan' else None
             while True:
                 pid, status, usage = os.wait4(proc.pid, os.WNOHANG)
                 if pid:
+                    reaped = True
                     break
                 now = time.monotonic()
                 if tool == 'masscan' and now >= next_check:
@@ -411,13 +427,14 @@ def run_tool(tool, plan, rate, out_dir, label, router_mac):
                     timed_out = True
                     proc.kill()
                     _, status, usage = os.wait4(proc.pid, 0)
+                    reaped = True
                     break
                 time.sleep(0.02)
         finally:
             if waker:
                 waker.kill()
                 waker.wait()
-            if status is None:
+            if not reaped:
                 # Something above raised before the scanner was reaped.
                 proc.kill()
                 os.wait4(proc.pid, 0)
@@ -434,15 +451,24 @@ def run_tool(tool, plan, rate, out_dir, label, router_mac):
         row['error'] = stderr_path.read_text(errors='replace').strip().splitlines()[-5:]
         return row, set()
     text = raw.read_text() if raw.exists() else ''
-    return row, PARSERS[tool](text)
+    try:
+        return row, PARSERS[tool](text)
+    except ValueError as error:
+        row['error'] = [str(error)]
+        return row, set()
+
+
+def succeeded(row):
+    """A sample: the tool exited 0 and nothing else disqualified the run."""
+    return row.get('exit_code') == 0 and 'error' not in row
 
 
 def summarize(rows):
     summary = []
     for tool in sorted({row['tool'] for row in rows}):
-        ok = [row for row in rows if row['tool'] == tool and row.get('exit_code') == 0]
+        ok = [row for row in rows if row['tool'] == tool and succeeded(row)]
         entry = {'tool': tool, 'samples': len(ok),
-                 'failed': sum(1 for row in rows if row['tool'] == tool and row.get('exit_code') != 0)}
+                 'failed': sum(1 for row in rows if row['tool'] == tool and not succeeded(row))}
         for field in ('seconds', 'cpu_seconds', 'recall', 'precision', 'addresses_per_second', 'probes_per_second',
                       'packets_sent', 'packets_per_second'):
             values = [row[field] for row in ok if field in row]
@@ -491,6 +517,7 @@ def run(args):
         print(metadata['warnings'][0], file=sys.stderr)
     write_json(out_dir / 'metadata.json', metadata)
     rows = []
+    write_json(out_dir / 'results.json', rows)
     with Namespaces(plan) as spaces:
         ready = out_dir / 'farm.ready'
         farm = subprocess.Popen(in_netns('farm', [sys.executable, os.path.abspath(__file__), 'serve',
@@ -513,7 +540,12 @@ def run(args):
                     # differ (masscan sent ~4x as many as naabu for the same
                     # sweep), so both are recorded.
                     row['packets_sent'] = farm_rx_packets() - sent_before
-                    if row['exit_code'] == 0:
+                    farm_died = farm.poll() is not None
+                    if farm_died:
+                        # This run saw part of the farm at best, and every later
+                        # one would score an empty farm as a scanner miss.
+                        row['error'] = [f'the farm exited ({farm.returncode}) during this run']
+                    if succeeded(row):
                         row.update(score(found, truth))
                         row['addresses_per_second'] = round(network.num_addresses / row['seconds'], 3)
                         row['probes_per_second'] = round(probes / row['seconds'], 3)
@@ -521,8 +553,7 @@ def run(args):
                     rows.append(row)
                     # Written as it grows: an interrupted scenario keeps what it scored.
                     write_json(out_dir / 'results.json', rows)
-                    if farm.poll() is not None:
-                        # Every later run would score an empty farm as a scanner miss.
+                    if farm_died:
                         raise SystemExit(f'the farm exited ({farm.returncode}) during {label} {tool}')
         finally:
             farm.terminate()
@@ -532,7 +563,6 @@ def run(args):
                 farm.kill()
                 farm.wait()
             ready.unlink(missing_ok=True)
-    write_json(out_dir / 'results.json', rows)
     summary = summarize(rows)
     write_json(out_dir / 'summary.json', summary)
     sums = [f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}'

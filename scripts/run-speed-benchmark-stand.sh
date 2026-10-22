@@ -24,10 +24,13 @@ image='shapo-speed-stand:local'
 docker build --pull=false -t "$image" -f "$source_root/docs/benchmarks/speed/Stand.Dockerfile" "$source_root/docs/benchmarks/speed"
 mkdir -p "$1"
 output_root="$(cd "$1" && pwd)"
-# "-dirty" when the tree has uncommitted changes: the results then come from
-# code that this hash alone does not reproduce.
+# "-dirty" when what the run uses (scripts, docs/benchmarks) has uncommitted
+# changes or untracked files: the results then come from code that this hash
+# alone does not reproduce.
 if commit="$(git -C "$source_root" rev-parse HEAD 2>/dev/null)"; then
-  git -C "$source_root" diff --quiet HEAD -- || commit="$commit-dirty"
+  if [[ -n "$(git -C "$source_root" status --porcelain --untracked-files=all -- scripts docs/benchmarks)" ]]; then
+    commit="$commit-dirty"
+  fi
   echo "$commit" > "$output_root/source-commit.txt"
 fi
 docker image inspect "$image" --format '{{.Id}}' > "$output_root/stand-image.txt"

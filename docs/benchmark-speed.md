@@ -21,7 +21,9 @@ same configured packet rate, with the tool order rotated between repetitions:
 
 The summary reports median, minimum and maximum. A run that exits non-zero or
 passes its deadline (five times the sweep at the configured rate, plus two
-minutes) counts as failed, not as a sample. A masscan still running 15 s past
+minutes; masscan's sweep is counted five times longer, as it sends that much
+more) counts as failed, not as a sample. So does a naabu run whose output has
+lines but no JSON at all: that is a changed format, not recall 0. A masscan still running 15 s past
 its `--wait` window is killed and counts as failed too. If the farm process
 exits mid-scenario the run stops: every later sample would score an empty farm
 as a scanner miss.

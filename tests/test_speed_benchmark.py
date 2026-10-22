@@ -81,6 +81,22 @@ def test_naabu_parser_skips_a_line_that_is_not_json():
     assert BENCH.parse_naabu(f'[WRN] something\n{event}\n{torn}') == {('198.19.0.1', 22)}
 
 
+def test_naabu_output_with_no_json_at_all_is_an_error_not_recall_zero(monkeypatch, tmp_path):
+    import sys
+    with pytest.raises(ValueError, match='no naabu JSON'):
+        BENCH.parse_naabu('198.19.0.1:22\n198.19.0.2:80\n')
+    assert BENCH.parse_naabu('') == set()
+    monkeypatch.setattr(BENCH, 'in_netns', lambda side, argv: argv)
+    monkeypatch.setattr(BENCH, 'command', lambda tool, plan, rate, output, mac=None:
+                        [sys.executable, '-c', f'open({str(output)!r}, "w").write("198.19.0.1:22\\n")'])
+    plan = BENCH.make_plan('dense', 'small', 1)
+    row, found = BENCH.run_tool('naabu-syn', plan, 100000, tmp_path, 'r0', None)
+    assert row['exit_code'] == 0
+    assert row['error'] == ['no naabu JSON in 1 line(s) of output']
+    assert found == set()
+    assert not BENCH.succeeded(row)
+
+
 def test_packets_are_read_for_the_farm_end_only():
     listing = (
         'Inter-|   Receive                                                |  Transmit\n'
@@ -140,6 +156,19 @@ def test_deadline_scales_with_the_sweep():
     assert BENCH.deadline_seconds(plan, 1000) == pytest.approx(5 * probes / 1000 + 120)
 
 
+def test_masscan_deadline_allows_for_the_packets_it_actually_sends():
+    # Stand, dense 10 000 pps: 297 454 packets at ~9 080 pps for 65 536 probes,
+    # ~5x the naabu sweep time; the plain deadline left it a 10 % margin.
+    plan = BENCH.make_plan('dense', 'small', 1)
+    probes = 64 * 1024
+    ratio = (297_454 / 9_080) / (probes / 10_000)  # masscan's time / the nominal sweep: ~5.0
+    masscan_seconds = ratio * probes / 1000
+    plain = BENCH.deadline_seconds(plan, 1000) - 120
+    assert plain < masscan_seconds * 1.1
+    assert BENCH.deadline_seconds(plan, 1000, 'masscan') - 120 >= 4 * masscan_seconds
+    assert BENCH.deadline_seconds(plan, 1000, 'naabu-syn') == BENCH.deadline_seconds(plan, 1000)
+
+
 def test_summary_separates_failures_from_samples():
     rows = [{'tool': 'naabu-syn', 'exit_code': 0, 'seconds': s, 'recall': r}
             for s, r in [(1.0, 1.0), (3.0, 0.5), (2.0, 0.75)]]
@@ -149,6 +178,13 @@ def test_summary_separates_failures_from_samples():
     assert entry['failed'] == 1
     assert (entry['seconds_median'], entry['seconds_min'], entry['seconds_max']) == (2.0, 1.0, 3.0)
     assert entry['recall_min'] == 0.5
+
+
+def test_a_run_disqualified_after_a_clean_exit_is_not_a_sample():
+    rows = [{'tool': 'naabu-syn', 'exit_code': 0, 'seconds': 1.0, 'recall': 1.0},
+            {'tool': 'naabu-syn', 'exit_code': 0, 'seconds': 9.0, 'error': ['the farm exited (3) during this run']}]
+    (entry,) = BENCH.summarize(rows)
+    assert (entry['samples'], entry['failed'], entry['seconds_max']) == (1, 1, 1.0)
 
 
 @pytest.mark.parametrize('tail, seconds', [
@@ -266,6 +302,37 @@ def test_the_scanner_is_reaped_when_the_waker_cannot_start(monkeypatch, tmp_path
         os.waitpid(scanner.pid, os.WNOHANG)
 
 
+def test_the_scanner_is_reaped_when_the_harness_is_interrupted(monkeypatch, tmp_path):
+    import os
+    import sys
+    started = []
+    real_popen = BENCH.subprocess.Popen
+
+    def popen(*args, **kwargs):
+        started.append(real_popen(*args, **kwargs))
+        return started[-1]
+
+    sleeps = []
+
+    def interrupted_sleep(seconds):
+        # The first poll has already run: wait4(WNOHANG) set status to 0.
+        sleeps.append(seconds)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(BENCH.subprocess, 'Popen', popen)
+    monkeypatch.setattr(BENCH, 'in_netns', lambda side, argv: argv)
+    monkeypatch.setattr(BENCH, 'command', lambda tool, plan, rate, output, mac=None:
+                        [sys.executable, '-c', 'import time; time.sleep(60)'])
+    monkeypatch.setattr(BENCH.time, 'sleep', interrupted_sleep)
+    plan = BENCH.make_plan('dense', 'small', 1)
+    with pytest.raises(KeyboardInterrupt):
+        BENCH.run_tool('naabu-syn', plan, 100000, tmp_path, 'r0', None)
+    assert sleeps
+    (scanner,) = started
+    with pytest.raises(ChildProcessError):
+        os.waitpid(scanner.pid, os.WNOHANG)
+
+
 # The farm for run(): writes its ready file, then exits mid-scenario.
 DYING_FARM = r'''
 import pathlib, sys, time
@@ -300,8 +367,10 @@ def test_a_farm_that_dies_stops_the_run_and_keeps_what_was_scored(monkeypatch, t
     with pytest.raises(SystemExit, match='the farm exited'):
         BENCH.main(['run', '--scenario', 'dense', '--tools', 'naabu-syn,naabu-connect', '--output', str(out)])
     rows = json.loads((out / 'results.json').read_text())
+    # The run the farm died in is kept, but as a failure, not as a scored sample.
     assert [row['tool'] for row in rows] == ['naabu-syn']
-    assert rows[0]['recall'] == 0.0
+    assert rows[0]['error'] == ['the farm exited (3) during this run']
+    assert 'recall' not in rows[0]
     assert json.loads((out / 'metadata.json').read_text())['scenario'] == 'dense'
 
 
@@ -350,3 +419,36 @@ def test_stand_requires_explicit_root_only_in_the_isolated_wrapper(tmp_path, rat
         assert argv[argv.index('--network') + 1] == 'none'
         assert '--privileged' in argv
         assert any('target=/bench,readonly' in arg for arg in argv)
+
+
+def test_stand_marks_results_dirty_for_an_untracked_file(tmp_path):
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    repo = tmp_path / 'repo'
+    (repo / 'scripts').mkdir(parents=True)
+    (repo / 'docs/benchmarks/speed').mkdir(parents=True)
+    shutil.copy(ROOT / 'scripts/run-speed-benchmark-stand.sh', repo / 'scripts')
+    shutil.copy(ROOT / 'docs/benchmarks/speed/Stand.Dockerfile', repo / 'docs/benchmarks/speed')
+    git = ['git', '-C', str(repo), '-c', 'user.name=t', '-c', 'user.email=t@example.invalid']
+    subprocess.run([*git, 'init', '-q'], check=True)
+    subprocess.run([*git, 'add', '.'], check=True)
+    subprocess.run([*git, 'commit', '-qm', 'stand'], check=True)
+    binaries = tmp_path / 'bin'
+    binaries.mkdir()
+    docker = binaries / 'docker'
+    docker.write_text(f'#!{sys.executable}\nimport sys\nif sys.argv[1] == "image": print("sha256:x")\n')
+    docker.chmod(0o755)
+    env = {**os.environ, 'PATH': f'{binaries}:{os.environ["PATH"]}', 'RATES': '1000'}
+
+    def provenance(name):
+        subprocess.run(['bash', str(repo / 'scripts/run-speed-benchmark-stand.sh'), str(tmp_path / name)],
+                       env=env, check=True, capture_output=True)
+        return (tmp_path / name / 'source-commit.txt').read_text().strip()
+
+    clean = provenance('clean')
+    assert len(clean) == 40
+    (repo / 'scripts/helper.py').write_text('# not committed\n')
+    assert provenance('dirty') == f'{clean}-dirty'
