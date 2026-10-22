@@ -702,12 +702,10 @@ def _assert_no_hold(session: Session, username: str) -> None:
     """
     # A session may outlive membership and actor-audit retention. Lock its
     # tenant before testing hold, serializing against legal_hold.place_hold.
-    operator_tenants = set(session.scalars(select(models.OperatorSession.tenant_id)
-        .where(models.OperatorSession.username == username).distinct()))
-    if operator_tenants:
-        list(session.scalars(select(models.Tenant).where(models.Tenant.tenant_id.in_(operator_tenants))
-            .order_by(models.Tenant.tenant_id).with_for_update()))
-    for tenant_id in sorted(operator_tenants | legal_hold.held_tenants_naming(session, username)):
+    from api.services.local_operator import store as operator_store
+
+    operator_tenants = operator_store.lock_owner_tenants(session, username, action="user.erase")
+    for tenant_id in sorted(legal_hold.held_tenants_naming(session, username) - operator_tenants):
         legal_hold.assert_not_on_hold(session, tenant_id, action="user.erase")
 
 

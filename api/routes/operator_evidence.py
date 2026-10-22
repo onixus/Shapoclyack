@@ -7,13 +7,10 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Path, Query, Request
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
 
 from api.auth import TenantPrincipal
 from api.db import tenant_scope
-from api.db.models import UserTenant
 from api.routes.local_operator import OperatorContext, OperatorSettings, Reader, Writer
-from api.services import rbac
 from api.services.local_operator import store
 from api.services.local_operator.gateway import COUNT_FIELDS, GatewayError
 
@@ -42,21 +39,13 @@ def _authorize(settings, context: OperatorContext, *, writer=False) -> TenantPri
         # A tenant-scoped transaction would hide other grants and incorrectly
         # restore the legacy default-tenant fallback after revocation.
         with tenant_scope.system("operator evidence current console authority"), store.get_session_db(settings.postgres_url) as db:
-            user = store._lock_actor(db, settings, principal.username, context.auth_session_id)  # noqa: SLF001
+            user = store._lock_actor(db, settings, principal.username, context.auth_session_id,  # noqa: SLF001
+                                     writer=writer)
             store._lock_tenant(db, principal.tenant_id)  # noqa: SLF001
-            if user.role == "admin":
-                role, rank = "admin", 3
-            else:
-                grants = dict(db.execute(select(UserTenant.tenant_id, UserTenant.role).where(
-                    UserTenant.username == principal.username
-                )).all())
-                role = grants.get(principal.tenant_id)
-                if role is None and not grants and principal.tenant_id == "default":
-                    role = user.role
-                resolved = rbac.role_in_session(db, principal.tenant_id, role or "")
-                if resolved is None or resolved.rank < (2 if writer else 1):
-                    raise store.OperatorStoreError("access_revoked")
-                rank = resolved.rank
+            current = store.resolve_role(db, user, principal.tenant_id)
+            if current is None or current[1] < (2 if writer else 1):
+                raise store.OperatorStoreError("access_revoked")
+            role, rank = current
             return TenantPrincipal(username=principal.username, tenant_id=principal.tenant_id,
                                    role=role, rank=rank, tenant_requested=True,
                                    is_platform_admin=user.role == "admin")
@@ -131,7 +120,7 @@ def _call(settings, context, action, *, writer=False, **kwargs):
     except GatewayError as exc:
         status = {"operator_access_revoked": 403, "operator_invalid_query": 422,
                   "operator_invalid_limit": 422, "operator_source_changed": 409,
-                  "operator_source_unavailable": 404}.get(exc.code, 409)
+                  "operator_source_unavailable": 404, "operator_storage_unavailable": 503}.get(exc.code, 409)
         raise HTTPException(status_code=status, detail=exc.code) from None
 
 

@@ -17,7 +17,7 @@ from starlette.concurrency import run_in_threadpool
 from api.auth import TenantPrincipal
 from api.db import models, tenant_scope
 from api.db.engine import get_session
-from api.services import artifact_store, rbac
+from api.services import artifact_store
 from api.services.artifact_store import keys
 from api.services.local_operator.config import OperatorConfig
 from api.services.local_operator.contracts import (
@@ -56,19 +56,10 @@ def authorize_actor(settings, task) -> TenantPrincipal:
                     or tenant.status != "active"
                     or user.token_version != task.get("actor_token_version")):
                 raise GatewayError("operator_access_revoked")
-            if user.role == "admin":
-                role, rank = "admin", 3
-            else:
-                grants = db.execute(select(models.UserTenant.tenant_id, models.UserTenant.role)
-                                    .where(models.UserTenant.username == username)).all()
-                granted = dict(grants)
-                role = granted.get(tenant_id)
-                if role is None and not grants and tenant_id == "default":
-                    role = user.role
-                resolved = rbac.role_in_session(db, tenant_id, role or "")
-                if resolved is None or resolved.rank < 2:
-                    raise GatewayError("operator_access_revoked")
-                rank = resolved.rank
+            current = operator_store.resolve_role(db, user, tenant_id)
+            if current is None or current[1] < 2:
+                raise GatewayError("operator_access_revoked")
+            role, rank = current
             return TenantPrincipal(username=username, tenant_id=tenant_id, role=role,
                                    rank=rank, tenant_requested=True, is_platform_admin=False)
 
@@ -144,7 +135,10 @@ def read_evidence(settings, principal, run_id):
         return counts, citation
     except GatewayError:
         raise
-    except (artifact_store.ArtifactStoreError, ValueError, TypeError, RecursionError, OSError):
+    except (artifact_store.ArtifactStoreError, OSError):
+        # Transient storage failure: not evidence that the source is gone.
+        raise GatewayError("operator_storage_unavailable") from None
+    except (ValueError, TypeError, RecursionError):
         raise GatewayError("operator_source_unavailable") from None
 
 

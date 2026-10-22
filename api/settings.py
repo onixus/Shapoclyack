@@ -1457,6 +1457,25 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def _operator_number(name: str, default, kind):
+    """Optional AI-operator knob from the environment.
+
+    A malformed value is a clear configuration error while the operator is
+    enabled, and only a warning (default kept) while it is not: a typo in an
+    optional feature must not take down the control plane.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return kind(raw)
+    except ValueError:
+        if os.environ.get("OCTO_OPERATOR_ENABLED", "false").strip().lower() in {"1", "true", "yes"}:
+            raise InsecureConfigurationError(f"{name}={raw!r} is not a valid number") from None
+        logger.warning("%s=%r is not a number; using %s", name, raw, default)
+        return default
+
+
 def _today() -> date:
     """UTC date, indirected so the sunset check can be tested without freezing time."""
     return datetime.now(UTC).date()
@@ -2086,15 +2105,15 @@ def load_settings() -> Settings:
         operator_api_key=os.environ.get("OCTO_OPERATOR_API_KEY", "").strip(),
         operator_allow_external=os.environ.get("OCTO_OPERATOR_ALLOW_EXTERNAL", "false").strip().lower()
         in {"1", "true", "yes"},
-        operator_timeout_seconds=float(os.environ.get("OCTO_OPERATOR_TIMEOUT_SECONDS", "120")),
-        operator_max_response_bytes=int(os.environ.get("OCTO_OPERATOR_MAX_RESPONSE_BYTES", "262144")),
-        operator_max_input_chars=int(os.environ.get("OCTO_OPERATOR_MAX_INPUT_CHARS", "24000")),
-        operator_max_output_tokens=int(os.environ.get("OCTO_OPERATOR_MAX_OUTPUT_TOKENS", "1024")),
+        operator_timeout_seconds=_operator_number("OCTO_OPERATOR_TIMEOUT_SECONDS", 120.0, float),
+        operator_max_response_bytes=_operator_number("OCTO_OPERATOR_MAX_RESPONSE_BYTES", 262144, int),
+        operator_max_input_chars=_operator_number("OCTO_OPERATOR_MAX_INPUT_CHARS", 24000, int),
+        operator_max_output_tokens=_operator_number("OCTO_OPERATOR_MAX_OUTPUT_TOKENS", 1024, int),
         operator_worker_enabled=os.environ.get("OCTO_OPERATOR_WORKER_ENABLED", "false").strip().lower()
         in {"1", "true", "yes"},
-        operator_worker_poll_seconds=float(os.environ.get("OCTO_OPERATOR_WORKER_POLL_SECONDS", "2")),
-        operator_worker_lease_seconds=int(os.environ.get("OCTO_OPERATOR_WORKER_LEASE_SECONDS", "180")),
-        operator_queue_limit=int(os.environ.get("OCTO_OPERATOR_QUEUE_LIMIT", "20")),
+        operator_worker_poll_seconds=_operator_number("OCTO_OPERATOR_WORKER_POLL_SECONDS", 2.0, float),
+        operator_worker_lease_seconds=_operator_number("OCTO_OPERATOR_WORKER_LEASE_SECONDS", 180, int),
+        operator_queue_limit=_operator_number("OCTO_OPERATOR_QUEUE_LIMIT", 20, int),
         mcp_enabled=os.environ.get("OCTO_MCP_ENABLED", "false").strip().lower()
         in {"1", "true", "yes"},
         mcp_allowed_origins=[

@@ -40,6 +40,7 @@ SAFE_FAILURE_CODES = frozenset(
         "operator_unsupported_task",
         "operator_invalid_run",
         "operator_source_unavailable",
+        "operator_storage_unavailable",
         "operator_source_too_large",
         "operator_source_invalid",
         "operator_source_incomplete",
@@ -53,6 +54,9 @@ SAFE_FAILURE_CODES = frozenset(
         "operator_transport_failed",
         "operator_execution_failed",
         "operator_timeout",
+        "operator_legal_hold",
+        "operator_cancelled",
+        "operator_result_too_large",
     }
 )
 
@@ -75,16 +79,20 @@ def _owned(model, tenant_id, username):
     return select(model).where(model.tenant_id == tenant_id, model.username == username)
 
 
-def _lock_actor(db, settings, username, auth_session_id):
-    """Fence mutations against account deletion and stale authenticated requests."""
-    user = db.scalar(select(User).where(User.username == username).with_for_update())
+def _lock_actor(db, settings, username, auth_session_id, *, writer=True):
+    """Fence mutations against account deletion and stale authenticated requests.
+
+    Readers take a share lock: it still fences deletion and revocation, without
+    serializing polling against refresh rotation or other readers.
+    """
+    user = db.scalar(select(User).where(User.username == username).with_for_update(read=not writer))
     if user is None or user.disabled_at is not None or user.erased_at is not None:
         raise OperatorStoreError("access_revoked")
     if auth_session_id is not None:
         family = db.scalar(
             select(SessionFamily)
             .where(SessionFamily.family_id == auth_session_id)
-            .with_for_update()
+            .with_for_update(read=not writer)
         )
         now = _now()
         idle = max(0, int(getattr(settings, "session_idle_minutes", 30)))
@@ -108,23 +116,31 @@ def _lock_tenant(db, tenant_id):
         raise OperatorStoreError("not_found")
 
 
-def _require_current_role(db, user, tenant_id, minimum_rank):
+def resolve_role(db, user, tenant_id):
+    """Current ``(role, rank)`` of ``user`` in ``tenant_id``, or None when revoked.
+
+    The one grant resolution for console, evidence and queued work. All
+    memberships matter: another tenant's grant disables the legacy
+    no-membership default fallback. A deleted/unknown custom role keeps the
+    route's coarse reader contract: rank 1, never operator authority.
+    """
     if user.role == "admin":
-        return
-    # All memberships matter: another tenant's grant disables the legacy
-    # no-membership default fallback. Resolve before narrowing this transaction.
+        return "admin", 3
     grants = dict(db.execute(select(UserTenant.tenant_id, UserTenant.role).where(
         UserTenant.username == user.username)).all())
     role = grants.get(tenant_id)
     if role is None and not grants and tenant_id == "default":
         role = user.role
     if role is None:
-        raise OperatorStoreError("access_revoked")
+        return None
     resolved = rbac.role_in_session(db, tenant_id, role)
-    # Match the route's coarse reader contract for deleted/unknown custom roles:
-    # rank 1 with no permissions, never operator authority.
-    rank = resolved.rank if resolved is not None else 1
-    if rank < minimum_rank:
+    return role, (resolved.rank if resolved is not None else 1)
+
+
+def _require_current_role(db, user, tenant_id, minimum_rank):
+    # Resolve before narrowing this transaction.
+    current = resolve_role(db, user, tenant_id)
+    if current is None or current[1] < minimum_rank:
         raise OperatorStoreError("access_revoked")
 
 
@@ -135,7 +151,7 @@ def _personal_db(settings, tenant_id, username, auth_session_id, *, writer=False
              if auth_session_id is not None else nullcontext())
     with scope, get_session_db(settings.postgres_url) as db:
         if writer or auth_session_id is not None:
-            user = _lock_actor(db, settings, username, auth_session_id)
+            user = _lock_actor(db, settings, username, auth_session_id, writer=writer)
         if writer:
             _lock_tenant(db, tenant_id)
         if auth_session_id is not None:
@@ -494,10 +510,11 @@ def finish_task(settings, task_id, owner, result=None, error=None):
         else:
             row.status, row.result = "succeeded", result
             # Bounded output is supplied by the worker; persist it atomically.
-            if result is not None:
-                content = json.dumps(result, ensure_ascii=False)
-                if len(content) > 65536:
-                    raise OperatorStoreError("invalid_input")
+            content = json.dumps(result, ensure_ascii=False) if result is not None else None
+            if content is not None and len(content) > 65536:
+                # Record a safe failure instead of raising out of the worker.
+                row.status, row.error, row.result = "failed", "operator_result_too_large", None
+            elif content is not None:
                 db.add(
                     OperatorMessage(
                         message_id=str(uuid4()),
@@ -517,13 +534,9 @@ def finish_task(settings, task_id, owner, result=None, error=None):
         return True
 
 
-def delete_owner_sessions(db, username):
-    """Delete an account's personal state in its caller's deletion transaction.
-
-    The username has no FK, so account recreation must not inherit old work.
-    Tenant locks serialize legal-hold placement, including departed accounts.
-    Running-task disappearance tells the worker to stop and fences late finish.
-    """
+def lock_owner_tenants(db, username, *, action):
+    """Lock, in tenant order, every tenant holding the account's personal state
+    and refuse while any is on hold; serializes with legal_hold.place_hold."""
     tenant_ids = set(
         db.scalars(
             select(OperatorSession.tenant_id)
@@ -541,7 +554,18 @@ def delete_owner_sessions(db, username):
             )
         )
     for tenant_id in sorted(tenant_ids):
-        legal_hold.assert_not_on_hold(db, tenant_id, action="user.delete")
+        legal_hold.assert_not_on_hold(db, tenant_id, action=action)
+    return tenant_ids
+
+
+def delete_owner_sessions(db, username):
+    """Delete an account's personal state in its caller's deletion transaction.
+
+    The username has no FK, so account recreation must not inherit old work.
+    Tenant locks serialize legal-hold placement, including departed accounts.
+    Running-task disappearance tells the worker to stop and fences late finish.
+    """
+    lock_owner_tenants(db, username, action="user.delete")
     return db.execute(
         delete(OperatorSession).where(OperatorSession.username == username)
     ).rowcount

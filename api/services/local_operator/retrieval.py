@@ -12,7 +12,7 @@ import re
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import case, delete, func, literal_column, or_, select
+from sqlalchemy import case, delete, func, literal_column, or_, select, update
 
 from api.db import models, tenant_scope
 from api.db.engine import get_session
@@ -246,25 +246,69 @@ def get_citation(settings, principal, source_id, snapshot_id, source_hash):
         return _item(doc, snapshot)
 
 
+def verify_items(settings, principal, items):
+    """Whether every item is still a current document of its snapshot.
+
+    One source check per snapshot and one document query, not one full source
+    capture per item.
+    """
+    if not items:
+        return True
+    snapshot_ids = {item["snapshot_id"] for item in items}
+    with tenant_scope.tenant(principal.tenant_id), get_session(settings.postgres_url) as db:
+        snapshots = db.scalars(select(models.OperatorEvidenceSnapshot).where(
+            models.OperatorEvidenceSnapshot.tenant_id == principal.tenant_id,
+            models.OperatorEvidenceSnapshot.snapshot_id.in_(snapshot_ids))).all()
+        if len(snapshots) != len(snapshot_ids):
+            return False
+        current = {source_id: (source_hash, document_hash) for source_id, source_hash, document_hash in db.execute(
+            select(models.OperatorEvidenceDocument.source_id, models.OperatorEvidenceDocument.source_hash,
+                   models.OperatorEvidenceDocument.document_hash).where(
+                models.OperatorEvidenceDocument.tenant_id == principal.tenant_id,
+                models.OperatorEvidenceDocument.snapshot_id.in_(snapshot_ids),
+                models.OperatorEvidenceDocument.source_id.in_([item["source_id"] for item in items])))}
+        for snapshot in snapshots:
+            _current(settings, principal, snapshot)
+    return all(current.get(item["source_id"]) == (item["source_hash"], item["document_hash"]) for item in items)
+
+
 def prune_invalid(settings, limit=20):
-    """Remove stale derived chunks; held evidence remains inaccessible but retained."""
+    """Remove stale derived chunks; held evidence remains inaccessible but retained.
+
+    Sources are read with no lock held; each deletion is its own short
+    transaction under its tenant's lock. Storage failures prove nothing.
+    """
     from types import SimpleNamespace
     from .gateway import GatewayError
     if type(limit) is not int or not 1 <= limit <= 100:
         raise _error("operator_invalid_limit")
     removed = 0
-    with tenant_scope.system("operator evidence expiry cleanup"), get_session(settings.postgres_url) as db:
-        candidates = db.scalars(select(models.OperatorEvidenceSnapshot).order_by(
-            models.OperatorEvidenceSnapshot.last_checked_at,
-            models.OperatorEvidenceSnapshot.snapshot_id).limit(limit)).all()
-        for snapshot in candidates:
-            snapshot.last_checked_at = datetime.now(UTC).replace(tzinfo=None)
+    reason = "operator evidence expiry cleanup"
+    with tenant_scope.system(reason), get_session(settings.postgres_url) as db:
+        candidates = [SimpleNamespace(snapshot_id=row.snapshot_id, tenant_id=row.tenant_id, run_id=row.run_id,
+                                      summary_hash=row.summary_hash, publication_snapshot=row.publication_snapshot,
+                                      findings_hash=row.findings_hash)
+                      for row in db.scalars(select(models.OperatorEvidenceSnapshot).order_by(
+                          models.OperatorEvidenceSnapshot.last_checked_at,
+                          models.OperatorEvidenceSnapshot.snapshot_id).limit(limit))]
+        if candidates:
+            db.execute(update(models.OperatorEvidenceSnapshot).where(
+                models.OperatorEvidenceSnapshot.snapshot_id.in_([c.snapshot_id for c in candidates])
+            ).values(last_checked_at=datetime.now(UTC).replace(tzinfo=None)))
+    for snapshot in candidates:
+        try:
+            _current(settings, SimpleNamespace(tenant_id=snapshot.tenant_id), snapshot)
+            continue
+        except GatewayError as exc:
+            if exc.code == "operator_storage_unavailable":
+                continue
+        except (artifact_store.ArtifactStoreError, OSError):
+            continue
+        with tenant_scope.system(reason), get_session(settings.postgres_url) as db:
             db.scalar(select(models.Tenant).where(models.Tenant.tenant_id == snapshot.tenant_id).with_for_update())
             if db.get(models.TenantLegalHold, snapshot.tenant_id) is not None:
                 continue
-            try:
-                _current(settings, SimpleNamespace(tenant_id=snapshot.tenant_id), snapshot)
-            except GatewayError:
-                db.delete(snapshot)
-                removed += 1
+            removed += db.execute(delete(models.OperatorEvidenceSnapshot).where(
+                models.OperatorEvidenceSnapshot.snapshot_id == snapshot.snapshot_id,
+                models.OperatorEvidenceSnapshot.tenant_id == snapshot.tenant_id)).rowcount
     return removed

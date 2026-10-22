@@ -355,10 +355,10 @@ def test_late_authenticated_create_cannot_survive_delete_and_name_reuse(
     reached, proceed = Event(), Event()
     original = store._lock_actor
 
-    def delayed_check(*args):
+    def delayed_check(*args, **kwargs):
         reached.set()
         assert proceed.wait(10)
-        return original(*args)
+        return original(*args, **kwargs)
 
     monkeypatch.setattr(store, "_lock_actor", delayed_check)
 

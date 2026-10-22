@@ -43,11 +43,8 @@ async def execute(settings, task):
         raise gateway.GatewayError("operator_invalid_model_output") from None
     principal = await run_in_threadpool(gateway.authorize_actor, settings, task)
     # Revalidate every disclosed observation, even when the model abstains.
-    for item in evidence["items"]:
-        current = await run_in_threadpool(retrieval.get_citation, settings, principal,
-                                         item["source_id"], item["snapshot_id"], item["source_hash"])
-        if current is None or current["document_hash"] != item["document_hash"]:
-            raise gateway.GatewayError("operator_source_changed")
+    if not await run_in_threadpool(retrieval.verify_items, settings, principal, evidence["items"]):
+        raise gateway.GatewayError("operator_source_changed")
     # Missing evidence still requires a current eligible publication.
     await run_in_threadpool(gateway.read_evidence, settings, principal, task["run_id"])
     return {"schema_version": "1", "analysis": result, "quality_status": "quality_unverified",
