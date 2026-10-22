@@ -101,6 +101,16 @@ SUBJECT_COLUMNS: dict[tuple[str, str], tuple[str, str]] = {
     ("revoked_tokens", "username"): (DELETED, "logout denylist; token_version refuses all"),
     ("console_saved_views", "username"): (DELETED, "personal saved console views"),
     ("console_saved_views", "state"): (DELETED, "personal search and filter preferences deleted with the owner"),
+    # Personal operator state belongs to the account; erasure cascades from sessions.
+    ("operator_sessions", "username"): (DELETED, "personal AI operator sessions"),
+    ("operator_messages", "username"): (DELETED, "personal AI operator messages"),
+    ("operator_messages", "content"): (DELETED, "personal AI operator message content"),
+    ("operator_tasks", "username"): (DELETED, "personal AI operator tasks"),
+    ("operator_tasks", "actor_token_version"): (DELETED, "account authorization generation captured for queued work"),
+    ("operator_tasks", "result"): (DELETED, "personal AI operator results and citations"),
+    ("operator_proposals", "username"): (DELETED, "personal reserved AI proposals"),
+    ("operator_proposals", "payload"): (DELETED, "personal reserved AI proposal content"),
+    ("operator_executions", "username"): (DELETED, "personal reserved AI execution records"),
     ("session_families", "username"): (DELETED, "sign-in sessions and refresh tokens"),
     ("auth_events", "username"): (
         RETAINED,
@@ -205,6 +215,7 @@ SUBJECT_COLUMNS: dict[tuple[str, str], tuple[str, str]] = {
 #: Columns that look like they name an account and do not, so the check in the
 #: test can tell a decision from an omission.
 NOT_SUBJECT_COLUMNS: dict[tuple[str, str], str] = {
+    ("operator_evidence_documents", "content"): "derived allowlisted tenant scan facts; no console identity, conversation or raw source text",
     ("service_tokens", "allowed_cidrs"): "integration source network policy; no console account",
     ("agent_deployments", "username"): "the SSH account on the target host",
     ("assets", "owner_email"): "the asset's owner, tenant business data the tenant edits",
@@ -360,6 +371,7 @@ def _export(
                 {"tenant_id": view.tenant_id, "page": view.page, "name": view.name, "state": view.state}
                 for view in session.scalars(select(models.ConsoleSavedView).where(models.ConsoleSavedView.username == username))
             ],
+            "operator": _operator_records(session, username),
             "memberships": _memberships(session, username),
             "security_keys": _security_keys(session, username),
             "sessions": _sessions(session, username),
@@ -406,6 +418,44 @@ def _export(
             },
         )
         return document
+
+
+OPERATOR_EXPORT_LIMIT = 1000
+
+
+def _operator_records(session: Session, username: str) -> dict[str, list[dict[str, Any]]]:
+    """Only the subject's records, including tenants they no longer belong to.
+
+    Refuse over-limit exports rather than silently omit retained personal data.
+    The existing export route maps ExportTooSlow to a retryable 503 response.
+    """
+    exported = {}
+    for name, model in (
+        ("sessions", models.OperatorSession),
+        ("messages", models.OperatorMessage),
+        ("tasks", models.OperatorTask),
+        ("proposals", models.OperatorProposal),
+        ("executions", models.OperatorExecution),
+    ):
+        query = (select(model).where(model.username == username)
+                 .order_by(model.created_at).limit(OPERATOR_EXPORT_LIMIT + 1))
+        rows = list(session.scalars(query))
+        if len(rows) > OPERATOR_EXPORT_LIMIT:
+            raise ExportTooSlow(
+                "operator subject export exceeds the bounded record limit; "
+                "arrange a batched export"
+            )
+        records = []
+        for row in rows:
+            record = {}
+            for column in model.__table__.columns:
+                if column.name in {"actor_token_version", "lease_owner"}:
+                    continue
+                value = getattr(row, column.name)
+                record[column.name] = _iso(value) if isinstance(value, datetime) else value
+            records.append(record)
+        exported[name] = records
+    return exported
 
 
 def _account(row: models.User) -> dict[str, Any]:
@@ -650,7 +700,12 @@ def _assert_no_hold(session: Session, username: str) -> None:
     revoked membership takes neither the account's actions nor its grant out
     of that trail.
     """
-    for tenant_id in sorted(legal_hold.held_tenants_naming(session, username)):
+    # A session may outlive membership and actor-audit retention. Lock its
+    # tenant before testing hold, serializing against legal_hold.place_hold.
+    from api.services.local_operator import store as operator_store
+
+    operator_tenants = operator_store.lock_owner_tenants(session, username, action="user.erase")
+    for tenant_id in sorted(legal_hold.held_tenants_naming(session, username) - operator_tenants):
         legal_hold.assert_not_on_hold(session, tenant_id, action="user.erase")
 
 
@@ -715,6 +770,7 @@ def _erase(
             "memberships": sorted(m.tenant_id for m in memberships),
             "security_keys": _count(session, models.WebAuthnCredential, username),
             "sessions": _count(session, models.SessionFamily, username),
+            "operator_sessions": _count(session, models.OperatorSession, username),
             "report_recipients": _strip_report_recipient(session, address) if address else 0,
             "notification_recipients": (
                 _strip_channel_recipient(session, address, audit) if address else 0
@@ -747,6 +803,9 @@ def _erase(
             models.WebAuthnChallenge,
             models.SessionFamily,
             models.ConsoleSavedView,
+            # Includes running tasks: disappearance cancels the worker, and
+            # owner fencing refuses any response already in flight.
+            models.OperatorSession,
             models.RevokedToken,
             # A SCIM push after the erasure must not re-attach the pseudonym
             # to a group, and through it to a tenant (#316).

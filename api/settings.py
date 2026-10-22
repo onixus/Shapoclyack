@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import socket
 from dataclasses import dataclass, field
@@ -131,6 +132,25 @@ class Settings:
     # load_settings() validates — Settings constructed directly (tests, tools)
     # are trusted, since whoever writes the field is stating the value.
     env: str = ENV_PROD
+    # Optional AI operator. Hosted inference requires a separate, explicit
+    # egress opt-in; none of these credentials belongs in scanner YAML/UI.
+    operator_enabled: bool = False
+    operator_provider: str = "local"
+    operator_base_url: str = ""
+    operator_model: str = "Qwen3.5-9B-Q4_K_M"
+    operator_api_key: str = field(default="", repr=False)
+    operator_allow_external: bool = False
+    operator_timeout_seconds: float = 120.0
+    operator_max_response_bytes: int = 262144
+    operator_max_input_chars: int = 24000
+    operator_max_output_tokens: int = 1024
+    # Orchestration is a separate process; enabling the API never starts it.
+    operator_worker_enabled: bool = False
+    operator_worker_poll_seconds: float = 2.0
+    operator_worker_lease_seconds: int = 180
+    operator_queue_limit: int = 20
+    mcp_enabled: bool = False
+    mcp_allowed_origins: list[str] = field(default_factory=list)
     jwt_secret: str = DEFAULT_JWT_SECRET
     jwt_algorithm: str = ALLOWED_JWT_ALGORITHMS[0]
     # The absolute lifetime of a console sign-in (OCTO_JWT_EXPIRE_MINUTES).
@@ -1437,6 +1457,25 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def _operator_number(name: str, default, kind):
+    """Optional AI-operator knob from the environment.
+
+    A malformed value is a clear configuration error while the operator is
+    enabled, and only a warning (default kept) while it is not: a typo in an
+    optional feature must not take down the control plane.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return kind(raw)
+    except ValueError:
+        if os.environ.get("OCTO_OPERATOR_ENABLED", "false").strip().lower() in {"1", "true", "yes"}:
+            raise InsecureConfigurationError(f"{name}={raw!r} is not a valid number") from None
+        logger.warning("%s=%r is not a number; using %s", name, raw, default)
+        return default
+
+
 def _today() -> date:
     """UTC date, indirected so the sunset check can be tested without freezing time."""
     return datetime.now(UTC).date()
@@ -2058,6 +2097,29 @@ def load_settings() -> Settings:
 
     settings = Settings(
         env=env,
+        operator_enabled=os.environ.get("OCTO_OPERATOR_ENABLED", "false").strip().lower()
+        in {"1", "true", "yes"},
+        operator_provider=os.environ.get("OCTO_OPERATOR_PROVIDER", "local").strip(),
+        operator_base_url=os.environ.get("OCTO_OPERATOR_BASE_URL", "").strip(),
+        operator_model=os.environ.get("OCTO_OPERATOR_MODEL", "Qwen3.5-9B-Q4_K_M").strip(),
+        operator_api_key=os.environ.get("OCTO_OPERATOR_API_KEY", "").strip(),
+        operator_allow_external=os.environ.get("OCTO_OPERATOR_ALLOW_EXTERNAL", "false").strip().lower()
+        in {"1", "true", "yes"},
+        operator_timeout_seconds=_operator_number("OCTO_OPERATOR_TIMEOUT_SECONDS", 120.0, float),
+        operator_max_response_bytes=_operator_number("OCTO_OPERATOR_MAX_RESPONSE_BYTES", 262144, int),
+        operator_max_input_chars=_operator_number("OCTO_OPERATOR_MAX_INPUT_CHARS", 24000, int),
+        operator_max_output_tokens=_operator_number("OCTO_OPERATOR_MAX_OUTPUT_TOKENS", 1024, int),
+        operator_worker_enabled=os.environ.get("OCTO_OPERATOR_WORKER_ENABLED", "false").strip().lower()
+        in {"1", "true", "yes"},
+        operator_worker_poll_seconds=_operator_number("OCTO_OPERATOR_WORKER_POLL_SECONDS", 2.0, float),
+        operator_worker_lease_seconds=_operator_number("OCTO_OPERATOR_WORKER_LEASE_SECONDS", 180, int),
+        operator_queue_limit=_operator_number("OCTO_OPERATOR_QUEUE_LIMIT", 20, int),
+        mcp_enabled=os.environ.get("OCTO_MCP_ENABLED", "false").strip().lower()
+        in {"1", "true", "yes"},
+        mcp_allowed_origins=[
+            origin.strip() for origin in os.environ.get("OCTO_MCP_ALLOWED_ORIGINS", "").split(",")
+            if origin.strip()
+        ],
         jwt_secret=os.environ.get("API_SECRET_KEY", "").strip()
         or os.environ.get("OCTO_JWT_SECRET", DEFAULT_JWT_SECRET),
         jwt_algorithm=algorithm,
@@ -2620,6 +2682,22 @@ def load_settings() -> Settings:
             if item.strip()
         ],
     )
+
+    if settings.operator_enabled:
+        from api.services.local_operator.config import OperatorConfig
+
+        try:
+            OperatorConfig.from_settings(settings)
+        except ValueError as exc:
+            raise InsecureConfigurationError("Invalid operator configuration: " + str(exc)) from None
+
+    if settings.operator_worker_enabled:
+        if (not settings.operator_enabled
+                or not math.isfinite(settings.operator_worker_poll_seconds)
+                or not 0 < settings.operator_worker_poll_seconds <= 60
+                or not settings.operator_timeout_seconds + 30 <= settings.operator_worker_lease_seconds <= 3600
+                or not 1 <= settings.operator_queue_limit <= 100):
+            raise InsecureConfigurationError("Invalid operator worker configuration")
 
     if settings.idp_authoritative and not (settings.oidc_role_map or settings.idp_group_map):
         # Not a refusal, and not obeyed either: with nothing mapped, every SSO

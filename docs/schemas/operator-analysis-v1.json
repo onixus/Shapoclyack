@@ -1,0 +1,105 @@
+{
+  "$defs": {
+    "Selection": {
+      "additionalProperties": false,
+      "properties": {
+        "source_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Source Hash",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "proposed_priority": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "unknown"
+          ],
+          "title": "Proposed Priority",
+          "type": "string"
+        },
+        "category": {
+          "enum": [
+            "vulnerability",
+            "exposure",
+            "configuration",
+            "unknown"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "next_steps": {
+          "items": {
+            "enum": [
+              "verify_evidence",
+              "review_configuration",
+              "confirm_exposure",
+              "request_fresh_scan"
+            ],
+            "type": "string"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Next Steps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "source_id",
+        "source_hash",
+        "snapshot_id",
+        "proposed_priority",
+        "category",
+        "next_steps"
+      ],
+      "title": "Selection",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "language": {
+      "enum": [
+        "ru",
+        "en"
+      ],
+      "title": "Language",
+      "type": "string"
+    },
+    "summary": {
+      "enum": [
+        "review_required",
+        "insufficient_evidence"
+      ],
+      "title": "Summary",
+      "type": "string"
+    },
+    "recommendations": {
+      "items": {
+        "$ref": "#/$defs/Selection"
+      },
+      "maxItems": 40,
+      "title": "Recommendations",
+      "type": "array"
+    }
+  },
+  "required": [
+    "language",
+    "summary",
+    "recommendations"
+  ],
+  "title": "ModelAnalysis",
+  "type": "object"
+}
