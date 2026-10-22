@@ -141,7 +141,12 @@ def parse_naabu(stdout):
     for line in stdout.splitlines():
         line = line.strip()
         if line:
-            row = json.loads(line)
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                # A warning or a torn last write is not a finding; one such
+                # line must not cost the whole scenario its scores.
+                continue
             found.add((row['ip'], int(row['port'])))
     return found
 
@@ -293,6 +298,26 @@ def in_netns(side, argv):
     return ['nsenter', f'--net=/var/run/netns/{NETNS[side]}', *argv]
 
 
+def parse_net_dev(text, ifname):
+    """Packets received on ifname, from a /proc/net/dev listing."""
+    for line in text.splitlines():
+        name, sep, counters = line.partition(':')
+        if sep and name.strip() == ifname:
+            return int(counters.split()[1])
+    raise ValueError(f'{ifname} is not in /proc/net/dev')
+
+
+def farm_rx_packets():
+    """Everything the scanner namespace has put on the link so far.
+
+    /proc/net/dev follows the reader's network namespace, so it is read from a
+    process inside the farm's.
+    """
+    listing = subprocess.run(in_netns('farm', ['cat', '/proc/net/dev']),
+                             capture_output=True, text=True, check=True).stdout
+    return parse_net_dev(listing, VETH['farm'])
+
+
 def serve(plan_path, ready_path):
     """The farm: accept on every planned (host, port), answer, close."""
     plan = json.loads(Path(plan_path).read_text())
@@ -360,7 +385,6 @@ def run_tool(tool, plan, rate, out_dir, label, router_mac):
     stderr_path = out_dir / f'{label}.{tool}.stderr'
     argv = in_netns('scan', command(tool, plan, rate, raw, router_mac))
     deadline = deadline_seconds(plan, rate)
-    waker = wake_receiver() if tool == 'masscan' else None
     started = time.monotonic()
     stalled = False
     # nsenter execs the tool in place, so wait4 reports the tool's own usage.
@@ -370,7 +394,11 @@ def run_tool(tool, plan, rate, out_dir, label, router_mac):
         proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr)
         timed_out = False
         next_check = started
+        # Started once the scanner is, so a scanner that cannot start leaves
+        # no waker behind; it is only needed at the end of masscan's run.
+        waker = status = None
         try:
+            waker = wake_receiver() if tool == 'masscan' else None
             while True:
                 pid, status, usage = os.wait4(proc.pid, os.WNOHANG)
                 if pid:
@@ -389,6 +417,10 @@ def run_tool(tool, plan, rate, out_dir, label, router_mac):
             if waker:
                 waker.kill()
                 waker.wait()
+            if status is None:
+                # Something above raised before the scanner was reaped.
+                proc.kill()
+                os.wait4(proc.pid, 0)
     seconds = time.monotonic() - started
     proc.returncode = os.waitstatus_to_exitcode(status)
     row = {'tool': tool, 'label': label, 'argv': argv, 'exit_code': proc.returncode,
@@ -411,7 +443,8 @@ def summarize(rows):
         ok = [row for row in rows if row['tool'] == tool and row.get('exit_code') == 0]
         entry = {'tool': tool, 'samples': len(ok),
                  'failed': sum(1 for row in rows if row['tool'] == tool and row.get('exit_code') != 0)}
-        for field in ('seconds', 'cpu_seconds', 'recall', 'precision', 'addresses_per_second', 'probes_per_second'):
+        for field in ('seconds', 'cpu_seconds', 'recall', 'precision', 'addresses_per_second', 'probes_per_second',
+                      'packets_sent', 'packets_per_second'):
             values = [row[field] for row in ok if field in row]
             if values:
                 entry[f'{field}_median'] = round(statistics.median(values), 6)
@@ -419,6 +452,10 @@ def summarize(rows):
                 entry[f'{field}_max'] = round(max(values), 6)
         summary.append(entry)
     return summary
+
+
+def write_json(path, data):
+    path.write_text(json.dumps(data, indent=1, sort_keys=True) + '\n')
 
 
 def run(args):
@@ -452,6 +489,7 @@ def run(args):
     if 'naabu-syn' in available and not metadata['host']['libpcap']:
         metadata['warnings'] = ['no libpcap on this host: naabu SYN cannot see replies and reports nothing']
         print(metadata['warnings'][0], file=sys.stderr)
+    write_json(out_dir / 'metadata.json', metadata)
     rows = []
     with Namespaces(plan) as spaces:
         ready = out_dir / 'farm.ready'
@@ -467,21 +505,36 @@ def run(args):
                 # Rotate the order so no tool always runs first on a cold cache.
                 order = available[repeat % len(available):] + available[:repeat % len(available)] if available else []
                 for tool in order:
-                    row, found = run_tool(tool, plan, args.rate, out_dir, f'r{repeat}', spaces.farm_mac)
+                    label = f'r{repeat}'
+                    sent_before = farm_rx_packets()
+                    row, found = run_tool(tool, plan, args.rate, out_dir, label, spaces.farm_mac)
                     row['repeat'] = repeat
+                    # The probes a tool is asked for and the packets it sends
+                    # differ (masscan sent ~4x as many as naabu for the same
+                    # sweep), so both are recorded.
+                    row['packets_sent'] = farm_rx_packets() - sent_before
                     if row['exit_code'] == 0:
                         row.update(score(found, truth))
                         row['addresses_per_second'] = round(network.num_addresses / row['seconds'], 3)
                         row['probes_per_second'] = round(probes / row['seconds'], 3)
+                        row['packets_per_second'] = round(row['packets_sent'] / row['seconds'], 3)
                     rows.append(row)
+                    # Written as it grows: an interrupted scenario keeps what it scored.
+                    write_json(out_dir / 'results.json', rows)
+                    if farm.poll() is not None:
+                        # Every later run would score an empty farm as a scanner miss.
+                        raise SystemExit(f'the farm exited ({farm.returncode}) during {label} {tool}')
         finally:
             farm.terminate()
-            farm.wait(timeout=30)
+            try:
+                farm.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                farm.kill()
+                farm.wait()
             ready.unlink(missing_ok=True)
-    (out_dir / 'metadata.json').write_text(json.dumps(metadata, indent=1, sort_keys=True) + '\n')
-    (out_dir / 'results.json').write_text(json.dumps(rows, indent=1, sort_keys=True) + '\n')
+    write_json(out_dir / 'results.json', rows)
     summary = summarize(rows)
-    (out_dir / 'summary.json').write_text(json.dumps(summary, indent=1, sort_keys=True) + '\n')
+    write_json(out_dir / 'summary.json', summary)
     sums = [f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}'
             for path in sorted(out_dir.iterdir()) if path.is_file() and path.name != 'SHA256SUMS']
     (out_dir / 'SHA256SUMS').write_text('\n'.join(sums) + '\n')

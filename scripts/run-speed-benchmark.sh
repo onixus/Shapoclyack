@@ -22,7 +22,12 @@ repeats="${REPEATS:-5}"
 tools="${TOOLS:-naabu-syn,naabu-connect,masscan}"
 mkdir -p "$1"
 output_root="$(cd "$1" && pwd)"
-git -C "$source_root" rev-parse HEAD > "$output_root/source-commit.txt" 2>/dev/null || true
+# "-dirty" when the tree has uncommitted changes: the results then come from
+# code that this hash alone does not reproduce.
+if commit="$(git -C "$source_root" rev-parse HEAD 2>/dev/null)"; then
+  git -C "$source_root" diff --quiet HEAD -- || commit="$commit-dirty"
+  echo "$commit" > "$output_root/source-commit.txt"
+fi
 run() {
   local name="$1"; shift
   python3 "$source_root/scripts/benchmark-speed.py" run --scale "$scale" --rate "$rate" \

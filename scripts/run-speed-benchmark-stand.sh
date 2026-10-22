@@ -13,14 +13,23 @@ if [[ -e "$1" ]]; then
   exit 2
 fi
 source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-rates="${RATES:-1000 10000 100000}"
+read -r -a rates <<< "${RATES:-1000 10000 100000}"
+if [[ ${#rates[@]} -eq 0 ]]; then
+  echo 'RATES is empty' >&2
+  exit 2
+fi
 repeats="${REPEATS:-5}"
 scale="${SCALE:-small}"
 image='shapo-speed-stand:local'
 docker build --pull=false -t "$image" -f "$source_root/docs/benchmarks/speed/Stand.Dockerfile" "$source_root/docs/benchmarks/speed"
 mkdir -p "$1"
 output_root="$(cd "$1" && pwd)"
-git -C "$source_root" rev-parse HEAD > "$output_root/source-commit.txt" 2>/dev/null || true
+# "-dirty" when the tree has uncommitted changes: the results then come from
+# code that this hash alone does not reproduce.
+if commit="$(git -C "$source_root" rev-parse HEAD 2>/dev/null)"; then
+  git -C "$source_root" diff --quiet HEAD -- || commit="$commit-dirty"
+  echo "$commit" > "$output_root/source-commit.txt"
+fi
 docker image inspect "$image" --format '{{.Id}}' > "$output_root/stand-image.txt"
 # --network none: the container has only loopback, and the harness adds two
 # namespaces joined to each other and nothing else. --privileged is what
@@ -31,9 +40,10 @@ bench() {
     --mount "type=bind,source=$output_root,target=/results" \
     "$image" run --scale "$scale" --repeats "$repeats" "$@"
 }
-for rate in $rates; do
+for rate in "${rates[@]}"; do
   bench --scenario dense --rate "$rate" --output "/results/dense-$rate"
 done
-bench --scenario sparse --rate "${rates##* }" --output /results/sparse
-bench --scenario allports --rate "${rates##* }" --output /results/allports
+fastest="${rates[${#rates[@]}-1]}"
+bench --scenario sparse --rate "$fastest" --output /results/sparse
+bench --scenario allports --rate "$fastest" --output /results/allports
 echo "results in $output_root"

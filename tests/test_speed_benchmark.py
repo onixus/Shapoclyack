@@ -75,6 +75,24 @@ def test_naabu_parser_deduplicates_events():
     assert BENCH.parse_naabu(f'{event}\n\n{event}\n') == {('198.19.0.1', 22)}
 
 
+def test_naabu_parser_skips_a_line_that_is_not_json():
+    event = json.dumps({'ip': '198.19.0.1', 'port': 22, 'protocol': 'tcp'})
+    torn = '{"ip": "198.19.0.2", "po'
+    assert BENCH.parse_naabu(f'[WRN] something\n{event}\n{torn}') == {('198.19.0.1', 22)}
+
+
+def test_packets_are_read_for_the_farm_end_only():
+    listing = (
+        'Inter-|   Receive                                                |  Transmit\n'
+        ' face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets\n'
+        '    lo:     120       2    0    0    0     0          0         0      120       2\n'
+        'spdfarm0: 4194304   65701    0    0    0     0          0         0  4100000   65690\n'
+    )
+    assert BENCH.parse_net_dev(listing, 'spdfarm0') == 65701
+    with pytest.raises(ValueError):
+        BENCH.parse_net_dev(listing, 'spdscan0')
+
+
 def test_masscan_parser_reads_list_output():
     text = '#masscan\nopen tcp 443 198.19.0.2 1761066000\nopen tcp 22 198.19.0.1 1761066001\n# end\n'
     assert BENCH.parse_masscan(text) == {('198.19.0.2', 443), ('198.19.0.1', 22)}
@@ -210,13 +228,95 @@ def test_naabu_runs_without_wake_up_traffic(monkeypatch, tmp_path):
     assert FakeWaker.started == 0
 
 
+def test_no_waker_is_left_when_the_scanner_cannot_start(monkeypatch, tmp_path):
+    FakeWaker.started = 0
+    monkeypatch.setattr(BENCH, 'in_netns', lambda side, argv: argv)
+    monkeypatch.setattr(BENCH, 'command', lambda tool, plan, rate, output, mac=None:
+                        [str(tmp_path / 'no-such-masscan')])
+    monkeypatch.setattr(BENCH, 'wake_receiver', FakeWaker)
+    plan = BENCH.make_plan('dense', 'small', 1)
+    with pytest.raises(FileNotFoundError):
+        BENCH.run_tool('masscan', plan, 100000, tmp_path, 'r0', '02:00:00:00:00:01')
+    assert FakeWaker.started == 0
+
+
+def test_the_scanner_is_reaped_when_the_waker_cannot_start(monkeypatch, tmp_path):
+    import os
+    import sys
+    started = []
+    real_popen = BENCH.subprocess.Popen
+
+    def popen(*args, **kwargs):
+        started.append(real_popen(*args, **kwargs))
+        return started[-1]
+
+    def broken_waker():
+        raise OSError('no nsenter')
+
+    monkeypatch.setattr(BENCH.subprocess, 'Popen', popen)
+    monkeypatch.setattr(BENCH, 'in_netns', lambda side, argv: argv)
+    monkeypatch.setattr(BENCH, 'command', lambda tool, plan, rate, output, mac=None:
+                        [sys.executable, '-c', 'import time; time.sleep(60)'])
+    monkeypatch.setattr(BENCH, 'wake_receiver', broken_waker)
+    plan = BENCH.make_plan('dense', 'small', 1)
+    with pytest.raises(OSError, match='no nsenter'):
+        BENCH.run_tool('masscan', plan, 100000, tmp_path, 'r0', '02:00:00:00:00:01')
+    (scanner,) = started
+    with pytest.raises(ChildProcessError):
+        os.waitpid(scanner.pid, os.WNOHANG)
+
+
+# The farm for run(): writes its ready file, then exits mid-scenario.
+DYING_FARM = r'''
+import pathlib, sys, time
+pathlib.Path(sys.argv[sys.argv.index('--ready') + 1]).write_text('ready\n')
+time.sleep(0.3)
+sys.exit(3)
+'''
+
+
+def test_a_farm_that_dies_stops_the_run_and_keeps_what_was_scored(monkeypatch, tmp_path):
+    import argparse
+    import contextlib
+    import sys
+    import time
+
+    @contextlib.contextmanager
+    def namespaces(plan):
+        yield argparse.Namespace(farm_mac='02:00:00:00:00:01')
+
+    def run_tool(tool, plan, rate, out_dir, label, router_mac):
+        time.sleep(0.5)
+        return {'tool': tool, 'label': label, 'exit_code': 0, 'seconds': 0.5}, set()
+
+    monkeypatch.setattr(BENCH.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(BENCH, 'Namespaces', namespaces)
+    monkeypatch.setattr(BENCH, 'in_netns', lambda side, argv:
+                        [sys.executable, '-c', DYING_FARM, *argv] if 'serve' in argv else argv)
+    monkeypatch.setattr(BENCH, 'binary_record', lambda tool: {'path': tool})
+    monkeypatch.setattr(BENCH, 'farm_rx_packets', lambda: 0)
+    monkeypatch.setattr(BENCH, 'run_tool', run_tool)
+    out = tmp_path / 'dense'
+    with pytest.raises(SystemExit, match='the farm exited'):
+        BENCH.main(['run', '--scenario', 'dense', '--tools', 'naabu-syn,naabu-connect', '--output', str(out)])
+    rows = json.loads((out / 'results.json').read_text())
+    assert [row['tool'] for row in rows] == ['naabu-syn']
+    assert rows[0]['recall'] == 0.0
+    assert json.loads((out / 'metadata.json').read_text())['scenario'] == 'dense'
+
+
 def test_cli_takes_no_targets():
     # The only addresses a run can touch are the ones make_plan draws from TARGET_NET.
     with pytest.raises(SystemExit):
         BENCH.main(['run', '--scenario', 'dense', '--output', '/tmp/x', '--target', '192.0.2.1'])
 
 
-def test_stand_requires_explicit_root_only_in_the_isolated_wrapper(tmp_path):
+@pytest.mark.parametrize('rates, expected', [
+    ('1000', ['1000', '1000', '1000']),
+    # A trailing space once left sparse and all-ports with an empty --rate.
+    ('1000 10000 ', ['1000', '10000', '10000', '10000']),
+])
+def test_stand_requires_explicit_root_only_in_the_isolated_wrapper(tmp_path, rates, expected):
     import os
     import subprocess
     import sys
@@ -240,11 +340,11 @@ def test_stand_requires_explicit_root_only_in_the_isolated_wrapper(tmp_path):
     subprocess.run(
         ['bash', str(ROOT / 'scripts/run-speed-benchmark-stand.sh'), str(tmp_path / 'results')],
         env={**os.environ, 'PATH': f'{binaries}:{os.environ["PATH"]}',
-             'BENCH_DOCKER_LOG': str(log), 'RATES': '1000', 'REPEATS': '1', 'SCALE': 'small'},
+             'BENCH_DOCKER_LOG': str(log), 'RATES': rates, 'REPEATS': '1', 'SCALE': 'small'},
         check=True, capture_output=True, text=True,
     )
     runs = [json.loads(line) for line in log.read_text().splitlines()]
-    assert len(runs) == 3
+    assert [argv[argv.index('--rate') + 1] for argv in runs] == expected
     for argv in runs:
         assert argv[argv.index('--user') + 1] == '0:0'
         assert argv[argv.index('--network') + 1] == 'none'

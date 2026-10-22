@@ -1578,10 +1578,15 @@ def _alive(pid: int) -> bool:
     # kill(0) also succeeds for a dead child awaiting its parent's wait().
     # Container init can reap an orphan after the updater has already exited;
     # that is not a verifier still executing after SIGKILL.
+    if not Path("/proc/self/stat").is_file():
+        # No procfs on macOS: retain the portable process-existence check.
+        return True
     try:
         state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except FileNotFoundError:
+        # Reaped between kill(0) and the read: gone, not still running.
+        return False
     except (OSError, IndexError):
-        # No procfs on macOS: retain the portable process-existence check.
         return True
     return state not in {"Z", "X"}
 

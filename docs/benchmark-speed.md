@@ -13,11 +13,18 @@ same configured packet rate, with the tool order rotated between repetitions:
 
 - wall time, CPU time and peak RSS of the scanner process (`wait4`);
 - recall and precision against the generated ground truth;
-- addresses per second and probes per second (swept addresses × ports / wall time).
+- addresses per second and probes per second (swept addresses × ports / wall time);
+- packets sent and packets per second: what the farm's end of the link
+  received while the tool ran. That is the tool's probes plus the scanner
+  namespace's RSTs to SYN-ACKs and, for masscan, about ten ICMP replies a
+  second to the wake-up datagrams (see below).
 
 The summary reports median, minimum and maximum. A run that exits non-zero or
 passes its deadline (five times the sweep at the configured rate, plus two
-minutes) counts as failed, not as a sample.
+minutes) counts as failed, not as a sample. A masscan still running 15 s past
+its `--wait` window is killed and counts as failed too. If the farm process
+exits mid-scenario the run stops: every later sample would score an empty farm
+as a scanner miss.
 
 ## Tools
 
@@ -27,7 +34,11 @@ minutes) counts as failed, not as a sample.
 | `naabu-connect` | `naabu -s c` | What the product falls back to when SYN finds nothing (`scanner/pipeline/ports.py`) |
 | `masscan` | `masscan --rate` | The usual "fastest" reference |
 
-All three run with no host discovery, one retry and the same rate. A tool that
+All three are asked for no host discovery, one retry and the same rate. What
+they send for it differs: on the stand, masscan sent 3.8–4.5 times as many
+packets as naabu for the same sweep (251 000 at 1 000 pps and 297 000 at
+10 000 pps against naabu's 65 700 for 65 536 probes), so compare its wall time
+with `packets_sent` beside it, not as the same workload. A tool that
 is not installed is recorded as skipped. The binary path, SHA-256 and version
 go into `metadata.json`. Nmap is not in the matrix: no code path in this
 repository runs it (#97, [Migrating off Nmap](nmap-migration.md)), and the
@@ -76,8 +87,11 @@ python3 scripts/benchmark-speed.py plan --scenario sparse
 The host needs root, `pyroute2`, `nsenter`, the scanners on `PATH`, libpcap
 for `naabu-syn` (see below) and `CONFIG_NET_SCH_NETEM` for `--impaired`. Each
 output directory holds `ground-truth.json`, `metadata.json` (host, kernel,
-binaries, rate, warnings), `results.json` (every repetition with its argv),
-`summary.json`, the raw tool output and stderr, and `SHA256SUMS`.
+binaries, rate, warnings; written before the first run), `results.json`
+(every repetition with its argv, rewritten after each one so an interrupted
+scenario keeps what it scored), `summary.json`, the raw tool output and
+stderr, and `SHA256SUMS`. The wrappers' `source-commit.txt` ends in `-dirty`
+when the tree had uncommitted changes.
 
 ## Stand
 
@@ -122,6 +136,17 @@ benchmark recorded the same empty root SYN result on loopback.
 pipe as stdin, naabu waits for targets on it and sometimes fails with `Could
 not run enumeration: Timeout` and no results. The harness gives every tool an
 empty stdin.
+
+**masscan waits for a packet to notice it is done.** Its receive thread sleeps
+in libpcap until a packet arrives and only then sees that its `--wait` window
+is over. The farm's link is otherwise silent, so masscan 1.3.2 stayed up 20–130 s
+past the window on the stand and was timed for it. While masscan runs, the farm
+sends the scanner's end of the link a UDP datagram every 100 ms.
+
+**netem's queue has to hold the delay.** netem keeps delayed packets in a queue
+of 1000 by default. naabu sends in bursts, and on the stand that queue dropped
+52 537 of its 65 536 SYN probes at 10 000 pps under `--impaired`. The queue now
+holds a million packets, and drops measured ~0.5 % per side for every scanner.
 
 **netem is not in every kernel.** `--impaired` stops with a clear error when
 the kernel has no netem qdisc.
