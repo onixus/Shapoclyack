@@ -1575,7 +1575,38 @@ def _alive(pid: int) -> bool:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    return True
+    # kill(0) also succeeds for a dead child awaiting its parent's wait().
+    # Container init can reap an orphan after the updater has already exited;
+    # that is not a verifier still executing after SIGKILL.
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        # No procfs on macOS: retain the portable process-existence check.
+        return True
+    return state not in {"Z", "X"}
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").is_file(), reason="Linux procfs liveness")
+def test_process_liveness_distinguishes_a_zombie_from_a_running_child():
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    try:
+        # Wait for exit without reaping: reproduce the state that kill(0)
+        # misclassified in the Jenkins verifier cleanup regression.
+        os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT)
+        os.kill(child.pid, 0)
+        assert not _alive(child.pid)
+    finally:
+        child.wait(timeout=10)
+
+
+def test_process_liveness_still_detects_a_running_child():
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        assert _alive(child.pid)
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+    assert not _alive(child.pid)
 
 
 def _interrupt_script(env: dict, sig: int, ready, *args: str) -> tuple[int | None, float, str]:
