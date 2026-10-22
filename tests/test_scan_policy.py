@@ -16,6 +16,7 @@ them fails on the pre-#362 code.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -245,7 +246,10 @@ def test_the_policy_is_not_broadcast_in_the_job_offer(tmp_path, monkeypatch):
     assert started.status_code == 202, started.text
     assert len(published) == 1
     assert "scan_policy" not in published[0]
-    assert "502" not in json.dumps(published[0])
+    # job_id and run_id carry the start time and a random hex suffix, so a
+    # plain substring check failed whenever either happened to spell 502.
+    offer = {k: v for k, v in published[0].items() if k not in ("job_id", "run_id")}
+    assert not re.search(r"(?<![0-9a-f])502(?![0-9a-f])", json.dumps(offer))
 
 
 def test_the_policy_snapshot_is_frozen_at_admission(tmp_path, monkeypatch):
