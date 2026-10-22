@@ -79,6 +79,24 @@ output directory holds `ground-truth.json`, `metadata.json` (host, kernel,
 binaries, rate, warnings), `results.json` (every repetition with its argv),
 `summary.json`, the raw tool output and stderr, and `SHA256SUMS`.
 
+## Stand
+
+The cloud runs cannot install Debian packages or pull the release images, so
+SYN with the library the image would ship, masscan, and full scale run on a
+test stand. Any Linux host with Docker and root will do:
+
+```bash
+scripts/run-speed-benchmark-stand.sh /srv/bench/speed-$(date +%Y%m%d)
+# RATES='1000 10000 100000' REPEATS=5 SCALE=small by default
+```
+
+It builds `docs/benchmarks/speed/Stand.Dockerfile`: the released scanner image
+by digest, plus `libpcap0.8` (the Debian package a SYN fix would add, #594),
+`masscan` and `pyroute2`. Then it runs the harness in a `--network none
+--privileged` container: dense at every rate, then sparse and all-ports at the
+highest one. The container has only loopback, and the harness's two namespaces
+are joined to each other and to nothing else.
+
 ## Known findings
 
 **naabu SYN needs libpcap at run time.** naabu 2.6.1 built with
