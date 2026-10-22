@@ -92,8 +92,10 @@ scripts/run-speed-benchmark-stand.sh /srv/bench/speed-$(date +%Y%m%d)
 
 It builds `docs/benchmarks/speed/Stand.Dockerfile`: the released scanner image
 by digest, plus `libpcap0.8` (the Debian package a SYN fix would add, #594),
-`masscan` and `pyroute2`. Then it runs the harness in a `--network none
---privileged` container: dense at every rate, then sparse and all-ports at the
+`masscan` and `pyroute2`. The image defaults to the unprivileged `scanner`
+account. The stand wrapper explicitly selects `--user 0:0` together with
+`--network none --privileged` for namespace creation: dense at every rate,
+then sparse and all-ports at the
 highest one. The container has only loopback, and the harness's two namespaces
 are joined to each other and to nothing else.
 

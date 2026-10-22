@@ -205,3 +205,39 @@ def test_cli_takes_no_targets():
     # The only addresses a run can touch are the ones make_plan draws from TARGET_NET.
     with pytest.raises(SystemExit):
         BENCH.main(['run', '--scenario', 'dense', '--output', '/tmp/x', '--target', '192.0.2.1'])
+
+
+def test_stand_requires_explicit_root_only_in_the_isolated_wrapper(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    dockerfile = (ROOT / 'docs/benchmarks/speed/Stand.Dockerfile').read_text()
+    users = [line.split()[1] for line in dockerfile.splitlines() if line.startswith('USER ')]
+    assert users[-1] == 'scanner'
+    binaries = tmp_path / 'bin'
+    binaries.mkdir()
+    log = tmp_path / 'docker-runs.jsonl'
+    docker = binaries / 'docker'
+    docker.write_text(
+        f'#!{sys.executable}\n'
+        'import json, os, sys\n'
+        'if sys.argv[1] == "image": print("sha256:stand-fixture")\n'
+        'if sys.argv[1] == "run":\n'
+        '    with open(os.environ["BENCH_DOCKER_LOG"], "a") as out:\n'
+        '        out.write(json.dumps(sys.argv[2:]) + "\\n")\n'
+    )
+    docker.chmod(0o755)
+    subprocess.run(
+        ['bash', str(ROOT / 'scripts/run-speed-benchmark-stand.sh'), str(tmp_path / 'results')],
+        env={**os.environ, 'PATH': f'{binaries}:{os.environ["PATH"]}',
+             'BENCH_DOCKER_LOG': str(log), 'RATES': '1000', 'REPEATS': '1', 'SCALE': 'small'},
+        check=True, capture_output=True, text=True,
+    )
+    runs = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len(runs) == 3
+    for argv in runs:
+        assert argv[argv.index('--user') + 1] == '0:0'
+        assert argv[argv.index('--network') + 1] == 'none'
+        assert '--privileged' in argv
+        assert any('target=/bench,readonly' in arg for arg in argv)

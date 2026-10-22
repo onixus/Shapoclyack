@@ -26,7 +26,7 @@ docker image inspect "$image" --format '{{.Id}}' > "$output_root/stand-image.txt
 # namespaces joined to each other and nothing else. --privileged is what
 # creating network namespaces and raw sockets inside the container takes.
 bench() {
-  docker run --rm --network none --privileged \
+  docker run --rm --network none --privileged --user 0:0 \
     --mount "type=bind,source=$source_root/scripts,target=/bench,readonly" \
     --mount "type=bind,source=$output_root,target=/results" \
     "$image" run --scale "$scale" --repeats "$repeats" "$@"

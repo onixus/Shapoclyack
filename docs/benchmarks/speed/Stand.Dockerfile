@@ -19,4 +19,5 @@ RUN set -eux; \
 COPY --from=pydeps /opt/bench-pydeps /opt/bench-pydeps
 ENV PYTHONPATH=/opt/bench-pydeps
 RUN python -c 'import pyroute2'
+USER scanner
 ENTRYPOINT ["python", "/bench/benchmark-speed.py"]
