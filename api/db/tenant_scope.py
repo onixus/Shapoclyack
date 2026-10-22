@@ -288,6 +288,22 @@ _NARROW = text(
 )
 
 
+def narrow_transaction(session: Session, tenant_id: str) -> None:
+    """Narrow an authentication-owned transaction before accessing tenant data.
+
+    Global authority lookup may need the connecting role. This only drops to
+    the tenant role, on the same connection/transaction; it never resets a role
+    or releases the account/session locks held by authentication.
+    """
+    tenant_id = (tenant_id or "").strip()
+    if not tenant_id:
+        raise TenantScopeConflict("cannot narrow to an empty tenant id")
+    if enforcing() and session.get_bind().dialect.name == "postgresql":
+        session.connection().execute(_NARROW, {
+            "role": TENANT_ROLE, "setting": TENANT_SETTING, "tenant": tenant_id,
+        })
+
+
 def after_begin(session: Session, transaction: SessionTransaction, connection: Any) -> None:
     """``Session.after_begin``: scope the transaction that is starting.
 

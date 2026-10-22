@@ -69,6 +69,8 @@ TICKET_SYNC_LOCK_ID = 6
 # it publishes ``new_cve`` events, which a second replica would send again.
 RETRO_MATCH_LOCK_ID = 7
 ASSET_IMPORT_LOCK_ID = 8
+OPERATOR_LOCK_ID = 9
+OPERATOR_QUEUE_LOCK_ID = 10
 
 
 class LeaderLock:

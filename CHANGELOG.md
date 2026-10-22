@@ -4,6 +4,13 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+- Image builds fetch enrichment data (NVD/CVSS4, EPSS, KEV, GeoIP, vendor
+  advisories) once per build instead of once per image and architecture: the
+  fetch moved into an `enrichment` stage that runs on the build platform and is
+  identical in `Dockerfile` and `Dockerfile.allinone`, so a multi-arch publish
+  pages NVD once and the aio image takes the stage from the BuildKit cache. The
+  scanner image now also carries the fetched vendor advisories.
+
 ## [0.48-1021] — 2026-10-21
 
 Stable successor to `0.46-0922`. API and sensor versions are `0.48-1021`; Pulse
