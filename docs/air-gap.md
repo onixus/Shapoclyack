@@ -44,7 +44,7 @@ which the base pins by tag and digest (#313). Copy each with its digest intact â
 
 ```bash
 REG=registry.internal.example
-TAG=shapoclyack-0.46-0922
+TAG=shapoclyack-0.48-1021
 skopeo copy --all --preserve-digests \
   docker://ghcr.io/onixus/shapoclyack-aio:$TAG@sha256:<digest from the manifests> \
   docker://$REG/shapoclyack/shapoclyack-aio:$TAG

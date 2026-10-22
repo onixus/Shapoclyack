@@ -16,8 +16,8 @@ import sys
 from urllib.parse import urlsplit
 
 DEFAULT_IMAGE = (
-    "ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.46-0922"
-    "@sha256:40a7312b39b46d2fce7e529a2ce7003834b32f880f8579ffff5850c5e2b0b161"
+    "ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.48-1021"
+    "@sha256:70ac7f954fa68de9c99025cc584817fc35db71fd1f4dc6c4a7118066c66d10d4"
 )
 # The database is pinned the same way as the application (#313): a tag alone
 # lets the next `compose pull` start a Postgres nobody tested this with. One

@@ -67,7 +67,7 @@ spec:
               app.kubernetes.io/component: scanner-executor
       containers:
         - name: executor
-          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.46-0922@sha256:40a7312b39b46d2fce7e529a2ce7003834b32f880f8579ffff5850c5e2b0b161
+          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.48-1021@sha256:70ac7f954fa68de9c99025cc584817fc35db71fd1f4dc6c4a7118066c66d10d4
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "agent"]
           env:
@@ -93,7 +93,7 @@ spec:
             # worker predates the file and exits without a key otherwise. A
             # current worker prefers the file and starts the scan without any
             # OCTO_AGENT_* variable. Remove with the first pin past
-            # shapoclyack-0.46-0922 (docs/k8s-hardening.md § What changes).
+            # shapoclyack-0.48-1021 (docs/k8s-hardening.md § What changes).
             - name: OCTO_AGENT_PROVISIONING_KEY
               valueFrom:
                 secretKeyRef:

@@ -209,10 +209,10 @@ Documentation is part of the feature definition. A behavior change is incomplete
 ## Version scope
 
 This documentation index was reconciled with `main @ b86aea66` (after #577)
-on **2026-10-21**. The release prepared from it is `shapoclyack-0.48-1021`; see
-[release notes and publication checklist](releases/0.48-1021.md). Until its
-tag and images are published, the latest published stable release is
-`shapoclyack-0.46-0922` (2026-09-22). Use the tagged documentation and
+on **2026-10-21**. The release cut from it, `shapoclyack-0.48-1021`, is the
+latest published stable release; see its
+[release notes and publication checklist](releases/0.48-1021.md). The previous
+stable release is `shapoclyack-0.46-0922` (2026-09-22). Use the tagged documentation and
 [CHANGELOG.md](../CHANGELOG.md) for a release's contract.
 
 The `0.47-1009-rc1` candidate (2026-10-09, [notes](releases/0.47-1009-rc1.md))
