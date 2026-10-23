@@ -33,11 +33,6 @@ spec:
           value: http://shapoclyack-api.{{ .Release.Namespace }}.svc:8080
         - name: OCTO_AGENT_PROVISIONING_KEY_FILE
           value: /etc/shapoclyack/executor-key/provisioning_key
-        - name: OCTO_AGENT_PROVISIONING_KEY
-          valueFrom:
-            secretKeyRef:
-              key: provisioning_key
-              name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "scannerExecutor" "default" "shapoclyack-scanner-executor") }}
         - name: POD_NAME
           valueFrom:
             fieldRef:

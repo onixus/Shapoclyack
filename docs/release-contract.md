@@ -159,7 +159,7 @@ procedure:
   published, put `latest` back afterwards:
 
   ```bash
-  CURRENT=shapoclyack-0.46-0922   # the newest release of the current line
+  CURRENT=shapoclyack-0.48-1021   # the newest release of the current line
   for image in shapoclyack-scanner shapoclyack-aio; do
     docker buildx imagetools create -t "ghcr.io/onixus/$image:latest" "ghcr.io/onixus/$image:$CURRENT"
   done
@@ -179,7 +179,7 @@ tag in your own clone:
 ```bash
 git clone https://github.com/onixus/Shapoclyack.git
 cd Shapoclyack                       # main: the verifier is here
-TAG=shapoclyack-0.46-0922
+TAG=shapoclyack-0.48-1021
 git show "$TAG:scripts/pulse-pinned.sha256" > "pins-$TAG.sha256"
 ```
 

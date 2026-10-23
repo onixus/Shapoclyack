@@ -1556,7 +1556,7 @@ DEPLOYMENT_KEY_PLACEHOLDER = "<PROVISIONING_KEY>"
 # scripts/install-agent.sh; tests/test_agent_install_pins.py keeps the two
 # equal. Until that pin lands, an API from a new tag hands out the sensor of
 # the release before it.
-SENSOR_IMAGE = "ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.46-0922@sha256:7eb82c8dab4071517ee7af8825bb8df58d7706afac4eb6e1da6ca4759f44fa66"
+SENSOR_IMAGE = "ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.48-1021@sha256:395ba59100a425c3a2a1a0e1420d42965c07e56d222bee53b21b618742fa526e"
 # The Kubernetes snippet's namespace, the example's, which it labels to admit
 # NET_RAW/NET_ADMIN; and the Secret its Deployment reads the key from.
 SENSOR_K8S_NAMESPACE = "network-scan-executor"

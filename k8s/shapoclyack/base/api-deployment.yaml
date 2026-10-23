@@ -66,7 +66,7 @@ spec:
       # migration fails the pod with a cause instead of hanging at Init:0/1.
       initContainers:
         - name: migrate
-          image: ghcr.io/onixus/shapoclyack-api:shapoclyack-0.46-0922@sha256:05f8a602511b5b0c6e04b29c503e5b77a793f4ea7abfc742044b08fd55357f2d
+          image: ghcr.io/onixus/shapoclyack-api:shapoclyack-0.48-1021@sha256:57ff1ab42e82cb6f12bacbc98f85c2a8ab2ac3909623f8dc5983bcbd94541341
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "api.db.migrate"]
           env:
@@ -94,7 +94,7 @@ spec:
           # attack surface in the one pod holding every credential. The
           # migration above runs from the same image, so the two cannot
           # disagree on the schema; base/local-scan puts the all-in-one back.
-          image: ghcr.io/onixus/shapoclyack-api:shapoclyack-0.46-0922@sha256:05f8a602511b5b0c6e04b29c503e5b77a793f4ea7abfc742044b08fd55357f2d
+          image: ghcr.io/onixus/shapoclyack-api:shapoclyack-0.48-1021@sha256:57ff1ab42e82cb6f12bacbc98f85c2a8ab2ac3909623f8dc5983bcbd94541341
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

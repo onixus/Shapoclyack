@@ -11,7 +11,7 @@ Visual overview: [shapoclyack.html](shapoclyack.html) · Release history: [CHANG
 ## Delivery snapshot
 
 Source baseline: `main @ 577bd547` plus the CRL change (#534), reviewed **2026-10-09**. The documented
-published baseline remains `shapoclyack-0.46-0922`; later source changes belong
+published baseline is now `shapoclyack-0.48-1021`; later source changes belong
 to `Unreleased` in [CHANGELOG.md](CHANGELOG.md). This snapshot records source
 behavior, not a completed deployment, release publication or CI result.
 
@@ -743,8 +743,8 @@ just more noise.
 GitHub issue/PR state. Fourteen original EPIC issues remain open (listed below).
 An open issue can contain delivered milestones; a merge does not establish
 release publication or operational acceptance. Changes after the prepared
-`0.47-1009-rc1` snapshot remain under `## Unreleased`; the latest verified
-published stable release is `shapoclyack-0.46-0922`.
+`0.47-1009-rc1` snapshot shipped in `shapoclyack-0.48-1021`, the latest
+published stable release.
 
 **Delivered contracts and their remaining acceptance boundaries:**
 

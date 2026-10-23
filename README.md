@@ -127,7 +127,7 @@ These are focused installer checks. Full CI validation requires dedicated Postgr
 
 ## Releases & Container Images
 
-Documented release: [shapoclyack-0.46-0922](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.46-0922). Source features after it are recorded under `Unreleased` in [CHANGELOG.md](CHANGELOG.md).
+Documented release: [shapoclyack-0.48-1021](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.48-1021) ([notes](docs/releases/0.48-1021.md)). Source features after it are recorded under `Unreleased` in [CHANGELOG.md](CHANGELOG.md).
 
 | Image | Contents |
 |---|---|

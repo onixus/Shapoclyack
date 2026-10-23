@@ -4,12 +4,20 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Changed
+
 - Image builds fetch enrichment data (NVD/CVSS4, EPSS, KEV, GeoIP, vendor
   advisories) once per build instead of once per image and architecture: the
   fetch moved into an `enrichment` stage that runs on the build platform and is
   identical in `Dockerfile` and `Dockerfile.allinone`, so a multi-arch publish
   pages NVD once and the aio image takes the stage from the BuildKit cache. The
   scanner image now also carries the fetched vendor advisories.
+
+- Deployment pins move to the published `shapoclyack-0.48-1021` images
+  (`k8s/`, the Helm chart, `scripts/install-server.py`,
+  `scripts/install-agent.sh`, `SENSOR_IMAGE`). The scanner-executor no longer
+  gets `OCTO_AGENT_PROVISIONING_KEY` as a variable: the pinned worker reads
+  the key file. `SECURITY.md` makes `0.48` the supported line.
 
 ## [0.48-1021] — 2026-10-21
 

@@ -103,7 +103,7 @@ python -m pytest tests/test_server_installer.py tests/test_agent_install_pins.py
 
 ## Релизы и образы
 
-Документированный релиз: [shapoclyack-0.46-0922](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.46-0922).
+Документированный релиз: [shapoclyack-0.48-1021](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.48-1021) ([заметки](docs/releases/0.48-1021.md)).
 Изменения исходников после него — в `Unreleased` [CHANGELOG.md](CHANGELOG.md).
 
 | Образ | Содержимое |
