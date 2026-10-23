@@ -1,0 +1,454 @@
+"""Contracts for the isolated speed benchmark (scripts/benchmark-speed.py)."""
+import importlib.util
+import ipaddress
+import json
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location('speed_benchmark', ROOT / 'scripts/benchmark-speed.py')
+BENCH = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(BENCH)
+
+
+@pytest.mark.parametrize('scenario', sorted(BENCH.SCENARIOS))
+@pytest.mark.parametrize('scale', ['small', 'full'])
+def test_plans_are_deterministic_and_stay_in_the_benchmark_range(scenario, scale):
+    plan = BENCH.make_plan(scenario, scale, seed=7)
+    assert plan == BENCH.make_plan(scenario, scale, seed=7)
+    assert ipaddress.ip_network(plan['cidr']).subnet_of(BENCH.TARGET_NET)
+    assert plan['hosts']
+    assert BENCH.make_plan(scenario, scale, seed=8)['hosts'] != plan['hosts']
+
+
+def test_impairment_is_part_of_the_plan():
+    assert BENCH.make_plan('dense', 'small', 1)['impairment'] is None
+    assert BENCH.make_plan('dense', 'small', 1, impaired=True)['impairment'] == BENCH.IMPAIRMENT
+
+
+def test_netem_queue_holds_the_delay_at_the_fastest_rate():
+    # netem keeps delayed packets in its queue; a full queue drops them, and
+    # that loss is the stand's, not the path's.
+    with pytest.raises(ValueError):
+        BENCH.validate_rate(10_000_001)
+    in_flight = 10_000_000 * BENCH.IMPAIRMENT['delay_ms'] / 1000
+    assert BENCH.IMPAIRMENT['queue_limit'] >= 2 * in_flight
+
+
+@pytest.mark.parametrize('cidr', ['10.0.0.0/24', '198.18.0.0/30', '0.0.0.0/0', '198.18.0.0/15'])
+def test_plans_outside_the_benchmark_range_are_refused(cidr):
+    plan = BENCH.make_plan('dense', 'small', 1)
+    with pytest.raises(ValueError, match='outside'):
+        BENCH.validate_plan(dict(plan, cidr=cidr))
+
+
+def test_hosts_and_ports_outside_the_plan_are_refused():
+    plan = BENCH.make_plan('dense', 'small', 1)
+    with pytest.raises(ValueError, match='outside'):
+        BENCH.validate_plan(dict(plan, hosts={'198.19.200.1': [80]}))
+    first = next(iter(plan['hosts']))
+    with pytest.raises(ValueError, match='port outside'):
+        BENCH.validate_plan(dict(plan, hosts={first: [65535]}))
+
+
+def test_unknown_scenario_is_refused():
+    with pytest.raises(ValueError, match='unknown scenario'):
+        BENCH.make_plan('internet', 'full', 1)
+
+
+def test_score_counts_misses_and_extras():
+    truth = {('198.19.0.1', 22), ('198.19.0.1', 80), ('198.19.0.2', 443), ('198.19.0.3', 25)}
+    found = {('198.19.0.1', 22), ('198.19.0.2', 443), ('198.19.0.9', 8080)}
+    assert BENCH.score(found, truth) == {
+        'expected': 4, 'found': 3, 'true_positives': 2, 'missing': 2, 'unexpected': 1,
+        'recall': 0.5, 'precision': 0.666667}
+
+
+def test_empty_result_has_zero_recall_not_a_silent_pass():
+    truth = {('198.19.0.1', 22)}
+    assert BENCH.score(set(), truth)['recall'] == 0.0
+
+
+def test_naabu_parser_deduplicates_events():
+    event = json.dumps({'ip': '198.19.0.1', 'port': 22, 'protocol': 'tcp'})
+    assert BENCH.parse_naabu(f'{event}\n\n{event}\n') == {('198.19.0.1', 22)}
+
+
+def test_naabu_parser_skips_a_line_that_is_not_json():
+    event = json.dumps({'ip': '198.19.0.1', 'port': 22, 'protocol': 'tcp'})
+    torn = '{"ip": "198.19.0.2", "po'
+    assert BENCH.parse_naabu(f'[WRN] something\n{event}\n{torn}') == {('198.19.0.1', 22)}
+
+
+def test_naabu_output_with_no_json_at_all_is_an_error_not_recall_zero(monkeypatch, tmp_path):
+    import sys
+    with pytest.raises(ValueError, match='no naabu JSON'):
+        BENCH.parse_naabu('198.19.0.1:22\n198.19.0.2:80\n')
+    assert BENCH.parse_naabu('') == set()
+    monkeypatch.setattr(BENCH, 'in_netns', lambda side, argv: argv)
+    monkeypatch.setattr(BENCH, 'command', lambda tool, plan, rate, output, mac=None:
+                        [sys.executable, '-c', f'open({str(output)!r}, "w").write("198.19.0.1:22\\n")'])
+    plan = BENCH.make_plan('dense', 'small', 1)
+    row, found = BENCH.run_tool('naabu-syn', plan, 100000, tmp_path, 'r0', None)
+    assert row['exit_code'] == 0
+    assert row['error'] == ['no naabu JSON in 1 line(s) of output']
+    assert found == set()
+    assert not BENCH.succeeded(row)
+
+
+def test_packets_are_read_for_the_farm_end_only():
+    listing = (
+        'Inter-|   Receive                                                |  Transmit\n'
+        ' face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets\n'
+        '    lo:     120       2    0    0    0     0          0         0      120       2\n'
+        'spdfarm0: 4194304   65701    0    0    0     0          0         0  4100000   65690\n'
+    )
+    assert BENCH.parse_net_dev(listing, 'spdfarm0') == 65701
+    with pytest.raises(ValueError):
+        BENCH.parse_net_dev(listing, 'spdscan0')
+
+
+def test_masscan_parser_reads_list_output():
+    text = '#masscan\nopen tcp 443 198.19.0.2 1761066000\nopen tcp 22 198.19.0.1 1761066001\n# end\n'
+    assert BENCH.parse_masscan(text) == {('198.19.0.2', 443), ('198.19.0.1', 22)}
+
+
+@pytest.mark.parametrize('tool', BENCH.TOOLS)
+def test_every_tool_scans_only_the_plan_at_the_requested_rate(tool):
+    plan = BENCH.make_plan('dense', 'small', 1)
+    argv = BENCH.command(tool, plan, 5000, Path('/tmp/out'), router_mac='02:00:00:00:00:01')
+    assert plan['cidr'] in argv
+    assert '1-1024' in argv
+    assert '5000' in argv
+    assert tool in BENCH.PARSERS
+
+
+def test_naabu_modes_differ_only_in_scan_technique():
+    plan = BENCH.make_plan('dense', 'small', 1)
+    syn = BENCH.command('naabu-syn', plan, 1000, Path('/tmp/out'))
+    connect = BENCH.command('naabu-connect', plan, 1000, Path('/tmp/out'))
+    assert syn[syn.index('-s') + 1] == 's'
+    assert connect[connect.index('-s') + 1] == 'c'
+    assert [a for a in syn if a != 's'] == [a for a in connect if a != 'c']
+
+
+def test_masscan_needs_the_farm_as_router():
+    with pytest.raises(ValueError, match='router'):
+        BENCH.command('masscan', BENCH.make_plan('dense', 'small', 1), 1000, Path('/tmp/out'))
+
+
+@pytest.mark.parametrize('count', [-1, 0, 4, 101])
+def test_repetitions_must_support_reported_spread(count):
+    with pytest.raises(ValueError, match='5..100'):
+        BENCH.validate_repeats(count)
+
+
+@pytest.mark.parametrize('rate', [0, 99, 10_000_001])
+def test_rate_must_be_bounded(rate):
+    with pytest.raises(ValueError):
+        BENCH.validate_rate(rate)
+
+
+def test_deadline_scales_with_the_sweep():
+    plan = BENCH.make_plan('dense', 'small', 1)
+    probes = 64 * 1024
+    assert BENCH.deadline_seconds(plan, 1000) == pytest.approx(5 * probes / 1000 + 120)
+
+
+def test_masscan_deadline_allows_for_the_packets_it_actually_sends():
+    # Stand, dense 10 000 pps: 297 454 packets at ~9 080 pps for 65 536 probes,
+    # ~5x the naabu sweep time; the plain deadline left it a 10 % margin.
+    plan = BENCH.make_plan('dense', 'small', 1)
+    probes = 64 * 1024
+    ratio = (297_454 / 9_080) / (probes / 10_000)  # masscan's time / the nominal sweep: ~5.0
+    masscan_seconds = ratio * probes / 1000
+    plain = BENCH.deadline_seconds(plan, 1000) - 120
+    assert plain < masscan_seconds * 1.1
+    assert BENCH.deadline_seconds(plan, 1000, 'masscan') - 120 >= 4 * masscan_seconds
+    assert BENCH.deadline_seconds(plan, 1000, 'naabu-syn') == BENCH.deadline_seconds(plan, 1000)
+
+
+def test_summary_separates_failures_from_samples():
+    rows = [{'tool': 'naabu-syn', 'exit_code': 0, 'seconds': s, 'recall': r}
+            for s, r in [(1.0, 1.0), (3.0, 0.5), (2.0, 0.75)]]
+    rows.append({'tool': 'naabu-syn', 'exit_code': -9, 'seconds': 99.0})
+    (entry,) = BENCH.summarize(rows)
+    assert entry['samples'] == 3
+    assert entry['failed'] == 1
+    assert (entry['seconds_median'], entry['seconds_min'], entry['seconds_max']) == (2.0, 1.0, 3.0)
+    assert entry['recall_min'] == 0.5
+
+
+def test_a_run_disqualified_after_a_clean_exit_is_not_a_sample():
+    rows = [{'tool': 'naabu-syn', 'exit_code': 0, 'seconds': 1.0, 'recall': 1.0},
+            {'tool': 'naabu-syn', 'exit_code': 0, 'seconds': 9.0, 'error': ['the farm exited (3) during this run']}]
+    (entry,) = BENCH.summarize(rows)
+    assert (entry['samples'], entry['failed'], entry['seconds_max']) == (1, 1, 1.0)
+
+
+@pytest.mark.parametrize('tail, seconds', [
+    (b'rate:  0.00-kpps, 100.00% done, waiting 2-secs, found=346       \r', 0),
+    (b'rate:  0.00-kpps, 100.00% done, waiting 0-secs, found=346       \r', 0),
+    (b'rate:  0.00-kpps, 100.00% done, waiting -1-secs, found=346       \r', 1),
+    (b'waiting -127-secs, found=278       \rrate:  0.00-kpps, 100.00% done, waiting -128-secs, found=278   \r', 128),
+    (b'rate:  9.97-kpps, 74.14% done, 0:00:07 remaining, found=260       \r', 0),
+])
+def test_masscan_overrun_is_read_from_its_status_line(tail, seconds):
+    assert BENCH.masscan_overrun(tail) == seconds
+
+
+def test_the_wake_up_traffic_goes_from_the_farm_to_the_scanner_end_only(monkeypatch):
+    argv = []
+    monkeypatch.setattr(BENCH.subprocess, 'Popen', lambda a, **kwargs: argv.extend(a))
+    BENCH.wake_receiver()
+    assert argv[:2] == ['nsenter', f'--net=/var/run/netns/{BENCH.NETNS["farm"]}']
+    assert repr(BENCH.LINK['scan']) in argv[-1]
+    # Nothing else in the code it runs names an address.
+    assert ipaddress.ip_address(BENCH.LINK['scan']) not in BENCH.TARGET_NET
+
+
+# A stand-in for masscan 1.3.2 on a silent link: writes its findings, then
+# counts its --wait window below zero and never exits on its own.
+FAKE_MASSCAN = r'''
+import sys, time
+with open(sys.argv[1], 'w') as handle:
+    handle.write('#masscan\nopen tcp 22 198.19.0.1 1761066000\n')
+for left in range(2, -600, -1):
+    sys.stderr.write(f'rate:  0.00-kpps, 100.00% done, waiting {left}-secs, found=1       \r')
+    sys.stderr.flush()
+    time.sleep(0.05)
+'''
+
+
+class FakeWaker:
+    started = killed = 0
+
+    def __init__(self):
+        FakeWaker.started += 1
+
+    def kill(self):
+        FakeWaker.killed += 1
+
+    def wait(self):
+        return 0
+
+
+def test_masscan_stalled_past_its_window_is_a_failure_not_a_sample(monkeypatch, tmp_path):
+    import sys
+    FakeWaker.started = FakeWaker.killed = 0
+    monkeypatch.setattr(BENCH, 'in_netns', lambda side, argv: argv)
+    monkeypatch.setattr(BENCH, 'command', lambda tool, plan, rate, output, mac=None:
+                        [sys.executable, '-c', FAKE_MASSCAN, str(output)])
+    monkeypatch.setattr(BENCH, 'wake_receiver', FakeWaker)
+    monkeypatch.setattr(BENCH, 'MASSCAN_OVERRUN_LIMIT', 3)
+    plan = BENCH.make_plan('dense', 'small', 1)
+    row, found = BENCH.run_tool('masscan', plan, 100000, tmp_path, 'r0', '02:00:00:00:00:01')
+    assert row['error'] == ['killed 3 s past its --wait window']
+    assert found == set()
+    # Killed on the overrun, long before the 123 s deadline.
+    assert row['seconds'] < 5
+    assert (FakeWaker.started, FakeWaker.killed) == (1, 1)
+
+
+def test_naabu_runs_without_wake_up_traffic(monkeypatch, tmp_path):
+    import sys
+    FakeWaker.started = 0
+    monkeypatch.setattr(BENCH, 'in_netns', lambda side, argv: argv)
+    monkeypatch.setattr(BENCH, 'command', lambda tool, plan, rate, output, mac=None:
+                        [sys.executable, '-c', 'pass'])
+    monkeypatch.setattr(BENCH, 'wake_receiver', FakeWaker)
+    plan = BENCH.make_plan('dense', 'small', 1)
+    row, _ = BENCH.run_tool('naabu-syn', plan, 100000, tmp_path, 'r0', None)
+    assert row['exit_code'] == 0
+    assert FakeWaker.started == 0
+
+
+def test_no_waker_is_left_when_the_scanner_cannot_start(monkeypatch, tmp_path):
+    FakeWaker.started = 0
+    monkeypatch.setattr(BENCH, 'in_netns', lambda side, argv: argv)
+    monkeypatch.setattr(BENCH, 'command', lambda tool, plan, rate, output, mac=None:
+                        [str(tmp_path / 'no-such-masscan')])
+    monkeypatch.setattr(BENCH, 'wake_receiver', FakeWaker)
+    plan = BENCH.make_plan('dense', 'small', 1)
+    with pytest.raises(FileNotFoundError):
+        BENCH.run_tool('masscan', plan, 100000, tmp_path, 'r0', '02:00:00:00:00:01')
+    assert FakeWaker.started == 0
+
+
+def test_the_scanner_is_reaped_when_the_waker_cannot_start(monkeypatch, tmp_path):
+    import os
+    import sys
+    started = []
+    real_popen = BENCH.subprocess.Popen
+
+    def popen(*args, **kwargs):
+        started.append(real_popen(*args, **kwargs))
+        return started[-1]
+
+    def broken_waker():
+        raise OSError('no nsenter')
+
+    monkeypatch.setattr(BENCH.subprocess, 'Popen', popen)
+    monkeypatch.setattr(BENCH, 'in_netns', lambda side, argv: argv)
+    monkeypatch.setattr(BENCH, 'command', lambda tool, plan, rate, output, mac=None:
+                        [sys.executable, '-c', 'import time; time.sleep(60)'])
+    monkeypatch.setattr(BENCH, 'wake_receiver', broken_waker)
+    plan = BENCH.make_plan('dense', 'small', 1)
+    with pytest.raises(OSError, match='no nsenter'):
+        BENCH.run_tool('masscan', plan, 100000, tmp_path, 'r0', '02:00:00:00:00:01')
+    (scanner,) = started
+    with pytest.raises(ChildProcessError):
+        os.waitpid(scanner.pid, os.WNOHANG)
+
+
+def test_the_scanner_is_reaped_when_the_harness_is_interrupted(monkeypatch, tmp_path):
+    import os
+    import sys
+    started = []
+    real_popen = BENCH.subprocess.Popen
+
+    def popen(*args, **kwargs):
+        started.append(real_popen(*args, **kwargs))
+        return started[-1]
+
+    sleeps = []
+
+    def interrupted_sleep(seconds):
+        # The first poll has already run: wait4(WNOHANG) set status to 0.
+        sleeps.append(seconds)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(BENCH.subprocess, 'Popen', popen)
+    monkeypatch.setattr(BENCH, 'in_netns', lambda side, argv: argv)
+    monkeypatch.setattr(BENCH, 'command', lambda tool, plan, rate, output, mac=None:
+                        [sys.executable, '-c', 'import time; time.sleep(60)'])
+    monkeypatch.setattr(BENCH.time, 'sleep', interrupted_sleep)
+    plan = BENCH.make_plan('dense', 'small', 1)
+    with pytest.raises(KeyboardInterrupt):
+        BENCH.run_tool('naabu-syn', plan, 100000, tmp_path, 'r0', None)
+    assert sleeps
+    (scanner,) = started
+    with pytest.raises(ChildProcessError):
+        os.waitpid(scanner.pid, os.WNOHANG)
+
+
+# The farm for run(): writes its ready file, then exits mid-scenario.
+DYING_FARM = r'''
+import pathlib, sys, time
+pathlib.Path(sys.argv[sys.argv.index('--ready') + 1]).write_text('ready\n')
+time.sleep(0.3)
+sys.exit(3)
+'''
+
+
+def test_a_farm_that_dies_stops_the_run_and_keeps_what_was_scored(monkeypatch, tmp_path):
+    import argparse
+    import contextlib
+    import sys
+    import time
+
+    @contextlib.contextmanager
+    def namespaces(plan):
+        yield argparse.Namespace(farm_mac='02:00:00:00:00:01')
+
+    def run_tool(tool, plan, rate, out_dir, label, router_mac):
+        time.sleep(0.5)
+        return {'tool': tool, 'label': label, 'exit_code': 0, 'seconds': 0.5}, set()
+
+    monkeypatch.setattr(BENCH.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(BENCH, 'Namespaces', namespaces)
+    monkeypatch.setattr(BENCH, 'in_netns', lambda side, argv:
+                        [sys.executable, '-c', DYING_FARM, *argv] if 'serve' in argv else argv)
+    monkeypatch.setattr(BENCH, 'binary_record', lambda tool: {'path': tool})
+    monkeypatch.setattr(BENCH, 'farm_rx_packets', lambda: 0)
+    monkeypatch.setattr(BENCH, 'run_tool', run_tool)
+    out = tmp_path / 'dense'
+    with pytest.raises(SystemExit, match='the farm exited'):
+        BENCH.main(['run', '--scenario', 'dense', '--tools', 'naabu-syn,naabu-connect', '--output', str(out)])
+    rows = json.loads((out / 'results.json').read_text())
+    # The run the farm died in is kept, but as a failure, not as a scored sample.
+    assert [row['tool'] for row in rows] == ['naabu-syn']
+    assert rows[0]['error'] == ['the farm exited (3) during this run']
+    assert 'recall' not in rows[0]
+    assert json.loads((out / 'metadata.json').read_text())['scenario'] == 'dense'
+
+
+def test_cli_takes_no_targets():
+    # The only addresses a run can touch are the ones make_plan draws from TARGET_NET.
+    with pytest.raises(SystemExit):
+        BENCH.main(['run', '--scenario', 'dense', '--output', '/tmp/x', '--target', '192.0.2.1'])
+
+
+@pytest.mark.parametrize('rates, expected', [
+    ('1000', ['1000', '1000', '1000']),
+    # A trailing space once left sparse and all-ports with an empty --rate.
+    ('1000 10000 ', ['1000', '10000', '10000', '10000']),
+])
+def test_stand_requires_explicit_root_only_in_the_isolated_wrapper(tmp_path, rates, expected):
+    import os
+    import subprocess
+    import sys
+
+    dockerfile = (ROOT / 'docs/benchmarks/speed/Stand.Dockerfile').read_text()
+    users = [line.split()[1] for line in dockerfile.splitlines() if line.startswith('USER ')]
+    assert users[-1] == 'scanner'
+    binaries = tmp_path / 'bin'
+    binaries.mkdir()
+    log = tmp_path / 'docker-runs.jsonl'
+    docker = binaries / 'docker'
+    docker.write_text(
+        f'#!{sys.executable}\n'
+        'import json, os, sys\n'
+        'if sys.argv[1] == "image": print("sha256:stand-fixture")\n'
+        'if sys.argv[1] == "run":\n'
+        '    with open(os.environ["BENCH_DOCKER_LOG"], "a") as out:\n'
+        '        out.write(json.dumps(sys.argv[2:]) + "\\n")\n'
+    )
+    docker.chmod(0o755)
+    subprocess.run(
+        ['bash', str(ROOT / 'scripts/run-speed-benchmark-stand.sh'), str(tmp_path / 'results')],
+        env={**os.environ, 'PATH': f'{binaries}:{os.environ["PATH"]}',
+             'BENCH_DOCKER_LOG': str(log), 'RATES': rates, 'REPEATS': '1', 'SCALE': 'small'},
+        check=True, capture_output=True, text=True,
+    )
+    runs = [json.loads(line) for line in log.read_text().splitlines()]
+    assert [argv[argv.index('--rate') + 1] for argv in runs] == expected
+    for argv in runs:
+        assert argv[argv.index('--user') + 1] == '0:0'
+        assert argv[argv.index('--network') + 1] == 'none'
+        assert '--privileged' in argv
+        assert any('target=/bench,readonly' in arg for arg in argv)
+
+
+def test_stand_marks_results_dirty_for_an_untracked_file(tmp_path):
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    repo = tmp_path / 'repo'
+    (repo / 'scripts').mkdir(parents=True)
+    (repo / 'docs/benchmarks/speed').mkdir(parents=True)
+    shutil.copy(ROOT / 'scripts/run-speed-benchmark-stand.sh', repo / 'scripts')
+    shutil.copy(ROOT / 'docs/benchmarks/speed/Stand.Dockerfile', repo / 'docs/benchmarks/speed')
+    git = ['git', '-C', str(repo), '-c', 'user.name=t', '-c', 'user.email=t@example.invalid']
+    subprocess.run([*git, 'init', '-q'], check=True)
+    subprocess.run([*git, 'add', '.'], check=True)
+    subprocess.run([*git, 'commit', '-qm', 'stand'], check=True)
+    binaries = tmp_path / 'bin'
+    binaries.mkdir()
+    docker = binaries / 'docker'
+    docker.write_text(f'#!{sys.executable}\nimport sys\nif sys.argv[1] == "image": print("sha256:x")\n')
+    docker.chmod(0o755)
+    env = {**os.environ, 'PATH': f'{binaries}:{os.environ["PATH"]}', 'RATES': '1000'}
+
+    def provenance(name):
+        subprocess.run(['bash', str(repo / 'scripts/run-speed-benchmark-stand.sh'), str(tmp_path / name)],
+                       env=env, check=True, capture_output=True)
+        return (tmp_path / name / 'source-commit.txt').read_text().strip()
+
+    clean = provenance('clean')
+    assert len(clean) == 40
+    (repo / 'scripts/helper.py').write_text('# not committed\n')
+    assert provenance('dirty') == f'{clean}-dirty'

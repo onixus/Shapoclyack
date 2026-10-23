@@ -404,6 +404,18 @@ def cvss4_fetcher():
     return module
 
 
+def test_partial_full_nvd_harvest_preserves_parked_snapshot(cvss4_fetcher, monkeypatch, tmp_path):
+    path = tmp_path / "cvss4.json"
+    previous = json.dumps({"entries": {"CVE-2026-0001": {"score": 7.5}}})
+    path.write_text(previous)
+    monkeypatch.setattr("sys.argv", ["fetch-cvss4-db.py", "--full", "--output", str(path)])
+    monkeypatch.setattr(cvss4_fetcher, "harvest", lambda *a, **kw: ({
+        "CVE-2026-0002": {"score": 9.0, "vector": "CVSS:4.0", "severity": "critical"}
+    }, False))
+    assert cvss4_fetcher.main() == 1
+    assert path.read_text() == previous
+
+
 def _pagination_rows(total):
     return [
         {"cve": {"id": f"CVE-2026-{10000 + index}", "metrics": {
