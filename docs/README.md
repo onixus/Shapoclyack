@@ -28,6 +28,7 @@ The bare word "agent" always means the Lariska endpoint Agent; anything that cla
 | Read the Enterprise Wiki & role scenarios | [Enterprise Wiki (База знаний)](wiki/README.md) 🇷🇺 |
 | Understand components, trust boundaries, and data flow | [Architecture](architecture.md) |
 | Configure scanning, enrichment, and runtime settings | [Configuration](configuration.md) |
+| Classify assets with explainable rules and protected context | [Dynamic asset groups](dynamic-asset-groups.md) |
 | Deploy or upgrade Kubernetes workloads | [Kubernetes / Kustomize](../k8s/README.md), [Helm chart](helm.md) |
 | Deploy with Helm instead of kustomize: values, existing Secrets, External Secrets, OCI publishing | [Helm chart](helm.md) |
 | Understand host inventory and credentialed-scanning coverage | [Coverage boundaries](operations.md#credentialed-scanning-scope-and-coverage-368) |

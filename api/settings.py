@@ -459,6 +459,10 @@ class Settings:
     # reports use — the API surface and the button are unaffected, and the
     # worker is leader-locked so only one replica polls whatever the count.
     ticket_sync_enabled: bool = True
+    # Periodic inventory reconciliation; scan authorization remains separate.
+    asset_groups_enabled: bool = True
+    asset_groups_interval_seconds: int = 30
+    asset_groups_batch_size: int = 200
     # How often the thread wakes to look for due findings. Not the poll
     # cadence: that is per subscription, below.
     ticket_sync_poll_interval_seconds: int = 60
@@ -2254,6 +2258,14 @@ def load_settings() -> Settings:
         ),
         ticket_sync_enabled=os.environ.get("OCTO_TICKET_SYNC_ENABLED", "true").lower()
         in {"1", "true", "yes"},
+        asset_groups_enabled=os.environ.get("OCTO_ASSET_GROUPS_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
+        asset_groups_interval_seconds=max(
+            5, int(os.environ.get("OCTO_ASSET_GROUPS_INTERVAL_SECONDS", "30"))
+        ),
+        asset_groups_batch_size=min(
+            500, max(1, int(os.environ.get("OCTO_ASSET_GROUPS_BATCH_SIZE", "200")))
+        ),
         # Floored like the dispatchers' intervals above: a mistyped 0 would
         # turn the worker's Event.wait() into a busy loop against the database.
         ticket_sync_poll_interval_seconds=max(

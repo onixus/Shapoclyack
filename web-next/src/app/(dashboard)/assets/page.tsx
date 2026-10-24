@@ -243,7 +243,7 @@ function AssetsInner() {
             {assetsQuery.isFetching ? " · Refreshing inventory stream…" : ""}
           </p>
         </div>
-        <AssetImportButton />
+        <div className="flex flex-wrap gap-2"><Button variant="outline" asChild><Link href="/assets/groups">Dynamic groups</Link></Button><AssetImportButton /></div>
       </div>
 
       <SavedViews page="assets" state={{ version: 1, search: pagination.search, sort: pagination.sort ?? null, order: pagination.order, filters: { status, unowned } }} onApply={(view) => {

@@ -125,6 +125,11 @@ SUBJECT_COLUMNS: dict[tuple[str, str], tuple[str, str]] = {
     ("report_schedules", "recipients"): (CLEARED, "the account's address, where listed"),
     ("idempotency_records", "actor"): (RETAINED, "expires by itself within 24 hours"),
     ("config_overrides", "updated_by"): (PSEUDONYM, "attribution"),
+    ("asset_group_versions", "actor"): (
+        PSEUDONYM,
+        "immutable classification-rule version attribution; the account key stays "
+        "as its erased pseudonym, while account contact and credentials are removed",
+    ),
     ("tenants", "change_freeze_by"): (PSEUDONYM, "attribution"),
     # The tenant lifecycle (#325): who suspended or deleted a customer, and the
     # deletion journal that outlives the tenant as its tombstone.
@@ -219,6 +224,23 @@ NOT_SUBJECT_COLUMNS: dict[tuple[str, str], str] = {
     ("service_tokens", "allowed_cidrs"): "integration source network policy; no console account",
     ("agent_deployments", "username"): "the SSH account on the target host",
     ("assets", "owner_email"): "the asset's owner, tenant business data the tenant edits",
+    # Classification documents contain tenant asset context, including explicit
+    # owner addresses, not references to console accounts. Free-text group
+    # names/descriptions and predicate values have the same ownership. Erasing
+    # a console account must not silently rewrite a rule or historical receipt
+    # by recursively matching its strings. Actor attribution is kept separately
+    # in asset_group_versions.actor and exported as counts by _attributions.
+    ("asset_groups", "name"): "tenant-authored classification name, not a console account identifier",
+    ("asset_groups", "description"): "tenant-authored classification description, not console account data",
+    ("asset_groups", "rules"): "typed predicates over tenant asset context; any owner address is tenant business data like assets.owner_email",
+    ("asset_groups", "context"): "tenant-owned asset assignments, including owner addresses; no console account reference or actor field",
+    ("asset_group_versions", "document"): "immutable tenant rule/context snapshot; console actor attribution lives in the separately classified actor column",
+    ("asset_group_memberships", "reasons"): "typed asset predicate observations and source evidence; no console actor field",
+    ("asset_group_provenance", "value"): "tenant-owned applied asset context, including owner addresses",
+    ("asset_group_provenance", "previous"): "tenant-owned original asset context and source needed for safe rule release; no console actor field",
+    ("asset_group_provenance", "reason"): "typed asset predicate observations and source evidence; no console actor field",
+    ("asset_group_evaluations", "report"): "immutable classification transitions and bounded diagnostics with tenant asset context and rule/version/source provenance; no console actor field",
+
     ("tenant_branding", "contact_email"): "the tenant's published contact address",
     ("vulnerabilities", "owner_team"): "a team name",
     ("sla_escalation_policies", "escalate_owner_team"): "a team name",
