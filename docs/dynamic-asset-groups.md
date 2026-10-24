@@ -69,6 +69,14 @@ Assignment and membership transitions are retained in immutable evaluation
 receipts, including rule/version and explanations. Repeated unchanged passes
 coalesce their diagnostic row; they do not append duplicate transition history.
 
+Rule-version actor attribution participates in the existing console-account
+data-subject export and erasure policy. Export counts matching attributions
+without copying tenant rule documents. Erasure removes account contact and
+credentials while keeping its non-reusable attribution key as the existing
+pseudonym. Tenant-owned rule/context/evidence documents, including operational
+owner addresses, are distinct business records and are not recursively erased
+by matching strings. Tenant deletion still removes these group records.
+
 Groups are classification, not scan authorization. They do not change scan
 scope, deny rules, maintenance checks, finding identity, lifecycle, SLA,
 exceptions or recorded risk assessments. Scan requests still use the existing
