@@ -17,7 +17,11 @@
 # Upstream builds all three with CGO_ENABLED=0 and -s -w (their .goreleaser.yml
 # and Makefile), which is what we do below, so these binaries differ from the
 # released ones only in the toolchain and the x/crypto bump. In particular
-# naabu's SYN path stays exactly as upstream ships it and needs no libpcap.
+# naabu's SYN path stays exactly as upstream ships it. It dlopen()s libpcap at
+# run time, and the runtime stage does not install libpcap0.8 on purpose: with
+# it SYN recall was 0.57-0.85 in the speed farm, and ports.py only falls back to
+# CONNECT on an empty SYN batch (#594). Until that gap is understood, SYN finds
+# nothing here and the pipeline settles on CONNECT.
 # Every stage is pinned by index digest, not only the final one (#313): a
 # build stage's toolchain ends up in the binaries just as surely as the base
 # ends up in the image. Renovate proposes the refresh as a reviewed PR.
