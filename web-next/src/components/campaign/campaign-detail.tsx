@@ -172,7 +172,7 @@ export function CampaignDetail({ id }: { id: string }) {
         enableSorting: false,
         cell: ({ row }) => (
           <Link href={vulnDetailHref(row.original.vuln_id)} className="group space-y-0.5">
-            <p className="font-mono text-sm font-bold text-sky-600 group-hover:underline dark:text-sky-400">
+            <p className="whitespace-nowrap font-mono text-sm font-bold text-sky-600 group-hover:underline dark:text-sky-400">
               {row.original.cve || row.original.title || row.original.problem_key}
             </p>
             <p className="text-[11px] text-muted-foreground">
@@ -185,11 +185,13 @@ export function CampaignDetail({ id }: { id: string }) {
       { id: "asset_id", header: t("col.asset"), accessorKey: "asset_id", cell: ({ row }) => <span className="font-mono text-[11px]">{row.original.asset_id}</span> },
       {
         id: "severity",
+        accessorFn: (row) => row.severity,
         header: t("col.severity"),
         cell: ({ row }) => <StatusBadge value={normalizeSeverity(row.original.severity)} map={SEVERITY_STATUS} />,
       },
       {
         id: "state",
+        accessorFn: (row) => row.state,
         header: t("col.lifecycle"),
         cell: ({ row }) => <StatusBadge value={row.original.state} map={VULN_LIFECYCLE_STATUS} />,
       },
