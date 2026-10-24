@@ -20,7 +20,11 @@
 # Upstream builds all three with CGO_ENABLED=0 and -s -w (their .goreleaser.yml
 # and Makefile), which is what we do below, so these binaries differ from the
 # released ones only in the toolchain and the x/crypto bump. In particular
-# naabu's SYN path stays exactly as upstream ships it and needs no libpcap.
+# naabu's SYN path stays exactly as upstream ships it. It dlopen()s libpcap at
+# run time, and the runtime stage does not install libpcap0.8 on purpose: with
+# it SYN recall was 0.57-0.85 in the speed farm, and ports.py only falls back to
+# CONNECT on an empty SYN batch (#594). Until that gap is understood, SYN finds
+# nothing here and the pipeline settles on CONNECT.
 # Every stage is pinned by index digest, not only the final one (#313); see
 # the same line in Dockerfile.
 FROM golang:1.26.10-bookworm@sha256:fe3da92a5cb2881e4aa75e625cb0b7c50571632fb4cf340cbe53e6ccdcffdd51 AS go-tools
