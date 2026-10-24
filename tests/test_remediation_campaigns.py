@@ -186,6 +186,31 @@ def test_a_retried_create_replays_instead_of_duplicating(env):
     assert client.get(URL, headers=operator).json()["total"] == 1
 
 
+def test_the_same_key_in_two_tenants_makes_two_campaigns_without_leaking_either(env):
+    client, settings, tenant_id, ids, operator = env
+    other = tenants_service.create_tenant(tenant_id="ten_b", name="B")["tenant_id"]
+    with get_session(settings.postgres_url) as session:
+        theirs = add_finding(session, other, "b1", cve="CVE-2024-1111")
+    admin = auth_headers(client, "admin")
+    for tenant in ("ten_b", tenant_id):
+        granted = client.put(f"/api/tenants/{tenant}/members/operator", headers=admin, json={"role": "operator"})
+        assert granted.status_code == 200, granted.text
+    headers = {**operator, "Idempotency-Key": "shared-key"}
+    mine = client.post(URL, params={"tenant_id": tenant_id}, headers=headers,
+                       json={"name": "same", "selection": {"vuln_ids": ids["c1"]}})
+    foreign = client.post(URL, params={"tenant_id": "ten_b"}, headers=headers,
+                          json={"name": "same", "selection": {"vuln_ids": [theirs]}})
+    assert mine.status_code == 201 and foreign.status_code == 201, foreign.text
+    assert mine.json()["campaign_id"] != foreign.json()["campaign_id"]
+    assert foreign.json()["snapshot_size"] == 1 and "replayed" not in foreign.json()
+    # Each tenant's retry replays its own answer, never the other's.
+    again = client.post(URL, params={"tenant_id": "ten_b"}, headers=headers,
+                        json={"name": "same", "selection": {"vuln_ids": [theirs]}})
+    assert again.status_code == 200 and again.json()["campaign_id"] == foreign.json()["campaign_id"]
+    assert client.get(URL, params={"tenant_id": "ten_b"}, headers=operator).json()["total"] == 1
+    assert client.get(URL, params={"tenant_id": tenant_id}, headers=operator).json()["total"] == 1
+
+
 def test_a_failed_create_gives_its_key_back(env):
     client, _, _, _, operator = env
     refused = _create(client, operator, {"problem_keys": ["cve:CVE-2099-9999"]}, key="k1")
@@ -464,6 +489,26 @@ def test_completion_needs_every_member_resolved_and_a_recurrence_reopens_the_cam
     _verify_closed(settings, a)
     assert _campaign(client, operator, cid)["status"] == "completed"
     assert [e["kind"] for e in _events(client, operator, cid)].count("completed") == 2
+
+
+def test_a_derived_transition_made_by_a_read_is_audited_as_the_system(env):
+    client, settings, tenant_id, ids, operator = env
+    a = ids["c2"][0]
+    cid = _create(client, operator, {"vuln_ids": [a]}).json()["campaign_id"]
+    _verify_closed(settings, a)
+    # A viewer's GET is what notices the completion.
+    assert _campaign(client, auth_headers(client, "viewer"), cid)["status"] == "completed"
+    with get_session(settings.postgres_url) as session:
+        rows = session.execute(
+            select(models.AuditEvent.actor, models.AuditEvent.actor_type, models.AuditEvent.after)
+            .where(models.AuditEvent.resource_id == cid, models.AuditEvent.action == "campaign.status")
+        ).all()
+    assert len(rows) == 1
+    actor, actor_type, after = rows[0]
+    assert actor != "viewer" and actor_type == "system"
+    assert after["derived"] is True and after["status"] == "completed"
+    event = next(e for e in _events(client, operator, cid) if e["kind"] == "completed")
+    assert event["actor"] is None
 
 
 def test_adding_unresolved_work_to_a_completed_campaign_reopens_it(env):

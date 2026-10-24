@@ -112,6 +112,22 @@ def seed_fleet(settings, tenant_id: str) -> dict[str, list[str]]:
     return ids
 
 
+@pytest.fixture(autouse=True)
+def pinned_epss():
+    """A scorer with a known EPSS overlay, so the figures do not depend on the
+    feed shipped in the repository."""
+    from api.services import risk_scoring
+
+    risk_scoring.reset_scorer_for_tests(
+        risk_scoring.RiskScoring(
+            epss={"CVE-2024-1111": 0.42, "CVE-2024-3333": 0.0},
+            epss_meta={"source": "first-epss", "updated": "2026-10-20"},
+        )
+    )
+    yield
+    risk_scoring.reset_scorer_for_tests(None)
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     client = configured_client(tmp_path, monkeypatch)
@@ -162,6 +178,10 @@ def test_the_sql_key_and_its_python_twin_agree_on_every_shape(env):
             add_finding(session, tenant_id, "a9", template_id="t", detector_source=None),
             add_finding(session, tenant_id, "a9", cve="not-a-cve", script_id="s2"),
             add_finding(session, tenant_id, "a9", cve="", template_id="  ", script_id=""),
+            add_finding(session, tenant_id, "a9", cve="CVE-2024-1111\n"),
+            add_finding(session, tenant_id, "a9", cve="\tcve-2024-1111\xa0"),
+            add_finding(session, tenant_id, "a9", template_id="\nt2\t", detector_source="\xa0nuclei "),
+            add_finding(session, tenant_id, "a9", script_id="\r\nssl\x0b"),
         ]
         key = problem_identity.problem_key_expr()
         rows = session.execute(
@@ -176,6 +196,10 @@ def test_the_sql_key_and_its_python_twin_agree_on_every_shape(env):
     # A non-CVE string in the cve column does not become a CVE problem.
     assert by_id[extra[2]] == "script:s2"
     assert by_id[extra[3]] == f"unknown:{extra[3]}"
+    # Padding other than a plain space no longer splits a problem in two.
+    assert by_id[extra[4]] == by_id[extra[5]] == "cve:CVE-2024-1111"
+    assert by_id[extra[6]] == "tpl:nuclei:t2"
+    assert by_id[extra[7]] == "script:ssl"
 
 
 # --------------------------------------------------------------------------
@@ -192,11 +216,33 @@ def test_instances_and_assets_are_separate_and_semantics_are_explicit(env):
     assert row["severity"] == "critical"  # worst instance
     assert row["contextual_score"] == 9.1  # highest, not an average
     assert row["cvss"] == 9.8
-    assert row["epss"] is None  # not stored: unknown, never 0
+    assert row["epss"] == 0.42  # from the EPSS overlay, by normalised CVE
+    assert body["enrichment"]["epss"] == {"source": "first-epss", "updated": "2026-10-20"}
     assert row["in_kev"] is True and row["kev_instances"] == 1
     assert row["last_seen_at"].endswith("Z")
-    assert "worst instance" in body["semantics"]["severity"]
+    assert "worst OPEN instance" in body["semantics"]["severity"]
     assert body["as_of"].endswith("Z")
+
+
+def test_severity_and_title_come_from_open_instances_when_there_are_any(env):
+    client, settings, tenant_id, _ = env
+    with get_session(settings.postgres_url) as session:
+        add_finding(session, tenant_id, "a1", cve="CVE-2030-0100", severity="critical",
+                    contextual_score=9.9, state="CLOSED", closed_at=_now(), title="closed critical")
+        add_finding(session, tenant_id, "a2", cve="CVE-2030-0100", severity="low",
+                    contextual_score=1.0, title="open low")
+        add_finding(session, tenant_id, "a3", cve="CVE-2030-0100", severity="medium",
+                    contextual_score=4.0, title="open medium")
+        add_finding(session, tenant_id, "a4", cve="CVE-2030-0200", severity="high",
+                    contextual_score=7.0, state="CLOSED", closed_at=_now(), title="only closed")
+    headers = auth_headers(client, "viewer")
+    # Without open_only the closed critical is in the selection, yet not the verdict.
+    row = _by_key(_problems(client, headers, limit=100))["cve:CVE-2030-0100"]
+    assert (row["severity"], row["contextual_score"], row["title"]) == ("medium", 4.0, "open medium")
+    assert row["instances"] == 3
+    # Nothing open: the closed instances speak.
+    only = _by_key(_problems(client, headers, limit=100))["cve:CVE-2030-0200"]
+    assert (only["severity"], only["title"]) == ("high", "only closed")
 
 
 def test_missing_cvss_is_null_not_zero(env):
@@ -205,6 +251,29 @@ def test_missing_cvss_is_null_not_zero(env):
         add_finding(session, tenant_id, "a1", cve="CVE-2030-0001", severity="low")
     row = _by_key(_problems(client, auth_headers(client, "viewer"), limit=100))["cve:CVE-2030-0001"]
     assert row["cvss"] is None and row["contextual_score"] is None and row["epss"] is None
+
+
+def test_epss_is_unknown_when_absent_zero_when_listed_and_unknown_for_non_cve(env):
+    client, settings, tenant_id, _ = env
+    with get_session(settings.postgres_url) as session:
+        add_finding(session, tenant_id, "a1", cve="CVE-2024-3333", severity="low")
+    keys = _by_key(_problems(client, auth_headers(client, "viewer"), limit=100))
+    assert keys["cve:CVE-2024-3333"]["epss"] == 0.0  # listed with probability 0: a real value
+    assert keys["cve:CVE-2024-2222"]["epss"] is None  # not in the overlay: unknown
+    assert keys["tpl:nuclei:exposed-panel"]["epss"] is None  # non-CVE: unknown
+    drill = client.get(
+        "/api/problems/instances",
+        params={"problem_key": "cve:CVE-2024-1111"},
+        headers=auth_headers(client, "viewer"),
+    ).json()
+    assert {item["epss"] for item in drill["items"]} == {0.42}
+    assert drill["enrichment"]["epss"]["updated"] == "2026-10-20"
+    other = client.get(
+        "/api/problems/instances",
+        params={"problem_key": "cve:CVE-2024-2222"},
+        headers=auth_headers(client, "viewer"),
+    ).json()
+    assert {item["epss"] for item in other["items"]} == {None}
 
 
 def test_exposure_is_counted_with_its_source_and_basis_and_unknown_is_unknown(env):

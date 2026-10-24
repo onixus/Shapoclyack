@@ -53,6 +53,7 @@ from api.db.engine import get_session, insert_or_skip
 from api.services import bdu_fstec
 from api.services import audit as audit_service
 from api.services import exploit_evidence
+from api.services import job_states
 from api.services import metrics
 from api.services import nist_risk
 from api.services import pagination
@@ -2979,9 +2980,16 @@ def apply_ticket_status(
         # move the finding out of VERIFYING: the run's verdict is gated on that
         # state, so the move would silently discard a machine result that is
         # about to arrive and record a ticket's word in its place.
-        held_for_verification = (
-            previous == vuln_states.VERIFYING and bool(row.verification_job_id)
-        )
+        # "In flight" means the linked job is actually alive. ``verification_job_id``
+        # is never cleared, so an id whose job finished or died with its sensor,
+        # or a manual move to VERIFYING with an old id, must not pin the finding
+        # there forever.
+        held_for_verification = False
+        if previous == vuln_states.VERIFYING and row.verification_job_id:
+            job_status = session.execute(
+                select(models.Job.status).where(models.Job.job_id == row.verification_job_id)
+            ).scalar_one_or_none()
+            held_for_verification = job_status in job_states.ACTIVE
         if (
             suggested_state
             and suggested_state != previous

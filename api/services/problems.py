@@ -15,13 +15,17 @@ aggregate row was computed under.
 
 Semantics worth stating where they are used:
 
-* ``severity`` / ``contextual_score`` / ``cvss`` are the **worst instance**
-  (a maximum), not an average; the response says so in ``semantics``.
+* ``severity`` / ``contextual_score`` are the **worst open instance** (a
+  maximum, not an average; closed ones count only when none is open); ``cvss``
+  is the highest over all instances. The response says so in ``semantics``.
 * ``instances`` counts finding rows; ``assets`` counts distinct assets. Both
   are returned because 80 instances on 3 assets and 80 on 80 assets are
   different work.
-* EPSS is not stored with findings, so it is reported as ``null`` (unknown),
-  never as zero.
+* EPSS is not stored with findings; it comes from the EPSS overlay the risk
+  scorer loads (``OCTO_EPSS_DATABASE``), looked up by the normalised CVE of a
+  ``cve:`` problem. A CVE the overlay does not list, and every non-CVE problem,
+  reads ``null`` (unknown), never zero; the overlay's source and feed date are
+  returned with the page so the figure's freshness is visible.
 * Exposure is reported per source with a ``basis`` (declared / measured /
   inferred / unknown); absent data is ``unknown``, not "not exposed".
 """
@@ -37,6 +41,7 @@ from api.db import models
 from api.db.engine import get_session
 from api.services import pagination
 from api.services import problem_identity
+from api.services import risk_scoring
 from api.services import vuln_states
 from api.services import vulnerabilities as vulns
 from api.settings import Settings
@@ -58,10 +63,14 @@ EXPOSURE_BASIS = {
 }
 
 SEMANTICS = {
-    "severity": "worst instance (maximum), not an average",
-    "contextual_score": "highest contextual risk score among instances",
+    "severity": "worst OPEN instance (maximum, not an average); the worst closed one only "
+    "when no instance is open",
+    "contextual_score": "highest contextual risk score among open instances (closed ones only "
+    "when none is open)",
     "cvss": "highest CVSS among instances; null when none carries one",
-    "epss": "not stored with findings; always null (unknown)",
+    "epss": "EPSS of the problem's CVE from the scoring overlay (a problem is one CVE, so the "
+    "maximum over CVEs is that value); null when the overlay has no entry (unknown, never 0) "
+    "and always null for non-CVE problems; source and feed date in `enrichment.epss`",
     "instances": "tracked findings (one per asset/port) in the filtered selection",
     "assets": "distinct assets among those instances",
     "exposure": "counts per instance; basis is declared, measured, inferred or unknown",
@@ -125,8 +134,16 @@ def list_problems(
             key.label("problem_key"),
             func.count().label("instances"),
             func.count(func.distinct(V.asset_id)).label("assets"),
-            func.max(_sev_rank()).label("sev_rank"),
-            func.max(V.contextual_score).label("score"),
+            # Open instances decide when there are any: a closed critical next to
+            # an open low is a low problem. All-closed selections fall back to
+            # the closed ones (the sort keys use the same open-first values).
+            func.coalesce(
+                func.max(case((active, _sev_rank()), else_=None)), func.max(_sev_rank())
+            ).label("sev_rank"),
+            func.coalesce(
+                func.max(case((active, V.contextual_score), else_=None)),
+                func.max(V.contextual_score),
+            ).label("score"),
             func.max(V.cvss).label("cvss"),
             _count_if(V.in_kev.is_(True)).label("kev"),
             func.max(V.last_seen_at).label("last_seen"),
@@ -137,7 +154,16 @@ def list_problems(
             func.min(case((active, V.due_at), else_=None)).label("due"),
             _count_if(V.network_exposure == "external").label("ext"),
             _count_if(V.network_exposure == "internal").label("int"),
-            func.min(V.title).label("title"),
+            # Title of the most severe open instance (open flag, then severity
+            # digit, prefix stripped in Python), not an arbitrary alphabetical one.
+            func.max(
+                case((active, "1"), else_="0")
+                + case(
+                    (V.severity == "critical", "4"), (V.severity == "high", "3"),
+                    (V.severity == "medium", "2"), (V.severity == "low", "1"), else_="0",
+                )
+                + func.coalesce(V.title, "")
+            ).label("title"),
             func.min(V.cve).label("cve"),
             _count_if(V.state == vuln_states.OPEN).label("s_open"),
             _count_if(V.state == vuln_states.ACKNOWLEDGED).label("s_ack"),
@@ -188,6 +214,10 @@ def list_problems(
         ).one()
 
     items = [_item(row, facets.get(row.problem_key, {})) for row in rows]
+    scorer = risk_scoring.get_scorer()
+    for item in items:
+        if item["cve"]:
+            item["epss"] = scorer.epss_lookup(item["cve"])
     return {
         "items": items,
         "total": total,
@@ -202,7 +232,15 @@ def list_problems(
         },
         "as_of": vulns._iso(now),
         "semantics": SEMANTICS,
+        "enrichment": {"epss": epss_info(scorer)},
     }
+
+
+def epss_info(scorer: Any) -> dict[str, Any]:
+    """Where the EPSS figures came from and how old the feed is (``null`` fields
+    when the overlay is absent)."""
+    meta = scorer.epss_meta()
+    return {"source": meta.get("source"), "updated": meta.get("updated")}
 
 
 def _facets(session: Any, predicates: list[Any], key: Any, keys: list[str]) -> dict[str, dict]:
@@ -240,7 +278,7 @@ def _item(row: Any, facet: dict[str, Any]) -> dict[str, Any]:
         "problem_key": row.problem_key,
         "kind": problem_identity.kind_of(row.problem_key),
         "cve": row.cve if row.problem_key.startswith(problem_identity.CVE_PREFIX) else None,
-        "title": row.title or "",
+        "title": (row.title or "")[2:],
         "instances": row.instances,
         "assets": row.assets,
         "severity": _RANK_SEVERITY.get(row.sev_rank, "unknown"),
@@ -349,4 +387,15 @@ def problem_instances(
                 )
             ),
         }
-    return {"items": items, "total": total, "drift": drift, "problem_key": problem_key}
+    # EPSS of the problem's CVE on every instance (the figure is per CVE, so it
+    # is the same for all of them); null when the overlay has no entry.
+    scorer = risk_scoring.get_scorer()
+    for item in items:
+        item["epss"] = scorer.epss_lookup(item["cve"]) if item.get("cve") else None
+    return {
+        "items": items,
+        "total": total,
+        "drift": drift,
+        "problem_key": problem_key,
+        "enrichment": {"epss": epss_info(scorer)},
+    }

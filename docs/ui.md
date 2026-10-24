@@ -481,8 +481,8 @@ A switch above the counts changes the table, not the filters: **Instances** is
 the findings list above, **Problems** groups the same filtered selection by a
 typed key (normalised CVE, detector template, script; a finding with no known
 identity is its own problem) and shows, per problem, instances and distinct
-assets as two numbers, the *worst* severity and highest score/CVSS (EPSS is not
-stored and reads *unknown*), owners, SLA breaches and exposure with its basis
+assets as two numbers, the *worst open* severity and score, CVSS and EPSS from the scoring overlay
+(with its source and feed date; absent EPSS reads *unknown*), owners, SLA breaches and exposure with its basis
 (declared / measured / inferred / unknown). The line above the table totals the
 whole filtered selection on the server, not the loaded page. `?view=problems`
 selects the view; **Show instances** drills down with `?problem=<key>` on the

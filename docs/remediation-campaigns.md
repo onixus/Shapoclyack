@@ -48,10 +48,17 @@ page. The response carries `items` (one row per problem), `total` (problems),
 and `semantics`. A row shows:
 
 - `instances` (findings) and `assets` (distinct assets) **separately**;
-- `severity`, `contextual_score`, `cvss`: the **worst instance** (maximum), never
-  an average. `epss` is always `null` — EPSS is not stored with findings; absent
-  data is unknown, not zero. `in_kev` / `kev_instances`, `first_seen_at` /
-  `last_seen_at`;
+- `severity`, `contextual_score`: the **worst open instance** (maximum, never an
+  average; a closed critical next to an open low is a low problem, and closed
+  instances speak only when none is open); `cvss`: the highest over all
+  instances; `title`: that of the most severe open instance. `epss` comes from
+  the EPSS overlay the risk scorer loads (`OCTO_EPSS_DATABASE`, hot-reloaded),
+  looked up by the problem's normalised CVE — a problem is one CVE, so the
+  maximum over CVEs is that value. A CVE the overlay does not list, and every
+  non-CVE problem, is `null` (unknown, never 0); a listed `0.0` is a real value.
+  The page carries `enrichment.epss` (`source`, feed `updated` date) and the
+  drill-down items carry the same `epss`. `in_kev` / `kev_instances`,
+  `first_seen_at` / `last_seen_at`;
 - `owners` (unassigned instances, top assignees and teams), `sla` (breached,
   due soon, earliest due date), `states`, `machine_verified`;
 - `exposure`: `external` / `internal` / `unknown` counts, the per-source counts
@@ -188,6 +195,26 @@ tenant; another tenant's campaign id is `404` for every verb. Audit actions:
 
 ### Data and migration
 
+Identity padding: the problem key strips space, tab, LF, VT, FF, CR and NBSP around
+a CVE, template, detector or script in SQL and in Python alike (`"CVE-2024-1\n"`
+is the same problem as `"CVE-2024-1"`); the parity test covers these characters.
+
+A campaign's status is derived and is also recorded when *any* read or write first
+notices it (a viewer's GET may be that read). That write is the platform's, not the
+reader's: `campaign.status` in `audit_events` with `derived: true` under the system
+actor, and a history event with no actor; it is compare-and-set, so it happens once.
+The alternative — computing status on the fly and persisting only in write paths —
+would leave completion and recurrence unrecorded for a campaign nobody writes to.
+
+Known limitation: `remediation_campaign_members.vuln_id` is `ON DELETE CASCADE`. If
+a finding row is deleted (its asset is deleted, or a tenant purge) the membership
+and its history of that finding disappear with it; the campaign's `snapshot_size`
+and events keep the counts and ids they recorded.
+
+Ticket sync holds a finding in `VERIFYING` only while the linked verification job is
+alive (`queued`, `claimed`, `running`, `cancelling`). `verification_job_id` is never
+cleared, so a finished or dead job (or a manual move to `VERIFYING`) does not pin it.
+
 Migration `0101_remediation_campaigns` is expand-only: three tenant tables
 (`remediation_campaigns`, `remediation_campaign_members`,
 `remediation_campaign_events`) with tenant row-level security, no change to
@@ -198,7 +225,7 @@ data-subject catalogue know the new columns.
 ### Not included
 
 - Grouping by advisory/package/fix (no such context on findings — see above).
-- EPSS on problem rows (not stored; shown as unknown).
+- EPSS for non-CVE problems, and for CVEs the overlay does not list (unknown).
 - Applying owner/exception changes to all members from a campaign: use the
   existing bulk actions, which are explicit and audited.
 - New ticket integrations (#353); campaigns show the links findings already have.

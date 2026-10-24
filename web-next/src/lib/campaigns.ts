@@ -29,11 +29,12 @@ export type ProblemRow = {
   title: string;
   instances: number;
   assets: number;
-  /** Worst instance (maximum), never an average. */
+  /** Worst open instance (maximum, never an average); closed ones only when none is open. */
   severity: string;
   contextual_score: number | null;
   cvss: number | null;
-  /** Not stored with findings: always null, i.e. unknown. */
+  /** From the EPSS overlay by CVE; null (unknown, never 0) when the overlay has
+   * no entry and always for non-CVE problems. */
   epss: number | null;
   kev_instances: number;
   in_kev: boolean;
@@ -70,6 +71,8 @@ export type ProblemPage = Page<ProblemRow> & {
   aggregates: ProblemAggregates;
   as_of: string;
   semantics: Record<string, string>;
+  /** Where the EPSS figures come from and how old that feed is. */
+  enrichment?: { epss: { source: string | null; updated: string | null } };
 };
 
 export type ProblemDrift = {

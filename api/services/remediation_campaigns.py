@@ -481,7 +481,16 @@ def _reconcile(
     actor: str | None = None,
 ) -> None:
     """Record completion or recurrence. Compare-and-set, so two concurrent
-    readers write one event, not two."""
+    readers write one event, not two.
+
+    This runs on reads as well as writes (a GET may be the first thing to see
+    that the last member was verified). That write is the platform's own, not
+    the viewer's: it is attributed to the system in ``audit_events``
+    (``campaign.status`` with ``derived: true``) and in the campaign history
+    (``actor`` null), and it is idempotent. Computing the status on the fly and
+    persisting it only in write paths was rejected: completion and recurrence
+    would then go unrecorded for a campaign nobody writes to.
+    """
     if campaign.status == STATUS_CANCELLED:
         return
     total, unresolved = progress["total"], progress["unresolved"]
@@ -500,6 +509,8 @@ def _reconcile(
                 now=now,
                 detail={"members": total, "cause": cause, "categories": progress["categories"]},
             )
+            _audit(session, None, campaign, action=audit_service.ACTION_CAMPAIGN_STATUS,
+                   after={"status": STATUS_COMPLETED, "derived": True, "cause": cause})
     elif campaign.status == STATUS_COMPLETED and unresolved > 0:
         claimed = session.execute(
             update(C)
@@ -528,6 +539,9 @@ def _reconcile(
                     "categories": progress["categories"],
                 },
             )
+            _audit(session, None, campaign, action=audit_service.ACTION_CAMPAIGN_STATUS,
+                   after={"status": STATUS_ACTIVE, "derived": True, "cause": cause,
+                          "unresolved": progress["unresolved"]})
 
 
 def _campaign_dict(campaign: Any, progress: dict[str, Any], now: datetime) -> dict[str, Any]:

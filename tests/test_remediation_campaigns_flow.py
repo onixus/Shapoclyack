@@ -118,6 +118,12 @@ def _verification_run(settings, tenant_id, vuln_id, run_id, *, alive, findings, 
     return vulns.register_findings_from_run(settings, tenant_id=tenant_id, run_id=run_id)
 
 
+def _set_job_status(settings, tenant_id, vuln_id, status):
+    job_id = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=vuln_id)["verification_job_id"]
+    with get_session(settings.postgres_url) as session:
+        session.get(models.Job, job_id).status = status
+
+
 def _categories(settings, tenant_id, cid):
     return campaigns.get_campaign(settings, tenant_id=tenant_id, campaign_id=cid)["progress"]["categories"]
 
@@ -199,6 +205,7 @@ def test_shared_cve_same_fix_and_non_cve_through_partial_fix_unreachable_asset_a
     # Competing ticket sync cannot close the finding whose verdict is pending.
     vulns.set_ticket(settings, tenant_id=tenant_id, vuln_id=b6["vuln_id"], system="jira",
                      key="SEC-6", url=None, actor="alice", verify_repository=False)
+    _set_job_status(settings, tenant_id, b6["vuln_id"], "running")
     vulns.apply_ticket_status(settings, tenant_id=tenant_id, vuln_id=b6["vuln_id"],
                               suggested_state="CLOSED", raw_status="Done")
     held = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=b6["vuln_id"])
@@ -339,3 +346,23 @@ def test_verify_over_http_is_idempotent_and_needs_operator(tmp_path, monkeypatch
     assert started == 2
     viewer = auth_headers(client, "viewer")
     assert client.post(f"/api/remediation-campaigns/{cid}/verify", json={}, headers=viewer).status_code == 403
+
+
+def test_a_dead_verification_job_does_not_pin_a_finding_against_its_ticket(fleet):
+    """``verification_job_id`` is never cleared: only a *live* job holds the finding."""
+    settings, tenant_id = fleet
+    item = _finding(settings, tenant_id, cve="CVE-2024-0001", host_port=("10.0.0.5", "80"))
+    _to_fixing(settings, tenant_id, item["vuln_id"])
+    vulns.trigger_verification(settings, tenant_id=tenant_id, vuln_id=item["vuln_id"], actor="alice")
+    vulns.set_ticket(settings, tenant_id=tenant_id, vuln_id=item["vuln_id"], system="jira",
+                     key="SEC-1", url=None, actor="alice", verify_repository=False)
+
+    _set_job_status(settings, tenant_id, item["vuln_id"], "failed")  # died with its sensor
+    vulns.apply_ticket_status(settings, tenant_id=tenant_id, vuln_id=item["vuln_id"],
+                              suggested_state="CLOSED", raw_status="Done")
+
+    after = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=item["vuln_id"])
+    assert after["state"] == vuln_states.CLOSED and after["machine_verified"] is False
+    events, _ = vulns.list_events(settings, tenant_id=tenant_id, vuln_id=item["vuln_id"])
+    synced = next(e for e in events if e["kind"] == "ticket_synced")
+    assert synced["detail"]["applied"] is True and "held_for_verification" not in synced["detail"]

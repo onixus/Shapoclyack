@@ -100,6 +100,7 @@ def list_problems(
         "aggregates": result["aggregates"],
         "as_of": result["as_of"],
         "semantics": result["semantics"],
+        "enrichment": result["enrichment"],
     }
 
 
@@ -137,4 +138,5 @@ def problem_instances(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
     built = build_page(result["items"], result["total"], page)
-    return {**built.model_dump(), "drift": result["drift"], "problem_key": problem_key}
+    return {**built.model_dump(), "drift": result["drift"], "problem_key": problem_key,
+            "enrichment": result["enrichment"]}

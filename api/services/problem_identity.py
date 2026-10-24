@@ -36,6 +36,9 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import case, func
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.sql.expression import FunctionElement
+from sqlalchemy.types import String
 
 from api.db import models
 
@@ -46,8 +49,36 @@ UNKNOWN_PREFIX = "unknown:"
 KINDS = ("cve", "tpl", "script", "unknown")
 
 
+#: The characters that count as padding around an identifier, in Python and in
+#: SQL alike. ``str.strip()`` alone removes every Unicode space while SQL
+#: ``trim()`` removes only ' ', so "CVE-2024-1\n" was two problems; both sides
+#: now strip exactly this set (space, tab, LF, VT, FF, CR, NBSP).
+PADDING = " \t\n\x0b\x0c\r\xa0"
+
+
 def _clean(value: Any) -> str:
-    return str(value or "").strip()
+    return str(value or "").strip(PADDING)
+
+
+class _strip(FunctionElement):  # noqa: N801 - SQL function name
+    type = String()
+    inherit_cache = True
+
+
+@compiles(_strip)
+def _strip_default(element, compiler, **kw):
+    # SQLite: trim(X, chars)
+    return "trim(%s)" % compiler.process(element.clauses, **kw)
+
+
+@compiles(_strip, "postgresql")
+def _strip_pg(element, compiler, **kw):
+    # PostgreSQL has no two-argument trim(); btrim(X, chars) is the same thing.
+    return "btrim(%s)" % compiler.process(element.clauses, **kw)
+
+
+def _sql_strip(column: Any) -> Any:
+    return _strip(column, PADDING)
 
 
 def problem_key(
@@ -84,16 +115,16 @@ def problem_key_of(row: models.Vulnerability) -> str:
 def problem_key_expr() -> Any:
     """The same key as a SQL expression, for ``GROUP BY`` and drill-down."""
     V = models.Vulnerability
-    cve = func.upper(func.trim(func.coalesce(V.cve, "")))
-    template = func.trim(func.coalesce(V.template_id, ""))
-    script = func.trim(func.coalesce(V.script_id, ""))
+    cve = func.upper(_sql_strip(func.coalesce(V.cve, "")))
+    template = _sql_strip(func.coalesce(V.template_id, ""))
+    script = _sql_strip(func.coalesce(V.script_id, ""))
     return case(
         (cve.like("CVE-%"), CVE_PREFIX + cve),
         (
             template != "",
             TEMPLATE_PREFIX
-            + case((func.trim(func.coalesce(V.detector_source, "")) == "", "-"),
-                   else_=func.trim(V.detector_source))
+            + case((_sql_strip(func.coalesce(V.detector_source, "")) == "", "-"),
+                   else_=_sql_strip(V.detector_source))
             + ":"
             + template,
         ),
