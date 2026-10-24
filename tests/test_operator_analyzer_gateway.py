@@ -1,6 +1,7 @@
 """Real queue/worker integration for selection-only, evidence-bound analysis."""
 import asyncio
 import json
+import hashlib
 
 import pytest
 from sqlalchemy import select, update
@@ -8,7 +9,7 @@ from sqlalchemy import select, update
 from api.db import models
 from api.db.engine import get_session
 from api.services.artifact_store import keys
-from api.services.local_operator import gateway, worker
+from api.services.local_operator import gateway, worker, analysis as analysis_contract
 from api.services.local_operator import store as operator_store
 from api.services.local_operator.providers import Completion
 from tests.conftest import requires_postgres
@@ -53,8 +54,15 @@ def test_real_queue_worker_analysis_history_and_retry_are_durable(env, monkeypat
     settings, task, _, _ = env
     calls = []
 
-    async def complete(self, messages):
+    schemas = []
+    async def complete(self, messages, *, response_schema):
         calls.append(messages)
+        schemas.append(response_schema)
+        assert response_schema["properties"]["language"] == {"type": "string", "const": "ru"}
+        reference = _selection(messages)["recommendations"][0]
+        variant = response_schema["properties"]["recommendations"]["items"]["anyOf"][0]
+        for field in ("source_id", "source_hash", "snapshot_id"):
+            assert variant["properties"][field] == {"type": "string", "const": reference[field]}
         return Completion(json.dumps(_selection(messages)), "local", "analysis-test-model")
 
     monkeypatch.setattr(gateway.InferenceProvider, "complete", complete)
@@ -87,6 +95,10 @@ def test_real_queue_worker_analysis_history_and_retry_are_durable(env, monkeypat
             models.AuditEvent.action == "operator.inference.start"))
         assert audit is not None
         assert len(audit.after["prompt_sha256"]) == 64
+        assert audit.after["prompt_sha256"] == hashlib.sha256(json.dumps(
+            {"messages": calls[0], "response_schema": schemas[0]}, sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest()
+        assert audit.after["prompt_version"] == analysis_contract.PROMPT_VERSION
         assert "messages" not in audit.after and "analysis" not in audit.after
 
 
@@ -110,7 +122,7 @@ def test_no_findings_abstains_without_provider(env, monkeypatch, missing):
 def test_midflight_changes_discard_analysis_and_never_persist_answer(env, monkeypatch, change):
     settings, task, store, ref = env
 
-    async def complete(self, messages):
+    async def complete(self, messages, *, response_schema):
         answer = _selection(messages)
         if change == "revoked":
             with get_session(settings.postgres_url) as db:
@@ -136,7 +148,7 @@ def test_invalid_analysis_output_is_failed_without_repair(env, monkeypatch, inva
     settings, task, _, _ = env
     calls = []
 
-    async def complete(self, messages):
+    async def complete(self, messages, *, response_schema):
         calls.append(messages)
         output = _selection(messages)
         if invalid == "foreign-source":

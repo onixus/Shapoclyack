@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.services.local_operator.contracts import Citation
 
-PROMPT_VERSION = "finding-analysis-labels-v1"
+PROMPT_VERSION = "finding-analysis-labels-v2"
 MAX_OUTPUT_BYTES = 32768
 MAX_ITEMS = 40
 SERVICES = frozenset({"http", "https", "ssh", "smtp", "dns", "ftp", "smb", "rdp", "mysql",
@@ -96,6 +97,35 @@ def _registry(result):
     if result["state"] == "missing" and items:
         raise AnalysisError("operator_analysis_retrieval_invalid")
     return registered
+
+
+def output_schema(retrieval_result, *, language=None):
+    """Constrain decoding to references already registered by the service.
+
+    This is a generation aid, never an authorization or semantic correctness
+    check. ``validate_output`` still independently validates the returned JSON
+    and its exact bindings after inference.
+    """
+    registered = _registry(retrieval_result)
+    schema = ModelAnalysis.model_json_schema()
+    if language is not None:
+        _language(language)
+        schema["properties"]["language"] = {"type": "string", "const": language}
+    recommendations = schema["properties"]["recommendations"]
+    eligible = [citation for _item, citation in registered.values() if citation.status != "stale"]
+    if not eligible or retrieval_result["state"] in {"missing", "stale", "unknown"}:
+        recommendations["maxItems"] = 0
+        schema["properties"]["summary"] = {"type": "string", "const": "insufficient_evidence"}
+        return schema
+    variants = []
+    for citation in eligible:
+        variant = deepcopy(schema["$defs"]["Selection"])
+        for field in ("source_id", "source_hash", "snapshot_id"):
+            variant["properties"][field] = {"type": "string", "const": getattr(citation, field)}
+        variants.append(variant)
+    recommendations["items"] = {"anyOf": variants}
+    recommendations["maxItems"] = min(MAX_ITEMS, len(eligible))
+    return schema
 
 
 def _safe_context(item):

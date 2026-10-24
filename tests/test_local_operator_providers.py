@@ -8,9 +8,63 @@ from api.services.local_operator.config import OperatorConfig
 from api.services.local_operator.providers import InferenceProvider, OperatorProviderError
 
 
-def complete(config=None, handler=None, messages=None):
+def complete(config=None, handler=None, messages=None, *, response_schema=None):
     provider = InferenceProvider(config or OperatorConfig(enabled=True), transport=httpx.MockTransport(handler or (lambda _: httpx.Response(200, json={"choices": [{"message": {"content": "bounded answer"}}]}))))
-    return asyncio.run(provider.complete(messages if messages is not None else [{"role": "user", "content": "question"}]))
+    return asyncio.run(provider.complete(messages if messages is not None else [{"role": "user", "content": "question"}], response_schema=response_schema))
+
+
+@pytest.mark.parametrize("provider,base", [("local", "http://127.0.0.1:8080/v1"), ("openrouter", "https://openrouter.ai/api/v1"), ("omnirouter", "https://router.example/v1")])
+def test_explicit_schema_requests_strict_json_without_changing_contract(provider, base):
+    schema = {"type": "object", "additionalProperties": False, "properties": {"result": {"type": "string"}}, "required": ["result"]}
+    requests = []
+    def handler(request):
+        requests.append(request)
+        payload = json.loads(request.content)
+        assert payload["response_format"] == {"type": "json_schema", "json_schema": {
+            "name": "operator_response", "strict": True, "schema": schema}}
+        assert "tools" not in payload and payload["stream"] is False
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": '{"result":"bounded"}'}}]})
+    config = OperatorConfig(enabled=True, provider=provider, base_url=base, model="test/model", api_key="private-key", allow_external=provider != "local")
+    assert complete(config, handler, response_schema=schema).content == '{"result":"bounded"}'
+    assert len(requests) == 1
+    assert schema["properties"]["result"] == {"type": "string"}
+
+
+@pytest.mark.parametrize("schema", [[], {}, {"type": "array"}, {"type": "object", "enum": {1, 2}}, {"type": "object", "minimum": float("nan")}, {"type": "object", "$ref": "https://untrusted.example/schema"}, {"type": "object", "$ref": 1}, {"type": "object", 1: "not-a-json-key"}])
+def test_invalid_schema_never_opens_transport(schema):
+    with pytest.raises(OperatorProviderError, match="^invalid_operator_response_schema$"):
+        complete(handler=lambda _: pytest.fail("invalid schema reached transport"), response_schema=schema)
+
+
+@pytest.mark.parametrize("schema", [
+    {"type": "object", "title": "x" * 65537},
+    {"type": "object", "title": "界" * 24000},
+    {"type": "object", "enum": [True] * 17000},
+])
+def test_schema_byte_and_node_limits_precede_transport(schema):
+    with pytest.raises(OperatorProviderError, match="^operator_response_schema_too_large$"):
+        complete(handler=lambda _: pytest.fail("oversized schema reached transport"), response_schema=schema)
+
+
+def test_schema_depth_is_bounded_before_transport():
+    schema = {"type": "object"}
+    nested = schema
+    for _ in range(40):
+        nested["properties"] = {"nested": {"type": "object"}}
+        nested = nested["properties"]["nested"]
+    with pytest.raises(OperatorProviderError, match="^operator_response_schema_too_large$"):
+        complete(handler=lambda _: pytest.fail("deep schema reached transport"), response_schema=schema)
+
+
+def test_schema_rejected_by_upstream_is_not_retried_as_unconstrained_output():
+    requests = []
+    def handler(request):
+        requests.append(request)
+        assert "response_format" in json.loads(request.content)
+        return httpx.Response(400, text="private-key schema unsupported")
+    with pytest.raises(OperatorProviderError, match="^operator_upstream_rejected$"):
+        complete(handler=handler, response_schema={"type": "object"})
+    assert len(requests) == 1
 
 
 @pytest.mark.parametrize("provider,base", [("local", "http://127.0.0.1:8080/v1"), ("openrouter", "https://openrouter.ai/api/v1"), ("omnirouter", "https://router.example/v1")])

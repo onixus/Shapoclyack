@@ -30,10 +30,11 @@ These runs overlap; their counts must not be added as unique coverage:
 | Migration 0101 upgrade/downgrade, evidence-loss refusal and retention | 14 passed |
 | Contract/provider/analysis/MCP and bundle/remediation units | 290 passed, 1 PostgreSQL-only skip before final bundle additions |
 | Offline bundle CLI and local ingress boundary tests | 42 passed |
+| Constrained provider/analysis follow-up | 139 unit and 49 PostgreSQL integration passed |
 | Frontend | 98 files, 712 tests; typecheck/lint/build passed |
 | Ruff and diff whitespace | Passed |
 | SDK | OpenAPI parity passed; local wheel build skipped (setuptools/wheel unavailable) |
-| Pinned SAST ERROR gate | 113 rules, 1292 targets, zero reportable findings; 99.9% parsed lines, five nonfatal parser errors and documented skips |
+| Pinned SAST ERROR gate before constrained-provider follow-up | 113 rules, 1296 targets, zero reportable findings; 99.9% parsed lines, five nonfatal parser errors and documented skips |
 
 SAST was run with the owning checkout's Git metadata mounted read-only because
 the normal single-directory invocation cannot resolve an absolute `.git`
@@ -63,6 +64,17 @@ separate worker → real Qwen → stored result in **8.290 seconds**, with termi
 three-host/seven-port fixture, not a real scan. The temporary personal session,
 source artifacts and job row were removed afterward; audit evidence remains.
 No network scan was dispatched.
+
+An additional real `analyze_run` smoke initially failed closed after 30.678
+seconds because unconstrained model output did not pass the strict validator.
+The follow-up adds schema-constrained generation with language and complete
+source-reference tuples bound to server-owned constants, retaining all server
+validation. The same one-finding synthetic path then succeeded in 32.988 seconds
+with an explicit insufficient-evidence abstention and no recommendations or
+citations. This proves the tested transport/queue/validation path, not useful
+classification quality. Both outcomes belong in any later evaluation denominator.
+The model's inherited image healthcheck was also corrected from port 8080 to
+the actual configured port 8082; the running container subsequently became healthy.
 
 The runtime network namespace had only the `172.30.83.0/24` connected route and
 no default route. A TCP/443 connect probe to an external IP returned errno 101
