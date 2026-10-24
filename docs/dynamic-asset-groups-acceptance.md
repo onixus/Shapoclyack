@@ -12,7 +12,7 @@ freshness, context ownership, batch limits and continuation semantics.
 | Read-only preview of entrants/exits/context/conflicts | `test_preview_does_not_write_and_replay_is_idempotent`; browser preview/save/recalculate scenario |
 | Automatic discovery, exclusion, restart and replay | `test_actual_worker_tick_discovers_excludes_and_preserves_manual_override`; persisted-cursor rollback/restart tests |
 | Deterministic priorities and protected manual/CMDB values | `test_priority_conflict_never_writes_and_tenant_ids_are_checked`; context ownership/release tests; `test_asset_groups_import_ownership.py` covers CMDB same-value ownership, replay, conflicts, omissions and manual-source protection |
-| Versioned immutable provenance and safe disable/delete | Assignment receipt/version/release tests in both `test_asset_groups.py` and `test_asset_groups_integration.py` |
+| Versioned immutable provenance and safe disable/delete | Assignment receipt/version/release tests in both `test_asset_groups.py` and `test_asset_groups_integration.py`; `test_asset_groups_conflict_release.py` covers obsolete owners under unrelated conflicts |
 | No exposure inference | Closed assignment validator rejects `exposure_level`; OS tests use only confirmed endpoint inventory; context conditions remain explicit |
 | Preserve finding identity, history, SLA, exceptions and recorded risk | `test_classification_preserves_finding_identity_sla_history_and_captured_risk` compares all persisted finding/event/risk columns and historical API output; current risk uses standard context |
 | Group membership grants no scanning permission | `test_classified_group_targets_still_pass_scope_deny_and_scan_policy`: real job admission refuses denied/out-of-scope targets and unsafe profiles; no job created |
@@ -32,6 +32,7 @@ python -m pytest -q \
   tests/test_asset_group_rules.py tests/test_asset_group_worker.py \
   tests/test_asset_groups.py tests/test_asset_groups_os.py \
   tests/test_asset_groups_import_ownership.py \
+  tests/test_asset_groups_conflict_release.py \
   tests/test_asset_groups_privacy.py tests/test_data_subject.py \
   tests/test_asset_groups_integration.py tests/test_asset_import.py \
   tests/test_tenant_rls.py tests/test_tenant_purge.py \

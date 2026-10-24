@@ -279,6 +279,16 @@ def _snapshot(session, tenant_id, asset):
     return snapshot
 
 
+def _owner_still_proposes(provenance, field, matches, groups_by_id):
+    owner = groups_by_id.get(provenance.group_id) if provenance is not None else None
+    return (
+        owner is not None
+        and owner["enabled"]
+        and owner["id"] in matches
+        and field in owner["context"]
+    )
+
+
 def _plan(session, tenant_id, asset, groups, *, snapshot, managed, latest_events):
     # Predicates see external context, never a previous rule's output. This
     # makes retries stable and prevents feedback/oscillation between rules.
@@ -288,6 +298,7 @@ def _plan(session, tenant_id, asset, groups, *, snapshot, managed, latest_events
     matches = {}
     evaluations = {}
     candidates = {}
+    groups_by_id = {group["id"]: group for group in groups}
     for group in groups:
         if not group["enabled"]:
             continue
@@ -349,9 +360,12 @@ def _plan(session, tenant_id, asset, groups, *, snapshot, managed, latest_events
                     "source": "group_rule",
                     "reason": matches[group["id"]],
                 }
-        elif owned and not any(
-            conflict["field"] == field and conflict["reason"] == "equal_priority"
-            for conflict in conflicts
+        elif owned and not (
+            _owner_still_proposes(provenance, field, matches, groups_by_id)
+            and any(
+                conflict["field"] == field and conflict["reason"] == "equal_priority"
+                for conflict in conflicts
+            )
         ):
             changes[field] = {
                 "old": old,
@@ -780,10 +794,15 @@ def _batch(
         for field in set(managed) | set(winners):
             provenance = managed.get(field)
             if field not in winners:
-                if any(
-                    conflict["field"] == field
-                    and conflict["reason"] == "equal_priority"
-                    for conflict in conflicts
+                if (
+                    provenance is not None
+                    and getattr(asset, field) == provenance.value.get("value")
+                    and _owner_still_proposes(provenance, field, matches, by_id)
+                    and any(
+                        conflict["field"] == field
+                        and conflict["reason"] == "equal_priority"
+                        for conflict in conflicts
+                    )
                 ):
                     continue
                 if provenance:

@@ -64,6 +64,10 @@ by its original value, preventing a rule from matching its own assignments.
 Disabling or deleting a rule removes its memberships during reconciliation and
 restores only values still owned by the rule. A later manual/import change is
 preserved. Deletion retains a tombstone and version history.
+An equal-priority conflict freezes an existing assignment only while its owner
+is enabled, still matches and still proposes that field. Removing that proposal
+releases the owned value even if other rules conflict; their conflict remains
+visible and neither conflicting proposal is applied.
 
 Assignment and membership transitions are retained in immutable evaluation
 receipts, including rule/version and explanations. Repeated unchanged passes
