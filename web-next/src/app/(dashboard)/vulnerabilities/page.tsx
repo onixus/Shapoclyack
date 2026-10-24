@@ -17,6 +17,10 @@ import { SavedViews } from "@/components/saved-views";
 import { pickFilter } from "@/lib/saved-views";
 import { DataTable } from "@/components/data-table";
 import { VulnerabilityBulkActions } from "@/components/vulnerability/bulk-actions";
+import { CreateCampaignDialog } from "@/components/campaign/create-campaign-dialog";
+import { ProblemsTable } from "@/components/vulnerability/problems-table";
+import { useProblemDrift } from "@/hooks/use-campaigns";
+import { selectionFromFilters, type CampaignSelection, type ProblemRow } from "@/lib/campaigns";
 import { RetroMatchCard } from "@/components/vulnerability/retro-match-card";
 import { useT } from "@/lib/i18n";
 import { useRelativeTime } from "@/lib/i18n/datetime";
@@ -88,13 +92,31 @@ function VulnerabilitiesInner() {
   // were ticked in. ``useAuthStore``-gated verbs live in the bulk bar itself.
   const [selected, setSelected] = useBulkSelection();
   const [assetId, setAssetId] = useState(initialAssetId);
+  // Problems / Instances (#579). The filters above are shared by both views —
+  // they are this component's state, not either table's — so switching never
+  // loses them; only the table underneath changes. The view and a problem
+  // drill-down live in the URL, so a reload or a shared link lands on the same one.
+  const [view, setView] = useState<"problems" | "instances">(
+    searchParams.get("view") === "problems" ? "problems" : "instances",
+  );
+  const initialProblem = (searchParams.get("problem") || "").trim();
+  const [drill, setDrill] = useState<{ key: string; instances: number; asOf: string } | null>(
+    initialProblem ? { key: initialProblem, instances: -1, asOf: "" } : null,
+  );
+  const [selectedProblems, setSelectedProblems] = useState<string[]>([]);
+  const [campaignSelection, setCampaignSelection] = useState<CampaignSelection | null>(null);
 
   const pagination = usePagination({
     sort: "contextual_score",
     order: "desc",
     search: (searchParams.get("q") || "").trim(),
   });
-  const filters = {
+  const problemPagination = usePagination({
+    sort: "risk",
+    order: "desc",
+    search: (searchParams.get("q") || "").trim(),
+  });
+  const sharedFilters = {
     state,
     open_only: scope === "open" && !state,
     severity,
@@ -107,8 +129,48 @@ function VulnerabilitiesInner() {
     sla,
     stale_days: staleDays ? Number(staleDays) : undefined,
   };
-  const listQuery = useTrackedVulnerabilities(filters, pagination.params);
+  // The drill-down adds only the problem key to the very same filters, which is
+  // what makes it reproduce the aggregate row's selection.
+  const filters = { ...sharedFilters, problem_key: drill?.key || undefined };
+  const listQuery = useTrackedVulnerabilities(filters, pagination.params, view === "instances");
+  const driftQuery = useProblemDrift(drill, sharedFilters, view === "instances");
   const summaryQuery = useVulnerabilitySummary();
+
+  const changeView = (next: "problems" | "instances") => {
+    if (next === view) return;
+    setView(next);
+    // The search box is part of the filters: carry it across.
+    if (next === "problems") problemPagination.setSearch(pagination.search);
+    else pagination.setSearch(problemPagination.search);
+    setSelected([]);
+    setSelectedProblems([]);
+    const params = new URLSearchParams(searchParams.toString());
+    if (next === "problems") params.set("view", "problems");
+    else params.delete("view");
+    if (next === "problems" || !drill) params.delete("problem");
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  };
+
+  const showInstances = (row: ProblemRow, asOf: string) => {
+    setDrill({ key: row.problem_key, instances: row.instances, asOf });
+    setView("instances");
+    pagination.reset();
+    setSelected([]);
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("view");
+    params.set("problem", row.problem_key);
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  };
+
+  const clearDrill = () => {
+    setDrill(null);
+    pagination.reset();
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("problem");
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  };
   const data = listQuery.data?.items ?? [];
   const total = listQuery.data?.total ?? 0;
   const summary = summaryQuery.data;
@@ -235,108 +297,7 @@ function VulnerabilitiesInner() {
     [ago, t],
   );
 
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <ShieldAlert className="h-5 w-5 text-sky-600 dark:text-sky-400" />
-            <h1 className="text-2xl font-extrabold tracking-tight text-foreground">
-              {t("page.vulns.title")}
-            </h1>
-          </div>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {t("page.vulns.subtitle")}
-            {listQuery.isFetching ? t("common.refreshing") : ""}
-            {assetId ? (
-              <>
-                {" "}
-                Filtered to asset{" "}
-                <Link
-                  href={assetDetailHref(assetId)}
-                  className="font-mono text-sky-600 dark:text-sky-400 hover:underline"
-                >
-                  {assetId}
-                </Link>
-                .
-              </>
-            ) : null}
-          </p>
-        </div>
-      </div>
-
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <KpiCard
-          label={t("kpi.openFindings")}
-          value={summaryQuery.isLoading ? "…" : (summary?.open_total ?? 0)}
-          hint={summary ? t("vulns.hint.untriaged", { count: summary.untriaged }) : undefined}
-          decorationColor="sky"
-        />
-        <KpiCard
-          label={t("kpi.critHighOpen")}
-          value={
-            summaryQuery.isLoading
-              ? "…"
-              : (summary?.by_severity_open.critical ?? 0) + (summary?.by_severity_open.high ?? 0)
-          }
-          hint={
-            summary
-              ? t("vulns.hint.critHigh", {
-                  critical: summary.by_severity_open.critical ?? 0,
-                  high: summary.by_severity_open.high ?? 0,
-                })
-              : undefined
-          }
-          decorationColor="orange"
-        />
-        <KpiCard
-          label={t("kpi.slaBreached")}
-          value={summaryQuery.isLoading ? "…" : (summary?.breached ?? 0)}
-          hint={
-            summary?.worst_breached_severity
-              ? t("vulns.hint.worstOpen", {
-                  severity: t.label(summary.worst_breached_severity),
-                })
-              : t("vulns.hint.noBreaches")
-          }
-          decorationColor="rose"
-        />
-        <KpiCard
-          label={t("kpi.dueSoon")}
-          value={summaryQuery.isLoading ? "…" : (summary?.by_sla.due_soon ?? 0)}
-          hint={t("vulns.hint.withinSeven")}
-          decorationColor="amber"
-        />
-      </div>
-
-      {summary?.cve_findings != null && summary?.non_cve_findings != null ? (
-        <p className="text-xs text-muted-foreground">
-          All tracked findings: {summary.cve_findings.toLocaleString()} CVE · {summary.non_cve_findings.toLocaleString()} non-CVE
-        </p>
-      ) : null}
-
-      <RetroMatchCard canOperate={canOperate} />
-
-      <SavedViews page="vulnerabilities" state={{ version: 1, search: pagination.search, sort: pagination.sort ?? null, order: pagination.order, filters: { scope, state, severity, sla, staleDays, unassigned, source, findingType, detector, exposure, assetId } }} onApply={(view) => {
-        pagination.setSearch(view.search); pagination.setSort(view.sort ?? undefined, view.order);
-        const f = view.filters;
-        setScope(f.scope === "all" ? "all" : "open"); setState((f.state || "") as VulnLifecycleState | ""); setSeverity(String(f.severity || "")); setSla((f.sla || "") as SlaState | "");
-        setStaleDays(String(f.staleDays || "")); setUnassigned(f.unassigned === true); setSource((f.source || "") as VulnerabilitySource | ""); setFindingType((f.findingType || "") as FindingType | ""); setDetector(String(f.detector || "")); setExposure((f.exposure || "") as NetworkExposure | ""); setAssetId(String(f.assetId || "")); setSelected([]); pagination.reset();
-        // Keep ?assetId= in step with the applied view, so a reload or a shared link
-        // does not bring back the previous asset filter.
-        const params = new URLSearchParams(searchParams.toString());
-        if (f.assetId) params.set("assetId", String(f.assetId)); else params.delete("assetId");
-        const query = params.toString();
-        router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
-      }} />
-      <DataTable
-        columns={columns}
-        data={data}
-        isLoading={listQuery.isLoading}
-        error={listQuery.error}
-        initialSorting={[{ id: "contextual_score", desc: true }]}
-        searchPlaceholder={t("search.vulns")}
-        toolbar={
+  const filterToolbar = (
           <div className="flex flex-wrap items-center gap-2">
             <Filter className="h-4 w-4 text-muted-foreground" />
             <Select
@@ -513,7 +474,188 @@ function VulnerabilitiesInner() {
               </SelectContent>
             </Select>
           </div>
-        }
+  );
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
+        <div>
+          <div className="flex items-center gap-2.5">
+            <ShieldAlert className="h-5 w-5 text-sky-600 dark:text-sky-400" />
+            <h1 className="text-2xl font-extrabold tracking-tight text-foreground">
+              {t("page.vulns.title")}
+            </h1>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {t("page.vulns.subtitle")}
+            {listQuery.isFetching ? t("common.refreshing") : ""}
+            {assetId ? (
+              <>
+                {" "}
+                Filtered to asset{" "}
+                <Link
+                  href={assetDetailHref(assetId)}
+                  className="font-mono text-sky-600 dark:text-sky-400 hover:underline"
+                >
+                  {assetId}
+                </Link>
+                .
+              </>
+            ) : null}
+          </p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div
+          role="tablist"
+          aria-label={t("vulns.view.label")}
+          className="inline-flex rounded-md border border-border bg-card p-0.5"
+        >
+          {(["problems", "instances"] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              role="tab"
+              aria-selected={view === mode}
+              onClick={() => changeView(mode)}
+              className={
+                "rounded px-3 py-1 text-xs font-medium transition-colors " +
+                (view === mode
+                  ? "bg-sky-600 text-white dark:bg-sky-500"
+                  : "text-muted-foreground hover:text-foreground")
+              }
+            >
+              {t(mode === "problems" ? "vulns.view.problems" : "vulns.view.instances")}
+            </button>
+          ))}
+        </div>
+        <Button asChild variant="outline" size="sm" className="h-8 text-xs">
+          <Link href="/campaigns">{t("nav.campaigns")}</Link>
+        </Button>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <KpiCard
+          label={t("kpi.openFindings")}
+          value={summaryQuery.isLoading ? "…" : (summary?.open_total ?? 0)}
+          hint={summary ? t("vulns.hint.untriaged", { count: summary.untriaged }) : undefined}
+          decorationColor="sky"
+        />
+        <KpiCard
+          label={t("kpi.critHighOpen")}
+          value={
+            summaryQuery.isLoading
+              ? "…"
+              : (summary?.by_severity_open.critical ?? 0) + (summary?.by_severity_open.high ?? 0)
+          }
+          hint={
+            summary
+              ? t("vulns.hint.critHigh", {
+                  critical: summary.by_severity_open.critical ?? 0,
+                  high: summary.by_severity_open.high ?? 0,
+                })
+              : undefined
+          }
+          decorationColor="orange"
+        />
+        <KpiCard
+          label={t("kpi.slaBreached")}
+          value={summaryQuery.isLoading ? "…" : (summary?.breached ?? 0)}
+          hint={
+            summary?.worst_breached_severity
+              ? t("vulns.hint.worstOpen", {
+                  severity: t.label(summary.worst_breached_severity),
+                })
+              : t("vulns.hint.noBreaches")
+          }
+          decorationColor="rose"
+        />
+        <KpiCard
+          label={t("kpi.dueSoon")}
+          value={summaryQuery.isLoading ? "…" : (summary?.by_sla.due_soon ?? 0)}
+          hint={t("vulns.hint.withinSeven")}
+          decorationColor="amber"
+        />
+      </div>
+
+      {summary?.cve_findings != null && summary?.non_cve_findings != null ? (
+        <p className="text-xs text-muted-foreground">
+          All tracked findings: {summary.cve_findings.toLocaleString()} CVE · {summary.non_cve_findings.toLocaleString()} non-CVE
+        </p>
+      ) : null}
+
+      <RetroMatchCard canOperate={canOperate} />
+
+      <SavedViews page="vulnerabilities" state={{ version: 1, search: pagination.search, sort: pagination.sort ?? null, order: pagination.order, filters: { scope, state, severity, sla, staleDays, unassigned, source, findingType, detector, exposure, assetId } }} onApply={(view) => {
+        pagination.setSearch(view.search); pagination.setSort(view.sort ?? undefined, view.order);
+        const f = view.filters;
+        setScope(f.scope === "all" ? "all" : "open"); setState((f.state || "") as VulnLifecycleState | ""); setSeverity(String(f.severity || "")); setSla((f.sla || "") as SlaState | "");
+        setStaleDays(String(f.staleDays || "")); setUnassigned(f.unassigned === true); setSource((f.source || "") as VulnerabilitySource | ""); setFindingType((f.findingType || "") as FindingType | ""); setDetector(String(f.detector || "")); setExposure((f.exposure || "") as NetworkExposure | ""); setAssetId(String(f.assetId || "")); setSelected([]); pagination.reset();
+        // Keep ?assetId= in step with the applied view, so a reload or a shared link
+        // does not bring back the previous asset filter.
+        const params = new URLSearchParams(searchParams.toString());
+        if (f.assetId) params.set("assetId", String(f.assetId)); else params.delete("assetId");
+        const query = params.toString();
+        router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+      }} />
+      {view === "problems" ? (
+        <ProblemsTable
+          filters={sharedFilters}
+          pagination={problemPagination}
+          toolbar={filterToolbar}
+          selected={selectedProblems}
+          onSelectedChange={setSelectedProblems}
+          onShowInstances={showInstances}
+          selectionActions={
+            canOperate
+              ? (keys) => (
+                  <Button
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() =>
+                      setCampaignSelection(selectionFromFilters(keys, [], sharedFilters))
+                    }
+                  >
+                    {t("campaign.create")}
+                  </Button>
+                )
+              : undefined
+          }
+        />
+      ) : null}
+      {view === "instances" ? (
+        <>
+      {drill ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-xs">
+          <span className="font-mono">{t("problems.drill.chip", { key: drill.key })}</span>
+          <Button variant="outline" size="sm" className="h-6 text-xs" onClick={clearDrill}>
+            {t("problems.drill.clear")}
+          </Button>
+          {driftQuery.data?.drift?.differs ? (
+            <span role="status" className="text-amber-600 dark:text-amber-400">
+              {driftQuery.data.drift.changed_since_as_of > 0
+                ? t("problems.drill.drift", {
+                    expected: driftQuery.data.drift.expected_instances,
+                    actual: driftQuery.data.drift.actual_instances,
+                    changed: driftQuery.data.drift.changed_since_as_of,
+                  })
+                : t("problems.drill.driftNoChange", {
+                    expected: driftQuery.data.drift.expected_instances,
+                    actual: driftQuery.data.drift.actual_instances,
+                  })}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+      <DataTable
+        columns={columns}
+        data={data}
+        isLoading={listQuery.isLoading}
+        error={listQuery.error}
+        initialSorting={[{ id: "contextual_score", desc: true }]}
+        searchPlaceholder={t("search.vulns")}
+        toolbar={filterToolbar}
         meta={t("vulns.meta", { count: total.toLocaleString() })}
         loadingMessage={t("loading.trackedVulns")}
         emptyMessage={t("empty.trackedFindings")}
@@ -524,12 +666,23 @@ function VulnerabilitiesInner() {
           max: MAX_BULK_IDS,
           selectAllLabel: "Select every finding on this page",
           actions: (ids) => (
-            <VulnerabilityBulkActions
-              ids={ids}
-              // The ids that failed stay selected: an operator whose batch of
-              // two hundred skipped three needs to see which three.
-              onApplied={(remaining) => setSelected(remaining)}
-            />
+            <>
+              <VulnerabilityBulkActions
+                ids={ids}
+                // The ids that failed stay selected: an operator whose batch of
+                // two hundred skipped three needs to see which three.
+                onApplied={(remaining) => setSelected(remaining)}
+              />
+              {canOperate ? (
+                <Button
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => setCampaignSelection(selectionFromFilters([], ids, undefined))}
+                >
+                  {t("campaign.create")}
+                </Button>
+              ) : null}
+            </>
           ),
         }}
         serverPagination={{
@@ -554,6 +707,22 @@ function VulnerabilitiesInner() {
           onSortChange: pagination.setSort,
         }}
       />
+        </>
+      ) : null}
+      {campaignSelection ? (
+        <CreateCampaignDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setCampaignSelection(null);
+          }}
+          selection={campaignSelection}
+          onCreated={(campaign) => {
+            setSelected([]);
+            setSelectedProblems([]);
+            router.push(`/campaigns?id=${encodeURIComponent(campaign.campaign_id)}`);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
