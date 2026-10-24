@@ -52,6 +52,10 @@ group ID breaks ties only between equal values. Explicit operator and CMDB
 values outrank rules. Values with unknown provenance are protected. An explicit
 null or a hand edit equal to the current rule value reclaims ownership as well.
 CMDB's existing protection of manual values still applies.
+An explicit import of the same rule-owned value transfers ownership to its
+declared import source, with an audited source transition. Repeating that
+import does not append another event. Omitted or blank import fields do not
+claim ownership, and a conflicting row cannot partially reclaim fields.
 
 Every actual context change uses the existing asset context history. Managed
 fields also retain the rule ID/version, previous value, applied value, time

@@ -38,6 +38,11 @@ and names the fields. ``overwrite_operator_edits`` is the explicit way to let
 the CMDB win. A row is applied whole or not at all, so a conflict on one field
 does not half-update the asset.
 
+**Explicit imported context outranks automatic classification.** Confirming a
+rule-owned field with the same value is an ownership update: it revokes the
+rule's receipt and records a same-value context event with the import source.
+The next identical import is unchanged. Blank/absent cells claim nothing.
+
 **Dry run is the default and writes nothing.** The plan is built from reads
 only; applying it is a second pass over the same plan in the same transaction,
 so the preview and the apply cannot disagree about what a row means — only
@@ -542,6 +547,26 @@ def _last_sources(session, tenant_id: str, asset_ids: list[str]) -> dict[tuple[s
     return out
 
 
+def _rule_managed_values(session, tenant_id: str, last_sources: dict) -> dict[tuple[str, str], Any]:
+    """Load candidate rule ownership in bounded batches, never one query per row."""
+    ids = sorted({asset_id for (asset_id, _), source in last_sources.items() if source == "group_rule"})
+    out = {}
+    for chunk in _chunks(ids):
+        for asset_id, field_name, value in session.execute(
+            select(
+                models.AssetGroupProvenance.asset_id,
+                models.AssetGroupProvenance.field,
+                models.AssetGroupProvenance.value,
+            ).where(
+                models.AssetGroupProvenance.tenant_id == tenant_id,
+                models.AssetGroupProvenance.asset_id.in_(chunk),
+            )
+        ):
+            if last_sources.get((asset_id, field_name)) == "group_rule":
+                out[(asset_id, field_name)] = value.get("value")
+    return out
+
+
 def _operator_owned(
     asset: models.Asset, field_name: str, last_sources: dict[tuple[str, str], str | None]
 ) -> bool:
@@ -599,6 +624,7 @@ def plan(
     existing_ids = sorted(assets)
     tags = _load_tags(session, existing_ids)
     last_sources = _last_sources(session, tenant_id, existing_ids)
+    managed_values = _rule_managed_values(session, tenant_id, last_sources)
     capacity = quotas.asset_capacity_in_session(session, settings, tenant_id)
 
     plans: list[_Plan] = []
@@ -716,7 +742,12 @@ def plan(
                 continue
             for name, value in row.context.items():
                 old = getattr(asset, name)
-                if old != value:
+                key = (target, name)
+                # An explicit CMDB confirmation claims a rule-owned value
+                # even when equal. Treat it as an audited source transition;
+                # _apply revokes ownership atomically with that event.
+                reclaim = key in managed_values and managed_values[key] == old
+                if old != value or reclaim:
                     entry.changes[name] = (old, value)
             current_tags = tags.get(target, {})
             for key, value in row.tags.items():
