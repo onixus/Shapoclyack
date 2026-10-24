@@ -109,6 +109,18 @@ export const queryKeys = {
     ["vulnerabilities", "events", pageKey(page)] as const,
   riskHistory: (params?: { since?: string; until?: string; limit?: number }) =>
     ["vulnerabilities", "risk-history", params] as const,
+  /** Aggregated problems (#579). Under `vulnerabilities` so a finding change
+   * that invalidates the findings list refreshes the aggregates too. */
+  problemsPage: (filters: Record<string, unknown>, page?: PageParams) =>
+    ["vulnerabilities", "problems", filters, pageKey(page)] as const,
+  campaigns: ["campaigns"] as const,
+  campaignsPage: (page?: PageParams, status?: string) =>
+    ["campaigns", "list", status ?? "", pageKey(page)] as const,
+  campaign: (id: string) => ["campaigns", "detail", id] as const,
+  campaignMembers: (id: string, page?: PageParams, options?: Record<string, unknown>) =>
+    ["campaigns", "detail", id, "members", options ?? {}, pageKey(page)] as const,
+  campaignEvents: (id: string, page?: PageParams) =>
+    ["campaigns", "detail", id, "events", pageKey(page)] as const,
   complianceFrameworks: ["compliance", "frameworks"] as const,
   compliancePosture: (frameworkId: string) => ["compliance", frameworkId] as const,
   reportBranding: ["reports", "branding"] as const,

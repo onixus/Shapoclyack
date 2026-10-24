@@ -18,7 +18,10 @@ All notable changes to Shapoclyack are documented in this file.
   (never summed into "fixed"), a defined completion/recurrence policy and a
   verification run through the existing per-finding verify. Migration `0101`
   is expand-only. A ticket sync no longer moves a finding out of `VERIFYING`
-  while its verification is in flight. See
+  while its verification is in flight. The console gains a **Problems /
+  Instances** switch on `/vulnerabilities` that keeps the filters, a drill-down
+  that explains a changed count, campaign creation with a composition preview,
+  and `/campaigns`. See
   [docs/remediation-campaigns.md](docs/remediation-campaigns.md).
 
 ### Changed

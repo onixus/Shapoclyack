@@ -37,6 +37,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/` | Risk Overview: estate NIST verdict, SLA, unassigned work, unowned assets | Viewer |
 | `/vulnerabilities` | Vulnerability Center: tracked findings, lifecycle, owner, SLA | Viewer |
 | `/vulnerabilities/view?vulnId=…` | Finding detail, transitions, assignment, comments, ticket link, risk acceptance, audit trail | Viewer; operator to move/assign/comment/link; admin to accept risk |
+| `/campaigns`, `/campaigns?id=…` | Remediation campaigns: frozen sets of findings with owner, target date, per-category progress, verification and history | Viewer; operator to create/edit/verify |
 | `/remediation` | Remediation Kanban — detection to verified closure | Viewer; operator to move/assign/comment/link |
 | `/assets` | Asset inventory: owner, service, exposure, open tracked risk | Viewer |
 | `/assets/view?assetId=…` | Asset-centric security view: required actions, tracked findings, software, scan evidence, history | Viewer; operator for permitted edits |
@@ -473,6 +474,33 @@ software inventory produced. A software finding has no port by construction, so
 its row shows the installed package and the version that closes it
 (`curl 7.68.0-1ubuntu2.1 → 7.68.0-1ubuntu2.20`) where a scan finding shows
 `port 443`.
+
+### Problems / Instances (#579)
+
+A switch above the counts changes the table, not the filters: **Instances** is
+the findings list above, **Problems** groups the same filtered selection by a
+typed key (normalised CVE, detector template, script; a finding with no known
+identity is its own problem) and shows, per problem, instances and distinct
+assets as two numbers, the *worst* severity and highest score/CVSS (EPSS is not
+stored and reads *unknown*), owners, SLA breaches and exposure with its basis
+(declared / measured / inferred / unknown). The line above the table totals the
+whole filtered selection on the server, not the loaded page. `?view=problems`
+selects the view; **Show instances** drills down with `?problem=<key>` on the
+same filters and, when the count differs from the row's, says how many findings
+changed since the list was loaded.
+
+Operators can tick problems (or findings) and **Create campaign…**: the dialog
+previews the exact composition the server would freeze, shows how many findings
+already sit in other campaigns, and sends the reviewed `composition_hash` with an
+`Idempotency-Key`. `/campaigns` lists campaigns (owner, target date, per-category
+progress bar); `/campaigns?id=…` shows the eight progress categories separately
+(open, being fixed, awaiting verification, verified by a scan, accepted risk, false
+positive, closed without verification, unavailable) — never one "fixed" number —
+the members with their tickets and last verification result (partial coverage and
+refused dispatches are spelled out), explicit add/exclude with a mandatory reason,
+**Request verification** with a per-finding report, cancel/resume, and the history.
+Viewers see all of it read-only; a cancelled campaign offers only **Resume**. See
+[remediation-campaigns.md](remediation-campaigns.md).
 
 ### Saved views
 
