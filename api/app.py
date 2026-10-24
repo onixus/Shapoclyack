@@ -34,6 +34,7 @@ from api.routes import agents as agents_routes
 from api.routes import audit as audit_routes
 from api.routes import rbac as rbac_routes
 from api.routes import assets as assets_routes
+from api.routes import asset_groups as asset_groups_routes
 from api.routes import auth as auth_routes
 from api.routes import endpoint_inventory as endpoint_inventory_routes
 from api.routes import jobs as jobs_routes
@@ -90,6 +91,7 @@ from api.services.compliance import definitions as compliance_definitions
 from api.services.crypto import startup as crypto_startup
 from api.services.integrations import ticket_sync_worker
 from api.services import asset_connector
+from api.services import asset_group_worker
 from api.services.integrations import webhook_worker
 from api.services.integrations import channels as channels_service
 from api.services.integrations import webhooks as webhooks_service
@@ -189,12 +191,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # tickets and write the same lifecycle events (#347).
     ticket_sync_worker.start_worker(settings)
     asset_connector.start_worker(settings)
+    asset_group_worker.start_worker(settings)
     # Every replica, like the run publisher: an approved deletion is claimed
     # with FOR UPDATE SKIP LOCKED and held on a lease its batches renew (#325).
     tenant_purge.start_worker(settings)
     try:
         yield
     finally:
+        asset_group_worker.stop_worker()
         tenant_purge.stop_worker()
         ticket_sync_worker.stop_worker()
         webhook_worker.stop_worker()
@@ -597,6 +601,7 @@ def create_app() -> FastAPI:
     # Stable v1 schema aliases share the same handlers and dependencies. The
     # outer middleware canonicalizes requests before all existing path guards.
     include_api_router(assets_routes.router)
+    include_api_router(asset_groups_routes.router)
     include_api_router(system_routes.router)
     include_api_router(config_routes.router)
     include_api_router(schedules_routes.router)

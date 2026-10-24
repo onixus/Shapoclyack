@@ -824,6 +824,12 @@ def _apply(
         asset_id = entry.asset_id
         assert asset_id is not None
         asset = created.get(asset_id) or assets[asset_id]
+        # A CMDB/import write outranks automatic classification. Revoke
+        # ownership atomically so a later rule removal cannot restore over it.
+        if entry.changes:
+            from api.services.asset_groups import revoke_managed_fields
+
+            revoke_managed_fields(session, tenant_id, asset_id, entry.changes)
         for name, (old, new) in entry.changes.items():
             setattr(asset, name, new)
             _event(

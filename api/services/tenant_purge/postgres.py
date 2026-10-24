@@ -74,6 +74,12 @@ POSTGRES_TABLES = (
     "endpoint_identifiers",
     "endpoint_devices",
     # Assets: asset_tags and asset_identifiers are NO ACTION keys to assets.
+    "asset_group_provenance",
+    "asset_group_memberships",
+    "asset_group_evaluations",
+    "asset_group_versions",
+    "asset_group_sweeps",
+    "asset_groups",
     "asset_context_events",
     "asset_tags",
     "asset_identifiers",

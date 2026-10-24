@@ -1163,6 +1163,25 @@ def update_asset(
         asset = session.get(models.Asset, asset_id, with_for_update=True)
         if asset is None or asset.tenant_id != tenant_id:
             return None
+        # An explicit PATCH reclaims a rule's field even when its value is
+        # unchanged. Otherwise disabling that rule could erase a hand edit.
+        from api.services.asset_groups import revoke_managed_fields
+
+        fields = set(updates).intersection(CONTEXT_FIELDS)
+        managed = set(session.scalars(select(models.AssetGroupProvenance.field).where(
+            models.AssetGroupProvenance.tenant_id == tenant_id,
+            models.AssetGroupProvenance.asset_id == asset_id,
+            models.AssetGroupProvenance.field.in_(fields),
+        ))) if fields else set()
+        latest_ids = select(func.max(models.AssetContextEvent.id)).where(
+            models.AssetContextEvent.tenant_id == tenant_id,
+            models.AssetContextEvent.asset_id == asset_id,
+            models.AssetContextEvent.field.in_(fields),
+        ).group_by(models.AssetContextEvent.field)
+        sources = dict(session.execute(select(
+            models.AssetContextEvent.field, models.AssetContextEvent.source,
+        ).where(models.AssetContextEvent.id.in_(latest_ids))).all()) if fields else {}
+        revoke_managed_fields(session, tenant_id, asset_id, fields)
         previous_status = asset.status
         for field in CONTEXT_FIELDS:
             if field not in updates:
@@ -1171,7 +1190,10 @@ def update_asset(
             new = updates[field]
             if isinstance(new, str):
                 new = new.strip() or None
-            if old == new:
+            reclaim = field in managed or (
+                new is None and sources.get(field) in (None, "group_rule")
+            )
+            if old == new and not reclaim:
                 continue
             setattr(asset, field, new)
             session.add(

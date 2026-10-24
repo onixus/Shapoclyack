@@ -3614,3 +3614,79 @@ class OperatorEvidenceDocument(Base):
     cve: Mapped[str]
     package: Mapped[str]
     observed_at: Mapped[datetime]
+
+
+class AssetGroup(Base):
+    """Tenant classification rule; deletion is a tombstone preserving provenance."""
+    __tablename__ = "asset_groups"
+    id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True)
+    name: Mapped[str]
+    description: Mapped[str] = mapped_column(default="")
+    enabled: Mapped[bool] = mapped_column(default=True)
+    deleted: Mapped[bool] = mapped_column(default=False)
+    priority: Mapped[int] = mapped_column(default=0)
+    version: Mapped[int] = mapped_column(default=1)
+    rules: Mapped[dict] = mapped_column(_JSON_DOC)
+    context: Mapped[dict] = mapped_column(_JSON_DOC, default=dict)
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class AssetGroupVersion(Base):
+    __tablename__ = "asset_group_versions"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    group_id: Mapped[str] = mapped_column(ForeignKey("asset_groups.id", ondelete="CASCADE"), index=True)
+    version: Mapped[int]
+    document: Mapped[dict] = mapped_column(_JSON_DOC)
+    actor: Mapped[str | None]
+    created_at: Mapped[datetime]
+    __table_args__ = (UniqueConstraint("group_id", "version", name="uq_asset_group_version"),)
+
+
+class AssetGroupMembership(Base):
+    __tablename__ = "asset_group_memberships"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    group_id: Mapped[str] = mapped_column(ForeignKey("asset_groups.id", ondelete="CASCADE"), index=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("assets.asset_id", ondelete="CASCADE"), index=True)
+    version: Mapped[int]
+    reasons: Mapped[list] = mapped_column(_JSON_DOC)
+    evaluated_at: Mapped[datetime]
+    __table_args__ = (UniqueConstraint("group_id", "asset_id", name="uq_asset_group_member"),)
+
+
+class AssetGroupEvaluation(Base):
+    __tablename__ = "asset_group_evaluations"
+    id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    group_id: Mapped[str | None] = mapped_column(ForeignKey("asset_groups.id", ondelete="CASCADE"), index=True)
+    version: Mapped[int | None]
+    status: Mapped[str]
+    started_at: Mapped[datetime]
+    completed_at: Mapped[datetime | None]
+    report: Mapped[dict] = mapped_column(_JSON_DOC)
+    error: Mapped[str | None]
+
+
+class AssetGroupProvenance(Base):
+    __tablename__ = "asset_group_provenance"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("assets.asset_id", ondelete="CASCADE"), index=True)
+    field: Mapped[str]
+    group_id: Mapped[str] = mapped_column(ForeignKey("asset_groups.id", ondelete="CASCADE"))
+    version: Mapped[int]
+    value: Mapped[dict] = mapped_column(_JSON_DOC)
+    previous: Mapped[dict] = mapped_column(_JSON_DOC)
+    reason: Mapped[list] = mapped_column(_JSON_DOC)
+    updated_at: Mapped[datetime]
+    __table_args__ = (UniqueConstraint("asset_id", "field", name="uq_asset_group_field"),)
+
+
+class AssetGroupSweep(Base):
+    __tablename__ = "asset_group_sweeps"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id", ondelete="CASCADE"), primary_key=True)
+    after_asset_id: Mapped[str | None]
+    updated_at: Mapped[datetime]
