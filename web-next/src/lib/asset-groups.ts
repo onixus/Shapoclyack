@@ -4,6 +4,7 @@ export const GROUP_FIELDS = [
   "ip",
   "fqdn",
   "status",
+  "os_family",
   "owner_email",
   "business_unit",
   "business_service",
@@ -39,6 +40,7 @@ export type AssetGroup = GroupDraft & {
   member_count: number;
   updated_at: string;
   last_success_at?: string | null;
+  latest_evaluation?: GroupEvaluation | null;
 };
 export type GroupPage<T> = {
   items: T[];
@@ -90,7 +92,7 @@ export type GroupPreview = {
 };
 
 export function ruleOperators(field: string): RuleOperator[] {
-  if (field === "asset_criticality") return ["eq", "ne", "in", "not_in"];
+  if (field === "asset_criticality" || field === "os_family") return ["eq", "ne", "in", "not_in"];
   if (field === "ip") return ["eq", "ne", "in", "not_in", "cidr"];
   return ["eq", "ne", "in", "not_in", "contains", "starts_with", "ends_with"];
 }
@@ -104,6 +106,8 @@ export function parseRuleValue(
     op === "in" || op === "not_in" ? value.split(",").map((item) => item.trim()) : [value.trim()];
   if (parts.some((item) => item === "")) throw new Error("Rule values cannot be empty.");
   const parsed = parts.map((item) => {
+    if (field === "os_family" && !["windows", "linux", "macos"].includes(item))
+      throw new Error("Confirmed OS family must be windows, linux or macos.");
     if (!numeric) return item;
     if (!/^\d+$/.test(item)) throw new Error(`${field} requires whole numbers.`);
     const number = Number(item);
@@ -115,6 +119,8 @@ export function parseRuleValue(
 
 const endpoint = "/asset-groups";
 export const assetGroupsApi = {
+  get: async (id: string) =>
+    (await api.get<AssetGroup>(`${endpoint}/${encodeURIComponent(id)}`)).data,
   list: async (offset: number) =>
     (await api.get<GroupPage<AssetGroup>>(endpoint, { params: { offset, limit: 20 } })).data,
   save: async (draft: GroupDraft, id?: string) =>
@@ -152,11 +158,11 @@ export const assetGroupsApi = {
         params: { offset, limit: 20 },
       })
     ).data,
-  evaluations: async (id: string) =>
+  evaluations: async (id: string, offset = 0) =>
     (
       await api.get<GroupPage<GroupEvaluation>>(
         `${endpoint}/${encodeURIComponent(id)}/evaluations`,
-        { params: { limit: 10 } },
+        { params: { offset, limit: 20 } },
       )
     ).data,
 };

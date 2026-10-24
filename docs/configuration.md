@@ -717,6 +717,9 @@ OCTO_ARTIFACT_S3_SECRET_ACCESS_KEY
 OCTO_ARTIFACT_S3_SESSION_TOKEN
 OCTO_ARTIFACT_S3_VERIFY_TLS
 OCTO_ASSET_EVENTS_ENABLED
+OCTO_ASSET_GROUPS_BATCH_SIZE
+OCTO_ASSET_GROUPS_ENABLED
+OCTO_ASSET_GROUPS_INTERVAL_SECONDS
 OCTO_ASSET_EVENTS_MAX_PER_RUN
 OCTO_ASSET_STALE_DAYS
 OCTO_AUDIT_EVENT_RETENTION_DAYS
@@ -1016,6 +1019,9 @@ Core deployment variables:
 | `OCTO_ALLOW_SCAN_START` | Permit job creation from API/UI |
 | `OCTO_SCAN_SCOPE_RESOLVE_CHECK` | Resolve requested scan domains at admission and refuse the ones whose current addresses fall in a range the tenant's approved scope denies (default `true`, #226). Only runs when the scope has deny ranges; a lookup that does not answer within 3s leaves the name checked as a string and is logged. Turn it off only where the API cannot resolve names at all |
 | `OCTO_ASSET_STALE_DAYS` | Age threshold for stale assets |
+| `OCTO_ASSET_GROUPS_ENABLED` | Run this replica's leader-elected dynamic-group reconciler (default `true`); API remains available when disabled. See [dynamic asset groups](dynamic-asset-groups.md). |
+| `OCTO_ASSET_GROUPS_INTERVAL_SECONDS` | Reconciliation interval in seconds (default `30`, minimum `5`); each tick advances one persisted asset page per tenant. |
+| `OCTO_ASSET_GROUPS_BATCH_SIZE` | Assets per tenant per tick (default `200`, clamped to `1–500`); cursor resumes after restart. |
 | `OCTO_ASSET_EVENTS_ENABLED` | Publish asset-level events to `events.asset.{tenant}.{kind}` after each run (default `true`; inert without `OCTO_NATS_URL`) |
 | `OCTO_ASSET_EVENTS_MAX_PER_RUN` | Per-run publish cap (default `1000`); the overflow is logged and counted, and `diff.json` always keeps the full set |
 

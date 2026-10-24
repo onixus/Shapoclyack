@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import and_, delete, func, select, text
 
 from api.db import models
 from api.db.engine import get_session
@@ -14,6 +14,7 @@ from api.services import assets
 
 MAX_GROUPS = 100
 MAX_BATCH = 500
+MAX_OS_ENDPOINTS = 16
 
 
 def _now():
@@ -285,11 +286,13 @@ def _plan(session, tenant_id, asset, groups, *, snapshot, managed, latest_events
         if snapshot[field] == provenance.value.get("value"):
             snapshot[field] = provenance.previous.get("value")
     matches = {}
+    evaluations = {}
     candidates = {}
     for group in groups:
         if not group["enabled"]:
             continue
         result = engine.evaluate_rules(group["rules"], snapshot)
+        evaluations[group["id"]] = result["reasons"]
         if result["matched"]:
             matches[group["id"]] = result["reasons"]
             for field, value in group["context"].items():
@@ -359,7 +362,7 @@ def _plan(session, tenant_id, asset, groups, *, snapshot, managed, latest_events
                 "source": "group_rule",
                 "reason": provenance.reason,
             }
-    return matches, changes, conflicts, winners, managed
+    return matches, changes, conflicts, winners, managed, evaluations
 
 
 def _evaluation(row):
@@ -378,6 +381,79 @@ def _evaluation(row):
     }
 
 
+def _endpoint_os_snapshot(observations, *, now, freshness_hours):
+    """Only explicit, fresh, reconciled endpoint facts confirm an OS family.
+
+    Network ``asset_os`` rows are scanner guesses and never enter this path.
+    All endpoint rows linked to an asset must agree: absence or ambiguity is
+    unknown, including for negative conditions.
+    """
+    now = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
+    cutoff = now - timedelta(hours=freshness_hours)
+    future = now + timedelta(minutes=5)
+    evidence = {
+        "source": "endpoint_inventory",
+        "state": "missing",
+        "freshness_hours": freshness_hours,
+        "observations": [],
+    }
+    states, families = set(), set()
+    incomplete = len(observations) > MAX_OS_ENDPOINTS
+    for observation in observations[:MAX_OS_ENDPOINTS]:
+        device, snapshot = observation
+        family = (device.os_family or "").strip().casefold()
+        if family == "darwin":
+            family = "macos"
+        detail = {
+            "device_id": device.device_id,
+            "snapshot_id": snapshot.snapshot_id if snapshot is not None else None,
+            "reconciliation_status": device.reconciliation_status,
+            "family": family or None,
+        }
+        state = "confirmed"
+        if device.reconciliation_status != "linked":
+            state = "conflict"
+        elif snapshot is None:
+            state = "missing"
+        elif family not in {"windows", "linux", "macos"}:
+            state = "unknown"
+        if snapshot is not None:
+            for key in ("collected_at", "received_at"):
+                value = getattr(snapshot, key)
+                value = (
+                    value.replace(tzinfo=UTC)
+                    if value.tzinfo is None
+                    else value.astimezone(UTC)
+                )
+                detail[key] = value.isoformat()
+                if state == "confirmed" and (value < cutoff or value > future):
+                    state = "stale"
+        detail["state"] = state
+        evidence["observations"].append(detail)
+        states.add(state)
+        if state == "confirmed":
+            families.add(family)
+    if observations:
+        if "conflict" in states or len(families) > 1:
+            evidence["state"] = "conflict"
+        elif "stale" in states:
+            evidence["state"] = "stale"
+        elif "missing" in states:
+            evidence["state"] = "missing"
+        elif "unknown" in states:
+            evidence["state"] = "unknown"
+        else:
+            evidence["state"] = "confirmed"
+    if incomplete:
+        evidence["state"] = "incomplete"
+        evidence["observations_truncated"] = True
+        evidence["endpoint_count_lower_bound"] = MAX_OS_ENDPOINTS + 1
+    return {
+        "os_family": next(iter(families)) if evidence["state"] == "confirmed" else None,
+        "_os_evidence": evidence,
+    }
+
+
 def _batch(
     session,
     tenant_id,
@@ -388,6 +464,7 @@ def _batch(
     limit=200,
     apply=False,
     actor=None,
+    endpoint_stale_hours=48,
 ):
     if not 1 <= limit <= MAX_BATCH:
         raise ValueError("limit must be 1-500")
@@ -456,6 +533,54 @@ def _batch(
         }
         for asset in rows
     }
+    os_observations = {aid: [] for aid in ids}
+    if ids:
+        ranked_devices = (
+            select(
+                models.EndpointDevice.device_id,
+                func.row_number()
+                .over(
+                    partition_by=models.EndpointDevice.asset_id,
+                    order_by=models.EndpointDevice.device_id,
+                )
+                .label("position"),
+            )
+            .where(
+                models.EndpointDevice.tenant_id == tenant_id,
+                models.EndpointDevice.asset_id.in_(ids),
+            )
+            .subquery()
+        )
+        bounded_device_ids = select(ranked_devices.c.device_id).where(
+            ranked_devices.c.position <= MAX_OS_ENDPOINTS + 1
+        )
+        endpoint_query = (
+            select(models.EndpointDevice, models.EndpointInventorySnapshot)
+            .outerjoin(
+                models.EndpointInventorySnapshot,
+                and_(
+                    models.EndpointInventorySnapshot.snapshot_id
+                    == models.EndpointDevice.latest_snapshot_id,
+                    models.EndpointInventorySnapshot.device_id
+                    == models.EndpointDevice.device_id,
+                    models.EndpointInventorySnapshot.tenant_id == tenant_id,
+                ),
+            )
+            .where(
+                models.EndpointDevice.tenant_id == tenant_id,
+                models.EndpointDevice.asset_id.in_(ids),
+                models.EndpointDevice.device_id.in_(bounded_device_ids),
+            )
+            .order_by(models.EndpointDevice.asset_id, models.EndpointDevice.device_id)
+        )
+        for device, snapshot in session.execute(endpoint_query):
+            os_observations[device.asset_id].append((device, snapshot))
+    for aid in ids:
+        snapshots[aid].update(
+            _endpoint_os_snapshot(
+                os_observations[aid], now=now, freshness_hours=endpoint_stale_hours
+            )
+        )
     memberships = {aid: {} for aid in ids}
     provenance_rows = {aid: {} for aid in ids}
     latest = {aid: {} for aid in ids}
@@ -527,7 +652,7 @@ def _batch(
     }
     for asset in rows:
         existing = memberships[asset.asset_id]
-        matches, changes, conflicts, winners, managed = _plan(
+        matches, changes, conflicts, winners, managed, evaluations = _plan(
             session,
             tenant_id,
             asset,
@@ -579,7 +704,7 @@ def _batch(
                 "matched": matched,
                 "entrant": entrant,
                 "exited": exited,
-                "reasons": matches.get(group_id, [])
+                "reasons": evaluations.get(group_id, [])
                 if group_id
                 else [reason for reasons in matches.values() for reason in reasons],
                 "changes": changes,
@@ -609,7 +734,7 @@ def _batch(
                         "matched": gid in matches,
                         "entrant": group_entrant,
                         "exited": group_exited,
-                        "reasons": matches.get(gid, []),
+                        "reasons": evaluations.get(gid, []),
                         "changes": group_changes,
                         "conflicts": group_conflicts,
                     }
@@ -780,6 +905,7 @@ def preview(
         return _batch(
             session,
             tenant_id,
+            endpoint_stale_hours=settings.endpoint_stale_hours,
             group_id=group_id,
             draft=draft,
             limit=limit,
@@ -795,6 +921,7 @@ def _recalculate(
         return _batch(
             session,
             tenant_id,
+            endpoint_stale_hours=settings.endpoint_stale_hours,
             group_id=group_id,
             limit=limit,
             after_asset_id=after_asset_id,
@@ -818,6 +945,7 @@ def _reconcile_batch(settings, tenant_id, *, limit=200, actor=None):
         report = _batch(
             session,
             tenant_id,
+            endpoint_stale_hours=settings.endpoint_stale_hours,
             limit=limit,
             after_asset_id=state.after_asset_id,
             apply=True,

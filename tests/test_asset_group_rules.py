@@ -98,3 +98,40 @@ def test_context_assignments_match_existing_vocabularies():
 def test_invalid_context_assignments(context):
     with pytest.raises(ValueError):
         validate_context(context)
+
+
+@pytest.mark.parametrize("family", ["windows", "linux", "macos"])
+def test_os_conditions_require_proven_fresh_endpoint_snapshot(family):
+    evidence = {"source": "endpoint_inventory", "state": "confirmed", "device_ids": ["device"],
+                "snapshot_ids": ["snapshot"], "collected_at": "2026-10-24T10:00:00+00:00"}
+    result = evaluate_rules(leaf("os_family", "eq", family), {"os_family": family, "_os_evidence": evidence})
+    assert result["matched"] is True
+    assert result["reasons"][0]["evidence"] == evidence
+
+
+@pytest.mark.parametrize("state", ["missing", "stale", "conflict", "unknown"])
+@pytest.mark.parametrize("negate", [False, True])
+def test_unconfirmed_os_evidence_never_matches_including_negation(state, negate):
+    rule = leaf("os_family", "ne", "windows", negate=negate)
+    result = evaluate_rules(rule, {"os_family": "linux", "_os_evidence": {
+        "source": "endpoint_inventory", "state": state,
+    }})
+    assert result["matched"] is False
+    assert result["result"] == "unknown"
+    assert result["reasons"][0]["evidence"]["state"] == state
+
+
+def test_scan_os_guess_or_raw_scalar_cannot_claim_confirmation():
+    rule = leaf("os_family", "eq", "windows")
+    assert evaluate_rules(rule, {"os_family": "windows"})["result"] == "unknown"
+    assert evaluate_rules(rule, {"os_family": "windows", "_os_evidence": {
+        "source": "nmap", "state": "confirmed", "accuracy": 100,
+    }})["result"] == "unknown"
+
+
+@pytest.mark.parametrize("rule", [leaf("os_family", "eq", "Windows"),
+    leaf("os_family", "eq", "darwin"), leaf("os_family", "contains", "windows"),
+    leaf("os_family", "in", ["linux", "unknown"])])
+def test_os_family_is_closed_typed_vocabulary(rule):
+    with pytest.raises(ValueError):
+        validate_rules(rule)

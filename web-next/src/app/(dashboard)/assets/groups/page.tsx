@@ -2,10 +2,8 @@
 
 import Link from "next/link";
 import { AssetGroups } from "@/components/asset/asset-groups";
-import { useAuthStore } from "@/lib/auth-store";
 
 export default function AssetGroupsPage() {
-  const tenant = useAuthStore((state) => state.activeTenant);
   return (
     <div className="space-y-6">
       <Link href="/assets" className="text-sm text-primary hover:underline">
@@ -18,7 +16,7 @@ export default function AssetGroupsPage() {
           tenant.
         </p>
       </div>
-      <AssetGroups key={tenant ?? "resolved-tenant"} />
+      <AssetGroups />
     </div>
   );
 }

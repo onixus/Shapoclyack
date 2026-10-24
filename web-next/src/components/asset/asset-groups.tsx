@@ -56,6 +56,10 @@ const blankDraft = (): GroupDraft => ({
   rules: { all: [newLeaf()] },
   context: {},
 });
+const ruleLabels: Record<string, string> = {
+  ...CONTEXT_FIELD_LABELS,
+  os_family: "Confirmed endpoint OS",
+};
 const contextOptions: Record<string, readonly string[]> = {
   environment: ASSET_ENVIRONMENTS,
   data_classification: ASSET_DATA_CLASSIFICATIONS,
@@ -76,6 +80,33 @@ function observed(value: unknown): string {
       ? "unknown"
       : String(value);
 }
+function OsEvidence({ value }: { value: unknown }) {
+  const evidence = asRecord(value);
+  if (!evidence) return null;
+  const observations = Array.isArray(evidence.observations) ? evidence.observations : [];
+  return (
+    <div className="mt-1 border-l border-border pl-3 text-xs text-muted-foreground">
+      <p>
+        Source: authenticated endpoint inventory · {String(evidence.state ?? "unknown")} · freshness
+        limit {observed(evidence.freshness_hours)} hours
+      </p>
+      {evidence.observations_truncated ? (
+        <p>Additional linked devices were omitted; incomplete evidence never confirms a match.</p>
+      ) : null}
+      {observations.map((item, index) => {
+        const snapshot = asRecord(item);
+        return (
+          <p key={index}>
+            Device {observed(snapshot?.device_id)} · snapshot {observed(snapshot?.snapshot_id)} ·{" "}
+            {observed(snapshot?.family)} · collected {observed(snapshot?.collected_at)} · received{" "}
+            {observed(snapshot?.received_at)} · reconciliation{" "}
+            {observed(snapshot?.reconciliation_status)}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
 function Reasons({ value }: { value: unknown }) {
   const reasons = Array.isArray(value) ? value : [];
   if (!reasons.length) return <p>No matching conditions recorded.</p>;
@@ -87,10 +118,11 @@ function Reasons({ value }: { value: unknown }) {
         const field = String(row.field ?? "Condition");
         return (
           <li key={index}>
-            {CONTEXT_FIELD_LABELS[field] ?? field} {row.negate ? "NOT " : ""}
+            {ruleLabels[field] ?? field} {row.negate ? "NOT " : ""}
             {String(row.op ?? "")} {observed(row.value)}; observed: {observed(row.actual)};{" "}
             {String(row.result ?? "evaluated").replaceAll("_", " ")}
             {row.actual_truncated ? " (evidence truncated)" : ""}
+            {field === "os_family" && <OsEvidence value={row.evidence} />}
           </li>
         );
       })}
@@ -106,8 +138,9 @@ function Changes({ value }: { value: unknown }) {
         const row = asRecord(change);
         return (
           <li key={field}>
-            {CONTEXT_FIELD_LABELS[field] ?? field}: {observed(row?.old)} → {observed(row?.new)}
+            {ruleLabels[field] ?? field}: {observed(row?.old)} → {observed(row?.new)}
             {row?.release ? " (release rule-owned value)" : ""}
+            {row?.group_id ? ` · group ${row.group_id}` : ""}
             {row?.version != null ? ` · rule v${row.version}` : ""}
           </li>
         );
@@ -125,8 +158,7 @@ function Conflicts({ value }: { value: unknown }) {
         const field = String(row?.field ?? "Context");
         return (
           <li key={index}>
-            {CONTEXT_FIELD_LABELS[field] ?? field}:{" "}
-            {String(row?.reason ?? "conflict").replaceAll("_", " ")}
+            {ruleLabels[field] ?? field}: {String(row?.reason ?? "conflict").replaceAll("_", " ")}
             {row?.group_ids ? ` · groups ${observed(row.group_ids)}` : ""}
           </li>
         );
@@ -156,31 +188,38 @@ function Pager({
   hasMore,
   onChange,
   pending = false,
+  label,
 }: {
   offset: number;
   total: number;
   hasMore: boolean;
   onChange: (value: number) => void;
   pending?: boolean;
+  label?: string;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-3 text-sm">
       <span>
-        {total === 0 ? "0" : `${offset + 1}–${Math.min(offset + 20, total)}`} / {total}
+        {total === 0
+          ? "0"
+          : offset >= total
+            ? "No rows on this page"
+            : `${offset + 1}–${Math.min(offset + 20, total)}`}{" "}
+        / {total}
       </span>
       <Button
         variant="outline"
         disabled={pending || offset === 0}
         onClick={() => onChange(Math.max(0, offset - 20))}
       >
-        Previous page
+        Previous {label ? `${label} ` : ""}page
       </Button>
       <Button
         variant="outline"
         disabled={pending || !hasMore}
         onClick={() => onChange(offset + 20)}
       >
-        Next page
+        Next {label ? `${label} ` : ""}page
       </Button>
     </div>
   );
@@ -307,7 +346,7 @@ export function GroupRuleEditor({
         >
           {GROUP_FIELDS.map((field) => (
             <option key={field} value={field}>
-              {CONTEXT_FIELD_LABELS[field] ?? field}
+              {ruleLabels[field] ?? field}
             </option>
           ))}
           <option value="tag">Tag</option>
@@ -340,13 +379,36 @@ export function GroupRuleEditor({
       <Field
         title={`Value ${path}${rule.op === "in" || rule.op === "not_in" ? " (comma separated)" : ""}`}
       >
-        <Input
-          required
-          value={Array.isArray(rule.value) ? rule.value.join(",") : rule.value}
-          inputMode={rule.field === "asset_criticality" ? "numeric" : "text"}
-          onChange={(event) => onChange({ ...rule, value: event.target.value })}
-        />
+        {rule.field === "os_family" && rule.op !== "in" && rule.op !== "not_in" ? (
+          <select
+            required
+            className={selectClass}
+            value={String(rule.value)}
+            onChange={(event) => onChange({ ...rule, value: event.target.value })}
+          >
+            <option value="">Select OS family</option>
+            {["windows", "linux", "macos"].map((family) => (
+              <option value={family} key={family}>
+                {family}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <Input
+            required
+            value={Array.isArray(rule.value) ? rule.value.join(",") : rule.value}
+            inputMode={rule.field === "asset_criticality" ? "numeric" : "text"}
+            onChange={(event) => onChange({ ...rule, value: event.target.value })}
+          />
+        )}
       </Field>
+      {rule.field === "os_family" && (
+        <p className="text-xs text-muted-foreground sm:col-span-3">
+          Only authenticated, linked endpoint inventory confirms OS family. All linked devices must
+          agree and be fresh (default 48 hours). Missing, stale, conflicting or incomplete evidence
+          stays unknown, including negated rules. Accepted families: windows, linux, macos.
+        </p>
+      )}
       <label className="flex items-center gap-2 text-sm">
         <input
           type="checkbox"
@@ -386,9 +448,10 @@ function Preview({ result }: { result: GroupPreview }) {
         ))}
       </dl>
       <p className="text-xs text-muted-foreground">
-        Higher priority wins; equal-priority contradictions do not write. Manual context remains
-        protected. Membership does not grant permission to scan. Explanations show the current batch
-        (up to 100 assets); counts include all previewed batches.
+        Context changes resolve priorities across all active groups. Higher priority wins;
+        equal-priority contradictions do not write. Manual context remains protected. Membership
+        does not grant permission to scan. Explanations show the current batch (up to 100 assets);
+        counts include all previewed batches.
       </p>
       <div
         className="max-h-64 space-y-2 overflow-auto"
@@ -632,25 +695,28 @@ function GroupEditor({
 function GroupDetails({
   group,
   tenant,
+  scope,
   editable,
   onChanged,
 }: {
   group: AssetGroup;
   tenant: string | null;
+  scope: string;
   editable: boolean;
   onChanged: () => void;
 }) {
   const [offset, setOffset] = useState(0);
+  const [evaluationOffset, setEvaluationOffset] = useState(0);
   const [preview, setPreview] = useState<GroupPreview>();
   const [applied, setApplied] = useState<GroupPreview>();
   const [error, setError] = useState<unknown>();
   const members = useQuery({
-    queryKey: ["asset-groups", tenant, group.id, "members", offset],
+    queryKey: ["asset-groups", scope, group.id, "members", offset],
     queryFn: () => assetGroupsApi.members(group.id, offset),
   });
   const evaluations = useQuery({
-    queryKey: ["asset-groups", tenant, group.id, "evaluations"],
-    queryFn: () => assetGroupsApi.evaluations(group.id),
+    queryKey: ["asset-groups", scope, group.id, "evaluations", evaluationOffset],
+    queryFn: () => assetGroupsApi.evaluations(group.id, evaluationOffset),
     refetchInterval: 10000,
   });
   const dryRun = useMutation({
@@ -687,6 +753,9 @@ function GroupDetails({
   const lastSuccess = evaluations.data?.items.find(
     (item) => item.status === "success" || item.status === "completed",
   );
+  const currentEvaluation =
+    (group.latest_evaluation?.version === group.version ? group.latest_evaluation : undefined) ??
+    evaluations.data?.items.find((item) => item.version === group.version);
   return (
     <section
       className="space-y-4 rounded-lg border border-border p-4"
@@ -699,6 +768,18 @@ function GroupDetails({
         Last successful evaluation:{" "}
         {group.last_success_at ?? lastSuccess?.completed_at ?? "Not available"}
       </p>
+      <p className="text-sm" role="status">
+        Current rule v{group.version}: {currentEvaluation?.status ?? "awaiting evaluation"}. Last
+        success above may belong to an earlier rule version.
+      </p>
+      <ErrorMessage
+        error={
+          currentEvaluation && !evaluations.data?.items.includes(currentEvaluation)
+            ? currentEvaluation.error
+            : undefined
+        }
+      />
+      <h3 className="font-semibold">Evaluation history</h3>
       <ErrorMessage error={members.error ?? evaluations.error ?? error} />
       {evaluations.isLoading && <p role="status">Loading evaluations…</p>}
       {evaluations.data?.items.map((item, index) => (
@@ -720,6 +801,16 @@ function GroupDetails({
           )}
         </div>
       ))}
+      {evaluations.data && (
+        <Pager
+          offset={evaluationOffset}
+          total={evaluations.data.total}
+          hasMore={evaluations.data.has_more}
+          onChange={setEvaluationOffset}
+          pending={evaluations.isFetching}
+          label="evaluations"
+        />
+      )}
       {editable && (
         <div className="flex flex-wrap gap-2">
           <Button
@@ -765,6 +856,9 @@ function GroupDetails({
         <details key={member.asset_id} className="rounded border p-2 text-sm">
           <summary className="cursor-pointer">
             {member.asset_id} · rule v{member.version}
+            {member.version !== group.version
+              ? " · previous rule version, awaiting reevaluation"
+              : ""}
           </summary>
           <div className="break-words py-2">
             <Reasons value={member.reasons} />
@@ -794,7 +888,13 @@ function GroupDetails({
   );
 }
 export function AssetGroups() {
-  const tenant = useAuthStore((state) => state.activeTenant);
+  const activeTenant = useAuthStore((state) => state.activeTenant);
+  const user = useAuthStore((state) => state.user);
+  const tenant = activeTenant ?? user?.scoped_tenant ?? user?.default_tenant ?? null;
+  const scope = JSON.stringify([user?.username ?? null, tenant]);
+  return <ScopedAssetGroups key={scope} tenant={tenant} scope={scope} />;
+}
+function ScopedAssetGroups({ tenant, scope }: { tenant: string | null; scope: string }) {
   const user = useAuthStore((state) => state.user);
   const editable = can(user, { minRole: "operator" });
   const client = useQueryClient();
@@ -803,12 +903,13 @@ export function AssetGroups() {
   const [selected, setSelected] = useState<AssetGroup | null>(null);
   const [deleting, setDeleting] = useState<AssetGroup | null>(null);
   const groups = useQuery({
-    queryKey: ["asset-groups", tenant, "list", offset],
+    queryKey: ["asset-groups", scope, "list", offset],
     queryFn: () => assetGroupsApi.list(offset),
     refetchInterval: 15000,
+    enabled: Boolean(user),
   });
   const invalidate = () => {
-    void client.invalidateQueries({ queryKey: ["asset-groups", tenant] });
+    void client.invalidateQueries({ queryKey: ["asset-groups", scope] });
     void client.invalidateQueries({ queryKey: ["assets"] });
     void client.invalidateQueries({ queryKey: ["asset"] });
   };
@@ -820,13 +921,24 @@ export function AssetGroups() {
       invalidate();
     },
   });
+  const selectedDetail = useQuery({
+    queryKey: ["asset-groups", scope, "selected", selected?.id],
+    queryFn: () => assetGroupsApi.get(selected!.id),
+    enabled: Boolean(selected),
+    refetchInterval: 10000,
+  });
   const current = selected
-    ? (groups.data?.items.find((item) => item.id === selected.id) ?? selected)
+    ? {
+        ...selected,
+        ...groups.data?.items.find((item) => item.id === selected.id),
+        ...selectedDetail.data,
+      }
     : null;
   return (
     <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">Tenant: {tenant ?? "Resolved by server"}</p>
       {editable && <Button onClick={() => setEditor("new")}>Create group</Button>}
-      <ErrorMessage error={groups.error ?? remove.error} />
+      <ErrorMessage error={groups.error ?? selectedDetail.error ?? remove.error} />
       {groups.isLoading && <p role="status">Loading groups…</p>}
       {groups.data?.items.map((group) => (
         <article
@@ -877,6 +989,7 @@ export function AssetGroups() {
           key={`${current.id}:${current.version}`}
           group={current}
           tenant={tenant}
+          scope={scope}
           editable={editable}
           onChanged={invalidate}
         />

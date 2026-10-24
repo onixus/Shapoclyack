@@ -6,13 +6,44 @@ Saving versions the rule; applying it is a separate recalculation. Each preview
 and recalculation page reports its evaluated count, entrants, exits, changes,
 conflicts and continuation cursor. A partial page is not an estate-wide total.
 
-Conditions use registered IP/FQDN identifiers, tags (`tag:<key>`), asset status
-and existing business context. No executable expressions or SQL are accepted.
+Conditions use registered IP/FQDN identifiers, tags (`tag:<key>`), asset status,
+confirmed endpoint OS and existing business context. No executable expressions
+or SQL are accepted.
 Trees have at most 100 nodes, depth 4 and 50 children/values per branch/condition.
 Unknown values remain unknown under negation and do not include an asset.
-Observed OS and service fingerprints are deliberately unavailable until their
-source, authority and freshness have a separate contract. Exposure can be a
-condition but cannot be assigned by a classification rule.
+Network OS guesses and service fingerprints cannot establish confirmed OS.
+Exposure can be a condition but cannot be assigned by a classification rule.
+
+## Confirmed endpoint OS source contract
+
+`os_family` accepts `windows`, `linux` or `macos` with `eq`, `ne`, `in` and
+`not_in`. The source is the existing authenticated endpoint-inventory ingestion
+path, not network fingerprinting. `EndpointDevice.os_family` and its latest
+snapshot pointer are written atomically by that path; exact replays do not
+update them and older `collected_at` submissions are rejected. The accepted
+snapshot stores its digest and collection/receipt times; the current device
+row stores the associated OS fields. Family values are case-insensitive;
+`darwin` maps to `macos`. Other names are unknown, without guessing from banners,
+service products or the `asset_os` scan-guess table, even at accuracy 100.
+
+Classification joins only endpoint devices explicitly linked to this asset in
+the same tenant, and validates the latest snapshot's tenant and device IDs.
+Every linked device must have reconciliation status `linked`, a known family,
+and a receipt whose **collection and server receipt times** are within
+`OCTO_ENDPOINT_STALE_HOURS` (default 48 hours). Times over five minutes in the
+future are rejected as stale evidence. Multiple devices must agree; a conflict,
+stale/missing receipt, unknown family or unresolved link makes the whole OS
+value unknown. The batched query reads at most 17 endpoint rows per asset;
+more than 16 linked devices yields `incomplete`, keeps at most 16 explanations
+and never matches. Unknown also remains unknown under negative operators/negation.
+The existing freshness setting applies to previews and both manual/background
+recalculation, so expiration removes matches on the next bounded sweep.
+
+OS explanations retain `evidence.source=endpoint_inventory`, `state`, the
+freshness threshold, and the device/snapshot IDs, collection and receipt times,
+reported family and reconciliation status. This records why an inclusion was
+accepted without claiming that an endpoint agent is a network scan or that a
+classification permits scanning. No OS field changes declared exposure.
 
 ## Context precedence and provenance
 
@@ -94,11 +125,15 @@ across changed inputs as a consistent snapshot. Concurrent rule edits and manual
 asset changes are serialized with database locks. Review deployment sizing and
 measured query counts before changing the batch limit.
 
+Recalculation resolves context priorities across all active groups for each
+processed asset. The selected group's membership counters are separate from
+the resulting context changes, which can have a different winning rule.
+
 ## Validation boundary
 
 The isolated PostgreSQL acceptance fixture processed 503 registered assets in
-pages of 500 and 3. Both pages used 10 SELECT statements; the 500-asset page
-took approximately 0.175 seconds on the local test machine with one simple
+pages of 500 and 3. Both pages used 13 SELECT statements; the 500-asset page
+took approximately 0.131 seconds on the local test machine with one simple
 rule. This is a small synthetic fixture, not production sizing or a guarantee
 for 100 rules, mixed identities or deployment latency.
 
@@ -107,5 +142,6 @@ rollback, restart/cursor recovery, replay without duplicate context events,
 tenant and role rejection, immutable receipts and bounded queries. The browser
 acceptance scenario uses two synthetic RFC5737 assets: CIDR preview → group
 save → explicit recalculation → two explained members. No real targets were
-scanned. OS-derived conditions and production capacity acceptance remain
-outside this initial existing-context implementation.
+scanned. Confirmed OS scenarios additionally cover fresh, expired, missing,
+conflicting and cross-tenant evidence. The measurements describe a synthetic
+acceptance fixture; they do not promise unmeasured production capacity.

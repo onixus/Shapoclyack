@@ -1,6 +1,6 @@
 import axe from "axe-core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AssetGroups, normalizeGroupRules } from "@/components/asset/asset-groups";
@@ -79,6 +79,7 @@ async function createDraft() {
 beforeEach(() => {
   vi.restoreAllMocks();
   setRole("operator");
+  vi.spyOn(assetGroupsApi, "get").mockResolvedValue(GROUP);
   vi.spyOn(assetGroupsApi, "list").mockResolvedValue({
     items: [],
     total: 0,
@@ -278,10 +279,190 @@ describe("dynamic group workflow", () => {
     expect(screen.getByRole("alertdialog")).toBeInTheDocument();
   });
 });
+describe("tenant isolation and current evaluation", () => {
+  it("clears editor and selection when the effective tenant changes under automatic selection", async () => {
+    vi.mocked(assetGroupsApi.list)
+      .mockResolvedValueOnce({ items: [GROUP], total: 1, offset: 0, limit: 20, has_more: false })
+      .mockResolvedValue({
+        items: [{ ...GROUP, description: "Tenant B context" }],
+        total: 1,
+        offset: 0,
+        limit: 20,
+        has_more: false,
+      });
+    renderGroups();
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Members & evaluations: Production" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Edit Production" }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    const principal = useAuthStore.getState().user!;
+    act(() =>
+      useAuthStore.setState({
+        activeTenant: null,
+        user: {
+          ...principal,
+          scoped_tenant: "tenant-b",
+          default_tenant: "tenant-b",
+          tenants: ["default", "tenant-b"],
+        },
+      }),
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Group Production" })).not.toBeInTheDocument();
+    expect(await screen.findByText("Tenant B context")).toBeVisible();
+    expect(screen.getByText("Tenant: tenant-b")).toBeVisible();
+    expect(screen.queryByText("Declared production context")).not.toBeInTheDocument();
+  });
+  it("uses separate query caches for different accounts in the same tenant", async () => {
+    vi.mocked(assetGroupsApi.list)
+      .mockResolvedValueOnce({ items: [GROUP], total: 1, offset: 0, limit: 20, has_more: false })
+      .mockResolvedValue({ items: [], total: 0, offset: 0, limit: 20, has_more: false });
+    renderGroups();
+    await screen.findByText("Declared production context");
+    const principal = useAuthStore.getState().user!;
+    act(() => useAuthStore.setState({ user: { ...principal, username: "other-account" } }));
+    expect(screen.queryByText("Declared production context")).not.toBeInTheDocument();
+    expect(await screen.findByText("No dynamic groups in this tenant.")).toBeVisible();
+    expect(assetGroupsApi.list).toHaveBeenCalledTimes(2);
+  });
+  it("distinguishes failed current-version evaluation from past success and pages history", async () => {
+    vi.mocked(assetGroupsApi.get).mockResolvedValue({ ...GROUP, version: 4 });
+    vi.mocked(assetGroupsApi.list).mockResolvedValue({
+      items: [
+        {
+          ...GROUP,
+          version: 4,
+          latest_evaluation: {
+            id: "failed4",
+            version: 4,
+            status: "failed",
+            error: "Worker failed",
+          },
+        },
+      ],
+      total: 1,
+      offset: 0,
+      limit: 20,
+      has_more: false,
+    });
+    vi.mocked(assetGroupsApi.evaluations).mockResolvedValue({
+      items: [{ id: "old3", version: 3, status: "completed", completed_at: GROUP.last_success_at }],
+      total: 21,
+      offset: 0,
+      limit: 20,
+      has_more: true,
+    });
+    renderGroups();
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Members & evaluations: Production" }),
+    );
+    const region = screen.getByRole("region", { name: "Group Production" });
+    expect(await within(region).findByText(/Current rule v4: failed/)).toBeVisible();
+    expect(within(region).getByRole("alert")).toHaveTextContent("Worker failed");
+    expect(within(region).getByText(/Last success above may belong to an earlier/)).toBeVisible();
+    expect(
+      await within(region).findByText(/previous rule version, awaiting reevaluation/),
+    ).toBeVisible();
+    await user.click(within(region).getByRole("button", { name: "Next evaluations page" }));
+    await waitFor(() => expect(assetGroupsApi.evaluations).toHaveBeenLastCalledWith("g1", 20));
+  });
+  it("refreshes the selected rule version independently of the current list page", async () => {
+    vi.mocked(assetGroupsApi.list).mockResolvedValue({
+      items: [GROUP],
+      total: 21,
+      offset: 0,
+      limit: 20,
+      has_more: true,
+    });
+    vi.mocked(assetGroupsApi.get).mockResolvedValue({ ...GROUP, version: 5 });
+    renderGroups();
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Members & evaluations: Production" }),
+    );
+    const region = screen.getByRole("region", { name: "Group Production" });
+    expect(await within(region).findByText(/Current rule v5: awaiting evaluation/)).toBeVisible();
+    expect(await within(region).findByText(/rule v3 · previous rule version/)).toBeVisible();
+    expect(assetGroupsApi.get).toHaveBeenCalledWith("g1");
+  });
+  it("offers only confirmed endpoint OS families and shows source freshness with observed snapshot evidence", async () => {
+    vi.mocked(assetGroupsApi.preview).mockResolvedValue({
+      ...PREVIEW,
+      items: [
+        {
+          ...PREVIEW.items[0],
+          reasons: [
+            {
+              field: "os_family",
+              op: "eq",
+              value: "windows",
+              actual: ["windows"],
+              result: "matched",
+              evidence: {
+                source: "endpoint_inventory",
+                state: "confirmed",
+                freshness_hours: 48,
+                observations: [
+                  {
+                    device_id: "dev1",
+                    snapshot_id: "snap1",
+                    family: "windows",
+                    collected_at: "2026-10-24T12:00:00Z",
+                    received_at: "2026-10-24T12:01:00Z",
+                    reconciliation_status: "linked",
+                  },
+                ],
+              },
+            },
+          ],
+          changes: {
+            business_service: { old: null, new: "Payroll", group_id: "winner-group", version: 9 },
+          },
+        },
+      ],
+    });
+    renderGroups();
+    const { user, dialog } = await createDraft();
+    await user.selectOptions(within(dialog).getByLabelText("Field 1.1"), "os_family");
+    expect(within(dialog).getByText(/All linked devices must agree/)).toBeVisible();
+    expect(within(dialog).getByLabelText("Operator 1.1").querySelectorAll("option")).toHaveLength(
+      4,
+    );
+    await user.selectOptions(within(dialog).getByLabelText("Value 1.1"), "windows");
+    await user.click(within(dialog).getByRole("button", { name: "Preview dry-run" }));
+    await within(dialog).findByText("Preview complete");
+    expect(assetGroupsApi.preview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rules: { all: [{ field: "os_family", op: "eq", value: "windows" }] },
+      }),
+      undefined,
+      undefined,
+    );
+    await user.click(within(dialog).getByText(/a1 · matches/));
+    expect(
+      within(dialog).getByText(
+        /Source: authenticated endpoint inventory · confirmed · freshness limit 48 hours/,
+      ),
+    ).toBeVisible();
+    expect(within(dialog).getByText(/Device dev1 · snapshot snap1/)).toBeVisible();
+    expect(within(dialog).getByText(/group winner-group · rule v9/)).toBeVisible();
+    expect(
+      within(dialog).getByText(/Context changes resolve priorities across all active groups/),
+    ).toBeVisible();
+  });
+});
 describe("typed group input", () => {
   it("limits IP operators and validates numeric lists without converting empty input to zero", () => {
     expect(ruleOperators("ip")).toEqual(["eq", "ne", "in", "not_in", "cidr"]);
     expect(ruleOperators("asset_criticality")).not.toContain("contains");
+    expect(ruleOperators("os_family")).toEqual(["eq", "ne", "in", "not_in"]);
+    expect(parseRuleValue("os_family", "in", "windows,linux")).toEqual(["windows", "linux"]);
+    expect(() => parseRuleValue("os_family", "eq", "guessed-windows")).toThrow(
+      /Confirmed OS family/,
+    );
     expect(parseRuleValue("asset_criticality", "in", "0,4")).toEqual([0, 4]);
     expect(() => parseRuleValue("asset_criticality", "eq", "")).toThrow(/empty/);
     expect(() => parseRuleValue("asset_criticality", "eq", "5")).toThrow(/0–4/);

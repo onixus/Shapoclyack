@@ -20,11 +20,12 @@ MAX_VALUES = 50
 MAX_STRING = 256
 MAX_RULE_BYTES = 16384
 _TAG = re.compile(r"tag:[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
-_FIELDS = frozenset((*CONTEXT_FIELDS, "ip", "fqdn", "status"))
+_FIELDS = frozenset((*CONTEXT_FIELDS, "ip", "fqdn", "status", "os_family"))
 _OPS = frozenset(("eq", "ne", "in", "not_in", "contains", "starts_with", "ends_with", "cidr"))
 _INTEGERS = frozenset(("asset_criticality",))
 _ENUMS = {"environment": ENVIRONMENTS, "data_classification": DATA_CLASSIFICATIONS,
-          "exposure_level": EXPOSURE_LEVELS, "status": ("active", "stale", "decommissioned")}
+          "exposure_level": EXPOSURE_LEVELS, "status": ("active", "stale", "decommissioned"),
+          "os_family": ("windows", "linux", "macos")}
 
 
 def _scalar(field: str, value: Any) -> Any:
@@ -85,6 +86,8 @@ def validate_rules(rules: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError("unsupported rule operator")
             if field in _INTEGERS and op not in {"eq", "ne", "in", "not_in"}:
                 raise ValueError("integer fields only support eq/ne/in/not_in")
+            if field == "os_family" and op not in {"eq", "ne", "in", "not_in"}:
+                raise ValueError("OS family only supports eq/ne/in/not_in")
             if field == "ip" and op not in {"eq", "ne", "in", "not_in", "cidr"}:
                 raise ValueError("IP fields only support eq/ne/in/not_in/cidr")
             if op == "cidr":
@@ -139,6 +142,14 @@ def evaluate_rules(rules: dict[str, Any], snapshot: dict[str, Any]) -> dict[str,
     def condition(node: dict[str, Any]) -> bool | None:
         field, op, expected = node["field"], node["op"], node["value"]
         raw = snapshot.get(field)
+        evidence = snapshot.get("_os_evidence") if field == "os_family" else None
+        if field == "os_family" and not (
+            isinstance(evidence, dict) and evidence.get("state") == "confirmed"
+            and evidence.get("source") == "endpoint_inventory"
+        ):
+            # The snapshot loader owns authentication, tenant identity,
+            # consensus and freshness. A raw scan guess is never evidence.
+            raw = None
         if field.startswith("tag:") and field not in snapshot:
             tags = snapshot.get("tags")
             raw = tags.get(field[4:]) if isinstance(tags, dict) else None
@@ -181,6 +192,10 @@ def evaluate_rules(rules: dict[str, Any], snapshot: dict[str, Any]) -> dict[str,
                         "actual": values[:MAX_VALUES], "negate": node.get("negate", False),
                         "actual_truncated": len(values) > MAX_VALUES,
                         "result": "unknown" if effective is None else "matched" if effective else "not_matched"})
+        if field == "os_family":
+            reasons[-1]["evidence"] = evidence if isinstance(evidence, dict) else {
+                "source": "endpoint_inventory", "state": "missing",
+            }
         return result
 
     def visit(node: dict[str, Any]) -> bool | None:
