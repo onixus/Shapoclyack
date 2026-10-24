@@ -1,6 +1,8 @@
 /** UI copy. English is the source of `MsgKey`; Russian must cover every key. */
 
 export const en = {
+  "nav.operator": "AI operator",
+  "nav.hint.operator": "Evidence, analysis and confirmed scan actions",
   "assetConnector.title": "ServiceNow CMDB connector",
   "assetConnector.ldap": "LDAP/AD computer sync is unavailable until directory integration #317 is implemented. The AD file source label does not enable synchronization.",
   "assetConnector.url": "ServiceNow HTTPS origin",
@@ -1914,6 +1916,8 @@ export const en = {
 export type MsgKey = keyof typeof en;
 
 export const ru: Record<MsgKey, string> = {
+  "nav.operator": "ИИ-оператор",
+  "nav.hint.operator": "Доказательства, анализ и подтверждённые действия со сканами",
   "assetConnector.title": "Коннектор ServiceNow CMDB",
   "assetConnector.ldap": "Синхронизация компьютеров LDAP/AD недоступна до реализации интеграции каталогов #317. Метка источника AD в файле не включает синхронизацию.",
   "assetConnector.url": "HTTPS адрес ServiceNow",

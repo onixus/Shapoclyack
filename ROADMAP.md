@@ -804,9 +804,14 @@ and [ADR 0004](docs/adr/0004-local-operator.md). Optional inference-provider and
 MCP read adapters ([#597](https://github.com/onixus/Shapoclyack/issues/597),
 [#596](https://github.com/onixus/Shapoclyack/issues/596)) are implemented in this
 change. A durable worker, exact/full-text retrieval and selection-only analysis
-are implemented as bounded pilots; local runtime, semantic retrieval, measured
-model quality, confirmed scan/remediation execution, console and final acceptance
-(#585–#593) remain open. The default
+are implemented as bounded pilots. Confirmed scan/cancel/verification proposals,
+vendor-backed remediation cards, published-run comparison and the optional
+`/operator` console are now implemented. A separate
+[Mac CPU inference container](docs/local-operator-mac.md) and
+[offline integrity verifier](docs/local-operator-bundle.md) retain the pinned
+9B Q4_K_M model and 8192 context. Semantic retrieval, measured domain quality,
+full offline bundle and physical deployment acceptance (#585–#593) remain open
+until their evidence gates pass. The default
 is local offline operation with the optional inference adapter disabled;
 OpenRouter and an explicitly configured OmniRouter-compatible endpoint require
 hosted-provider opt-in. Qwen3.5-9B Q4_K_M / 8 GiB CUDA / 8192 context is a candidate

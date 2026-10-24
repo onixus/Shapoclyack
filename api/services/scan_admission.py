@@ -12,7 +12,9 @@ process, or publish an offer.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+import hashlib
+import json
 from typing import Any
 
 from api.schemas import StartScanRequest
@@ -42,6 +44,20 @@ class ScanAdmission:
     agent_group: str | None
     group_has_live_agent: bool
     parsed_targets: ParsedTargets | None
+
+
+def admission_digest(admission: ScanAdmission, *, execution: str) -> str:
+    """Stable admission identity for confirmed operator previews.
+
+    Compared by submission with the admission it actually materializes; a
+    policy/scope edit between preview and service invocation cannot silently
+    change the user's confirmed plan.
+    """
+    snapshot = {"scope": asdict(admission.scope), "policy": admission.policy_snapshot,
+        "execution": execution, "agent_group": admission.agent_group,
+        "targets": asdict(admission.parsed_targets) if admission.parsed_targets else None,
+        "promoted_admitted": admission.promoted_admitted}
+    return hashlib.sha256(json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
 
 
 def admit_scan(

@@ -16,6 +16,7 @@ from api.db import tenant_scope
 from api.db.engine import get_session as get_session_db
 from api.db.models import (
     OperatorMessage,
+    OperatorProposal,
     OperatorSession,
     OperatorTask,
     SessionFamily,
@@ -248,7 +249,7 @@ def get_session(settings, tenant_id, username, session_id, *, auth_session_id=No
         if row is None:
             return None
         result = _dict(row)
-        for model, key in ((OperatorMessage, "messages"), (OperatorTask, "tasks")):
+        for model, key in ((OperatorMessage, "messages"), (OperatorTask, "tasks"), (OperatorProposal, "proposals")):
             rows = list(
                 db.scalars(
                     _owned(model, tenant_id, username)
@@ -257,7 +258,11 @@ def get_session(settings, tenant_id, username, session_id, *, auth_session_id=No
                     .limit(100)
                 )
             )
-            result[key] = [_dict(item) for item in reversed(rows)]
+            if key == "proposals":
+                from api.services.local_operator.actions import _view
+                result[key] = [_view(item) for item in reversed(rows) if item.status != "reserved"]
+            else:
+                result[key] = [_dict(item) for item in reversed(rows)]
         return result
 
 
@@ -391,7 +396,12 @@ def delete_session(settings, tenant_id, username, session_id, *, auth_session_id
         ):
             raise OperatorStoreError("active_tasks")
         _audit(db, row, "session.delete")
-        # FK CASCADE includes reserved proposals/executions and messages.
+        if db.scalar(select(OperatorProposal.proposal_id).where(
+            OperatorProposal.session_id == session_id,
+            OperatorProposal.tenant_id == tenant_id,
+            OperatorProposal.status.in_(["executing", "unknown"])).limit(1)):
+            raise OperatorStoreError("active_tasks")
+        # Preserve uncertainty evidence until explicit reconciliation.
         db.execute(
             delete(OperatorSession).where(
                 OperatorSession.session_id == session_id,

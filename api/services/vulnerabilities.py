@@ -38,10 +38,11 @@ from scanner.pipeline.non_cve_policy import actionable
 
 import hashlib
 import ipaddress
+import json
 import logging
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -2621,12 +2622,20 @@ def push_ticket_state(
         return False
 
 
+def verification_plan_digest(row: models.Vulnerability, plan: VerificationPlan) -> str:
+    """Identity of the detector plan confirmed by an operator proposal."""
+    value = {"vuln_id": row.vuln_id, "port": row.port, "source": row.source,
+        "state": row.state, "plan": asdict(plan)}
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+
+
 def trigger_verification(
     settings: Settings,
     *,
     tenant_id: str | None,
     vuln_id: str,
     actor: str | None = None,
+    expected_plan_sha256: str | None = None,
 ) -> dict[str, Any] | None:
     """Dispatch a targeted re-scan and park the finding in ``VERIFYING``.
 
@@ -2681,6 +2690,8 @@ def trigger_verification(
         vuln_states.check_transition(vuln_id, previous, vuln_states.VERIFYING)
 
         plan = _verification_plan(session, row)
+        if expected_plan_sha256 is not None and verification_plan_digest(row, plan) != expected_plan_sha256:
+            raise VerificationDispatchError("Confirmed verification plan changed; prepare a new proposal")
 
         owning_tenant = row.tenant_id
         port = str(row.port).strip() if row.port is not None else None

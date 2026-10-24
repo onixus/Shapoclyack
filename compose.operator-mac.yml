@@ -1,0 +1,87 @@
+# Standalone CPU inference on Docker Desktop for Mac. No cloud provider.
+# scripts/operator-mac.sh verifies the pinned model before starting this file.
+services:
+  inference:
+    image: ghcr.io/ggml-org/llama.cpp@sha256:20c4196fc08b459a34ef78aaa05b101333b2fac687e30ec99f37b3c9dc071b44
+    platform: linux/arm64
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 7g
+    memswap_limit: 7g
+    cpus: 4
+    restart: "on-failure:3"
+    stop_grace_period: 30s
+    networks:
+      operator_offline:
+        ipv4_address: 172.30.83.2
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m,mode=1777"]
+    environment:
+      HF_HUB_OFFLINE: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      DO_NOT_TRACK: "1"
+    volumes:
+      - type: bind
+        source: ${OPERATOR_MODELS_DIR:?Set OPERATOR_MODELS_DIR to the verified model directory}/Qwen3.5-9B-Q4_K_M.gguf
+        target: /models/model.gguf
+        read_only: true
+        bind:
+          create_host_path: false
+    command:
+      - --model
+      - /models/model.gguf
+      - --alias
+      - Qwen3.5-9B-Q4_K_M
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8082"
+      - --ctx-size
+      - "8192"
+      - --parallel
+      - "1"
+      - --threads
+      - "4"
+      - --batch-size
+      - "512"
+      - --ubatch-size
+      - "128"
+      - --n-gpu-layers
+      - "0"
+      - --n-predict
+      - "1024"
+      - --reasoning
+      - "off"
+      - --offline
+      - --no-webui
+      - --no-agent
+      - --no-ui-mcp-proxy
+  gateway:
+    # Docker Desktop does not publish ports from internal-only networks.
+    # This credential-free fixed-target ingress keeps inference without egress.
+    image: sha256:d0c3811794d5e8ba0ab27e32705c34410ca7e6208c6a34d32a57a9ef6af387bf
+    pull_policy: never
+    user: "1000:1000"
+    command: [python, /operator-proxy.py, inference]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.5
+    restart: unless-stopped
+    ports: ["127.0.0.1:8082:8080"]
+    volumes: [./scripts/operator-console-proxy.py:/operator-proxy.py:ro]
+    networks:
+      operator_offline:
+        ipv4_address: 172.30.83.4
+      gateway_ingress: {}
+    healthcheck: {disable: true}
+    depends_on: [inference]
+networks:
+  operator_offline:
+    name: shapo-operator-offline
+    external: true
+  gateway_ingress: {}

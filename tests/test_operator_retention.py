@@ -51,6 +51,17 @@ def test_active_task_keeps_old_session(env):
     assert store.get_session(settings, "default", "operator", session_id)
 
 
+@pytest.mark.parametrize("status", ["executing", "unknown"])
+def test_unreconciled_effect_preserves_old_session(env, status):
+    settings, session_id, old = env
+    with get_session(settings.postgres_url) as db:
+        db.add(models.OperatorProposal(proposal_id="retention-proposal", tenant_id="default",
+            username="operator", session_id=session_id, payload={}, status=status, created_at=old))
+    assert retention.sweep(settings) == 0
+    with get_session(settings.postgres_url) as db:
+        assert db.get(models.OperatorProposal, "retention-proposal").status == status
+
+
 def test_per_tenant_keep_policy_is_used(env):
     settings, session_id, _ = env
     with get_session(settings.postgres_url) as db:

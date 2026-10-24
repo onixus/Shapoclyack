@@ -2,7 +2,7 @@
 
 Architecture baseline for [#584](https://github.com/onixus/Shapoclyack/issues/584),
 under [EPIC #583](https://github.com/onixus/Shapoclyack/issues/583). Decision:
-[ADR 0004](adr/0004-local-operator.md). Reviewed 2026-10-21.
+[ADR 0004](adr/0004-local-operator.md). Updated 2026-10-25.
 
 ## Delivery boundary
 
@@ -10,8 +10,10 @@ This change supplies strict version 1 exchange contracts, evidence-quality
 fixtures, an optional inference-provider adapter and an MCP read adapter. It
 now includes a durable personal session/queue service and separate worker with a
 read-only count-summary pilot ([service guide](local-operator-service.md)). It does
-not deliver an autonomous operator, general retrieval pipeline, scan/remediation
-executor or console assistant. Provider
+not deliver an autonomous operator or a general semantic retrieval pipeline.
+It now includes explicit confirmed control-plane actions, deterministic vendor
+remediation cards, published-run comparison and an optional authenticated console.
+Provider
 HTTP mocks and MCP unit tests establish adapter behavior only. The authenticated `GET /api/operator/status` reports configured enablement and
 provider with `runtime_status: "not_checked"`; it does not perform inference and
 returns 404 while the operator is disabled.
@@ -22,14 +24,14 @@ accepted. Later work must preserve this distinction in status and UI.
 | Work | Issue | State / required evidence |
 |---|---|---|
 | Architecture, contracts and acceptance specification | #584 | Defined here; contract fixtures implemented |
-| Pinned local inference runtime and model supply chain | #585 | Planned; real runtime and hardware report required |
+| Pinned local inference runtime and model supply chain | #585 | [Mac container profile](local-operator-mac.md) and [bundle verifier](local-operator-bundle.md) implemented; physical acceptance remains required |
 | Durable sessions, queue, worker, cancellation and recovery | #586 | Pilot implemented; PostgreSQL concurrency/isolation/recovery tests; deployment drill and broader tool orchestration pending |
 | Authorized retrieval and fixed-source citation resolution | #587 | Planned; ownership, retention, freshness and deletion tests required |
-| Evidence-aware analysis | #588 | Planned; quality corpus and empty/partial/stale behavior required |
-| Scan proposal, preview, confirmation and execution | #589 | Planned; existing scope/policy/quota gates required |
-| Remediation proposals and workflow integration | #590 | Planned; current workflow authorization required |
-| Operator console | #591 | Planned; visible evidence, limits, cancellation and consent required |
-| Security and misuse acceptance | #592 | Planned; cross-tenant, injection, egress and replay tests required |
+| Evidence-aware analysis | #588 | Bounded RU/EN labels and published comparison implemented; real-model domain quality unaccepted |
+| Scan proposal, preview, confirmation and execution | #589 | Durable actor/session/hash-bound proposals, current native admission and no-redispatch recovery implemented; deployment drill pending |
+| Remediation proposals and workflow integration | #590 | [Deterministic vendor/inventory cards](local-operator-remediation.md) implemented; sourced operational plans and full evaluation pending |
+| Operator console | #591 | `/operator`: sessions, analysis, comparison, citations, actions and remediation; deployment flows remain subject to acceptance |
+| Security and misuse acceptance | #592 | [Negative gate](local-operator-security.md) implemented; measured runtime network isolation and physical drills pending |
 | Frozen quality and deployment acceptance | #593 | Planned; exact build/model/hardware report required |
 | MCP read adapter | [#596](https://github.com/onixus/Shapoclyack/issues/596) | Implemented; real client/deployment acceptance pending |
 | Local/OpenRouter/OmniRouter provider adapter | [#597](https://github.com/onixus/Shapoclyack/issues/597) | Implemented; real model/account acceptance pending |
@@ -41,14 +43,14 @@ flowchart LR
     U[Authenticated console or MCP client] --> A[API: session and tenant authorization]
     A --> Q[Durable personal queue: implemented pilot]
     Q --> W[Separate bounded worker: implemented pilot]
-    W --> R[Authorized snapshot retrieval: planned]
+    W --> R[Authorized bounded snapshot retrieval]
     R --> D[(Tenant evidence stores)]
     W --> L[Local inference: disabled until configured]
     W --> H[Hosted inference: explicit administrator opt-in]
     W --> V[Strict output and citation validation]
-    V --> P[Stored proposal and user confirmation: planned]
+    U --> P[Explicit stored proposal and user confirmation]
     P --> G[Fresh authorization and existing service gates]
-    G --> S[Scan or remediation service: planned]
+    G --> S[Existing scan and verification services]
     V --> U
 ```
 

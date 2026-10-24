@@ -145,6 +145,29 @@ def refresh_evidence(run_id: RunId, body: RefreshEvidence, request: Request,
     return _call(settings, principal, "refresh_run", writer=True, run_id=run_id)
 
 
+@router.get("/runs/{run_id}/summary")
+def get_summary_evidence(run_id: RunId, request: Request, principal: Reader,
+                         settings: OperatorSettings, snapshot_id: Identifier,
+                         source_hash: Digest):
+    from api.services.local_operator.gateway import read_evidence
+
+    _query(request, {"tenant_id", "snapshot_id", "source_hash"})
+    current = _authorize(settings, principal)
+    try:
+        counts, citation = read_evidence(settings, current, run_id)
+        if citation.snapshot_id != snapshot_id or citation.source_hash != source_hash:
+            raise HTTPException(409, detail="operator_source_changed")
+        _authorize(settings, principal)
+        # Bind the displayed observations to the current publication, even if
+        # it was replaced during the authority lookup.
+        if read_evidence(settings, current, run_id)[1] != citation:
+            raise HTTPException(409, detail="operator_source_changed")
+        return {"context": {"counts": counts}, "citation": citation.model_dump(mode="json")}
+    except GatewayError as exc:
+        code = 503 if exc.code == "operator_storage_unavailable" else 404
+        raise HTTPException(code, detail=exc.code) from None
+
+
 @router.get("/{source_id}")
 def get_evidence(source_id: SourceId, request: Request, principal: Reader,
                  settings: OperatorSettings, snapshot_id: Identifier, source_hash: Digest):

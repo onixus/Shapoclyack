@@ -1,0 +1,91 @@
+# Confirmed operator actions and published comparisons
+
+The optional operator exposes explicit `start_scan`, `cancel_scan` and
+`verify_finding` proposals. These endpoints require a current console session,
+an explicit `tenant_id` and current operator authority in that tenant. They do
+not accept model-generated shell commands, arbitrary tools, URLs, tenant
+overrides, quota exemptions, priority overrides or scanner configuration.
+The feature remains disabled with `operator_enabled=false`.
+
+## Prepare, review, confirm and track
+
+1. Create a personal conversation with `POST /api/operator/sessions`.
+2. Prepare a plan with
+   `POST /api/operator/sessions/{session_id}/proposals?tenant_id=...`.
+   Supply `action` and its closed `arguments` object. A scan requires explicit
+   `ranges` or `domains`, and explicit TCP `ports`; optional fields are `mode`,
+   `intent`, `ports_udp` and `agent_group`. Cancellation accepts `job_id`;
+   verification accepts `vuln_id`.
+3. Review returned `arguments`, `impact`, `arguments_sha256` and `expires_at`.
+   Preview executes admission checks without creating a job. Its scan impact
+   includes parsed targets, approved scope, policy limits and the resolved
+   sensor group. Promoted domains are not added. An omitted UDP port override
+   is labelled `server_default`; normal scanner discovery and approved scope
+   semantics still apply.
+4. Confirm with
+   `POST /api/operator/proposals/{proposal_id}/confirm?tenant_id=...` and
+   `{"arguments_sha256":"<the reviewed digest>"}`. The digest covers canonical
+   stored action arguments. The stored proposal also binds actor, tenant,
+   conversation, current login session, account token version and a five-minute
+   expiry. A chat message is not confirmation.
+5. Poll `GET /api/operator/proposals/{proposal_id}?tenant_id=...`. Personal
+   session history includes proposal summaries; poll the individual proposal
+   for execution evidence. Job IDs use the ordinary job status APIs.
+
+Fresh account, login, tenant and role checks run before claiming and again
+before dispatch. Membership and account locks fence revocation through dispatch.
+Scan submission checks its actual admission digest against the preview before
+writing job inputs or inserting a job. Scope, policy, target or group drift
+requires a new proposal. Quotas, maintenance and queue limits remain the normal
+service's authority. Verification checks its actual detector-plan digest and
+uses the existing vulnerability lifecycle and sensor/coverage requirements;
+it cannot set `machine_verified` or close a finding. Cancellation reports the
+actual `cancelled` or `cancelling` state and preserves ordinary local-execution
+limitations.
+
+## Recovery and deletion
+
+An execution claim commits before calling an effectful service. A unique
+proposal-to-execution constraint and proposal row locking prevent double
+clicks from dispatching twice. Starts use the stable internal key
+`operator:<proposal_id>`. A confirm retry can reconcile an accepted start to its
+existing job after a lost response; it does not submit a second start.
+
+A service exception after dispatch produces `unknown` with
+`requires_reconciliation=true`, because an effect may already have committed.
+An interrupted claim remains `executing` if no outcome was persisted. A retry
+may recover an existing scan by its key; absence of that job never causes
+automatic replay. Verification and cancellation uncertainty needs manual
+inspection of existing finding/job state. There is no automatic retry or lease
+that turns an uncertain action into a fresh network job. A definitive service
+refusal before dispatch is `failed`; a refusal encountered during dispatch is
+conservatively `unknown`.
+
+Session deletion and retention refuse conversations with `executing` or
+`unknown` proposals, preserving reconciliation evidence. A session admits at
+most 100 retained proposals. Privacy erasure and tenant purge follow the
+platform's dedicated audited procedures. Migration
+`0101_operator_actions` extends the existing proposal/execution tables;
+downgrade refuses non-reserved action evidence instead of silently discarding
+it. Back up PostgreSQL with the rest of operator history before upgrade.
+
+## Read-only comparison
+
+`GET /api/operator/compare?tenant_id=...&previous_run_id=...&current_run_id=...&language=ru`
+supports `ru` and `en` for viewer or higher console users. Both runs must belong
+to the selected tenant and have accepted, succeeded publications. The service
+projects bounded counters from the scanner's published `diff.json`, whose
+baseline/current run labels must match the selected pair. It does not compute
+differences from incomplete pages or CVE-only sets. Missing or mismatched diff
+data returns `unsupported`; accepted counters remain `incomplete` and
+`quality_unverified`, because matching detector coverage is unproven.
+
+The response carries both summary citations and the diff artifact digest.
+Summary citations can be resolved through the authenticated operator summary
+endpoint using their snapshot/hash parameters. Diff paths, raw event text and
+arbitrary artifact fields are not returned. Source hashes are checked again
+before returning. Removed observations never mean verified remediation.
+
+These tests establish control-plane behavior with private PostgreSQL and
+queued scanner jobs. They do not establish model quality, physical GPU fit,
+offline operation, live sensor behavior or final epic acceptance.

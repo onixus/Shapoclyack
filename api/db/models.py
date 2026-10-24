@@ -3544,7 +3544,7 @@ class OperatorTask(Base):
 
 
 class OperatorProposal(Base):
-    """Reserved persisted proposal contract. No application/effects path exists."""
+    """Actor-bound immutable confirmed action proposal."""
 
     __tablename__ = "operator_proposals"
     proposal_id: Mapped[str] = mapped_column(primary_key=True)
@@ -3559,12 +3559,12 @@ class OperatorProposal(Base):
     status: Mapped[str] = mapped_column(default="reserved")
     created_at: Mapped[datetime]
     __table_args__ = (
-        CheckConstraint("status = 'reserved'", name="ck_operator_proposal_reserved"),
+        CheckConstraint("status IN ('reserved','preview','executing','succeeded','failed','unknown')", name="ck_operator_proposal_reserved"),
     )
 
 
 class OperatorExecution(Base):
-    """Reserved execution evidence; deliberately cannot enter an effectful state."""
+    """One durable execution claim per confirmed proposal."""
 
     __tablename__ = "operator_executions"
     execution_id: Mapped[str] = mapped_column(primary_key=True)
@@ -3577,8 +3577,10 @@ class OperatorExecution(Base):
     )
     status: Mapped[str] = mapped_column(default="reserved")
     created_at: Mapped[datetime]
+    payload: Mapped[dict | None] = mapped_column(JSON, default=None)
     __table_args__ = (
-        CheckConstraint("status = 'reserved'", name="ck_operator_execution_reserved"),
+        CheckConstraint("status IN ('reserved','preview','executing','succeeded','failed','unknown')", name="ck_operator_execution_reserved"),
+        UniqueConstraint("proposal_id", name="uq_operator_execution_proposal"),
     )
 
 
