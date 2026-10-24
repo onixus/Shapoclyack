@@ -21,7 +21,13 @@ def _now():
 
 
 def _lock_tenant(session, tenant_id):
-    if session.get(models.Tenant, tenant_id) is None:
+    tenant = session.scalar(
+        select(models.Tenant)
+        .where(models.Tenant.tenant_id == tenant_id)
+        .with_for_update(read=True)
+        .execution_options(populate_existing=True)
+    )
+    if tenant is None or tenant.status != "active":
         raise LookupError("Tenant not found")
     if session.bind.dialect.name == "postgresql":
         # Independent of Tenant FK key-share locks held by inventory imports.
@@ -800,10 +806,9 @@ def _recalculate(
 def _reconcile_batch(settings, tenant_id, *, limit=200, actor=None):
     with get_session(settings.postgres_url) as session:
         tenant = session.get(models.Tenant, tenant_id)
-        if tenant is not None:
-            _lock_tenant(session, tenant_id)
-        if tenant is None:
+        if tenant is None or tenant.status != "active":
             return {"evaluated": 0, "has_more": False}
+        _lock_tenant(session, tenant_id)
         state = session.get(models.AssetGroupSweep, tenant_id)
         if state is None:
             state = models.AssetGroupSweep(

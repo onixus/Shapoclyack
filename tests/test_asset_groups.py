@@ -45,6 +45,18 @@ def draft(**overrides):
     }
 
 
+@pytest.mark.parametrize("status", ["suspended", "pending_deletion", "deleting"])
+def test_background_reconciliation_cannot_mutate_inactive_tenant(tmp_path, status):
+    settings, tenant = setup(tmp_path)
+    groups.save_group(settings, tenant, draft())
+    with get_session(settings.postgres_url) as session:
+        session.get(models.Tenant, tenant).status = status
+    assert groups.reconcile_batch(settings, tenant)["evaluated"] == 0
+    assert asset(settings, tenant)[1] is None
+    with pytest.raises(LookupError):
+        groups.recalculate(settings, tenant)
+
+
 def asset(settings, tenant):
     with get_session(settings.postgres_url) as session:
         row = session.scalars(

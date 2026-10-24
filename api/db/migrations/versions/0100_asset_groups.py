@@ -2,6 +2,7 @@
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import JSONB
 
 revision = "0100_asset_groups"
 down_revision = "0099_operator_analysis_task"
@@ -35,8 +36,8 @@ def upgrade():
         sa.Column("deleted", sa.Boolean(), primary_key=False, nullable=False),
         sa.Column("priority", sa.Integer(), primary_key=False, nullable=False),
         sa.Column("version", sa.Integer(), primary_key=False, nullable=False),
-        sa.Column("rules", sa.JSON(), primary_key=False, nullable=False),
-        sa.Column("context", sa.JSON(), primary_key=False, nullable=False),
+        sa.Column("rules", sa.JSON().with_variant(JSONB(), "postgresql"), primary_key=False, nullable=False),
+        sa.Column("context", sa.JSON().with_variant(JSONB(), "postgresql"), primary_key=False, nullable=False),
         sa.Column("created_at", sa.DateTime(), primary_key=False, nullable=False),
         sa.Column("updated_at", sa.DateTime(), primary_key=False, nullable=False),
     )
@@ -53,7 +54,7 @@ def upgrade():
             nullable=False,
         ),
         sa.Column("version", sa.Integer(), primary_key=False, nullable=False),
-        sa.Column("document", sa.JSON(), primary_key=False, nullable=False),
+        sa.Column("document", sa.JSON().with_variant(JSONB(), "postgresql"), primary_key=False, nullable=False),
         sa.Column("actor", sa.String(), primary_key=False, nullable=True),
         sa.Column("created_at", sa.DateTime(), primary_key=False, nullable=False),
         sa.UniqueConstraint("group_id", "version", name="uq_asset_group_version"),
@@ -83,7 +84,7 @@ def upgrade():
             nullable=False,
         ),
         sa.Column("version", sa.Integer(), primary_key=False, nullable=False),
-        sa.Column("reasons", sa.JSON(), primary_key=False, nullable=False),
+        sa.Column("reasons", sa.JSON().with_variant(JSONB(), "postgresql"), primary_key=False, nullable=False),
         sa.Column("evaluated_at", sa.DateTime(), primary_key=False, nullable=False),
         sa.UniqueConstraint("group_id", "asset_id", name="uq_asset_group_member"),
     )
@@ -111,7 +112,7 @@ def upgrade():
         sa.Column("status", sa.String(), primary_key=False, nullable=False),
         sa.Column("started_at", sa.DateTime(), primary_key=False, nullable=False),
         sa.Column("completed_at", sa.DateTime(), primary_key=False, nullable=True),
-        sa.Column("report", sa.JSON(), primary_key=False, nullable=False),
+        sa.Column("report", sa.JSON().with_variant(JSONB(), "postgresql"), primary_key=False, nullable=False),
         sa.Column("error", sa.String(), primary_key=False, nullable=True),
     )
     op.create_index(
@@ -140,9 +141,9 @@ def upgrade():
             nullable=False,
         ),
         sa.Column("version", sa.Integer(), primary_key=False, nullable=False),
-        sa.Column("value", sa.JSON(), primary_key=False, nullable=False),
-        sa.Column("previous", sa.JSON(), primary_key=False, nullable=False),
-        sa.Column("reason", sa.JSON(), primary_key=False, nullable=False),
+        sa.Column("value", sa.JSON().with_variant(JSONB(), "postgresql"), primary_key=False, nullable=False),
+        sa.Column("previous", sa.JSON().with_variant(JSONB(), "postgresql"), primary_key=False, nullable=False),
+        sa.Column("reason", sa.JSON().with_variant(JSONB(), "postgresql"), primary_key=False, nullable=False),
         sa.Column("updated_at", sa.DateTime(), primary_key=False, nullable=False),
         sa.UniqueConstraint("asset_id", "field", name="uq_asset_group_field"),
     )

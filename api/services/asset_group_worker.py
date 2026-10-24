@@ -29,7 +29,8 @@ def tick(settings) -> None:
         with get_session(settings.postgres_url) as session:
             tenants = session.execute(
                 select(models.AssetGroup.tenant_id)
-                .where(models.AssetGroup.tenant_id > after)
+                .join(models.Tenant, models.Tenant.tenant_id == models.AssetGroup.tenant_id)
+                .where(models.AssetGroup.tenant_id > after, models.Tenant.status == "active")
                 .distinct().order_by(models.AssetGroup.tenant_id).limit(100)
             ).scalars().all()
         if not tenants:
