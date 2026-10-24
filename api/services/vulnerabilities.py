@@ -56,6 +56,7 @@ from api.services import exploit_evidence
 from api.services import metrics
 from api.services import nist_risk
 from api.services import pagination
+from api.services import problem_identity
 from api.services import publication_marks
 from api.services import runs as runs_service
 from api.services import scan_surface
@@ -2973,9 +2974,18 @@ def apply_ticket_status(
         # Only a legal move is applied. An unreachable tracker returns no
         # suggestion at all, and that is recorded as a sync that changed
         # nothing rather than as progress.
+        # A verification in flight is the arbiter of its own outcome (#579). A
+        # tracker saying Done (or In Progress) while the re-check runs must not
+        # move the finding out of VERIFYING: the run's verdict is gated on that
+        # state, so the move would silently discard a machine result that is
+        # about to arrive and record a ticket's word in its place.
+        held_for_verification = (
+            previous == vuln_states.VERIFYING and bool(row.verification_job_id)
+        )
         if (
             suggested_state
             and suggested_state != previous
+            and not held_for_verification
             and (remote_changed or not only_on_remote_change)
             and vuln_states.can_transition(previous, suggested_state)
         ):
@@ -3037,6 +3047,7 @@ def apply_ticket_status(
                     "remote_status": raw_status,
                     "suggested_state": suggested_state,
                     "applied": applied,
+                    **({"held_for_verification": True} if held_for_verification and suggested_state else {}),
                     **dropped_exception,
                     **({"error": error} if error else {}),
                     **({"after_fp_suppression": True} if dropped_fp else {}),
@@ -4203,8 +4214,7 @@ SORT_COLUMNS = {
 }
 
 
-def list_vulnerabilities(
-    settings: Settings,
+def finding_filters(
     *,
     tenant_id: str | None = None,
     state: str | None = None,
@@ -4221,24 +4231,13 @@ def list_vulnerabilities(
     exception_state: str | None = None,
     stale_days: int | None = None,
     in_kev: bool | None = None,
-    offset: int = 0,
-    limit: int = pagination.DEFAULT_LIMIT,
+    problem_key: str | None = None,
     q: str | None = None,
-    sort: str | None = None,
-    order: str | None = None,
-) -> tuple[list[dict[str, Any]], int]:
-    """Paginated findings.
-
-    ``sla`` filters on the derived reading, which is a predicate over ``due_at``
-    and ``exception_until`` rather than a column — the same expression
-    ``sla_state`` computes, pushed into SQL so a breach report does not have to
-    page through every open finding to find the overdue ones.
-
-    ``exception_state`` filters on the acceptance workflow (#348), and
-    ``exception_requested`` is the approver's queue: nothing notifies whoever
-    holds ``vulnerability.exception.approve`` that a request is waiting, so
-    without this the only way to find one is to read every finding in the
-    tenant.
+    now: datetime | None = None,
+) -> list[Any]:
+    """Validated SQL predicates shared by the findings list and the aggregated
+    problem list (#579), so a drill-down applies exactly the restrictions the
+    aggregate row was computed under. Raises ``ValueError`` on an unknown value.
     """
     if state and state.upper() not in vuln_states.ALL:
         raise ValueError(f"unknown state {state!r}; expected one of {', '.join(vuln_states.ORDER)}")
@@ -4265,10 +4264,7 @@ def list_vulnerabilities(
     if severity:
         severity = _validate_severity(severity)
 
-    now = _now()
-    sort_column = SORT_COLUMNS.get(sort or "", models.Vulnerability.contextual_score)
-    direction = sort_column.asc() if (order or "").lower() == "asc" else sort_column.desc()
-
+    now = now or _now()
     filters: list[Any] = []
     if tenant_id:
         filters.append(models.Vulnerability.tenant_id == tenant_id)
@@ -4309,6 +4305,8 @@ def list_vulnerabilities(
         filters.append(models.Vulnerability.last_seen_at < now - timedelta(days=stale_days))
     if in_kev is True:
         filters.append(models.Vulnerability.in_kev.is_(True))
+    if problem_key:
+        filters.append(problem_identity.problem_key_expr() == problem_identity.validate_key(problem_key))
     if q and q.strip():
         needle = f"%{q.strip().lower()}%"
         filters.append(
@@ -4320,6 +4318,58 @@ def list_vulnerabilities(
             )
         )
     filters.extend(_sla_filters(sla, now))
+    return filters
+
+
+def list_vulnerabilities(
+    settings: Settings,
+    *,
+    tenant_id: str | None = None,
+    state: str | None = None,
+    states: list[str] | None = None,
+    severity: str | None = None,
+    asset_id: str | None = None,
+    source: str | None = None,
+    finding_type: str | None = None,
+    detector_source: str | None = None,
+    network_exposure: str | None = None,
+    assignee: str | None = None,
+    unassigned: bool = False,
+    sla: str | None = None,
+    exception_state: str | None = None,
+    stale_days: int | None = None,
+    in_kev: bool | None = None,
+    problem_key: str | None = None,
+    offset: int = 0,
+    limit: int = pagination.DEFAULT_LIMIT,
+    q: str | None = None,
+    sort: str | None = None,
+    order: str | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Paginated findings.
+
+    ``sla`` filters on the derived reading, which is a predicate over ``due_at``
+    and ``exception_until`` rather than a column — the same expression
+    ``sla_state`` computes, pushed into SQL so a breach report does not have to
+    page through every open finding to find the overdue ones.
+
+    ``exception_state`` filters on the acceptance workflow (#348), and
+    ``exception_requested`` is the approver's queue: nothing notifies whoever
+    holds ``vulnerability.exception.approve`` that a request is waiting, so
+    without this the only way to find one is to read every finding in the
+    tenant.
+    """
+    now = _now()
+    sort_column = SORT_COLUMNS.get(sort or "", models.Vulnerability.contextual_score)
+    direction = sort_column.asc() if (order or "").lower() == "asc" else sort_column.desc()
+    filters = finding_filters(
+        tenant_id=tenant_id, state=state, states=states, severity=severity,
+        asset_id=asset_id, source=source, finding_type=finding_type,
+        detector_source=detector_source, network_exposure=network_exposure,
+        assignee=assignee, unassigned=unassigned, sla=sla,
+        exception_state=exception_state, stale_days=stale_days, in_kev=in_kev,
+        problem_key=problem_key, q=q, now=now,
+    )
 
     with get_session(settings.postgres_url) as session:
         total = session.execute(

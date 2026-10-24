@@ -4,6 +4,23 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Aggregated **problems** and **remediation campaigns**
+  ([#579](https://github.com/onixus/Shapoclyack/issues/579)). `GET /api/problems`
+  groups tracked findings by a typed key (normalised CVE, detector template,
+  script; unknown identities are never merged) with server-side filters,
+  sorting and whole-selection aggregates, and `GET /api/problems/instances`
+  drills down with an explanation of drift; `GET /api/vulnerabilities` takes
+  `problem_key`. `/api/remediation-campaigns` freezes a previewed set of
+  findings into a campaign with an owner, a target date and an action
+  description, explicit audited add/exclude, separate progress categories
+  (never summed into "fixed"), a defined completion/recurrence policy and a
+  verification run through the existing per-finding verify. Migration `0101`
+  is expand-only. A ticket sync no longer moves a finding out of `VERIFYING`
+  while its verification is in flight. See
+  [docs/remediation-campaigns.md](docs/remediation-campaigns.md).
+
 ### Changed
 
 - Image builds fetch enrichment data (NVD/CVSS4, EPSS, KEV, GeoIP, vendor

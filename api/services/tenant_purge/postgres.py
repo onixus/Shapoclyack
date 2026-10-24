@@ -64,6 +64,9 @@ POSTGRES_TABLES = (
     "operator_tasks",
     "operator_sessions",
     # Findings and their history.
+    "remediation_campaign_events",
+    "remediation_campaign_members",
+    "remediation_campaigns",
     "vulnerability_events",
     "software_cve_matches",
     "vulnerabilities",
