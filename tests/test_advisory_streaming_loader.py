@@ -38,7 +38,7 @@ def random_entries(rng, n, packages=("openssl", "curl", "a", "lib-x")):
     entries = []
     for i in range(n):
         entry = {
-            "advisory_id": rng.choice([f"USN-{i}-1", "", None]),
+            "advisory_id": rng.choice([f"USN-{i}-1", "", None, "DSA-ä", "DSA-\U0001f600", "DSA-z"]),
             "cve_ids": rng.choice(
                 [["CVE-2024-%d" % i], ["cve-2024-1", "CVE-2024-1", " "], "CVE-2024-9", [], 5]
             ),
@@ -220,7 +220,7 @@ def loads_error(text):
 
 def streamed_error(path, provider="p"):
     try:
-        with path.open("r", encoding="utf-8", newline="") as stream:
+        with path.open("r", encoding="utf-8") as stream:
             for _ in base._stream_document(stream):
                 pass
     except json.JSONDecodeError as exc:
@@ -274,6 +274,84 @@ def test_the_dataset_error_carries_the_file_position(tmp_path, monkeypatch):
     assert data.error == f"invalid JSON: {loads_error(text)}"
 
 
+def test_crlf_positions_match_the_old_universal_newline_read(tmp_path):
+    # The old loader parsed ``read_text()``, which turns CRLF into LF.
+    text = '{\r\n  "entries": [\r\n    {},\r\n    {"a": }\r\n  ]\r\n}'
+    path = tmp_path / "f.json"
+    path.write_bytes(text.encode("utf-8"))
+    data = base._load_dataset(path, provider="p")
+    assert data.error == f"invalid JSON: {loads_error(path.read_text())}"
+
+
+def test_a_digest_tail_with_a_newline_falls_back_to_the_rows(tmp_path):
+    payload = {
+        "entries": [
+            {"cve_ids": ["CVE-1-1"], "release": "x", "source_package": "a",
+             "fixed_version": "1", "advisory_id": "A\nZ"},
+            {"cve_ids": ["CVE-1-1"], "release": "x", "source_package": "a",
+             "fixed_version": "1", "advisory_id": "A"},
+            {"cve_ids": ["CVE-1-2"], "release": "y", "source_package": "b",
+             "fixed_version": "1\n0"},
+        ]
+    }
+    path = tmp_path / "f.json"
+    path.write_text(json.dumps(payload))
+    assert base._load_dataset(path, provider="p").digest == reference_digest(
+        reference_records(payload)
+    )
+
+
+@pytest.mark.parametrize("value", ["1.5", "1e+5", "-2.25E-3", "1234567"])
+def test_a_number_split_at_the_window_edge_is_read_whole(tmp_path, monkeypatch, value):
+    for size in range(1, 30):
+        monkeypatch.setattr(base, "_CHUNK_CHARS", size)
+        path = tmp_path / "f.json"
+        path.write_text('{"version": %s, "entries": [%s, 7]}' % (value, value))
+        events = list(base._stream_document(path.open(encoding="utf-8")))
+        assert ("meta", "version", json.loads(value)) in events, size
+        assert ("entry", json.loads(value)) in events, size
+
+
+def test_a_broken_document_is_not_read_to_the_end(tmp_path, monkeypatch):
+    monkeypatch.setattr(base, "_CHUNK_CHARS", 64)
+    path = tmp_path / "f.json"
+    filler = json.dumps({"cve_ids": ["CVE-1-1"], "release": "x", "source_package": "p"})
+    path.write_text('{"entries": [{"a" 1}, ' + ", ".join([filler] * 5000) + "]}")
+    reads = []
+    with path.open(encoding="utf-8") as stream:
+        read = stream.read
+        stream.read = lambda n=-1: reads.append(n) or read(n)
+        with pytest.raises(json.JSONDecodeError, match="Expecting ':' delimiter"):
+            list(base._stream_document(stream))
+    assert sum(reads) < 1024
+
+
+def test_the_read_size_shrinks_back_after_a_large_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(base, "_CHUNK_CHARS", 64)
+    big = {"cve_ids": ["CVE-1-1"], "release": "x", "source_package": "p", "url": "u" * 5000}
+    small = {"cve_ids": ["CVE-1-2"], "release": "x", "source_package": "p"}
+    path = tmp_path / "f.json"
+    path.write_text(json.dumps({"entries": [big] + [small] * 200}))
+    reads = []
+    with path.open(encoding="utf-8") as stream:
+        read = stream.read
+        stream.read = lambda n=-1: reads.append(n) or read(n)
+        list(base._stream_document(stream))
+    assert max(reads) > 2048 and reads[-1] < 128
+
+
+def test_a_value_error_in_normalization_is_not_reported_as_bad_json(tmp_path, monkeypatch):
+    path = tmp_path / "f.json"
+    path.write_text(json.dumps({"entries": [{"cve_ids": ["CVE-1-1"]}]}))
+
+    def broken(raw):
+        raise ValueError("normalizer bug")
+
+    monkeypatch.setattr(base, "_coerce_entry", broken)
+    with pytest.raises(ValueError, match="normalizer bug"):
+        base.load_dataset(path, provider="p")
+
+
 def _big_dataset(tmp_path, n=40):
     path = tmp_path / "big.json"
     path.write_text(json.dumps({"entries": random_entries(random.Random(9), n)}))
@@ -285,22 +363,49 @@ def test_indexing_records_does_not_decode_everything(tmp_path):
     everything = list(data.records)
     assert len(everything) > 50
     decoded = []
-    real = data.records._store._decode
-    data.records._store.bucket = lambda key: decoded.append(key) or real(key)
+    store = data.records._store
+    real = store._decode
+    store._decode = lambda key: decoded.append(key) or real(key)
     assert data.records[0] == everything[0]
     assert len(decoded) == 1 < len(data.index)
+    decoded.clear()
     assert data.records[-1] == everything[-1]
+    assert len(decoded) == 1
     assert data.records[3:9] == tuple(everything[3:9])
     assert data.records[::7] == tuple(everything[::7])
     assert data.records[10**6:] == ()
+    for step in (-1, -3):
+        for start, stop in ((None, None), (-5, 2), (10, None), (None, -10), (0, 5)):
+            assert data.records[start:stop:step] == tuple(everything[start:stop:step])
+    assert list(reversed(data.records)) == everything[::-1]
     with pytest.raises(IndexError):
         data.records[len(everything)]
     with pytest.raises(IndexError):
         data.records[-len(everything) - 1]
-    with pytest.raises(NotImplementedError):
-        data.records[::-1]
     with pytest.raises(TypeError):
         data.records["x"]
+
+
+def test_records_compare_like_the_tuple_they_replaced(tmp_path):
+    data = _big_dataset(tmp_path, 100)
+    again = _big_dataset(tmp_path, 100)
+    assert data.records == again.records == tuple(data.records)
+    assert tuple(data.records) == data.records and list(data.records) == list(data.records)
+    assert data.records != tuple(data.records)[1:] and data.records != "x"
+    empty = tmp_path / "e.json"
+    empty.write_text('{"entries": []}')
+    assert base._load_dataset(empty, provider="p").records == ()
+
+
+def test_walking_records_leaves_the_bucket_cache_alone(tmp_path):
+    data = _big_dataset(tmp_path, 400)
+    key = next(iter(data.index))
+    hot = data.lookup(*key)
+    before = data.index._store.bucket.cache_info()
+    list(data.records)
+    data.records[len(data.records) // 3]
+    assert data.index._store.bucket.cache_info() == before
+    assert data.lookup(*key) is hot
 
 
 def test_a_replaced_dataset_is_freed_without_a_gc_pass(tmp_path):

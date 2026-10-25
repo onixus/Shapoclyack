@@ -27,6 +27,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import weakref
 import zlib
@@ -266,7 +267,10 @@ class _PackedIndex(Mapping):
 
 class _PackedRecords(Sequence):
     """The flat record list, for callers that still want one. Iterating it
-    decodes bucket by bucket; ``len``/``bool`` are free."""
+    decodes bucket by bucket, past the bucket cache so a full pass does not
+    evict what the matcher keeps asking for; ``len``/``bool`` are free."""
+
+    __hash__ = None  # type: ignore[assignment]
 
     def __init__(self, store: _PackedStore) -> None:
         self._store = store
@@ -276,23 +280,40 @@ class _PackedRecords(Sequence):
 
     def __iter__(self) -> Iterator[AdvisoryRecord]:
         for key in self._store.blobs:
-            yield from self._store.bucket(key)
+            yield from self._store._decode(key)
+
+    def __reversed__(self) -> Iterator[AdvisoryRecord]:
+        for key in reversed(self._store.blobs):
+            yield from reversed(self._store._decode(key))
+
+    def __eq__(self, other: object) -> bool:
+        """Compares as the tuple it replaced did."""
+        if isinstance(other, _PackedRecords) and other._store is self._store:
+            return True
+        if not isinstance(other, Sequence) or isinstance(other, (str, bytes)):
+            return NotImplemented
+        return len(self) == len(other) and all(a == b for a, b in zip(self, other))
 
     def __getitem__(self, index):  # type: ignore[override]
-        """Walks buckets up to ``index`` instead of decoding the whole feed."""
+        """Walks buckets from the nearer end instead of decoding the whole feed."""
         size = len(self)
         if isinstance(index, slice):
             start, stop, step = index.indices(size)
-            if step < 0:
-                raise NotImplementedError("negative slice steps are not supported")
-            return tuple(islice(self, start, stop, step))
+            if step > 0:
+                return tuple(islice(self, start, stop, step))
+            # Position i is position size - 1 - i of the reversed walk.
+            return tuple(
+                islice(reversed(self), size - 1 - start, size - 1 - stop, -step)
+            )
         if not isinstance(index, int):
             raise TypeError("record indices must be integers or slices")
         if index < 0:
             index += size
         if not 0 <= index < size:
             raise IndexError("record index out of range")
-        return next(islice(self, index, index + 1))
+        if index < size // 2:
+            return next(islice(self, index, None))
+        return next(islice(reversed(self), size - 1 - index, None))
 
 
 @dataclass
@@ -335,6 +356,15 @@ def load_dataset(path: Path, *, provider: str) -> AdvisoryDataset:
 
 _CHUNK_CHARS = 1 << 20
 _JSON = json.JSONDecoder()
+_WHITESPACE = re.compile(r"[ \t\n\r]*")
+#: How close to the end of the window a parse error must be to count as input
+#: cut off by the window rather than as a broken document. Covers a partial
+#: ``\uXXXX`` escape, the longest construct that fails short of the end.
+_TAIL = 8
+
+
+class _ParserLimit(Exception):
+    """``raw_decode`` refused a value over Python's integer-string ceiling."""
 
 
 class _JsonReader:
@@ -381,12 +411,9 @@ class _JsonReader:
     def peek(self) -> str:
         """Next non-whitespace character, or ``""`` at end of input."""
         while True:
-            buf, pos, size = self.buf, self.pos, len(self.buf)
-            while pos < size and buf[pos] in " \t\n\r":
-                pos += 1
-            self.pos = pos
-            if pos < size:
-                return buf[pos]
+            self.pos = pos = _WHITESPACE.match(self.buf, self.pos).end()
+            if pos < len(self.buf):
+                return self.buf[pos]
             if not self.fill():
                 return ""
 
@@ -396,13 +423,26 @@ class _JsonReader:
             try:
                 obj, end = _JSON.raw_decode(self.buf, self.pos)
             except json.JSONDecodeError as exc:
-                if self.fill():
+                # Input cut off by the window fails at its end, or as a string
+                # that runs into it. Anything else is broken where it stands:
+                # reading on would only pull the rest of the file into memory.
+                cut = exc.pos >= len(self.buf) - _TAIL or exc.msg.startswith(
+                    "Unterminated string"
+                )
+                if cut and self.fill():
                     continue
                 # fill() has not moved the window: the position is still in it.
                 raise self.error(exc.msg, exc.pos) from None
-            if end == len(self.buf) and self.fill():
-                continue  # a number or literal may continue in the next chunk
+            except ValueError as exc:
+                if isinstance(exc, UnicodeError):
+                    raise
+                raise _ParserLimit(str(exc)) from None
+            # A number may continue in the next chunk, and a prefix of one
+            # ("1." or "1e+") decodes as a shorter number.
+            if len(self.buf) - end < 3 and self.fill():
+                continue
             self.pos = end
+            self.grow = _CHUNK_CHARS
             return obj
 
     def error(self, message: str, at: int) -> json.JSONDecodeError:
@@ -479,12 +519,10 @@ def _stream_document(stream: Any) -> Iterator[tuple]:
         raise reader.fail("Extra data")
 
 
-def _line(release: str, source_package: str, row: _Row) -> str:
+def _tail(row: _Row) -> str:
+    """A statement's digest line after its ``release|source_package|`` prefix."""
     advisory_id, cves, fixed_version, _severity, state, _url = row
-    return (
-        f"{release}|{source_package}|{','.join(cves)}|{state}|"
-        f"{fixed_version or ''}|{advisory_id}"
-    )
+    return f"{','.join(cves)}|{state}|{fixed_version or ''}|{advisory_id}"
 
 
 def _load_dataset(path: Path, *, provider: str) -> AdvisoryDataset:
@@ -493,12 +531,16 @@ def _load_dataset(path: Path, *, provider: str) -> AdvisoryDataset:
     # kept as objects: a tuple, a list and four strings per statement is what
     # made the old loader cost gigabytes.
     buckets: dict[tuple[str, str], bytearray] = {}
+    # Per bucket, the digest tail of each statement, newline-separated, so the
+    # digest needs no second parse of the rows. ``None`` once a tail holds a
+    # newline itself; the digest then rebuilds the tails from the rows.
+    tails: dict[tuple[str, str], bytearray] | None = {}
     state: str | None = None  # None | "list" | "empty" | "bad"
     count = 0
     dropped = 0
     intern: dict[str, str] = {}
     try:
-        with path.open("r", encoding="utf-8", newline="") as stream:
+        with path.open("r", encoding="utf-8") as stream:
             for event in _stream_document(stream):
                 kind = event[0]
                 if kind == "meta":
@@ -508,6 +550,7 @@ def _load_dataset(path: Path, *, provider: str) -> AdvisoryDataset:
                 elif kind in ("entries_list", "entries_value"):
                     # A repeated key replaces the earlier value, as in json.loads.
                     buckets.clear()
+                    tails = {}
                     count = dropped = 0
                     if kind == "entries_list":
                         state = "list"
@@ -525,6 +568,14 @@ def _load_dataset(path: Path, *, provider: str) -> AdvisoryDataset:
                     )
                     line = json.dumps(row, separators=(",", ":")).encode("ascii")
                     buckets.setdefault(key, bytearray()).extend(line + b"\n")
+                    if tails is not None:
+                        tail = _tail(row)
+                        if "\n" in tail:
+                            tails = None
+                        else:
+                            tails.setdefault(key, bytearray()).extend(
+                                tail.encode("utf-8") + b"\n"
+                            )
                     count += 1
     except FileNotFoundError:
         return AdvisoryDataset(error="missing")
@@ -534,9 +585,7 @@ def _load_dataset(path: Path, *, provider: str) -> AdvisoryDataset:
     except json.JSONDecodeError as exc:
         LOG.warning("advisories: %s is not valid JSON: %s", path, exc)
         return AdvisoryDataset(present=True, error=f"invalid JSON: {exc}")
-    except ValueError as exc:
-        if isinstance(exc, UnicodeError):
-            raise
+    except _ParserLimit:
         # json may raise a plain ValueError for Python's integer-string
         # conversion ceiling. Limit this handler to parsing, not normalization.
         LOG.warning("advisories: JSON value exceeds parser limits in %s", path)
@@ -556,28 +605,37 @@ def _load_dataset(path: Path, *, provider: str) -> AdvisoryDataset:
     # bucket share their ``release|package|`` prefix, so sorting buckets by that
     # prefix and each bucket's lines among themselves is the global sort — unless
     # one prefix is a prefix of another, which only a ``|`` in a package name
-    # can cause; that case sorts every line, as before.
+    # can cause; that case sorts every line, as before. Lines are sorted as
+    # UTF-8 bytes, which orders them exactly as the code points they encode.
     ordered = sorted((f"{key[0]}|{key[1]}|", key) for key in buckets)
     flat_sort = any(
         later.startswith(earlier)
         for (earlier, _), (later, _) in zip(ordered, ordered[1:])
     )
     digest = hashlib.sha256()
-    all_lines: list[str] = []
+    all_lines: list[bytes] = []
     wrote = False
     blobs: dict[tuple[str, str], bytes] = {}
-    for _prefix, key in ordered:
+    for prefix, key in ordered:
         raw = buckets.pop(key)
-        lines = [_line(*key, _row_from_json(item)) for item in raw.splitlines()]
-        if flat_sort:
-            all_lines.extend(lines)
+        if tails is not None:
+            lines = tails.pop(key).split(b"\n")
+            lines.pop()  # after the last newline
         else:
-            for text in sorted(lines):
-                digest.update((("\n" if wrote else "") + text).encode("utf-8"))
-                wrote = True
+            lines = [
+                _tail(_row_from_json(item)).encode("utf-8")
+                for item in raw.splitlines()
+            ]
+        head = prefix.encode("utf-8")
+        if flat_sort:
+            all_lines.extend(head + tail for tail in lines)
+        else:
+            lines.sort()
+            digest.update((b"\n" if wrote else b"") + head + (b"\n" + head).join(lines))
+            wrote = True
         blobs[key] = zlib.compress(bytes(raw), 6)
     if flat_sort:
-        digest.update("\n".join(sorted(all_lines)).encode("utf-8"))
+        digest.update(b"\n".join(sorted(all_lines)))
 
     store = _PackedStore(blobs, count, provider, updated)
     return AdvisoryDataset(
