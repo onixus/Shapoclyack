@@ -101,14 +101,14 @@ def test_missing_empty_or_invalid_feed_is_not_assessed(tmp_path, document):
 def test_unreadable_feed_is_not_assessed(tmp_path, monkeypatch):
     path = tmp_path / "denied.json"
     write_feed(path)
-    original = Path.read_text
+    original = Path.open
 
     def denied(self, *args, **kwargs):
         if self == path:
             raise PermissionError("fixture read refused")
         return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_text", denied)
+    monkeypatch.setattr(Path, "open", denied)
     assert_unassessed(run(FixtureProvider(path)), "no_advisory_data")
 
 
