@@ -36,6 +36,9 @@ BEFORE = "0066_tenant_lifecycle"
 REVISION = "0067_tenant_rls"
 #: Tenant tables created after REVISION; absent from a database stopped at it.
 ADDED_LATER = {
+    "remediation_campaigns",  # 0101 (#579), with its own tenant policy.
+    "remediation_campaign_members",
+    "remediation_campaign_events",
     "asset_groups",
     "asset_group_versions",
     "asset_group_memberships",

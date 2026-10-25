@@ -345,7 +345,7 @@ function serverErrorRequestId(error: AxiosError): string | null {
   return typeof value === "string" && value ? value : null;
 }
 
-function apiErrorMessage(error: unknown): string {
+export function apiErrorMessage(error: unknown): string {
   if (axios.isAxiosError(error)) {
     const requestId = serverErrorRequestId(error);
     const suffix = requestId ? ` (request id: ${requestId})` : "";
@@ -3057,6 +3057,8 @@ export type VulnerabilityListFilters = {
   in_kev?: boolean;
   /** Observed exposure of the finding's host; "unknown" also matches NULL. */
   network_exposure?: NetworkExposure | "";
+  /** Drill-down from an aggregated problem (#579): `cve:CVE-…`, `tpl:…`, `script:…`. */
+  problem_key?: string;
 };
 
 export type NetworkExposure = "external" | "internal" | "unknown";
@@ -3279,6 +3281,7 @@ export async function fetchTrackedVulnerabilities(
     if (filters?.in_kev) params.set("in_kev", "true");
     if (filters?.network_exposure) params.set("network_exposure", filters.network_exposure);
     if (filters?.stale_days != null) params.set("stale_days", String(filters.stale_days));
+    if (filters?.problem_key) params.set("problem_key", filters.problem_key);
     const { data } = await api.get<Page<TrackedVulnerability>>(`/vulnerabilities?${params}`);
     return data;
   } catch (error) {

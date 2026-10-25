@@ -234,6 +234,22 @@ def _load_cve_float_map(path: Path | None) -> dict[str, float]:
     return out
 
 
+def load_epss_meta(path: Path | None) -> dict[str, Any]:
+    """``source`` / ``updated`` header of an EPSS overlay file, or ``{}``."""
+    if path is None or not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        "source": raw.get("source") if isinstance(raw.get("source"), str) else None,
+        "updated": raw.get("updated") if isinstance(raw.get("updated"), str) else None,
+    }
+
+
 def _load_kev_set(path: Path | None) -> set[str]:
     if path is None or not path.is_file():
         return set()
@@ -590,8 +606,10 @@ class RiskScoring:
         kev: set[str] | None = None,
         exploits: ExploitEvidence | None = None,
         report_overlay_age: bool = False,
+        epss_meta: dict[str, Any] | None = None,
     ) -> None:
         self._epss = epss or {}
+        self._epss_meta = dict(epss_meta or {})
         self._kev = kev or set()
         # Defaults to an empty resolver rather than None so every call site can
         # assume it exists; with no overlay and no template corpus it still
@@ -630,6 +648,7 @@ class RiskScoring:
         kev_path = Path(os.environ.get("OCTO_KEV_DATABASE", "scanner/data/kev/kev-overlay.json"))
         return cls(
             epss=_load_cve_float_map(epss_path),
+            epss_meta=load_epss_meta(epss_path),
             kev=_load_kev_set(kev_path),
             exploits=ExploitEvidence.from_env(),
             report_overlay_age=True,
@@ -688,6 +707,21 @@ class RiskScoring:
         if not cve:
             return 0.0
         return float(self._epss.get(cve.upper(), 0.0))
+
+    def epss_lookup(self, cve: str) -> float | None:
+        """EPSS for a CVE, or ``None`` when the overlay has no entry.
+
+        Unlike :meth:`epss_score`, which scores a missing entry as 0.0 for the
+        likelihood model, this keeps "no data" distinct from "probability 0".
+        """
+        if not cve:
+            return None
+        value = self._epss.get(cve.strip().upper())
+        return float(value) if value is not None else None
+
+    def epss_meta(self) -> dict[str, Any]:
+        """``source`` and ``updated`` (feed date) of the loaded EPSS overlay."""
+        return dict(self._epss_meta)
 
     def exploit_active(self, cve: str) -> int:
         if cve and cve.upper() in self._kev:

@@ -1804,6 +1804,137 @@ class VulnerabilityEvent(Base):
     )
 
 
+class RemediationCampaign(Base):
+    """A durable remediation effort over a snapshot of findings (#579).
+
+    A campaign is **not** a second lifecycle. It never owns a finding's state,
+    owner, SLA or exception: those stay on ``vulnerabilities`` and move only
+    through the existing operations (transition, assign, exception, verify).
+    The campaign holds what the findings table cannot — who is accountable for
+    the shared action, by when, which findings were chosen *at creation*, and
+    why each later addition or exclusion happened.
+
+    ``due_at`` is the campaign's own target. It never rewrites
+    ``Vulnerability.due_at`` (the SLA judged by policy), so a lenient campaign
+    date cannot hide a breached finding and a strict one cannot create a breach.
+
+    ``status`` is ``active | completed | cancelled``. ``completed`` is derived
+    (every included member is machine-verified, an accepted risk or a false
+    positive) and recorded when a read or a verification reconciles it; a
+    recurrence of a member returns the campaign to ``active`` and counts in
+    ``reopen_count`` (api/services/remediation_campaigns.py states the policy).
+    ``cancelled`` is only ever set and lifted by a person.
+    """
+
+    __tablename__ = "remediation_campaigns"
+
+    campaign_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str]
+    # The common action ("upgrade openssl to 3.0.14 and restart"), free text.
+    description: Mapped[str] = mapped_column(Text, default="", server_default="")
+    owner: Mapped[str | None] = mapped_column(default=None)
+    due_at: Mapped[datetime | None] = mapped_column(default=None)
+    status: Mapped[str] = mapped_column(default="active", server_default="active")
+    status_changed_at: Mapped[datetime]
+    completed_at: Mapped[datetime | None] = mapped_column(default=None)
+    reopen_count: Mapped[int] = mapped_column(default=0, server_default="0")
+    # sha256 of the sorted vuln ids resolved at creation: what the preview
+    # showed and what was frozen.
+    composition_hash: Mapped[str] = mapped_column(default="")
+    snapshot_size: Mapped[int] = mapped_column(default=0, server_default="0")
+    # Membership rows ever created (snapshot plus later additions). Rows vanish
+    # with their finding (ON DELETE CASCADE); the gap against what is left is
+    # reported as ``vanished`` and blocks completion.
+    tracked_members: Mapped[int] = mapped_column(default=0, server_default="0")
+    # The selection that produced the snapshot (problem keys, ids, filters).
+    # Provenance only; it is never re-evaluated.
+    selection: Mapped[dict] = mapped_column(_JSON_DOC, default=dict)
+    created_by: Mapped[str | None] = mapped_column(default=None)
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+    __table_args__ = (
+        Index("ix_remediation_campaigns_status", "tenant_id", "status", "due_at"),
+    )
+
+
+class RemediationCampaignMember(Base):
+    """One finding's membership in a campaign (#579).
+
+    One row per (campaign, finding) for life: excluding and re-including flips
+    ``status`` on the same row, which is what keeps a re-inclusion from
+    counting the finding twice. The history of each flip is in
+    ``remediation_campaign_events``.
+    """
+
+    __tablename__ = "remediation_campaign_members"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    campaign_id: Mapped[str] = mapped_column(
+        ForeignKey("remediation_campaigns.campaign_id", ondelete="CASCADE"), index=True
+    )
+    # CASCADE: a finding that no longer exists (its asset was deleted) is not
+    # a member of anything.
+    vuln_id: Mapped[str] = mapped_column(
+        ForeignKey("vulnerabilities.vuln_id", ondelete="CASCADE")
+    )
+    # included | excluded
+    status: Mapped[str] = mapped_column(default="included", server_default="included")
+    problem_key: Mapped[str]
+    # The finding's reopen_count when it joined; a larger live value means it
+    # came back after the campaign took it on.
+    reopen_baseline: Mapped[int] = mapped_column(default=0, server_default="0")
+    # What the finding looked like when it joined: finding_key, asset, state,
+    # severity, reopen_count. Lets the campaign say "came back since".
+    snapshot: Mapped[dict] = mapped_column(_JSON_DOC, default=dict)
+    added_by: Mapped[str | None] = mapped_column(default=None)
+    added_at: Mapped[datetime]
+    add_reason: Mapped[str | None] = mapped_column(default=None)
+    excluded_by: Mapped[str | None] = mapped_column(default=None)
+    excluded_at: Mapped[datetime | None] = mapped_column(default=None)
+    exclude_reason: Mapped[str | None] = mapped_column(default=None)
+    # The campaign's latest verification request for this member and what
+    # dispatching it came to: dispatched | conflict | unsupported | failed.
+    last_verify_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_verify_outcome: Mapped[str | None] = mapped_column(default=None)
+    last_verify_detail: Mapped[str | None] = mapped_column(Text, default=None)
+
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "vuln_id", name="uq_campaign_member"),
+        Index("ix_campaign_members_vuln", "tenant_id", "vuln_id"),
+        Index("ix_campaign_members_problem", "campaign_id", "problem_key"),
+    )
+
+
+class RemediationCampaignEvent(Base):
+    """Append-only history of a campaign (#579); survives restarts and edits."""
+
+    __tablename__ = "remediation_campaign_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    campaign_id: Mapped[str] = mapped_column(
+        ForeignKey("remediation_campaigns.campaign_id", ondelete="CASCADE"), index=True
+    )
+    occurred_at: Mapped[datetime]
+    # created | updated | members_added | members_excluded | members_readded |
+    # verification_requested | completed | reopened | cancelled | resumed
+    kind: Mapped[str]
+    actor: Mapped[str | None] = mapped_column(default=None)
+    reason: Mapped[str | None] = mapped_column(default=None)
+    # Ids, counts and changed field names. Never usernames: attribution is the
+    # ``actor`` column, which is what erasure pseudonymises.
+    detail: Mapped[dict] = mapped_column(_JSON_DOC, default=dict)
+
+    __table_args__ = (
+        Index("ix_campaign_events_time", "campaign_id", "occurred_at"),
+    )
+
+
 class AssetTag(Base):
     __tablename__ = "asset_tags"
 
