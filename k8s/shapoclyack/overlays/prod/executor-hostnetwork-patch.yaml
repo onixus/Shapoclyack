@@ -16,6 +16,11 @@
 # docs/k8s-hardening.md lists this as the one deviation beyond `baseline` that
 # is not a capability.
 #
+# L2 discovery on large segments: the node's neighbour table (gc_thresh3,
+# default 1024) bounds how many ARP candidates survive. It is host-wide and
+# cannot be set through securityContext.sysctls; raise it on the scanner nodes with
+# scripts/neigh-table-limits.sh (docs/pulse-backend.md, "Neighbour table limits").
+#
 # Prerequisite, unchanged: nodes labelled `workload=scanner` and tainted
 # `scanner=true:NoSchedule`.
 apiVersion: apps/v1

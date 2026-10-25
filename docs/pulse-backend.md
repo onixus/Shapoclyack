@@ -843,6 +843,37 @@ discovery, a discovery-only mode and an interface choice
 ([GenDec#35](https://github.com/onixus/GenDec/issues/35)); the workarounds above
 go away when it lands. Measurements: [ADR 0002](adr/0002-replacing-nmap-functions.md).
 
+### Neighbour table limits
+
+The kernel keeps neighbour (ARP) entries in a table bounded by
+`net.ipv4.neigh.default.gc_thresh1/2/3` (defaults 128/512/1024; IPv6 has the
+same keys under `net.ipv6.neigh.default`). Above `gc_thresh3` the kernel evicts
+entries. A segment with more on-link candidates than that (a /20 has 4094)
+loses live hosts silently: Pulse reads the neighbours through `ip -4 neigh`
+after resolution, and an evicted host is simply not there.
+
+- **Symptom.** `neighbour table overflow` in `dmesg`, fewer live hosts than
+  expected on large segments, and the Pulse warning
+  `ARP candidates exceed ... gc_thresh3` (exposed as `discovery.warnings`,
+  [GenDec#53](https://github.com/onixus/GenDec/issues/53)).
+- **Check.** `scripts/neigh-table-limits.sh --check --hosts 5000 [--ipv6]`
+  prints the current values and exits 1 when the candidates do not fit.
+- **Apply.** `sudo scripts/neigh-table-limits.sh --apply --hosts 5000 --persist`
+  sets `gc_thresh3` to the next power of two at or above twice the hosts
+  (at least 4096), `gc_thresh2` to half of it, `gc_thresh1` to an eighth, and
+  writes `/etc/sysctl.d/90-shapoclyack-neigh.conf` (idempotent). `--thresh3 N`
+  sets the value explicitly; existing higher values are kept unless `--force`.
+- **Containers.** The neighbour table is shared by every network namespace on
+  a host, and the kernel exposes `gc_thresh1/2/3` only in the initial
+  namespace: `docker run --sysctl net.ipv4.neigh.default.gc_thresh3=...` fails
+  (no such file) and pod `securityContext.sysctls` cannot set them, allowlist
+  or not. Set them on the host, i.e. the scanner nodes for `overlays/prod`
+  (`hostNetwork: true`), for instance with a node bootstrap or a privileged
+  DaemonSet that writes the sysctl.d file. Neighbour entries of all containers
+  on the node count towards the same limit.
+
+Follow-up (pre-flight check, sizing policy, chunking): see the linked issue.
+
 ## Nmap
 
 Nmap is not bundled in the images (NPSL, [#97](https://github.com/onixus/Shapoclyack/issues/97))
