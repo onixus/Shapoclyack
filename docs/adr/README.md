@@ -10,6 +10,7 @@ rather than how one feature works. Feature design stays in its own guide.
 | [0002](0002-replacing-nmap-functions.md) | Where the functions Nmap provided move to | **Accepted** — onixus, 2026-10-10 | [#549](https://github.com/onixus/Shapoclyack/issues/549) |
 | [0003](0003-port-discovery-backend.md) | Retain Naabu pending discovery-backend acceptance | **Proposed** — existing default unchanged | [#452](https://github.com/onixus/Shapoclyack/issues/452) |
 | [0004](0004-local-operator.md) | Local operator with explicit provider and tool boundaries | **Accepted** — onixus, 2026-10-21; implementation requested, hardware acceptance pending | [#584](https://github.com/onixus/Shapoclyack/issues/584) |
+| [0005](0005-local-operator-mac-acceptance.md) | Mac primary operator acceptance; NVIDIA separate | **Accepted** — onixus, 2026-10-25 | [#583](https://github.com/onixus/Shapoclyack/issues/583), [#609](https://github.com/onixus/Shapoclyack/issues/609) |
 
 Decisions taken before this directory existed are recorded where they were
 made: the endpoint-inventory decisions in

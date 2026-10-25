@@ -7,6 +7,15 @@ export type OperatorStatus = {
   runtime_status: string;
   quality_status: string;
   task_submission_enabled: boolean;
+  runtime_verified?: boolean;
+  model_integrity?: string;
+  model_sha256?: string | null;
+  runtime_revision?: string | null;
+  runtime_image?: string | null;
+  context_tokens?: number | null;
+  parallel?: number | null;
+  verified_at?: string | null;
+  profile?: string | null;
 };
 export type Citation = {
   source_id: string;
@@ -39,7 +48,48 @@ export type OperatorTask = {
     quality_status?: string;
     analysis?: OperatorAnswer;
     answer?: { answer: OperatorAnswer };
+    plan?: OperatorPlan;
   } | null;
+};
+export type PlannerTool =
+  | "summarize_run"
+  | "analyze_run"
+  | "compare_runs"
+  | "find_remediation"
+  | "prepare_scan"
+  | "cancel_scan"
+  | "verify_finding"
+  | "abstain";
+export type OperatorPlan = {
+  tool: PlannerTool;
+  arguments: Record<string, unknown>;
+  requires_confirmation: boolean;
+  effect_executed: boolean;
+  status: string;
+  quality_status: string;
+  language: "ru" | "en";
+  reason?: string;
+};
+export type PlannerScan = {
+  mode: "safe" | "balanced" | "fast" | "test";
+  ranges?: string;
+  domains?: string;
+  ports: string;
+  ports_udp?: string;
+  intent?: string | null;
+  agent_group?: string | null;
+};
+export type PlannerRequest = {
+  request: string;
+  language: "ru" | "en";
+  context: {
+    run_id?: string;
+    previous_run_id?: string;
+    device_id?: string;
+    job_id?: string;
+    vuln_id?: string;
+    scan?: PlannerScan;
+  };
 };
 export type OperatorSession = {
   session_id: string;
@@ -69,12 +119,30 @@ export type RemediationSource = Citation & {
   feed_date?: string;
 };
 export type RemediationItem = {
-  package: string;
-  installed_version: string;
+  plan?: {
+    origin: "shapoclyack_operator_runbook";
+    runbook_id: string;
+    runbook_sha256: string;
+    plan_sha256: string;
+    preconditions: { ru: string[]; en: string[] };
+    backup: { status: string; ru: string; en: string };
+    restart: { status: string; ru: string; en: string };
+    rollback: { status: string; ru: string; en: string };
+    verification: { method: string; ru: string; en: string };
+    vendor_workaround: { status: string; reason: string };
+  };
+  kind?: string;
+  product?: string | null;
+  applicability?: string;
+  directive?: string | null;
+  summary?: string | null;
+  preconditions?: string[];
+  package: string | null;
+  installed_version: string | null;
   target_version: string | null;
-  distro: string;
-  distro_release: string;
-  architecture: string;
+  distro?: string;
+  distro_release?: string;
+  architecture?: string;
   status: string;
   cve_ids: string[];
   upgrade_command: string | null;
@@ -83,8 +151,9 @@ export type RemediationItem = {
   limitations: string[];
 };
 export type RemediationResult = {
-  device_id: string;
-  snapshot_id: string;
+  device_id?: string;
+  vuln_id?: string;
+  snapshot_id?: string;
   state: string;
   quality_status: string;
   reason: string | null;
@@ -115,6 +184,14 @@ const options = (tenant: string, signal?: AbortSignal) => {
   return { params: { tenant_id: tenant }, signal };
 };
 export const operatorApi = {
+  async plan(tenant: string, session: string, body: PlannerRequest, key: string) {
+    return (
+      await api.post<OperatorTask>(`/operator/sessions/${id(session)}/plan`, body, {
+        ...options(tenant),
+        headers: { "Idempotency-Key": key },
+      })
+    ).data;
+  },
   async compare(
     tenant: string,
     previous: string,
@@ -229,6 +306,39 @@ export const operatorApi = {
     return (
       await api.get<Record<string, unknown>>(
         `/operator/remediation/devices/${id(device)}/sources/${id(citation.source_id)}`,
+        {
+          ...options(tenant, signal),
+          params: {
+            tenant_id: tenant,
+            snapshot_id: citation.snapshot_id,
+            source_hash: citation.source_hash,
+          },
+        },
+      )
+    ).data;
+  },
+  async findingRemediation(
+    tenant: string,
+    finding: string,
+    language: "ru" | "en",
+    signal?: AbortSignal,
+  ) {
+    return (
+      await api.get<RemediationResult>(`/operator/remediation/findings/${id(finding)}`, {
+        ...options(tenant, signal),
+        params: { tenant_id: tenant, language },
+      })
+    ).data;
+  },
+  async findingRemediationSource(
+    tenant: string,
+    finding: string,
+    citation: Citation,
+    signal?: AbortSignal,
+  ) {
+    return (
+      await api.get<Record<string, unknown>>(
+        `/operator/remediation/findings/${id(finding)}/sources/${id(citation.source_id)}`,
         {
           ...options(tenant, signal),
           params: {

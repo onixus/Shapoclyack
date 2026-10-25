@@ -149,6 +149,16 @@ class Settings:
     operator_worker_poll_seconds: float = 2.0
     operator_worker_lease_seconds: int = 180
     operator_queue_limit: int = 20
+    operator_embeddings_enabled: bool = False
+    operator_embeddings_base_url: str = "http://127.0.0.1:8084/v1"
+    operator_embeddings_model: str = "Qwen3-Embedding-0.6B"
+    operator_embeddings_revision: str = ""
+    operator_embeddings_model_sha256: str = ""
+    operator_embeddings_dimensions: int = 1024
+    operator_embeddings_timeout_seconds: float = 30.0
+    operator_embeddings_max_response_bytes: int = 2097152
+    operator_runtime_manifest_path: Path | None = None
+    operator_runtime_manifest_sha256: str = ""
     mcp_enabled: bool = False
     mcp_allowed_origins: list[str] = field(default_factory=list)
     jwt_secret: str = DEFAULT_JWT_SECRET
@@ -2118,6 +2128,16 @@ def load_settings() -> Settings:
         operator_worker_poll_seconds=_operator_number("OCTO_OPERATOR_WORKER_POLL_SECONDS", 2.0, float),
         operator_worker_lease_seconds=_operator_number("OCTO_OPERATOR_WORKER_LEASE_SECONDS", 180, int),
         operator_queue_limit=_operator_number("OCTO_OPERATOR_QUEUE_LIMIT", 20, int),
+        operator_embeddings_enabled=os.environ.get("OCTO_OPERATOR_EMBEDDINGS_ENABLED", "false").strip().lower() == "true",
+        operator_embeddings_base_url=os.environ.get("OCTO_OPERATOR_EMBEDDINGS_BASE_URL", "http://127.0.0.1:8084/v1").strip(),
+        operator_embeddings_model=os.environ.get("OCTO_OPERATOR_EMBEDDINGS_MODEL", "Qwen3-Embedding-0.6B").strip(),
+        operator_embeddings_revision=os.environ.get("OCTO_OPERATOR_EMBEDDINGS_REVISION", "").strip(),
+        operator_embeddings_model_sha256=os.environ.get("OCTO_OPERATOR_EMBEDDINGS_MODEL_SHA256", "").strip(),
+        operator_embeddings_dimensions=_operator_number("OCTO_OPERATOR_EMBEDDINGS_DIMENSIONS", 1024, int),
+        operator_embeddings_timeout_seconds=_operator_number("OCTO_OPERATOR_EMBEDDINGS_TIMEOUT_SECONDS", 30.0, float),
+        operator_embeddings_max_response_bytes=_operator_number("OCTO_OPERATOR_EMBEDDINGS_MAX_RESPONSE_BYTES", 2097152, int),
+        operator_runtime_manifest_path=Path(os.environ["OCTO_OPERATOR_RUNTIME_MANIFEST_PATH"]) if os.environ.get("OCTO_OPERATOR_RUNTIME_MANIFEST_PATH") else None,
+        operator_runtime_manifest_sha256=os.environ.get("OCTO_OPERATOR_RUNTIME_MANIFEST_SHA256", "").strip(),
         mcp_enabled=os.environ.get("OCTO_MCP_ENABLED", "false").strip().lower()
         in {"1", "true", "yes"},
         mcp_allowed_origins=[
@@ -2702,6 +2722,14 @@ def load_settings() -> Settings:
             OperatorConfig.from_settings(settings)
         except ValueError as exc:
             raise InsecureConfigurationError("Invalid operator configuration: " + str(exc)) from None
+
+    if settings.operator_embeddings_enabled:
+        from api.services.local_operator.embeddings import EmbeddingConfig
+
+        try:
+            EmbeddingConfig.from_settings(settings)
+        except ValueError:
+            raise InsecureConfigurationError("Invalid operator embeddings configuration") from None
 
     if settings.operator_worker_enabled:
         if (not settings.operator_enabled

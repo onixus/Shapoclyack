@@ -113,6 +113,68 @@ afterEach(() => {
 });
 
 describe("operator console", () => {
+  it("shows verified startup integrity and live readiness separately from model quality", async () => {
+    vi.mocked(operatorApi.status).mockResolvedValue({
+      provider: "local",
+      model: "Qwen-real",
+      external_inference: false,
+      runtime_status: "ready",
+      runtime_verified: true,
+      model_integrity: "verified_at_startup",
+      model_sha256: "b".repeat(64),
+      context_tokens: 8192,
+      parallel: 1,
+      verified_at: "2026-10-25T09:00:00Z",
+      profile: "mac_arm64_container",
+      quality_status: "quality_unverified",
+      task_submission_enabled: true,
+    });
+    renderConsole();
+    expect(await screen.findByText(/Model integrity was verified at startup/)).toBeInTheDocument();
+    expect(screen.queryByText(/Runtime readiness has not been checked/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Model SHA-256: bbbbbbbbbbbbbbbb/)).toBeInTheDocument();
+    expect(screen.getByText("Context tokens: 8192")).toBeInTheDocument();
+    expect(screen.getByText(/Model quality has not been accepted/)).toBeInTheDocument();
+  });
+  it("reports unavailable readiness and disables new model work without fabricating acceptance", async () => {
+    savedSession();
+    vi.mocked(operatorApi.status).mockResolvedValue({
+      provider: "local",
+      model: "Qwen-real",
+      external_inference: false,
+      runtime_status: "unavailable",
+      runtime_verified: false,
+      quality_status: "quality_unverified",
+      task_submission_enabled: true,
+    });
+    renderConsole();
+    await screen.findByText(/Runtime is unavailable/);
+    await userEvent.type(await screen.findByLabelText("Your request"), "Summarize this run");
+    expect(screen.getByRole("button", { name: "Propose the next step" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Queue analysis" })).toBeDisabled();
+    expect(operatorApi.submit).not.toHaveBeenCalled();
+  });
+  it("links a completed execution to the existing authenticated job tracker", async () => {
+    savedSession();
+    sessionStorage.setItem(
+      `operator-proposal:${JSON.stringify(["tenant-a", "alice", "s1"])}`,
+      "plan1",
+    );
+    vi.mocked(operatorApi.proposal).mockResolvedValue({
+      ...plan,
+      status: "succeeded",
+      execution: {
+        execution_id: "execution1",
+        status: "succeeded",
+        result: { job_id: "confirmed-job" },
+      },
+    });
+    renderConsole();
+    expect(
+      await screen.findByRole("link", { name: "Track scan job: confirmed-job" }),
+    ).toHaveAttribute("href", "/scans?job=confirmed-job");
+    expect(operatorApi.confirm).not.toHaveBeenCalled();
+  });
   it("exposes session selection and creation in keyboard order", async () => {
     renderConsole();
     await screen.findByText("local / Qwen-test");
@@ -298,7 +360,7 @@ describe("operator console", () => {
     expect(exactPlan.getByText("safe", { exact: true })).toBeInTheDocument();
     expect(exactPlan.getByText("TCP ports", { exact: true })).toBeInTheDocument();
     expect(screen.getByText(/Expires:/)).toHaveTextContent(plan.expires_at);
-    await userEvent.click(screen.getByRole("checkbox"));
+    await userEvent.click(screen.getByRole("checkbox", { name: /I reviewed/ }));
     await userEvent.dblClick(confirm);
     await waitFor(() => expect(operatorApi.confirm).toHaveBeenCalledTimes(1));
     expect(operatorApi.confirm).toHaveBeenCalledWith("tenant-a", "plan1", plan.arguments_sha256);
@@ -333,7 +395,7 @@ describe("operator console", () => {
     );
     renderConsole();
     const confirm = await screen.findByRole("button", { name: "Confirm this plan" });
-    await userEvent.click(screen.getByRole("checkbox"));
+    await userEvent.click(screen.getByRole("checkbox", { name: /I reviewed/ }));
     expect(confirm).toBeEnabled();
     vi.mocked(operatorApi.proposal).mockResolvedValue({
       ...plan,
@@ -373,4 +435,120 @@ describe("operator console", () => {
     expect(screen.getByRole("button", { name: "New session" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Queue analysis" })).toBeDisabled();
   });
+
+  it.each(["en", "ru"] as const)(
+    "renders package operational caveats as a read-only operator runbook in %s",
+    async (locale) => {
+      useAppearanceStore.setState({ locale });
+      vi.mocked(operatorApi.remediation).mockResolvedValue({
+        device_id: "d1",
+        state: "complete",
+        quality_status: "deterministic",
+        reason: null,
+        truncated: false,
+        items: [
+          {
+            kind: "package_upgrade",
+            package: "openssl",
+            installed_version: "1",
+            target_version: "2",
+            status: "fix_available",
+            cve_ids: [],
+            upgrade_command: null,
+            sources: [],
+            limitations: [],
+            verification: { method: "endpoint_inventory", requires_confirmation: true },
+            plan: {
+              origin: "shapoclyack_operator_runbook",
+              runbook_id: "reviewed-runbook",
+              runbook_sha256: "a".repeat(64),
+              plan_sha256: "b".repeat(64),
+              preconditions: {
+                en: ["Confirm exact inventory"],
+                ru: ["Проверьте точную инвентаризацию"],
+              },
+              backup: {
+                status: "manual_approval_required",
+                en: "Validate restorable backup",
+                ru: "Проверьте восстановимую копию",
+              },
+              restart: {
+                status: "unknown",
+                en: "Restart impact unknown",
+                ru: "Влияние перезапуска неизвестно",
+              },
+              rollback: {
+                status: "unknown",
+                en: "Rollback safety unknown",
+                ru: "Безопасность отката неизвестна",
+              },
+              verification: {
+                method: "fresh_authenticated_endpoint_inventory_and_vendor_reassessment",
+                en: "Reassess fresh inventory",
+                ru: "Повторно оцените новую инвентаризацию",
+              },
+              vendor_workaround: {
+                status: "unsupported",
+                reason: "no_reviewed_vendor_workaround_source",
+              },
+            },
+          },
+        ],
+      });
+      renderConsole("tenant-a", false);
+      await userEvent.type(
+        await screen.findByLabelText(
+          locale === "en" ? "Endpoint device ID" : "ID устройства endpoint",
+        ),
+        "d1",
+      );
+      await userEvent.click(
+        screen.getByRole("button", { name: locale === "en" ? "Find fixes" : "Найти исправления" }),
+      );
+      const block = within(
+        await screen.findByRole("region", {
+          name:
+            locale === "en"
+              ? "Operator runbook · manual review required"
+              : "Инструкция оператора · требуется ручная проверка",
+        }),
+      );
+      expect(
+        block.getByText(
+          locale === "en" ? "Validate restorable backup" : "Проверьте восстановимую копию",
+        ),
+      ).toBeVisible();
+      expect(
+        block.getByText(
+          locale === "en" ? "Restart impact unknown" : "Влияние перезапуска неизвестно",
+        ),
+      ).toBeVisible();
+      expect(
+        block.getByText(
+          locale === "en" ? "Rollback safety unknown" : "Безопасность отката неизвестна",
+        ),
+      ).toBeVisible();
+      expect(
+        block.getByText(
+          locale === "en"
+            ? /Vendor facts cover package applicability/
+            : /Факты поставщика относятся только/,
+        ),
+      ).toBeVisible();
+      await userEvent.click(block.getByText(locale === "en" ? "Preconditions" : "Предусловия"));
+      expect(
+        block.getByText(
+          locale === "en" ? "Confirm exact inventory" : "Проверьте точную инвентаризацию",
+        ),
+      ).toBeVisible();
+      expect(
+        block.queryByText(
+          locale === "en" ? "Проверьте восстановимую копию" : "Validate restorable backup",
+        ),
+      ).not.toBeInTheDocument();
+      expect(block.queryAllByRole("button")).toHaveLength(0);
+      expect(operatorApi.prepare).not.toHaveBeenCalled();
+      expect(operatorApi.confirm).not.toHaveBeenCalled();
+    },
+  );
 });

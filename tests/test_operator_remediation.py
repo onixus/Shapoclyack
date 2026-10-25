@@ -1,5 +1,7 @@
 """Golden deterministic remediation cases; no model-quality claims."""
 from datetime import UTC, datetime, timedelta
+import hashlib
+import json
 from types import SimpleNamespace as NS
 
 import pytest
@@ -142,6 +144,63 @@ def test_feed_import_provenance_is_part_of_source_hash(monkeypatch):
     first = cards(monkeypatch, [item], feed=feed_for([item], date="2026-10-24"))
     second = cards(monkeypatch, [item], feed=feed_for([item], date="2026-10-25"))
     assert first["items"][0]["sources"][0]["source_hash"] != second["items"][0]["sources"][0]["source_hash"]
+
+
+def test_package_plan_is_our_runbook_with_unknown_restart_and_rollback(monkeypatch):
+    response = cards(monkeypatch, [row()])
+    card = response["items"][0]
+    plan = card["plan"]
+    assert card["kind"] == plan["kind"] == "package_upgrade"
+    assert plan["origin"] == "shapoclyack_operator_runbook"
+    assert plan["backup"]["status"] == "manual_approval_required"
+    for step in ("restart", "rollback"):
+        assert plan[step]["status"] == "unknown" and plan[step]["command"] is None
+        assert plan[step]["requires_manual_review"] is True
+    assert plan["upgrade"]["target_version"] == card["target_version"]
+    assert plan["upgrade"]["command"] == card["upgrade_command"]
+    assert plan["upgrade"]["effect_executed"] is False
+    assert card["vendor_workaround"]["status"] == "unsupported"
+    assert plan["sources"][0]["source_hash"] == card["sources"][0]["source_hash"]
+    assert "no_backup_restart_or_rollback_plan_supplied" not in response["limitations"]
+
+
+def test_unknown_package_does_not_gain_a_runbook_upgrade_or_restart_command(monkeypatch):
+    card = cards(monkeypatch, [row(status="unknown")])["items"][0]
+    assert card["plan"]["upgrade"]["status"] == "unsupported"
+    assert card["plan"]["upgrade"]["target_version"] is None and card["plan"]["upgrade"]["command"] is None
+    assert card["plan"]["restart"]["command"] is None and card["plan"]["rollback"]["command"] is None
+
+
+def test_runbook_version_change_invalidates_package_source_binding(monkeypatch, tmp_path):
+    first = cards(monkeypatch, [row()])["items"][0]
+    content = service.package_runbook()
+    content["runbook_id"] = "package-upgrade-reviewed-v2"
+    raw = json.dumps(content).encode()
+    path = tmp_path / "runbook.json"
+    path.write_bytes(raw)
+    monkeypatch.setattr(service, "PACKAGE_RUNBOOK_FILE", path)
+    monkeypatch.setattr(service, "PACKAGE_RUNBOOK_SHA256", hashlib.sha256(raw).hexdigest())
+    second = cards(monkeypatch, [row()])["items"][0]
+    assert first["target_version"] == second["target_version"]
+    assert first["sources"][0]["source_hash"] != second["sources"][0]["source_hash"]
+    assert first["plan"]["runbook_sha256"] != second["plan"]["runbook_sha256"]
+
+
+def test_unreviewed_runbook_bytes_fail_closed(monkeypatch, tmp_path):
+    path = tmp_path / "runbook.json"
+    path.write_text('{"upgrade":"install anything"}')
+    monkeypatch.setattr(service, "PACKAGE_RUNBOOK_FILE", path)
+    with pytest.raises(service.GatewayError, match="operator_source_changed"):
+        cards(monkeypatch, [row()])
+
+
+def test_another_advisory_changing_group_plan_invalidates_each_source(monkeypatch):
+    first = cards(monkeypatch, [row()])["items"][0]
+    second = row(id=2, cve_id="CVE-2026-2345", advisory_id="USN-2", fixed_version="7.68.0-1ubuntu2.20")
+    changed = cards(monkeypatch, [row(), second])["items"][0]
+    assert changed["target_version"] == second.fixed_version
+    original_source = next(source for source in changed["sources"] if source["source_id"] == "1")
+    assert original_source["source_hash"] != first["sources"][0]["source_hash"]
 
 
 def test_not_affected_is_not_safety_of_host(monkeypatch):

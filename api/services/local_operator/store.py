@@ -70,6 +70,7 @@ def _dict(row, *, internal=False):
     result = {c.name: getattr(row, c.name) for c in row.__table__.columns}
     if not internal:
         result.pop("actor_token_version", None)
+        result.pop("payload", None)
     return {
         k: v.isoformat() + "Z" if isinstance(v, datetime) else v
         for k, v in result.items()
@@ -277,15 +278,28 @@ def submit_task(
     *,
     auth_session_id=None,
     kind="summarize_run",
+    payload=None,
 ):
     if (
-        kind not in {"summarize_run", "analyze_run"}
+        kind not in {"summarize_run", "analyze_run", "plan_request"}
         or language not in {"ru", "en"}
         or not run_id
         or len(run_id) > 256
         or not idempotency_key
         or len(idempotency_key) > 128
     ):
+        raise OperatorStoreError("invalid_input")
+    if kind == "plan_request":
+        from api.services.local_operator.planner import PlanRequest
+
+        try:
+            if set(payload) != {"request", "auth_session_id"} or payload["auth_session_id"] != auth_session_id or not auth_session_id:
+                raise ValueError("invalid binding")
+            payload = {"request": PlanRequest.model_validate(payload["request"]).model_dump(),
+                       "auth_session_id": auth_session_id}
+        except (ValueError, TypeError, KeyError):
+            raise OperatorStoreError("invalid_input") from None
+    elif payload is not None:
         raise OperatorStoreError("invalid_input")
     with _personal_db(settings, tenant_id, username, auth_session_id, writer=True) as db:
         conversation = db.scalar(
@@ -306,7 +320,7 @@ def submit_task(
                 run_id,
                 language,
                 kind,
-            ):
+            ) or previous.payload != payload:
                 raise OperatorStoreError("idempotency_conflict")
             return _dict(previous)
         pending = db.scalar(
@@ -328,6 +342,7 @@ def submit_task(
             session_id=session_id,
             actor_token_version=user.token_version if user else 0,
             kind=kind,
+            payload=payload,
             run_id=run_id,
             language=language,
             idempotency_key=idempotency_key,

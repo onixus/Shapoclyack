@@ -7,6 +7,10 @@
 | Date | 2026-10-21 |
 | Specification | [Local Operator architecture and contracts](../local-operator.md) |
 
+Hardware acceptance is superseded by [ADR 0005](0005-local-operator-mac-acceptance.md)
+under the owner's explicit decision of 2026-10-25. The other boundaries below
+remain in force; NVIDIA work is preserved separately in #609.
+
 ## Context
 
 Operators need evidence-grounded assistance with inventory, findings, scanning

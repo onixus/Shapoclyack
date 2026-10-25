@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "runbook_id": "package-upgrade-operator-v1",
+  "origin": "shapoclyack_operator_runbook",
+  "license": "Apache-2.0",
+  "status": "draft_requires_administrator_approval",
+  "vendor_facts_scope": "Only package applicability and fixed versions from the cited current advisory matcher; operational steps below are our runbook guidance.",
+  "preconditions": {
+    "en": [
+      "Confirm the current authenticated endpoint inventory, operating-system release, package architecture and installation identity match the cited snapshot; resubmit inventory after any change.",
+      "Review every cited vendor advisory for this exact package and release; a remote service banner does not establish package applicability.",
+      "Use only the matched vendor fixed version and approved package repository; do not infer an upstream version or downgrade a vendor backport.",
+      "Obtain administrator approval and a maintenance window before making any change; this operator executes no installation."
+    ],
+    "ru": [
+      "Подтвердите соответствие текущей аутентифицированной инвентаризации, выпуска ОС, архитектуры пакета и идентификатора установки указанному снимку; после изменений отправьте новую инвентаризацию.",
+      "Проверьте все указанные рекомендации поставщика для точного пакета и выпуска ОС; удалённый баннер не подтверждает применимость к установленному пакету.",
+      "Используйте только исправленную версию из штатного сопоставления поставщика и одобренный репозиторий; не подменяйте backport версией upstream.",
+      "До изменений получите разрешение администратора и согласуйте окно обслуживания; оператор не выполняет установку."
+    ]
+  },
+  "backup": {
+    "status": "manual_approval_required",
+    "command": null,
+    "en": "The administrator must identify and validate a restorable backup of affected configuration, application data and package state, with access controls and restore ownership. Backup scope and completion are unknown to this operator.",
+    "ru": "Администратор определяет и проверяет восстановимую резервную копию затронутой конфигурации, данных приложения и состояния пакетов, права доступа и ответственного за восстановление. Объём и завершение резервного копирования оператору неизвестны."
+  },
+  "restart": {
+    "status": "unknown",
+    "requires_manual_review": true,
+    "command": null,
+    "en": "Affected services, restart ordering, availability impact and reboot requirements are not established by the advisory feed. Review vendor release notes and the approved service runbook before any restart.",
+    "ru": "Лента рекомендаций не устанавливает затронутые службы, порядок перезапуска, влияние на доступность и необходимость перезагрузки ОС. Перед перезапуском проверьте примечания поставщика и утверждённую инструкцию службы."
+  },
+  "rollback": {
+    "status": "unknown",
+    "requires_manual_review": true,
+    "command": null,
+    "en": "Confirm a tested restore path and compatibility of configuration and data migrations before upgrading. Package downgrade may be unsupported and may restore the vulnerability; rollback safety is unknown and never implied by a fixed-version advisory.",
+    "ru": "До обновления подтвердите проверенный путь восстановления и совместимость миграций конфигурации и данных. Понижение версии может не поддерживаться и вернуть уязвимость; безопасность отката неизвестна и не следует из наличия исправленной версии."
+  },
+  "verification": {
+    "method": "fresh_authenticated_endpoint_inventory_and_vendor_reassessment",
+    "requires_confirmation": true,
+    "en": "After the approved change, collect a fresh complete authenticated inventory and reassess it against current vendor coverage. An installation command or this plan does not prove remediation and does not close a finding.",
+    "ru": "После согласованного изменения соберите новую полную аутентифицированную инвентаризацию и повторите оценку с актуальными данными поставщика. Команда установки или этот план не доказывают исправление и не закрывают находку."
+  },
+  "vendor_workaround": {
+    "status": "unsupported",
+    "reason": "no_reviewed_vendor_workaround_source",
+    "command": null
+  }
+}

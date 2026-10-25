@@ -3513,7 +3513,7 @@ class OperatorTask(Base):
             name="uq_operator_task_idempotency",
         ),
         Index("ix_operator_tasks_queue", "status", "created_at"),
-        CheckConstraint("kind IN ('summarize_run', 'analyze_run')", name="ck_operator_task_kind"),
+        CheckConstraint("kind IN ('summarize_run', 'analyze_run', 'plan_request')", name="ck_operator_task_kind"),
         CheckConstraint("language IN ('ru', 'en')", name="ck_operator_task_language"),
         CheckConstraint(
             "status IN ('queued','running','succeeded','failed','cancelled','interrupted')",
@@ -3530,6 +3530,7 @@ class OperatorTask(Base):
     )
     actor_token_version: Mapped[int] = mapped_column(default=0)
     kind: Mapped[str] = mapped_column(default="summarize_run")
+    payload: Mapped[dict | None] = mapped_column(JSON, default=None)
     run_id: Mapped[str]
     language: Mapped[str]
     idempotency_key: Mapped[str]
@@ -3588,7 +3589,8 @@ class OperatorEvidenceSnapshot(Base):
     """One atomically replaced, tenant-owned evidence index per published run."""
 
     __tablename__ = "operator_evidence_snapshots"
-    __table_args__ = (UniqueConstraint("tenant_id", "run_id", name="uq_operator_evidence_run"),)
+    __table_args__ = (UniqueConstraint("tenant_id", "run_id", name="uq_operator_evidence_run"),
+                      UniqueConstraint("tenant_id", "snapshot_id", name="uq_operator_evidence_snapshot_tenant"))
     snapshot_id: Mapped[str] = mapped_column(primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True)
     run_id: Mapped[str]
@@ -3605,6 +3607,7 @@ class OperatorEvidenceDocument(Base):
     __table_args__ = (
         ForeignKeyConstraint(["snapshot_id"], ["operator_evidence_snapshots.snapshot_id"], ondelete="CASCADE"),
         Index("ix_operator_evidence_document_snapshot", "tenant_id", "snapshot_id"),
+        UniqueConstraint("tenant_id", "source_id", name="uq_operator_evidence_document_tenant"),
     )
     source_id: Mapped[str] = mapped_column(primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True)
@@ -3616,6 +3619,59 @@ class OperatorEvidenceDocument(Base):
     cve: Mapped[str]
     package: Mapped[str]
     observed_at: Mapped[datetime]
+
+
+class OperatorEmbeddingIndex(Base):
+    """Atomically installed vector corpus, isolated by source scope and model."""
+    __tablename__ = "operator_embedding_indexes"
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id", "evidence_snapshot_id"],
+            ["operator_evidence_snapshots.tenant_id", "operator_evidence_snapshots.snapshot_id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["tenant_id", "inventory_snapshot_id"],
+            ["endpoint_inventory_snapshots.tenant_id", "endpoint_inventory_snapshots.snapshot_id"], ondelete="CASCADE"),
+        UniqueConstraint("tenant_id", "index_id", name="uq_operator_embedding_index_tenant"),
+        UniqueConstraint("tenant_id", "scope_kind", "scope_id", "source_snapshot", "model_fingerprint", name="uq_operator_embedding_corpus"),
+        Index("ix_operator_embedding_scope", "tenant_id", "scope_kind", "scope_id"),
+        CheckConstraint("scope_kind IN ('run','device_remediation')", name="ck_operator_embedding_scope"),
+        CheckConstraint("(scope_kind = 'run' AND evidence_snapshot_id IS NOT NULL AND inventory_snapshot_id IS NULL) OR (scope_kind = 'device_remediation' AND evidence_snapshot_id IS NULL AND inventory_snapshot_id IS NOT NULL)", name="ck_operator_embedding_source"),
+        CheckConstraint("dimensions >= 1 AND dimensions <= 4096", name="ck_operator_embedding_dimensions"),
+        CheckConstraint("document_count >= 0 AND document_count <= 1001", name="ck_operator_embedding_document_count"),
+    )
+    index_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True)
+    evidence_snapshot_id: Mapped[str | None]
+    inventory_snapshot_id: Mapped[str | None]
+    scope_kind: Mapped[str]
+    scope_id: Mapped[str]
+    source_snapshot: Mapped[str]
+    model_fingerprint: Mapped[str]
+    model_revision: Mapped[str]
+    model_sha256: Mapped[str]
+    dimensions: Mapped[int]
+    corpus_hash: Mapped[str]
+    document_count: Mapped[int]
+    indexed_at: Mapped[datetime]
+    last_checked_at: Mapped[datetime]
+
+
+class OperatorEvidenceEmbedding(Base):
+    """Derived minimized vectors; readable only with current source authority."""
+    __tablename__ = "operator_evidence_embeddings"
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id", "index_id"],
+            ["operator_embedding_indexes.tenant_id", "operator_embedding_indexes.index_id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["tenant_id", "evidence_source_id"],
+            ["operator_evidence_documents.tenant_id", "operator_evidence_documents.source_id"], ondelete="CASCADE"),
+        Index("ix_operator_evidence_embedding_tenant", "tenant_id", "index_id"),
+    )
+    index_id: Mapped[str] = mapped_column(primary_key=True)
+    source_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id", ondelete="CASCADE"))
+    evidence_source_id: Mapped[str | None]
+    document_hash: Mapped[str]
+    text_hash: Mapped[str]
+    content: Mapped[str] = mapped_column(Text)
+    vector: Mapped[list] = mapped_column(JSON)
 
 
 class AssetGroup(Base):

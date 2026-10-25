@@ -3,7 +3,8 @@
 The optional operator exposes read-only remediation cards for an endpoint's
 accepted software inventory. This implements a bounded slice of
 [#590](https://github.com/onixus/Shapoclyack/issues/590): deterministic vendor
-fix lookup and package grouping. It makes no language-model quality claim.
+fix lookup, package grouping and a bounded administrator-reviewed upgrade plan.
+It makes no language-model quality claim.
 
 `GET /api/operator/remediation/devices/{device_id}` requires an explicit
 `tenant_id` and a current console session. Optional arguments are `language`
@@ -54,18 +55,45 @@ Sources open through
 `GET /api/operator/remediation/devices/{device_id}/sources/{source_id}` with
 explicit `tenant_id`, `snapshot_id` and `source_hash`. The SHA-256 binds the
 matcher provenance, exact vendor record fingerprint, current feed source/date,
-inventory payload digest, installation identity and current support status.
+inventory payload digest, installation identity, current support status and
+the pinned operator runbook SHA. Each numeric source also binds the whole
+grouped target/version decision: a newly applicable advisory that raises the
+group's target invalidates an older citation, even if its individual matcher
+row did not change.
 Old or changed references return 409; absent or foreign sources return 404.
 Only the first 100 matcher rows are exposed by this bounded operator surface;
 larger inventories use the existing inventory APIs. Raw advisory URLs, free
 text, evidence blobs and credentials are never returned or sent to inference.
 
-No endpoint installs packages, changes a finding, marks `machine_verified`,
-closes vulnerabilities, dispatches verification or invents backup/restart/
-rollback instructions. Verification requires a separate confirmed control-plane
-operation. Vendor workarounds, source-backed operational caveats, complete
-inventory/advisory semantic retrieval, real-model evaluation and physical
-offline/GPU acceptance remain outstanding for the full epic.
+Package cards declare `kind=package_upgrade` and include `plan` from the pinned
+`package-upgrade-runbook-v1.json` catalog. `plan.origin` explicitly identifies
+our operator runbook, separately from the cited vendor applicability/fixed
+version facts. Bilingual preconditions require current authenticated inventory,
+exact OS/architecture/installation identity, vendor review, approved repository,
+administrator approval and a maintenance window. Backup scope and completion
+require manual approval. Service restart/reboot needs and rollback safety remain
+`unknown`, with no invented commands. The runbook requires a tested restore path
+and warns that downgrades may be unsupported, restore vulnerabilities or fail
+after data migrations. No feed-derived fixed version proves operational safety.
+
+The plan's upgrade step uses only the existing matcher/patch-gap target and
+display-only command; unknown/no-fix/stale cards expose an unsupported upgrade
+step. `plan.vendor_workaround` is explicitly unsupported without a reviewed
+vendor workaround source. A fresh complete authenticated inventory and current
+vendor reassessment are required after an approved change. The same fixed plan
+opens inside the numeric citation response, with runbook and plan SHA bindings.
+No endpoint installs packages, executes the plan, closes vulnerabilities or
+marks `machine_verified`; effectful verification remains separately confirmed.
+
+For a current finding from the exact shipped Pulse `shapo_http_trace` plugin,
+`GET /api/operator/remediation/findings/{vuln_id}` exposes configuration guidance
+only after a current administrator records hash-bound independent Apache 2.4
+process/container inventory through the `applicability-review` route. A remote
+banner is insufficient. The offline reviewed Apache source recommends
+`TraceEnable off` and expects HTTP 405; the card explicitly treats this as
+configuration hardening, with no Apache CVE, package or fixed-version claim.
+Its backup/reload/rollback preconditions are labelled our runbook guidance.
+Source reads return pinned text and a fixed vendor URL without network fetches.
 
 Validation includes deterministic golden cases and real PostgreSQL API tests
 for tenant isolation, current-session revocation, replacement during a held

@@ -1,5 +1,7 @@
 """Real PostgreSQL tenant/session fences and bound remediation citations."""
 from datetime import UTC, datetime
+import hashlib
+import json
 
 import pytest
 from sqlalchemy import select, update
@@ -144,3 +146,25 @@ def test_service_tokens_are_refused(env):
     response = client.get(BASE, headers={"Authorization": "Bearer " + issued.json()["token"]},
                           params={"tenant_id": "default"})
     assert response.status_code == 403, response.text
+
+
+def test_numeric_citation_opens_fixed_manual_plan_and_old_runbook_is_rejected(env, monkeypatch, tmp_path):
+    client, _, headers = env
+    card = read(env).json()["items"][0]
+    source = card["sources"][0]
+    query = {"tenant_id": "default", "snapshot_id": source["snapshot_id"], "source_hash": source["source_hash"]}
+    url = BASE + "/sources/" + source["source_id"]
+    opened = client.get(url, headers=headers["viewer"], params=query)
+    assert opened.status_code == 200, opened.text
+    assert opened.json()["card"]["plan"]["runbook_sha256"] == remediation.PACKAGE_RUNBOOK_SHA256
+    assert opened.json()["card"]["plan"]["restart"]["status"] == "unknown"
+    assert opened.json()["card"]["plan"]["rollback"]["command"] is None
+    document = remediation.package_runbook()
+    document["runbook_id"] = "next-reviewed-runbook"
+    raw = json.dumps(document).encode()
+    path = tmp_path / "updated-runbook.json"
+    path.write_bytes(raw)
+    monkeypatch.setattr(remediation, "PACKAGE_RUNBOOK_FILE", path)
+    monkeypatch.setattr(remediation, "PACKAGE_RUNBOOK_SHA256", hashlib.sha256(raw).hexdigest())
+    stale = client.get(url, headers=headers["viewer"], params=query)
+    assert stale.status_code == 409, stale.text

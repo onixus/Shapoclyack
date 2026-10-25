@@ -6,6 +6,7 @@ x-control: &control
   working_dir: /app
   user: "1000:1000"
   read_only: true
+  dns: [127.0.0.1]
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
   pids_limit: 256
@@ -17,11 +18,13 @@ x-control: &control
   tmpfs: ["/tmp:rw,noexec,nosuid,size=128m,mode=1777"]
   volumes:
     - ./api:/app/api:ro
+    - ./agent:/app/agent:ro
     - ./scanner/config:/app/scanner/config:ro
     - ./scanner/pipeline:/app/scanner/pipeline:ro
     - ./web-next/out:/app/web/dist:ro
     - ./.operator-local/state:/app/scanner/state
     - ./.operator-local/output:/app/scanner/output
+    - ./.operator-local/runtime:/run/operator:ro
   networks: [console]
 services:
   postgres:
@@ -46,6 +49,10 @@ services:
     healthcheck: {disable: true}
   api:
     <<: *control
+    networks:
+      console: {}
+      inference:
+        ipv4_address: 172.30.83.7
     command: [python, -m, api]
     depends_on:
       migrate: {condition: service_completed_successfully}

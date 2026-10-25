@@ -6,6 +6,7 @@ services:
     platform: linux/arm64
     user: "65532:65532"
     read_only: true
+    dns: [127.0.0.1]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 128
@@ -73,6 +74,7 @@ services:
     platform: linux/arm64
     user: "65532:65532"
     read_only: true
+    dns: [127.0.0.1]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 128
@@ -103,7 +105,7 @@ services:
           create_host_path: false
     command: [--model, /models/embedding.gguf, --alias, Qwen3-Embedding-0.6B,
               --host, 0.0.0.0, --port, "8084", --embedding, --pooling, last,
-              --ctx-size, "8192", --batch-size, "8192", --ubatch-size, "8192",
+              --ctx-size, "2048", --batch-size, "2048", --ubatch-size, "2048",
               --threads, "2", --n-gpu-layers, "0", --parallel, "1",
               --offline, --no-webui, --no-agent, --no-ui-mcp-proxy]
   gateway: &model_gateway

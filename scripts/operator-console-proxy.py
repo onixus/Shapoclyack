@@ -1,12 +1,17 @@
 """Loopback development ingress to the fixed isolated API, never an open proxy."""
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import os
 import sys
 
 HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
                "te", "trailer", "transfer-encoding", "upgrade"}
 LOCAL_ORIGINS = {"http://127.0.0.1:8082", "http://localhost:8082",
                  "http://127.0.0.1:8083", "http://localhost:8083"}
+if port := os.environ.get("OCTO_OPERATOR_CONSOLE_PORT"):
+    if not port.isascii() or not port.isdecimal() or not 1024 <= int(port) <= 65535:
+        raise ValueError("Invalid deployment-owned console port")
+    LOCAL_ORIGINS.update({f"http://127.0.0.1:{int(port)}", f"http://localhost:{int(port)}"})
 
 
 class Proxy(BaseHTTPRequestHandler):

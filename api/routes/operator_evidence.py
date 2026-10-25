@@ -112,7 +112,8 @@ def _call(settings, context, action, *, writer=False, **kwargs):
         if action == "get_citation":
             return _item(result)
         response = {key: result[key] for key in (
-            "snapshot_id", "state", "mode", "semantic_status", "run_id", "indexed_at", "document_count"
+            "snapshot_id", "state", "mode", "semantic_status", "run_id", "indexed_at", "document_count",
+            "embedding_model", "model_fingerprint", "embedding_dimensions", "semantic_indexed_at", "scope_kind", "scope_id"
         ) if key in result}
         if "items" in result:
             response["items"] = [_item(item) for item in result["items"][:kwargs.get("limit", 10)]]
@@ -120,7 +121,9 @@ def _call(settings, context, action, *, writer=False, **kwargs):
     except GatewayError as exc:
         status = {"operator_access_revoked": 403, "operator_invalid_query": 422,
                   "operator_invalid_limit": 422, "operator_source_changed": 409,
-                  "operator_source_unavailable": 404, "operator_storage_unavailable": 503}.get(exc.code, 409)
+                  "operator_source_unavailable": 404, "operator_storage_unavailable": 503,
+                  "operator_embeddings_unavailable": 503, "operator_embeddings_not_ready": 503,
+                  "operator_embedding_configuration_invalid": 503}.get(exc.code, 409)
         raise HTTPException(status_code=status, detail=exc.code) from None
 
 
@@ -143,6 +146,52 @@ def refresh_evidence(run_id: RunId, body: RefreshEvidence, request: Request,
                      principal: Writer, settings: OperatorSettings):
     _query(request, {"tenant_id"})
     return _call(settings, principal, "refresh_run", writer=True, run_id=run_id)
+
+
+def _semantic_call(settings, context, action, *, writer=False, **kwargs):
+    from api.services.local_operator import semantic
+    principal = _authorize(settings, context, writer=writer)
+    try:
+        result = getattr(semantic, action)(settings, principal, **kwargs)
+        if result is None:
+            raise HTTPException(404, detail="operator_source_unavailable")
+        _authorize(settings, context, writer=writer)
+        corpus = semantic.device_corpus(settings, principal, kwargs["device_id"])
+        if result["snapshot_id"] != corpus["source_snapshot"]:
+            raise HTTPException(409, detail="operator_source_changed")
+        return result
+    except GatewayError as exc:
+        code = {"operator_source_unavailable": 404, "operator_invalid_query": 422,
+                "operator_embeddings_unavailable": 503, "operator_embeddings_not_ready": 503,
+                "operator_embedding_configuration_invalid": 503}.get(exc.code, 409)
+        raise HTTPException(code, detail=exc.code) from None
+
+
+@router.post("/devices/{device_id}/refresh")
+def refresh_device_evidence(device_id: SourceId, body: RefreshEvidence, request: Request,
+                            principal: Writer, settings: OperatorSettings):
+    _query(request, {"tenant_id"})
+    return _semantic_call(settings, principal, "refresh_device", writer=True, device_id=device_id)
+
+
+@router.get("/devices/{device_id}/search")
+def search_device_evidence(device_id: SourceId, request: Request, principal: Reader, settings: OperatorSettings,
+                           query: Annotated[str, Query(max_length=256)] = "",
+                           cve: Annotated[str | None, Query(max_length=32, pattern=r"^CVE-[0-9]{4}-[0-9]{4,19}$")] = None,
+                           package: Annotated[str | None, Query(min_length=1, max_length=128)] = None,
+                           source_kind: Annotated[str | None, Query(pattern=r"^(?:inventory|advisory)$")] = None,
+                           limit: Annotated[int, Query(ge=1, le=10)] = 10):
+    _query(request, {"tenant_id", "query", "cve", "package", "source_kind", "limit"})
+    return _semantic_call(settings, principal, "search_device", device_id=device_id, query=query,
+                          cve=cve, package=package, source_kind=source_kind, limit=limit)
+
+
+@router.get("/devices/{device_id}/sources/{source_id}")
+def get_device_evidence(device_id: SourceId, source_id: SourceId, request: Request,
+                        principal: Reader, settings: OperatorSettings, snapshot_id: Identifier, source_hash: Digest):
+    _query(request, {"tenant_id", "snapshot_id", "source_hash"})
+    return _semantic_call(settings, principal, "device_source", device_id=device_id,
+                          source_id=source_id, snapshot_id=snapshot_id, source_hash=source_hash)
 
 
 @router.get("/runs/{run_id}/summary")

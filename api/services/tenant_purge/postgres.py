@@ -54,6 +54,8 @@ OUTBOX_TABLES = ("nats_outbox", "run_publications")
 #: cascades from its parent it is still listed, and first: the cascade would
 #: work, in one statement the size of the tenant.
 POSTGRES_TABLES = (
+    "operator_evidence_embeddings",
+    "operator_embedding_indexes",
     # Tenant-derived evidence before its snapshots; separate from personal history.
     "operator_evidence_documents",
     "operator_evidence_snapshots",

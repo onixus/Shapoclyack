@@ -82,9 +82,10 @@
     {
       customType: "regex",
       description: "Pinned local operator inference runtime",
-      managerFilePatterns: ["/^scripts/operator-mac\\.sh$/"],
+      managerFilePatterns: ["/^scripts/operator-(mac\\.sh|runtime-manifest\\.py)$/"],
       matchStrings: [
         "RUNTIME_IMAGE=(?<depName>[a-z0-9][a-z0-9._/-]*):(?<currentValue>[A-Za-z0-9._-]+)@(?<currentDigest>sha256:[a-f0-9]{64})",
+        "RUNTIME = \"(?<depName>[a-z0-9][a-z0-9._/-]*):(?<currentValue>[A-Za-z0-9._-]+)@(?<currentDigest>sha256:[a-f0-9]{64})\"",
       ],
       datasourceTemplate: "docker",
     },

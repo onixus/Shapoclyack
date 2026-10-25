@@ -1,0 +1,2340 @@
+{
+  "schema_version": "1",
+  "name": "frozen-local-retrieval-2026-10-25",
+  "scope": "Synthetic published observations and synthetic vendor-backed inventory/advisory fixtures; real embedding inference only.",
+  "thresholds": {
+    "semantic_recall_at_10": 0.9,
+    "exact_identifier_hit_rate": 1
+  },
+  "documents": [
+    {
+      "cve": "CVE-2026-30000",
+      "package": "openssl",
+      "service": "https",
+      "port": 443,
+      "cwe": "CWE-295",
+      "version": "1.0-1",
+      "severity": "high"
+    },
+    {
+      "cve": "CVE-2026-30001",
+      "package": "openssh",
+      "service": "ssh",
+      "port": 22,
+      "cwe": "CWE-287",
+      "version": "1.0-1",
+      "severity": "medium"
+    },
+    {
+      "cve": "CVE-2026-30002",
+      "package": "postfix",
+      "service": "smtp",
+      "port": 25,
+      "cwe": "CWE-345",
+      "version": "1.0-1",
+      "severity": "low"
+    },
+    {
+      "cve": "CVE-2026-30003",
+      "package": "bind9",
+      "service": "dns",
+      "port": 53,
+      "cwe": "CWE-400",
+      "version": "1.0-1",
+      "severity": "high"
+    },
+    {
+      "cve": "CVE-2026-30004",
+      "package": "vsftpd",
+      "service": "ftp",
+      "port": 21,
+      "cwe": "CWE-319",
+      "version": "1.0-1",
+      "severity": "medium"
+    },
+    {
+      "cve": "CVE-2026-30005",
+      "package": "samba",
+      "service": "smb",
+      "port": 445,
+      "cwe": "CWE-284",
+      "version": "1.0-1",
+      "severity": "low"
+    },
+    {
+      "cve": "CVE-2026-30006",
+      "package": "freerdp",
+      "service": "rdp",
+      "port": 3389,
+      "cwe": "CWE-287",
+      "version": "1.0-1",
+      "severity": "high"
+    },
+    {
+      "cve": "CVE-2026-30007",
+      "package": "mysql-server",
+      "service": "mysql",
+      "port": 3306,
+      "cwe": "CWE-89",
+      "version": "1.0-1",
+      "severity": "medium"
+    },
+    {
+      "cve": "CVE-2026-30008",
+      "package": "postgresql",
+      "service": "postgresql",
+      "port": 5432,
+      "cwe": "CWE-89",
+      "version": "1.0-1",
+      "severity": "low"
+    },
+    {
+      "cve": "CVE-2026-30009",
+      "package": "redis-server",
+      "service": "redis",
+      "port": 6379,
+      "cwe": "CWE-306",
+      "version": "1.0-1",
+      "severity": "high"
+    },
+    {
+      "cve": "CVE-2026-30010",
+      "package": "mongodb-server",
+      "service": "mongodb",
+      "port": 27017,
+      "cwe": "CWE-306",
+      "version": "1.0-1",
+      "severity": "medium"
+    },
+    {
+      "cve": "CVE-2026-30011",
+      "package": "net-snmp",
+      "service": "snmp",
+      "port": 161,
+      "cwe": "CWE-319",
+      "version": "1.0-1",
+      "severity": "low"
+    },
+    {
+      "cve": "CVE-2026-30012",
+      "package": "telnetd",
+      "service": "telnet",
+      "port": 23,
+      "cwe": "CWE-319",
+      "version": "1.0-1",
+      "severity": "high"
+    },
+    {
+      "cve": "CVE-2026-30013",
+      "package": "nginx",
+      "service": "http",
+      "port": 80,
+      "cwe": "CWE-79",
+      "version": "1.0-1",
+      "severity": "medium"
+    },
+    {
+      "cve": "CVE-2026-30014",
+      "package": "dovecot",
+      "service": "imap",
+      "port": 143,
+      "cwe": "CWE-287",
+      "version": "1.0-1",
+      "severity": "low"
+    },
+    {
+      "cve": "CVE-2026-30015",
+      "package": "squid",
+      "service": "proxy",
+      "port": 3128,
+      "cwe": "CWE-918",
+      "version": "1.0-1",
+      "severity": "high"
+    },
+    {
+      "cve": "CVE-2026-30016",
+      "package": "docker-engine",
+      "service": "docker",
+      "port": 2375,
+      "cwe": "CWE-306",
+      "version": "1.0-1",
+      "severity": "medium"
+    },
+    {
+      "cve": "CVE-2026-30017",
+      "package": "kube-apiserver",
+      "service": "kubernetes",
+      "port": 6443,
+      "cwe": "CWE-284",
+      "version": "1.0-1",
+      "severity": "low"
+    },
+    {
+      "cve": "CVE-2026-30018",
+      "package": "prometheus",
+      "service": "metrics",
+      "port": 9090,
+      "cwe": "CWE-200",
+      "version": "1.0-1",
+      "severity": "high"
+    },
+    {
+      "cve": "CVE-2026-30019",
+      "package": "grafana",
+      "service": "http",
+      "port": 3000,
+      "cwe": "CWE-79",
+      "version": "1.0-1",
+      "severity": "medium"
+    },
+    {
+      "cve": "CVE-2026-30020",
+      "package": "elasticsearch",
+      "service": "elasticsearch",
+      "port": 9200,
+      "cwe": "CWE-306",
+      "version": "1.0-1",
+      "severity": "low"
+    },
+    {
+      "cve": "CVE-2026-30021",
+      "package": "memcached",
+      "service": "memcached",
+      "port": 11211,
+      "cwe": "CWE-306",
+      "version": "1.0-1",
+      "severity": "high"
+    },
+    {
+      "cve": "CVE-2026-30022",
+      "package": "ntpsec",
+      "service": "ntp",
+      "port": 123,
+      "cwe": "CWE-400",
+      "version": "1.0-1",
+      "severity": "medium"
+    },
+    {
+      "cve": "CVE-2026-30023",
+      "package": "mosquitto",
+      "service": "mqtt",
+      "port": 1883,
+      "cwe": "CWE-306",
+      "version": "1.0-1",
+      "severity": "low"
+    },
+    {
+      "cve": "CVE-2026-30024",
+      "package": "rabbitmq-server",
+      "service": "amqp",
+      "port": 5672,
+      "cwe": "CWE-287",
+      "version": "1.0-1",
+      "severity": "high"
+    },
+    {
+      "cve": "CVE-2026-30025",
+      "package": "openvpn",
+      "service": "vpn",
+      "port": 1194,
+      "cwe": "CWE-295",
+      "version": "1.0-1",
+      "severity": "medium"
+    },
+    {
+      "cve": "CVE-2026-30026",
+      "package": "strongswan",
+      "service": "ipsec",
+      "port": 500,
+      "cwe": "CWE-295",
+      "version": "1.0-1",
+      "severity": "low"
+    },
+    {
+      "cve": "CVE-2026-30027",
+      "package": "apache2",
+      "service": "http",
+      "port": 8080,
+      "cwe": "CWE-79",
+      "version": "1.0-1",
+      "severity": "high"
+    },
+    {
+      "cve": "CVE-2026-30028",
+      "package": "tomcat",
+      "service": "http",
+      "port": 8081,
+      "cwe": "CWE-502",
+      "version": "1.0-1",
+      "severity": "medium"
+    },
+    {
+      "cve": "CVE-2026-30029",
+      "package": "jenkins",
+      "service": "http",
+      "port": 8082,
+      "cwe": "CWE-284",
+      "version": "1.0-1",
+      "severity": "low"
+    },
+    {
+      "cve": "CVE-2025-40000",
+      "package": "fixture-distractor-000",
+      "service": "http",
+      "port": 15000,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40001",
+      "package": "fixture-distractor-001",
+      "service": "https",
+      "port": 15001,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40002",
+      "package": "fixture-distractor-002",
+      "service": "ssh",
+      "port": 15002,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40003",
+      "package": "fixture-distractor-003",
+      "service": "smtp",
+      "port": 15003,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40004",
+      "package": "fixture-distractor-004",
+      "service": "redis",
+      "port": 15004,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40005",
+      "package": "fixture-distractor-005",
+      "service": "http",
+      "port": 15005,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40006",
+      "package": "fixture-distractor-006",
+      "service": "https",
+      "port": 15006,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40007",
+      "package": "fixture-distractor-007",
+      "service": "ssh",
+      "port": 15007,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40008",
+      "package": "fixture-distractor-008",
+      "service": "smtp",
+      "port": 15008,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40009",
+      "package": "fixture-distractor-009",
+      "service": "redis",
+      "port": 15009,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40010",
+      "package": "fixture-distractor-010",
+      "service": "http",
+      "port": 15010,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40011",
+      "package": "fixture-distractor-011",
+      "service": "https",
+      "port": 15011,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40012",
+      "package": "fixture-distractor-012",
+      "service": "ssh",
+      "port": 15012,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40013",
+      "package": "fixture-distractor-013",
+      "service": "smtp",
+      "port": 15013,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40014",
+      "package": "fixture-distractor-014",
+      "service": "redis",
+      "port": 15014,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40015",
+      "package": "fixture-distractor-015",
+      "service": "http",
+      "port": 15015,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40016",
+      "package": "fixture-distractor-016",
+      "service": "https",
+      "port": 15016,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40017",
+      "package": "fixture-distractor-017",
+      "service": "ssh",
+      "port": 15017,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40018",
+      "package": "fixture-distractor-018",
+      "service": "smtp",
+      "port": 15018,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40019",
+      "package": "fixture-distractor-019",
+      "service": "redis",
+      "port": 15019,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40020",
+      "package": "fixture-distractor-020",
+      "service": "http",
+      "port": 15020,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40021",
+      "package": "fixture-distractor-021",
+      "service": "https",
+      "port": 15021,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40022",
+      "package": "fixture-distractor-022",
+      "service": "ssh",
+      "port": 15022,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40023",
+      "package": "fixture-distractor-023",
+      "service": "smtp",
+      "port": 15023,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40024",
+      "package": "fixture-distractor-024",
+      "service": "redis",
+      "port": 15024,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40025",
+      "package": "fixture-distractor-025",
+      "service": "http",
+      "port": 15025,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40026",
+      "package": "fixture-distractor-026",
+      "service": "https",
+      "port": 15026,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40027",
+      "package": "fixture-distractor-027",
+      "service": "ssh",
+      "port": 15027,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40028",
+      "package": "fixture-distractor-028",
+      "service": "smtp",
+      "port": 15028,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40029",
+      "package": "fixture-distractor-029",
+      "service": "redis",
+      "port": 15029,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40030",
+      "package": "fixture-distractor-030",
+      "service": "http",
+      "port": 15030,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40031",
+      "package": "fixture-distractor-031",
+      "service": "https",
+      "port": 15031,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40032",
+      "package": "fixture-distractor-032",
+      "service": "ssh",
+      "port": 15032,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40033",
+      "package": "fixture-distractor-033",
+      "service": "smtp",
+      "port": 15033,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40034",
+      "package": "fixture-distractor-034",
+      "service": "redis",
+      "port": 15034,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40035",
+      "package": "fixture-distractor-035",
+      "service": "http",
+      "port": 15035,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40036",
+      "package": "fixture-distractor-036",
+      "service": "https",
+      "port": 15036,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40037",
+      "package": "fixture-distractor-037",
+      "service": "ssh",
+      "port": 15037,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40038",
+      "package": "fixture-distractor-038",
+      "service": "smtp",
+      "port": 15038,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40039",
+      "package": "fixture-distractor-039",
+      "service": "redis",
+      "port": 15039,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40040",
+      "package": "fixture-distractor-040",
+      "service": "http",
+      "port": 15040,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40041",
+      "package": "fixture-distractor-041",
+      "service": "https",
+      "port": 15041,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40042",
+      "package": "fixture-distractor-042",
+      "service": "ssh",
+      "port": 15042,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40043",
+      "package": "fixture-distractor-043",
+      "service": "smtp",
+      "port": 15043,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40044",
+      "package": "fixture-distractor-044",
+      "service": "redis",
+      "port": 15044,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40045",
+      "package": "fixture-distractor-045",
+      "service": "http",
+      "port": 15045,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40046",
+      "package": "fixture-distractor-046",
+      "service": "https",
+      "port": 15046,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40047",
+      "package": "fixture-distractor-047",
+      "service": "ssh",
+      "port": 15047,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40048",
+      "package": "fixture-distractor-048",
+      "service": "smtp",
+      "port": 15048,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40049",
+      "package": "fixture-distractor-049",
+      "service": "redis",
+      "port": 15049,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40050",
+      "package": "fixture-distractor-050",
+      "service": "http",
+      "port": 15050,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40051",
+      "package": "fixture-distractor-051",
+      "service": "https",
+      "port": 15051,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40052",
+      "package": "fixture-distractor-052",
+      "service": "ssh",
+      "port": 15052,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40053",
+      "package": "fixture-distractor-053",
+      "service": "smtp",
+      "port": 15053,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40054",
+      "package": "fixture-distractor-054",
+      "service": "redis",
+      "port": 15054,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40055",
+      "package": "fixture-distractor-055",
+      "service": "http",
+      "port": 15055,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40056",
+      "package": "fixture-distractor-056",
+      "service": "https",
+      "port": 15056,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40057",
+      "package": "fixture-distractor-057",
+      "service": "ssh",
+      "port": 15057,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40058",
+      "package": "fixture-distractor-058",
+      "service": "smtp",
+      "port": 15058,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40059",
+      "package": "fixture-distractor-059",
+      "service": "redis",
+      "port": 15059,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40060",
+      "package": "fixture-distractor-060",
+      "service": "http",
+      "port": 15060,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40061",
+      "package": "fixture-distractor-061",
+      "service": "https",
+      "port": 15061,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40062",
+      "package": "fixture-distractor-062",
+      "service": "ssh",
+      "port": 15062,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40063",
+      "package": "fixture-distractor-063",
+      "service": "smtp",
+      "port": 15063,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40064",
+      "package": "fixture-distractor-064",
+      "service": "redis",
+      "port": 15064,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40065",
+      "package": "fixture-distractor-065",
+      "service": "http",
+      "port": 15065,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40066",
+      "package": "fixture-distractor-066",
+      "service": "https",
+      "port": 15066,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40067",
+      "package": "fixture-distractor-067",
+      "service": "ssh",
+      "port": 15067,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40068",
+      "package": "fixture-distractor-068",
+      "service": "smtp",
+      "port": 15068,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40069",
+      "package": "fixture-distractor-069",
+      "service": "redis",
+      "port": 15069,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40070",
+      "package": "fixture-distractor-070",
+      "service": "http",
+      "port": 15070,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40071",
+      "package": "fixture-distractor-071",
+      "service": "https",
+      "port": 15071,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40072",
+      "package": "fixture-distractor-072",
+      "service": "ssh",
+      "port": 15072,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40073",
+      "package": "fixture-distractor-073",
+      "service": "smtp",
+      "port": 15073,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40074",
+      "package": "fixture-distractor-074",
+      "service": "redis",
+      "port": 15074,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40075",
+      "package": "fixture-distractor-075",
+      "service": "http",
+      "port": 15075,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40076",
+      "package": "fixture-distractor-076",
+      "service": "https",
+      "port": 15076,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40077",
+      "package": "fixture-distractor-077",
+      "service": "ssh",
+      "port": 15077,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40078",
+      "package": "fixture-distractor-078",
+      "service": "smtp",
+      "port": 15078,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40079",
+      "package": "fixture-distractor-079",
+      "service": "redis",
+      "port": 15079,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40080",
+      "package": "fixture-distractor-080",
+      "service": "http",
+      "port": 15080,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40081",
+      "package": "fixture-distractor-081",
+      "service": "https",
+      "port": 15081,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40082",
+      "package": "fixture-distractor-082",
+      "service": "ssh",
+      "port": 15082,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40083",
+      "package": "fixture-distractor-083",
+      "service": "smtp",
+      "port": 15083,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40084",
+      "package": "fixture-distractor-084",
+      "service": "redis",
+      "port": 15084,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40085",
+      "package": "fixture-distractor-085",
+      "service": "http",
+      "port": 15085,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40086",
+      "package": "fixture-distractor-086",
+      "service": "https",
+      "port": 15086,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40087",
+      "package": "fixture-distractor-087",
+      "service": "ssh",
+      "port": 15087,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40088",
+      "package": "fixture-distractor-088",
+      "service": "smtp",
+      "port": 15088,
+      "version": "0.0-1",
+      "severity": "unknown"
+    },
+    {
+      "cve": "CVE-2025-40089",
+      "package": "fixture-distractor-089",
+      "service": "redis",
+      "port": 15089,
+      "version": "0.0-1",
+      "severity": "unknown"
+    }
+  ],
+  "device_packages": [
+    "openssl",
+    "openssh",
+    "postfix",
+    "bind9",
+    "vsftpd",
+    "samba",
+    "freerdp",
+    "mysql-server",
+    "postgresql",
+    "redis-server",
+    "mongodb-server",
+    "net-snmp",
+    "telnetd",
+    "nginx",
+    "dovecot"
+  ],
+  "queries": [
+    {
+      "id": "run-0-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the cryptographic library for an encrypted web connection observation for package openssl.",
+      "gold_package": "openssl"
+    },
+    {
+      "id": "run-0-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: криптографическая библиотека для зашифрованного веб-соединения, пакет openssl.",
+      "gold_package": "openssl"
+    },
+    {
+      "id": "exact-0-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30000",
+      "gold_package": "openssl"
+    },
+    {
+      "id": "exact-0-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "openssl",
+      "gold_package": "openssl"
+    },
+    {
+      "id": "device-0-inventory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "inventory",
+      "query": "Installed inventory version of package openssl",
+      "gold_package": "openssl"
+    },
+    {
+      "id": "device-0-advisory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "advisory",
+      "query": "Vendor advisory fixed version of package openssl",
+      "gold_package": "openssl"
+    },
+    {
+      "id": "device-0-inventory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "inventory",
+      "query": "Установленная версия из инвентаризации пакета openssl",
+      "gold_package": "openssl"
+    },
+    {
+      "id": "device-0-advisory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "advisory",
+      "query": "Исправленная версия из advisory поставщика пакета openssl",
+      "gold_package": "openssl"
+    },
+    {
+      "id": "run-1-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the secure remote shell login observation for package openssh.",
+      "gold_package": "openssh"
+    },
+    {
+      "id": "run-1-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: безопасный удалённый вход в командную оболочку, пакет openssh.",
+      "gold_package": "openssh"
+    },
+    {
+      "id": "exact-1-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30001",
+      "gold_package": "openssh"
+    },
+    {
+      "id": "exact-1-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "openssh",
+      "gold_package": "openssh"
+    },
+    {
+      "id": "device-1-inventory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "inventory",
+      "query": "Installed inventory version of package openssh",
+      "gold_package": "openssh"
+    },
+    {
+      "id": "device-1-advisory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "advisory",
+      "query": "Vendor advisory fixed version of package openssh",
+      "gold_package": "openssh"
+    },
+    {
+      "id": "device-1-inventory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "inventory",
+      "query": "Установленная версия из инвентаризации пакета openssh",
+      "gold_package": "openssh"
+    },
+    {
+      "id": "device-1-advisory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "advisory",
+      "query": "Исправленная версия из advisory поставщика пакета openssh",
+      "gold_package": "openssh"
+    },
+    {
+      "id": "run-2-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the outgoing electronic mail transfer observation for package postfix.",
+      "gold_package": "postfix"
+    },
+    {
+      "id": "run-2-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: передача исходящей электронной почты, пакет postfix.",
+      "gold_package": "postfix"
+    },
+    {
+      "id": "exact-2-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30002",
+      "gold_package": "postfix"
+    },
+    {
+      "id": "exact-2-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "postfix",
+      "gold_package": "postfix"
+    },
+    {
+      "id": "device-2-inventory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "inventory",
+      "query": "Installed inventory version of package postfix",
+      "gold_package": "postfix"
+    },
+    {
+      "id": "device-2-advisory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "advisory",
+      "query": "Vendor advisory fixed version of package postfix",
+      "gold_package": "postfix"
+    },
+    {
+      "id": "device-2-inventory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "inventory",
+      "query": "Установленная версия из инвентаризации пакета postfix",
+      "gold_package": "postfix"
+    },
+    {
+      "id": "device-2-advisory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "advisory",
+      "query": "Исправленная версия из advisory поставщика пакета postfix",
+      "gold_package": "postfix"
+    },
+    {
+      "id": "run-3-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the domain name resolution server observation for package bind9.",
+      "gold_package": "bind9"
+    },
+    {
+      "id": "run-3-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: сервер разрешения доменных имён, пакет bind9.",
+      "gold_package": "bind9"
+    },
+    {
+      "id": "exact-3-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30003",
+      "gold_package": "bind9"
+    },
+    {
+      "id": "exact-3-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "bind9",
+      "gold_package": "bind9"
+    },
+    {
+      "id": "device-3-inventory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "inventory",
+      "query": "Installed inventory version of package bind9",
+      "gold_package": "bind9"
+    },
+    {
+      "id": "device-3-advisory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "advisory",
+      "query": "Vendor advisory fixed version of package bind9",
+      "gold_package": "bind9"
+    },
+    {
+      "id": "device-3-inventory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "inventory",
+      "query": "Установленная версия из инвентаризации пакета bind9",
+      "gold_package": "bind9"
+    },
+    {
+      "id": "device-3-advisory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "advisory",
+      "query": "Исправленная версия из advisory поставщика пакета bind9",
+      "gold_package": "bind9"
+    },
+    {
+      "id": "run-4-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the file transfer over an unencrypted protocol observation for package vsftpd.",
+      "gold_package": "vsftpd"
+    },
+    {
+      "id": "run-4-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: передача файлов по незашифрованному протоколу, пакет vsftpd.",
+      "gold_package": "vsftpd"
+    },
+    {
+      "id": "exact-4-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30004",
+      "gold_package": "vsftpd"
+    },
+    {
+      "id": "exact-4-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "vsftpd",
+      "gold_package": "vsftpd"
+    },
+    {
+      "id": "device-4-inventory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "inventory",
+      "query": "Installed inventory version of package vsftpd",
+      "gold_package": "vsftpd"
+    },
+    {
+      "id": "device-4-advisory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "advisory",
+      "query": "Vendor advisory fixed version of package vsftpd",
+      "gold_package": "vsftpd"
+    },
+    {
+      "id": "device-4-inventory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "inventory",
+      "query": "Установленная версия из инвентаризации пакета vsftpd",
+      "gold_package": "vsftpd"
+    },
+    {
+      "id": "device-4-advisory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "advisory",
+      "query": "Исправленная версия из advisory поставщика пакета vsftpd",
+      "gold_package": "vsftpd"
+    },
+    {
+      "id": "run-5-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the Windows network file sharing observation for package samba.",
+      "gold_package": "samba"
+    },
+    {
+      "id": "run-5-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: сетевой доступ к общим файлам Windows, пакет samba.",
+      "gold_package": "samba"
+    },
+    {
+      "id": "exact-5-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30005",
+      "gold_package": "samba"
+    },
+    {
+      "id": "exact-5-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "samba",
+      "gold_package": "samba"
+    },
+    {
+      "id": "device-5-inventory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "inventory",
+      "query": "Installed inventory version of package samba",
+      "gold_package": "samba"
+    },
+    {
+      "id": "device-5-advisory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "advisory",
+      "query": "Vendor advisory fixed version of package samba",
+      "gold_package": "samba"
+    },
+    {
+      "id": "device-5-inventory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "inventory",
+      "query": "Установленная версия из инвентаризации пакета samba",
+      "gold_package": "samba"
+    },
+    {
+      "id": "device-5-advisory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "advisory",
+      "query": "Исправленная версия из advisory поставщика пакета samba",
+      "gold_package": "samba"
+    },
+    {
+      "id": "run-6-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the remote graphical desktop access observation for package freerdp.",
+      "gold_package": "freerdp"
+    },
+    {
+      "id": "run-6-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: доступ к удалённому графическому рабочему столу, пакет freerdp.",
+      "gold_package": "freerdp"
+    },
+    {
+      "id": "exact-6-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30006",
+      "gold_package": "freerdp"
+    },
+    {
+      "id": "exact-6-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "freerdp",
+      "gold_package": "freerdp"
+    },
+    {
+      "id": "device-6-inventory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "inventory",
+      "query": "Installed inventory version of package freerdp",
+      "gold_package": "freerdp"
+    },
+    {
+      "id": "device-6-advisory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "advisory",
+      "query": "Vendor advisory fixed version of package freerdp",
+      "gold_package": "freerdp"
+    },
+    {
+      "id": "device-6-inventory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "inventory",
+      "query": "Установленная версия из инвентаризации пакета freerdp",
+      "gold_package": "freerdp"
+    },
+    {
+      "id": "device-6-advisory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "advisory",
+      "query": "Исправленная версия из advisory поставщика пакета freerdp",
+      "gold_package": "freerdp"
+    },
+    {
+      "id": "run-7-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the MySQL relational database service observation for package mysql-server.",
+      "gold_package": "mysql-server"
+    },
+    {
+      "id": "run-7-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: служба реляционной базы данных MySQL, пакет mysql-server.",
+      "gold_package": "mysql-server"
+    },
+    {
+      "id": "exact-7-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30007",
+      "gold_package": "mysql-server"
+    },
+    {
+      "id": "exact-7-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "mysql-server",
+      "gold_package": "mysql-server"
+    },
+    {
+      "id": "device-7-inventory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "inventory",
+      "query": "Installed inventory version of package mysql-server",
+      "gold_package": "mysql-server"
+    },
+    {
+      "id": "device-7-advisory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "advisory",
+      "query": "Vendor advisory fixed version of package mysql-server",
+      "gold_package": "mysql-server"
+    },
+    {
+      "id": "device-7-inventory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "inventory",
+      "query": "Установленная версия из инвентаризации пакета mysql-server",
+      "gold_package": "mysql-server"
+    },
+    {
+      "id": "device-7-advisory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "advisory",
+      "query": "Исправленная версия из advisory поставщика пакета mysql-server",
+      "gold_package": "mysql-server"
+    },
+    {
+      "id": "run-8-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the PostgreSQL relational database service observation for package postgresql.",
+      "gold_package": "postgresql"
+    },
+    {
+      "id": "run-8-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: служба реляционной базы данных PostgreSQL, пакет postgresql.",
+      "gold_package": "postgresql"
+    },
+    {
+      "id": "exact-8-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30008",
+      "gold_package": "postgresql"
+    },
+    {
+      "id": "exact-8-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "postgresql",
+      "gold_package": "postgresql"
+    },
+    {
+      "id": "device-8-inventory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "inventory",
+      "query": "Installed inventory version of package postgresql",
+      "gold_package": "postgresql"
+    },
+    {
+      "id": "device-8-advisory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "advisory",
+      "query": "Vendor advisory fixed version of package postgresql",
+      "gold_package": "postgresql"
+    },
+    {
+      "id": "device-8-inventory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "inventory",
+      "query": "Установленная версия из инвентаризации пакета postgresql",
+      "gold_package": "postgresql"
+    },
+    {
+      "id": "device-8-advisory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "advisory",
+      "query": "Исправленная версия из advisory поставщика пакета postgresql",
+      "gold_package": "postgresql"
+    },
+    {
+      "id": "run-9-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the in-memory key value database observation for package redis-server.",
+      "gold_package": "redis-server"
+    },
+    {
+      "id": "run-9-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: база данных ключ-значение в оперативной памяти, пакет redis-server.",
+      "gold_package": "redis-server"
+    },
+    {
+      "id": "exact-9-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30009",
+      "gold_package": "redis-server"
+    },
+    {
+      "id": "exact-9-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "redis-server",
+      "gold_package": "redis-server"
+    },
+    {
+      "id": "device-9-inventory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "inventory",
+      "query": "Installed inventory version of package redis-server",
+      "gold_package": "redis-server"
+    },
+    {
+      "id": "device-9-advisory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "advisory",
+      "query": "Vendor advisory fixed version of package redis-server",
+      "gold_package": "redis-server"
+    },
+    {
+      "id": "device-9-inventory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "inventory",
+      "query": "Установленная версия из инвентаризации пакета redis-server",
+      "gold_package": "redis-server"
+    },
+    {
+      "id": "device-9-advisory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "advisory",
+      "query": "Исправленная версия из advisory поставщика пакета redis-server",
+      "gold_package": "redis-server"
+    },
+    {
+      "id": "run-10-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the document oriented database observation for package mongodb-server.",
+      "gold_package": "mongodb-server"
+    },
+    {
+      "id": "run-10-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: документоориентированная база данных, пакет mongodb-server.",
+      "gold_package": "mongodb-server"
+    },
+    {
+      "id": "exact-10-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30010",
+      "gold_package": "mongodb-server"
+    },
+    {
+      "id": "exact-10-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "mongodb-server",
+      "gold_package": "mongodb-server"
+    },
+    {
+      "id": "device-10-inventory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "inventory",
+      "query": "Installed inventory version of package mongodb-server",
+      "gold_package": "mongodb-server"
+    },
+    {
+      "id": "device-10-advisory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "advisory",
+      "query": "Vendor advisory fixed version of package mongodb-server",
+      "gold_package": "mongodb-server"
+    },
+    {
+      "id": "device-10-inventory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "inventory",
+      "query": "Установленная версия из инвентаризации пакета mongodb-server",
+      "gold_package": "mongodb-server"
+    },
+    {
+      "id": "device-10-advisory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "advisory",
+      "query": "Исправленная версия из advisory поставщика пакета mongodb-server",
+      "gold_package": "mongodb-server"
+    },
+    {
+      "id": "run-11-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the network device monitoring and management observation for package net-snmp.",
+      "gold_package": "net-snmp"
+    },
+    {
+      "id": "run-11-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: мониторинг и управление сетевым оборудованием, пакет net-snmp.",
+      "gold_package": "net-snmp"
+    },
+    {
+      "id": "exact-11-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30011",
+      "gold_package": "net-snmp"
+    },
+    {
+      "id": "exact-11-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "net-snmp",
+      "gold_package": "net-snmp"
+    },
+    {
+      "id": "device-11-inventory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "inventory",
+      "query": "Installed inventory version of package net-snmp",
+      "gold_package": "net-snmp"
+    },
+    {
+      "id": "device-11-advisory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "advisory",
+      "query": "Vendor advisory fixed version of package net-snmp",
+      "gold_package": "net-snmp"
+    },
+    {
+      "id": "device-11-inventory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "inventory",
+      "query": "Установленная версия из инвентаризации пакета net-snmp",
+      "gold_package": "net-snmp"
+    },
+    {
+      "id": "device-11-advisory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "advisory",
+      "query": "Исправленная версия из advisory поставщика пакета net-snmp",
+      "gold_package": "net-snmp"
+    },
+    {
+      "id": "run-12-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the unencrypted remote terminal login observation for package telnetd.",
+      "gold_package": "telnetd"
+    },
+    {
+      "id": "run-12-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: незашифрованный удалённый вход в терминал, пакет telnetd.",
+      "gold_package": "telnetd"
+    },
+    {
+      "id": "exact-12-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30012",
+      "gold_package": "telnetd"
+    },
+    {
+      "id": "exact-12-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "telnetd",
+      "gold_package": "telnetd"
+    },
+    {
+      "id": "device-12-inventory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "inventory",
+      "query": "Installed inventory version of package telnetd",
+      "gold_package": "telnetd"
+    },
+    {
+      "id": "device-12-advisory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "advisory",
+      "query": "Vendor advisory fixed version of package telnetd",
+      "gold_package": "telnetd"
+    },
+    {
+      "id": "device-12-inventory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "inventory",
+      "query": "Установленная версия из инвентаризации пакета telnetd",
+      "gold_package": "telnetd"
+    },
+    {
+      "id": "device-12-advisory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "advisory",
+      "query": "Исправленная версия из advisory поставщика пакета telnetd",
+      "gold_package": "telnetd"
+    },
+    {
+      "id": "run-13-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the NGINX web application reverse proxy observation for package nginx.",
+      "gold_package": "nginx"
+    },
+    {
+      "id": "run-13-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: обратный прокси веб-приложений NGINX, пакет nginx.",
+      "gold_package": "nginx"
+    },
+    {
+      "id": "exact-13-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30013",
+      "gold_package": "nginx"
+    },
+    {
+      "id": "exact-13-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "nginx",
+      "gold_package": "nginx"
+    },
+    {
+      "id": "device-13-inventory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "inventory",
+      "query": "Installed inventory version of package nginx",
+      "gold_package": "nginx"
+    },
+    {
+      "id": "device-13-advisory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "advisory",
+      "query": "Vendor advisory fixed version of package nginx",
+      "gold_package": "nginx"
+    },
+    {
+      "id": "device-13-inventory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "inventory",
+      "query": "Установленная версия из инвентаризации пакета nginx",
+      "gold_package": "nginx"
+    },
+    {
+      "id": "device-13-advisory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "advisory",
+      "query": "Исправленная версия из advisory поставщика пакета nginx",
+      "gold_package": "nginx"
+    },
+    {
+      "id": "run-14-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the incoming mailbox access using IMAP observation for package dovecot.",
+      "gold_package": "dovecot"
+    },
+    {
+      "id": "run-14-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: доступ к входящему почтовому ящику по IMAP, пакет dovecot.",
+      "gold_package": "dovecot"
+    },
+    {
+      "id": "exact-14-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30014",
+      "gold_package": "dovecot"
+    },
+    {
+      "id": "exact-14-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "dovecot",
+      "gold_package": "dovecot"
+    },
+    {
+      "id": "device-14-inventory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "inventory",
+      "query": "Installed inventory version of package dovecot",
+      "gold_package": "dovecot"
+    },
+    {
+      "id": "device-14-advisory-en",
+      "scope": "device",
+      "language": "en",
+      "source_kind": "advisory",
+      "query": "Vendor advisory fixed version of package dovecot",
+      "gold_package": "dovecot"
+    },
+    {
+      "id": "device-14-inventory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "inventory",
+      "query": "Установленная версия из инвентаризации пакета dovecot",
+      "gold_package": "dovecot"
+    },
+    {
+      "id": "device-14-advisory-ru",
+      "scope": "device",
+      "language": "ru",
+      "source_kind": "advisory",
+      "query": "Исправленная версия из advisory поставщика пакета dovecot",
+      "gold_package": "dovecot"
+    },
+    {
+      "id": "run-15-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the HTTP caching forward proxy observation for package squid.",
+      "gold_package": "squid"
+    },
+    {
+      "id": "run-15-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: кеширующий прямой HTTP-прокси, пакет squid.",
+      "gold_package": "squid"
+    },
+    {
+      "id": "exact-15-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30015",
+      "gold_package": "squid"
+    },
+    {
+      "id": "exact-15-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "squid",
+      "gold_package": "squid"
+    },
+    {
+      "id": "run-16-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the container engine remote control API observation for package docker-engine.",
+      "gold_package": "docker-engine"
+    },
+    {
+      "id": "run-16-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: API удалённого управления контейнерным движком, пакет docker-engine.",
+      "gold_package": "docker-engine"
+    },
+    {
+      "id": "exact-16-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30016",
+      "gold_package": "docker-engine"
+    },
+    {
+      "id": "exact-16-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "docker-engine",
+      "gold_package": "docker-engine"
+    },
+    {
+      "id": "run-17-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the Kubernetes cluster control plane API observation for package kube-apiserver.",
+      "gold_package": "kube-apiserver"
+    },
+    {
+      "id": "run-17-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: API плоскости управления кластером Kubernetes, пакет kube-apiserver.",
+      "gold_package": "kube-apiserver"
+    },
+    {
+      "id": "exact-17-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30017",
+      "gold_package": "kube-apiserver"
+    },
+    {
+      "id": "exact-17-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "kube-apiserver",
+      "gold_package": "kube-apiserver"
+    },
+    {
+      "id": "run-18-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the Prometheus monitoring metrics collection observation for package prometheus.",
+      "gold_package": "prometheus"
+    },
+    {
+      "id": "run-18-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: сбор метрик мониторинга Prometheus, пакет prometheus.",
+      "gold_package": "prometheus"
+    },
+    {
+      "id": "exact-18-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30018",
+      "gold_package": "prometheus"
+    },
+    {
+      "id": "exact-18-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "prometheus",
+      "gold_package": "prometheus"
+    },
+    {
+      "id": "run-19-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the Grafana monitoring dashboards observation for package grafana.",
+      "gold_package": "grafana"
+    },
+    {
+      "id": "run-19-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: панели мониторинга Grafana, пакет grafana.",
+      "gold_package": "grafana"
+    },
+    {
+      "id": "exact-19-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30019",
+      "gold_package": "grafana"
+    },
+    {
+      "id": "exact-19-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "grafana",
+      "gold_package": "grafana"
+    },
+    {
+      "id": "run-20-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the distributed search and analytics index observation for package elasticsearch.",
+      "gold_package": "elasticsearch"
+    },
+    {
+      "id": "run-20-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: распределённый индекс поиска и аналитики, пакет elasticsearch.",
+      "gold_package": "elasticsearch"
+    },
+    {
+      "id": "exact-20-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30020",
+      "gold_package": "elasticsearch"
+    },
+    {
+      "id": "exact-20-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "elasticsearch",
+      "gold_package": "elasticsearch"
+    },
+    {
+      "id": "run-21-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the distributed memory object cache observation for package memcached.",
+      "gold_package": "memcached"
+    },
+    {
+      "id": "run-21-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: распределённый кеш объектов в памяти, пакет memcached.",
+      "gold_package": "memcached"
+    },
+    {
+      "id": "exact-21-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30021",
+      "gold_package": "memcached"
+    },
+    {
+      "id": "exact-21-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "memcached",
+      "gold_package": "memcached"
+    },
+    {
+      "id": "run-22-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the network clock synchronization observation for package ntpsec.",
+      "gold_package": "ntpsec"
+    },
+    {
+      "id": "run-22-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: синхронизация времени по сети, пакет ntpsec.",
+      "gold_package": "ntpsec"
+    },
+    {
+      "id": "exact-22-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30022",
+      "gold_package": "ntpsec"
+    },
+    {
+      "id": "exact-22-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "ntpsec",
+      "gold_package": "ntpsec"
+    },
+    {
+      "id": "run-23-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the MQTT message broker for sensors observation for package mosquitto.",
+      "gold_package": "mosquitto"
+    },
+    {
+      "id": "run-23-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: брокер сообщений MQTT для сенсоров, пакет mosquitto.",
+      "gold_package": "mosquitto"
+    },
+    {
+      "id": "exact-23-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30023",
+      "gold_package": "mosquitto"
+    },
+    {
+      "id": "exact-23-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "mosquitto",
+      "gold_package": "mosquitto"
+    },
+    {
+      "id": "run-24-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the AMQP message queue broker observation for package rabbitmq-server.",
+      "gold_package": "rabbitmq-server"
+    },
+    {
+      "id": "run-24-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: брокер очередей сообщений AMQP, пакет rabbitmq-server.",
+      "gold_package": "rabbitmq-server"
+    },
+    {
+      "id": "exact-24-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30024",
+      "gold_package": "rabbitmq-server"
+    },
+    {
+      "id": "exact-24-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "rabbitmq-server",
+      "gold_package": "rabbitmq-server"
+    },
+    {
+      "id": "run-25-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the OpenVPN virtual private network tunnel observation for package openvpn.",
+      "gold_package": "openvpn"
+    },
+    {
+      "id": "run-25-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: туннель виртуальной частной сети OpenVPN, пакет openvpn.",
+      "gold_package": "openvpn"
+    },
+    {
+      "id": "exact-25-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30025",
+      "gold_package": "openvpn"
+    },
+    {
+      "id": "exact-25-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "openvpn",
+      "gold_package": "openvpn"
+    },
+    {
+      "id": "run-26-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the IPsec encrypted network tunnel observation for package strongswan.",
+      "gold_package": "strongswan"
+    },
+    {
+      "id": "run-26-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: зашифрованный сетевой туннель IPsec, пакет strongswan.",
+      "gold_package": "strongswan"
+    },
+    {
+      "id": "exact-26-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30026",
+      "gold_package": "strongswan"
+    },
+    {
+      "id": "exact-26-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "strongswan",
+      "gold_package": "strongswan"
+    },
+    {
+      "id": "run-27-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the Apache HTTP web server observation for package apache2.",
+      "gold_package": "apache2"
+    },
+    {
+      "id": "run-27-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: веб-сервер Apache HTTP, пакет apache2.",
+      "gold_package": "apache2"
+    },
+    {
+      "id": "exact-27-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30027",
+      "gold_package": "apache2"
+    },
+    {
+      "id": "exact-27-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "apache2",
+      "gold_package": "apache2"
+    },
+    {
+      "id": "run-28-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the Java servlet application container observation for package tomcat.",
+      "gold_package": "tomcat"
+    },
+    {
+      "id": "run-28-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: контейнер Java-сервлетов, пакет tomcat.",
+      "gold_package": "tomcat"
+    },
+    {
+      "id": "exact-28-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30028",
+      "gold_package": "tomcat"
+    },
+    {
+      "id": "exact-28-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "tomcat",
+      "gold_package": "tomcat"
+    },
+    {
+      "id": "run-29-en",
+      "scope": "run",
+      "language": "en",
+      "query": "Find the continuous integration build automation observation for package jenkins.",
+      "gold_package": "jenkins"
+    },
+    {
+      "id": "run-29-ru",
+      "scope": "run",
+      "language": "ru",
+      "query": "Найди наблюдение: автоматизация сборок непрерывной интеграции, пакет jenkins.",
+      "gold_package": "jenkins"
+    },
+    {
+      "id": "exact-29-cve",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "CVE-2026-30029",
+      "gold_package": "jenkins"
+    },
+    {
+      "id": "exact-29-package",
+      "scope": "exact",
+      "language": "identifier",
+      "query": "jenkins",
+      "gold_package": "jenkins"
+    }
+  ]
+}

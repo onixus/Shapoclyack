@@ -15,10 +15,39 @@ import {
   type OperatorProposal,
   type OperatorTask,
   type ProposalAction,
+  type OperatorPlan,
+  type PlannerRequest,
+  type PlannerScan,
 } from "@/lib/operator-api";
 
 const copy = {
   en: {
+    runtimeReady: "Model integrity was verified at startup and runtime health is available.",
+    runtimeUnavailable: "Runtime is unavailable. Check its health before requesting model work.",
+    modelDigest: "Model SHA-256",
+    contextBudget: "Context tokens",
+    parallelBudget: "Parallel inference",
+    runtimeVerifiedAt: "Verified at",
+    trackJob: "Track scan job",
+    planner: "Ask the operator",
+    request: "Your request",
+    planRequest: "Propose the next step",
+    boundContext: "Selected context (optional)",
+    selectedRun: "Selected run ID",
+    selectedPrevious: "Selected previous run ID",
+    selectedDevice: "Selected endpoint device ID",
+    selectedJob: "Selected job ID",
+    selectedFinding: "Selected finding ID",
+    includeScan: "Include explicit scan targets",
+    proposalOnly:
+      "This selects a proposed operation and executes nothing. Scan actions still require a separate preview and confirmation.",
+    adopt: "Use these parameters",
+    adopted:
+      "Parameters copied into the form below. Review them and explicitly request the next step.",
+    noEffect: "No action has been executed.",
+    effectUnexpected:
+      "Unexpected execution state. Refresh and review the server result before proceeding.",
+    unsupportedPlan: "The request is unsupported or lacks sufficient selected context.",
     targets: "Targets",
     udp: "UDP ports",
     intent: "Scan purpose",
@@ -97,6 +126,22 @@ const copy = {
       "This plan expired or is no longer awaiting confirmation. Prepare a new preview when required.",
     remediation: "Find a vendor-backed fix",
     device: "Endpoint device ID",
+    remediationScope: "Remediation context",
+    endpointScope: "Endpoint inventory",
+    findingScope: "Network finding",
+    findingId: "Network finding ID",
+    configuration: "Configuration hardening",
+    directive: "Configuration directive for manual review",
+    operatorRunbook: "Operator runbook · manual review required",
+    vendorFacts:
+      "Vendor facts cover package applicability and fixed versions only. These operational steps are Shapoclyack guidance and require administrator approval.",
+    preconditions: "Preconditions",
+    backup: "Backup",
+    restart: "Restart",
+    rollback: "Rollback",
+    manualApproval: "Manual approval required",
+    workaround: "Vendor workaround",
+    noWorkaround: "Unsupported: no reviewed vendor workaround source.",
     lookup: "Find fixes",
     noFixes: "No confirmed fix cards are available; this is not evidence of safety.",
     installed: "Installed",
@@ -113,6 +158,31 @@ const copy = {
     busy: "A task is queued or running. Its state is restored from the server; reconnecting does not submit it again.",
   },
   ru: {
+    runtimeReady: "Целостность модели проверена при запуске; runtime доступен.",
+    runtimeUnavailable: "Runtime недоступен. Проверьте его состояние перед задачами модели.",
+    modelDigest: "SHA-256 модели",
+    contextBudget: "Токенов контекста",
+    parallelBudget: "Параллельных inference",
+    runtimeVerifiedAt: "Проверено",
+    trackJob: "Открыть задание скана",
+    planner: "Запрос оператору",
+    request: "Ваш запрос",
+    planRequest: "Предложить следующий шаг",
+    boundContext: "Выбранный контекст (необязательно)",
+    selectedRun: "ID выбранного скана",
+    selectedPrevious: "ID выбранного предыдущего скана",
+    selectedDevice: "ID выбранного endpoint-устройства",
+    selectedJob: "ID выбранного задания",
+    selectedFinding: "ID выбранной находки",
+    includeScan: "Добавить явные цели скана",
+    proposalOnly:
+      "Оператор только предлагает операцию. Для действий со сканами остаются отдельные предпросмотр и подтверждение.",
+    adopt: "Использовать параметры",
+    adopted: "Параметры скопированы в форму ниже. Проверьте их и явно запросите следующий шаг.",
+    noEffect: "Действия ещё не выполнялись.",
+    effectUnexpected:
+      "Неожиданное состояние исполнения. Обновите и проверьте результат сервера перед продолжением.",
+    unsupportedPlan: "Запрос не поддерживается или выбранного контекста недостаточно.",
     targets: "Цели",
     udp: "UDP-порты",
     intent: "Назначение скана",
@@ -190,6 +260,22 @@ const copy = {
       "План истёк или уже не ожидает подтверждения. При необходимости подготовьте новый предпросмотр.",
     remediation: "Найти исправление из advisory",
     device: "ID устройства endpoint",
+    remediationScope: "Контекст исправления",
+    endpointScope: "Инвентаризация endpoint",
+    findingScope: "Сетевая находка",
+    findingId: "ID сетевой находки",
+    configuration: "Усиление конфигурации",
+    directive: "Директива конфигурации для ручной проверки",
+    operatorRunbook: "Инструкция оператора · требуется ручная проверка",
+    vendorFacts:
+      "Факты поставщика относятся только к применимости пакета и исправленным версиям. Эти операционные шаги — инструкция Shapoclyack, требующая одобрения администратора.",
+    preconditions: "Предусловия",
+    backup: "Резервная копия",
+    restart: "Перезапуск",
+    rollback: "Откат",
+    manualApproval: "Требуется ручное одобрение",
+    workaround: "Обходное решение поставщика",
+    noWorkaround: "Не поддерживается: нет проверенного источника обходного решения поставщика.",
     lookup: "Найти исправления",
     noFixes: "Подтверждённых карточек исправления нет; это не доказательство безопасности.",
     installed: "Установлено",
@@ -223,6 +309,28 @@ function remember(key: string, value: string) {
 const keyForRequest = () =>
   globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
+type AdoptedPlan = { nonce: string; sessionId: string; plan: OperatorPlan };
+const selectableTools = [
+  "summarize_run",
+  "analyze_run",
+  "compare_runs",
+  "find_remediation",
+  "prepare_scan",
+  "cancel_scan",
+  "verify_finding",
+];
+
+function useActiveMount() {
+  const active = useRef(true);
+  useEffect(() => {
+    active.current = true;
+    return () => {
+      active.current = false;
+    };
+  }, []);
+  return active;
+}
+
 /** Text is deliberately rendered through React only: no Markdown renderer,
  * model URLs, external images, HTML, or automatic fetch of cited resources. */
 export function OperatorConsole({
@@ -238,14 +346,32 @@ export function OperatorConsole({
   const c = copy[t.locale];
   const language = t.locale;
   const client = useQueryClient();
+  const active = useActiveMount();
   const prefix = useMemo(() => operatorKey(tenant, actor), [tenant, actor]);
   const storageKey = `operator-session:${JSON.stringify([tenant, actor])}`;
   const [session, setSession] = useState(() => remembered(storageKey));
   const [run, setRun] = useState("");
   const [tool, setTool] = useState("analyze_run");
+  const [adopted, setAdopted] = useState<AdoptedPlan | null>(null);
+  const draft = adopted?.sessionId === session ? adopted : undefined;
+  const adopt = (plan: OperatorPlan) => {
+    if (
+      !canOperate ||
+      plan.effect_executed !== false ||
+      plan.status !== "proposal" ||
+      !selectableTools.includes(plan.tool)
+    )
+      return;
+    setAdopted({ nonce: keyForRequest(), sessionId: session, plan });
+    if (plan.tool === "summarize_run" || plan.tool === "analyze_run") {
+      setRun(typeof plan.arguments.run_id === "string" ? plan.arguments.run_id : "");
+      setTool(plan.tool);
+    }
+  };
   const [sourceRequest, setSourceRequest] = useState<{
     citation: Citation;
     device?: string;
+    finding?: string;
   } | null>(null);
   const requestKey = useRef<{ body: string; key: string } | null>(null);
   useEffect(
@@ -285,7 +411,9 @@ export function OperatorConsole({
     mutationFn: () => operatorApi.createSession(tenant),
     retry: false,
     onSuccess: (data) => {
+      if (!active.current) return;
       setSession(data.session_id);
+      setAdopted(null);
       remember(storageKey, data.session_id);
       void client.invalidateQueries({ queryKey: [...prefix, "sessions"] });
     },
@@ -301,6 +429,7 @@ export function OperatorConsole({
     },
     retry: false,
     onSuccess: () => {
+      if (!active.current) return;
       requestKey.current = null;
       void detail.refetch();
     },
@@ -310,26 +439,34 @@ export function OperatorConsole({
     mutationFn: (task: string) => operatorApi.cancel(tenant, task),
     retry: false,
     onSuccess: () => {
+      if (!active.current) return;
       void detail.refetch();
     },
   });
   const evidence = useQuery({
     queryKey: [...prefix, "source", sourceRequest],
     queryFn: ({ signal }) =>
-      sourceRequest!.device
-        ? operatorApi.remediationSource(
+      sourceRequest!.finding
+        ? operatorApi.findingRemediationSource(
             tenant,
-            sourceRequest!.device,
+            sourceRequest!.finding,
             sourceRequest!.citation,
             signal,
           )
-        : operatorApi.evidence(tenant, sourceRequest!.citation, signal),
+        : sourceRequest!.device
+          ? operatorApi.remediationSource(
+              tenant,
+              sourceRequest!.device,
+              sourceRequest!.citation,
+              signal,
+            )
+          : operatorApi.evidence(tenant, sourceRequest!.citation, signal),
     enabled: Boolean(sourceRequest),
     retry: false,
     staleTime: 0,
   });
-  const source = (citation: Citation, device?: string) => {
-    setSourceRequest({ citation, device });
+  const source = (citation: Citation, device?: string, finding?: string) => {
+    setSourceRequest({ citation, device, finding });
     // Clicking the same citation must recheck current authorization/freshness.
     if (sourceRequest?.citation === citation) void evidence.refetch();
   };
@@ -362,8 +499,50 @@ export function OperatorConsole({
           </p>
           <p>{status.data.external_inference ? c.hosted : c.local}</p>
           <p>
-            {c.runtime} <span className="font-mono">{status.data.runtime_status}</span>
+            {status.data.runtime_status === "ready"
+              ? c.runtimeReady
+              : status.data.runtime_status === "unavailable"
+                ? c.runtimeUnavailable
+                : c.runtime}{" "}
+            <span className="font-mono">{status.data.runtime_status}</span>
           </p>
+          {status.data.runtime_status === "ready" && (
+            <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
+              {typeof status.data.model_sha256 === "string" &&
+                /^[a-f0-9]{64}$/.test(status.data.model_sha256) && (
+                  <span title={status.data.model_sha256}>
+                    {c.modelDigest}: {status.data.model_sha256.slice(0, 16)}…
+                  </span>
+                )}
+              {status.data.context_tokens != null && (
+                <span>
+                  {c.contextBudget}: {status.data.context_tokens}
+                </span>
+              )}
+              {status.data.parallel != null && (
+                <span>
+                  {c.parallelBudget}: {status.data.parallel}
+                </span>
+              )}
+              {status.data.verified_at && (
+                <span>
+                  {c.runtimeVerifiedAt}: {status.data.verified_at}
+                </span>
+              )}
+              {status.data.profile && <span>{status.data.profile}</span>}
+            </div>
+          )}
+          {status.data.runtime_status === "unavailable" && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                void status.refetch();
+              }}
+            >
+              {c.retry}
+            </Button>
+          )}
           <p className="text-amber-700 dark:text-amber-300">
             {c.quality} <span className="font-mono">{status.data.quality_status}</span>
           </p>
@@ -383,6 +562,7 @@ export function OperatorConsole({
               setSession(event.target.value);
               remember(storageKey, event.target.value);
               setSourceRequest(null);
+              setAdopted(null);
             }}
           >
             <option value="">{c.chooseSession}</option>
@@ -402,6 +582,7 @@ export function OperatorConsole({
             variant="outline"
             onClick={() => {
               void sessions.refetch();
+              void status.refetch();
               if (session) void detail.refetch();
             }}
           >
@@ -415,6 +596,28 @@ export function OperatorConsole({
       </Card>
       {session && detail.data && (
         <>
+          <PlannerPanel
+            key={`planner:${session}`}
+            tenant={tenant}
+            actor={actor}
+            session={session}
+            runId={run}
+            language={language}
+            c={c}
+            canOperate={
+              canOperate &&
+              status.data.task_submission_enabled &&
+              status.data.runtime_status !== "unavailable"
+            }
+            onQueued={() => {
+              void detail.refetch();
+            }}
+          />
+          {draft && (
+            <p role="status" className="rounded border border-primary/30 bg-primary/5 p-3 text-sm">
+              {c.adopted}
+            </p>
+          )}
           <Card>
             <CardHeader>
               <CardTitle>{c.analysis}</CardTitle>
@@ -452,6 +655,7 @@ export function OperatorConsole({
                   disabled={
                     !canOperate ||
                     !status.data.task_submission_enabled ||
+                    status.data.runtime_status === "unavailable" ||
                     submit.isPending ||
                     !run.trim()
                   }
@@ -486,6 +690,7 @@ export function OperatorConsole({
                   cancelling={cancel.isPending}
                   onCancel={() => cancel.mutate(task.task_id)}
                   onSource={source}
+                  onAdopt={adopt}
                 />
               ))}
               {cancel.isError && <p role="alert">{c.failed}</p>}
@@ -493,19 +698,27 @@ export function OperatorConsole({
           </Card>
           {canOperate && (
             <ActionPanel
-              key={session}
+              key={`actions:${session}`}
               tenant={tenant}
               actor={actor}
               session={session}
               canOperate={canOperate}
               c={c}
               history={detail.data.proposals ?? []}
+              draft={draft}
             />
           )}
         </>
       )}
-      <ComparePanel tenant={tenant} actor={actor} language={language} c={c} />
-      <RemediationPanel tenant={tenant} actor={actor} language={language} c={c} onSource={source} />
+      <ComparePanel tenant={tenant} actor={actor} language={language} c={c} draft={draft} />
+      <RemediationPanel
+        tenant={tenant}
+        actor={actor}
+        language={language}
+        c={c}
+        onSource={source}
+        draft={draft}
+      />
       {sourceRequest && (
         <Card>
           <CardHeader>
@@ -528,20 +741,283 @@ export function OperatorConsole({
 
 type Copy = typeof copy.en;
 
+function toolLabel(tool: string, c: Copy): string {
+  const labels: Record<string, string> = {
+    summarize_run: c.summary,
+    analyze_run: c.categorize,
+    compare_runs: c.compare,
+    find_remediation: c.remediation,
+    prepare_scan: c.start,
+    cancel_scan: c.stop,
+    verify_finding: c.verify,
+    abstain: c.unsupportedPlan,
+  };
+  return labels[tool] ?? c.unsupportedPlan;
+}
+
+function PlannerPanel({
+  tenant,
+  actor,
+  session,
+  runId,
+  language,
+  c,
+  canOperate,
+  onQueued,
+}: {
+  tenant: string;
+  actor: string;
+  session: string;
+  runId: string;
+  language: "ru" | "en";
+  c: Copy;
+  canOperate: boolean;
+  onQueued: () => void;
+}) {
+  const active = useActiveMount();
+  const [request, setRequest] = useState("");
+  const [context, setContext] = useState({
+    run_id: runId,
+    previous_run_id: "",
+    device_id: "",
+    job_id: "",
+    vuln_id: "",
+  });
+  const [includeScan, setIncludeScan] = useState(false);
+  const [scan, setScan] = useState<PlannerScan>({
+    mode: "safe",
+    ranges: "",
+    domains: "",
+    ports: "443",
+    ports_udp: "",
+    agent_group: "",
+    intent: "",
+  });
+  const requestKey = useRef<{ body: string; key: string } | null>(null);
+  useEffect(() => {
+    setContext((previous) => ({ ...previous, run_id: runId }));
+  }, [runId]);
+  const mutation = useMutation({
+    mutationKey: [...operatorKey(tenant, actor), "plan-request"],
+    mutationFn: () => {
+      const bound: PlannerRequest["context"] = Object.fromEntries(
+        Object.entries(context)
+          .map(([key, value]) => [key, value.trim()])
+          .filter(([, value]) => value),
+      );
+      if (includeScan) {
+        const { intent, agent_group, ...fields } = scan;
+        bound.scan = {
+          ...fields,
+          ranges: scan.ranges?.trim(),
+          domains: scan.domains?.trim(),
+          ports: scan.ports.trim(),
+          ...(intent?.trim() ? { intent: intent.trim() } : {}),
+          ...(agent_group?.trim() ? { agent_group: agent_group.trim() } : {}),
+        };
+      }
+      const body: PlannerRequest = { request: request.trim(), language, context: bound };
+      const identity = JSON.stringify([session, body]);
+      if (requestKey.current?.body !== identity)
+        requestKey.current = { body: identity, key: keyForRequest() };
+      return operatorApi.plan(tenant, session, body, requestKey.current.key);
+    },
+    retry: false,
+    onSuccess: () => {
+      if (active.current) onQueued();
+    },
+  });
+  const fields = [
+    ["run_id", c.selectedRun],
+    ["previous_run_id", c.selectedPrevious],
+    ["device_id", c.selectedDevice],
+    ["job_id", c.selectedJob],
+    ["vuln_id", c.selectedFinding],
+  ] as const;
+  return (
+    <Card role="region" aria-label={c.planner}>
+      <CardHeader>
+        <CardTitle>{c.planner}</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-sm text-muted-foreground">{c.proposalOnly}</p>
+        <form
+          className="space-y-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            mutation.mutate();
+          }}
+        >
+          <label className="block space-y-2 text-sm">
+            {c.request}
+            <textarea
+              className="block min-h-24 w-full rounded-md border bg-background p-3"
+              required
+              maxLength={1000}
+              value={request}
+              onChange={(event) => setRequest(event.target.value)}
+            />
+          </label>
+          <details className="rounded border p-3 text-sm">
+            <summary className="cursor-pointer font-medium">{c.boundContext}</summary>
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              {fields.map(([key, label]) => (
+                <label className="space-y-2" key={key}>
+                  {label}
+                  <Input
+                    maxLength={256}
+                    pattern="[A-Za-z0-9][A-Za-z0-9_.:-]*"
+                    value={context[key]}
+                    onChange={(event) =>
+                      setContext((value) => ({ ...value, [key]: event.target.value }))
+                    }
+                  />
+                </label>
+              ))}
+            </div>
+            <label className="mt-4 flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={includeScan}
+                onChange={(event) => setIncludeScan(event.target.checked)}
+              />
+              {c.includeScan}
+            </label>
+            {includeScan && (
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <label className="space-y-2">
+                  {c.ranges}
+                  <textarea
+                    className="block min-h-20 w-full rounded-md border bg-background p-3"
+                    maxLength={8192}
+                    value={scan.ranges}
+                    onChange={(event) =>
+                      setScan((value) => ({ ...value, ranges: event.target.value }))
+                    }
+                  />
+                </label>
+                <label className="space-y-2">
+                  {c.domains}
+                  <textarea
+                    className="block min-h-20 w-full rounded-md border bg-background p-3"
+                    maxLength={8192}
+                    value={scan.domains}
+                    onChange={(event) =>
+                      setScan((value) => ({ ...value, domains: event.target.value }))
+                    }
+                  />
+                </label>
+                <label className="space-y-2">
+                  {c.ports}
+                  <Input
+                    required
+                    maxLength={2048}
+                    value={scan.ports}
+                    onChange={(event) =>
+                      setScan((value) => ({ ...value, ports: event.target.value }))
+                    }
+                  />
+                </label>
+                <label className="space-y-2">
+                  {c.mode}
+                  <select
+                    className="block h-10 w-full rounded border bg-background px-3"
+                    value={scan.mode}
+                    onChange={(event) =>
+                      setScan((value) => ({
+                        ...value,
+                        mode: event.target.value as PlannerScan["mode"],
+                      }))
+                    }
+                  >
+                    {["safe", "balanced", "fast", "test"].map((mode) => (
+                      <option key={mode} value={mode}>
+                        {mode}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="space-y-2">
+                  {c.udp}
+                  <Input
+                    maxLength={2048}
+                    value={scan.ports_udp}
+                    onChange={(event) =>
+                      setScan((value) => ({ ...value, ports_udp: event.target.value }))
+                    }
+                  />
+                </label>
+                <label className="space-y-2">
+                  {c.intent}
+                  <Input
+                    maxLength={64}
+                    value={scan.intent ?? ""}
+                    onChange={(event) =>
+                      setScan((value) => ({ ...value, intent: event.target.value }))
+                    }
+                  />
+                </label>
+                <label className="space-y-2">
+                  {c.group}
+                  <Input
+                    maxLength={63}
+                    value={scan.agent_group ?? ""}
+                    onChange={(event) =>
+                      setScan((value) => ({ ...value, agent_group: event.target.value }))
+                    }
+                  />
+                </label>
+              </div>
+            )}
+          </details>
+          <Button
+            disabled={
+              !canOperate ||
+              !request.trim() ||
+              mutation.isPending ||
+              (includeScan && !scan.ranges?.trim() && !scan.domains?.trim())
+            }
+          >
+            {c.planRequest}
+          </Button>
+          {mutation.isPending && <p role="status">{c.pending}</p>}
+          {mutation.isError && <p role="alert">{c.failed}</p>}
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
 function ComparePanel({
   tenant,
   actor,
   language,
   c,
+  draft,
 }: {
   tenant: string;
   actor: string;
   language: "ru" | "en";
   c: Copy;
+  draft?: AdoptedPlan;
 }) {
   const [previous, setPrevious] = useState("");
   const [current, setCurrent] = useState("");
   const [selection, setSelection] = useState<{ previous: string; current: string } | null>(null);
+  useEffect(() => {
+    if (draft?.plan.tool !== "compare_runs") return;
+    setPrevious(
+      typeof draft.plan.arguments.previous_run_id === "string"
+        ? draft.plan.arguments.previous_run_id
+        : "",
+    );
+    setCurrent(
+      typeof draft.plan.arguments.current_run_id === "string"
+        ? draft.plan.arguments.current_run_id
+        : "",
+    );
+    setSelection(null);
+  }, [draft]);
   const comparison = useQuery({
     queryKey: [...operatorKey(tenant, actor), "compare", selection, language],
     queryFn: ({ signal }) =>
@@ -624,6 +1100,7 @@ function Task({
   cancelling,
   onCancel,
   onSource,
+  onAdopt,
 }: {
   task: OperatorTask;
   c: Copy;
@@ -631,18 +1108,42 @@ function Task({
   cancelling: boolean;
   onCancel: () => void;
   onSource: (citation: Citation) => void;
+  onAdopt: (plan: OperatorPlan) => void;
 }) {
   const answer = task.result?.analysis ?? task.result?.answer?.answer;
+  const plan = task.result?.plan;
   return (
     <article className="space-y-3 rounded-lg border p-4">
       <p className="text-sm font-semibold">
-        {task.kind} · {task.run_id} · <span role="status">{task.status}</span>
+        {task.kind === "plan_request" ? c.planner : `${task.kind} · ${task.run_id}`} ·{" "}
+        <span role="status">{task.status}</span>
       </p>
       {task.cancel_requested && <p className="text-sm">{c.cancelling}</p>}
       {task.error && (
         <p role="alert" className="text-sm">
           {task.error}
         </p>
+      )}
+      {plan && (
+        <div className="space-y-3 rounded border bg-muted/30 p-3 text-sm">
+          <p className="font-semibold">
+            {toolLabel(plan.tool, c)} · {plan.status} · {plan.quality_status}
+          </p>
+          <p>{plan.effect_executed === false ? c.noEffect : c.effectUnexpected}</p>
+          {plan.tool === "abstain" ? (
+            <p>{c.unsupportedPlan}</p>
+          ) : (
+            <ArgumentRows arguments={plan.arguments} c={c} />
+          )}
+          {canOperate &&
+            plan.status === "proposal" &&
+            plan.effect_executed === false &&
+            selectableTools.includes(plan.tool) && (
+              <Button variant="outline" size="sm" onClick={() => onAdopt(plan)}>
+                {c.adopt}
+              </Button>
+            )}
+        </div>
       )}
       {answer && (
         <>
@@ -696,6 +1197,7 @@ function ActionPanel({
   canOperate,
   c,
   history,
+  draft,
 }: {
   tenant: string;
   actor: string;
@@ -703,19 +1205,53 @@ function ActionPanel({
   canOperate: boolean;
   c: Copy;
   history: OperatorProposal[];
+  draft?: AdoptedPlan;
 }) {
   const proposalStorage = `operator-proposal:${JSON.stringify([tenant, actor, session])}`;
+  const active = useActiveMount();
   const [proposalId, setProposalId] = useState(() => remembered(proposalStorage));
   const [action, setAction] = useState<ProposalAction>("start_scan");
   const [ranges, setRanges] = useState("");
   const [domains, setDomains] = useState("");
   const [ports, setPorts] = useState("80,443");
+  const [udp, setUdp] = useState("");
+  const [intent, setIntent] = useState("");
   const [mode, setMode] = useState("balanced");
   const [group, setGroup] = useState("");
   const [resource, setResource] = useState("");
   const [acknowledged, acknowledge] = useState("");
   const [confirmSent, setConfirmSent] = useState(false);
   const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!draft || !["prepare_scan", "cancel_scan", "verify_finding"].includes(draft.plan.tool))
+      return;
+    const args = draft.plan.arguments;
+    setAction(
+      draft.plan.tool === "prepare_scan"
+        ? "start_scan"
+        : draft.plan.tool === "cancel_scan"
+          ? "cancel_scan"
+          : "verify_finding",
+    );
+    setRanges(typeof args.ranges === "string" ? args.ranges : "");
+    setDomains(typeof args.domains === "string" ? args.domains : "");
+    setPorts(typeof args.ports === "string" ? args.ports : "");
+    setUdp(typeof args.ports_udp === "string" ? args.ports_udp : "");
+    setIntent(typeof args.intent === "string" ? args.intent : "");
+    setMode(typeof args.mode === "string" ? args.mode : "safe");
+    setGroup(typeof args.agent_group === "string" ? args.agent_group : "");
+    setResource(
+      typeof args.job_id === "string"
+        ? args.job_id
+        : typeof args.vuln_id === "string"
+          ? args.vuln_id
+          : "",
+    );
+    setProposalId("");
+    remember(proposalStorage, "");
+    acknowledge("");
+    setConfirmSent(false);
+  }, [draft, proposalStorage]);
   const proposal = useQuery({
     queryKey: [...operatorKey(tenant, actor), "proposal", proposalId],
     queryFn: ({ signal }) => operatorApi.proposal(tenant, proposalId, signal),
@@ -737,6 +1273,8 @@ function ActionPanel({
               ...(domains.trim() ? { domains: domains.trim() } : {}),
               ports,
               mode,
+              ...(udp.trim() ? { ports_udp: udp.trim() } : {}),
+              ...(intent.trim() ? { intent: intent.trim() } : {}),
               ...(group.trim() ? { agent_group: group.trim() } : {}),
             }
           : action === "cancel_scan"
@@ -746,6 +1284,7 @@ function ActionPanel({
     },
     retry: false,
     onSuccess: (data) => {
+      if (!active.current) return;
       setProposalId(data.proposal_id);
       remember(proposalStorage, data.proposal_id);
       acknowledge("");
@@ -758,10 +1297,20 @@ function ActionPanel({
       operatorApi.confirm(tenant, data.proposal_id, data.arguments_sha256),
     retry: false,
     onSettled: () => {
+      if (!active.current) return;
       void proposal.refetch();
     },
   });
   const data = proposal.data;
+  const executionResult = data?.execution?.result;
+  const resultJobId =
+    executionResult &&
+    typeof executionResult === "object" &&
+    "job_id" in executionResult &&
+    typeof executionResult.job_id === "string" &&
+    /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(executionResult.job_id)
+      ? executionResult.job_id
+      : null;
   const valid =
     data?.tenant_id === tenant &&
     data.session_id === session &&
@@ -860,6 +1409,22 @@ function ActionPanel({
                 </select>
               </label>
               <label className="space-y-2 text-sm">
+                {c.udp}
+                <Input
+                  maxLength={2048}
+                  value={udp}
+                  onChange={(event) => setUdp(event.target.value)}
+                />
+              </label>
+              <label className="space-y-2 text-sm">
+                {c.intent}
+                <Input
+                  maxLength={64}
+                  value={intent}
+                  onChange={(event) => setIntent(event.target.value)}
+                />
+              </label>
+              <label className="space-y-2 text-sm">
                 {c.group}
                 <Input
                   value={group}
@@ -950,9 +1515,23 @@ function ActionPanel({
               {c.retry}
             </Button>
             {data.execution && (
-              <pre className="overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-3 text-xs">
-                {JSON.stringify(data.execution, null, 2)}
-              </pre>
+              <div className="space-y-2 text-sm">
+                <p>{data.execution.status}</p>
+                {resultJobId && (
+                  <a
+                    className="inline-flex rounded border px-3 py-2 font-medium underline-offset-4 hover:underline"
+                    href={`/scans?job=${encodeURIComponent(resultJobId)}`}
+                  >
+                    {c.trackJob}: {resultJobId}
+                  </a>
+                )}
+                <details className="text-xs text-muted-foreground">
+                  <summary className="cursor-pointer">{c.details}</summary>
+                  <pre className="mt-2 overflow-auto whitespace-pre-wrap break-all">
+                    {JSON.stringify(data.execution, null, 2)}
+                  </pre>
+                </details>
+              </div>
             )}
           </section>
         )}
@@ -985,6 +1564,10 @@ function PlanRows({ rows, c }: { rows: [string, unknown][]; c: Copy }) {
 }
 
 function PlanArguments({ proposal, c }: { proposal: OperatorProposal; c: Copy }) {
+  return <ArgumentRows arguments={proposal.arguments} c={c} />;
+}
+
+function ArgumentRows({ arguments: args, c }: { arguments: Record<string, unknown>; c: Copy }) {
   const labels: Record<string, string> = {
     ranges: c.targets,
     domains: c.domains,
@@ -995,12 +1578,13 @@ function PlanArguments({ proposal, c }: { proposal: OperatorProposal; c: Copy })
     agent_group: c.group,
     job_id: c.job,
     vuln_id: c.finding,
+    run_id: c.run,
+    previous_run_id: c.previous,
+    current_run_id: c.current,
+    device_id: c.device,
   };
   return (
-    <PlanRows
-      c={c}
-      rows={Object.entries(proposal.arguments).map(([key, item]) => [labels[key] ?? key, item])}
-    />
+    <PlanRows c={c} rows={Object.entries(args).map(([key, item]) => [labels[key] ?? key, item])} />
   );
 }
 
@@ -1089,18 +1673,37 @@ function RemediationPanel({
   language,
   c,
   onSource,
+  draft,
 }: {
   tenant: string;
   actor: string;
   language: "ru" | "en";
   c: Copy;
-  onSource: (citation: Citation, device?: string) => void;
+  onSource: (citation: Citation, device?: string, finding?: string) => void;
+  draft?: AdoptedPlan;
 }) {
   const [device, setDevice] = useState("");
+  const [scope, setScope] = useState<"device" | "finding">("device");
   const [selected, select] = useState("");
+  useEffect(() => {
+    if (draft?.plan.tool !== "find_remediation") return;
+    const finding = typeof draft.plan.arguments.vuln_id === "string";
+    setScope(finding ? "finding" : "device");
+    setDevice(
+      finding
+        ? (draft.plan.arguments.vuln_id as string)
+        : typeof draft.plan.arguments.device_id === "string"
+          ? draft.plan.arguments.device_id
+          : "",
+    );
+    select("");
+  }, [draft]);
   const result = useQuery({
-    queryKey: [...operatorKey(tenant, actor), "remediation", selected, language],
-    queryFn: ({ signal }) => operatorApi.remediation(tenant, selected, language, signal),
+    queryKey: [...operatorKey(tenant, actor), "remediation", scope, selected, language],
+    queryFn: ({ signal }) =>
+      scope === "finding"
+        ? operatorApi.findingRemediation(tenant, selected, language, signal)
+        : operatorApi.remediation(tenant, selected, language, signal),
     enabled: Boolean(selected),
     retry: false,
   });
@@ -1119,7 +1722,22 @@ function RemediationPanel({
           }}
         >
           <label className="space-y-2 text-sm">
-            {c.device}
+            {c.remediationScope}
+            <select
+              className="block rounded border bg-background p-2"
+              value={scope}
+              onChange={(event) => {
+                setScope(event.target.value as "device" | "finding");
+                setDevice("");
+                select("");
+              }}
+            >
+              <option value="device">{c.endpointScope}</option>
+              <option value="finding">{c.findingScope}</option>
+            </select>
+          </label>
+          <label className="space-y-2 text-sm">
+            {scope === "finding" ? c.findingId : c.device}
             <Input
               required
               maxLength={256}
@@ -1146,19 +1764,40 @@ function RemediationPanel({
                 className="space-y-2 rounded-lg border p-4 text-sm"
               >
                 <h3 className="font-semibold">
-                  {item.package} · {item.status}
+                  {item.kind === "configuration_hardening" ? c.configuration : item.package} ·{" "}
+                  {item.status}
                 </h3>
-                <p>
-                  {c.installed}: {item.installed_version} · {c.target}:{" "}
-                  {item.target_version ?? c.unknown}
-                </p>
-                <p>
-                  {c.context}:{" "}
-                  {[item.distro, item.distro_release, item.architecture]
-                    .filter(Boolean)
-                    .join(" / ") || c.unknown}
-                </p>
-                <p>{item.cve_ids.join(", ")}</p>
+                {item.kind === "configuration_hardening" ? (
+                  <>
+                    <p>{[item.product, item.applicability].filter(Boolean).join(" · ")}</p>
+                    {item.summary && <p>{item.summary}</p>}
+                    {item.directive && (
+                      <>
+                        <p>{c.directive}</p>
+                        <pre className="whitespace-pre-wrap break-all rounded bg-muted p-3">
+                          {item.directive}
+                        </pre>
+                      </>
+                    )}
+                    {item.preconditions?.map((condition, index) => (
+                      <p key={index}>{condition}</p>
+                    ))}
+                  </>
+                ) : (
+                  <>
+                    <p>
+                      {c.installed}: {item.installed_version} · {c.target}:{" "}
+                      {item.target_version ?? c.unknown}
+                    </p>
+                    <p>
+                      {c.context}:{" "}
+                      {[item.distro, item.distro_release, item.architecture]
+                        .filter(Boolean)
+                        .join(" / ") || c.unknown}
+                    </p>
+                  </>
+                )}
+                {item.cve_ids.length > 0 && <p>{item.cve_ids.join(", ")}</p>}
                 <p className="text-muted-foreground">
                   {c.verifyMethod}: {item.verification.method}
                 </p>
@@ -1170,6 +1809,56 @@ function RemediationPanel({
                     </pre>
                   </>
                 )}
+                {item.kind === "package_upgrade" &&
+                  item.plan?.origin === "shapoclyack_operator_runbook" && (
+                    <section
+                      aria-label={c.operatorRunbook}
+                      className="space-y-3 rounded border bg-muted/30 p-3"
+                    >
+                      <h4 className="font-semibold">{c.operatorRunbook}</h4>
+                      <p className="text-muted-foreground">{c.vendorFacts}</p>
+                      <details>
+                        <summary className="cursor-pointer font-medium">{c.preconditions}</summary>
+                        <ul className="mt-2 list-inside list-disc space-y-1">
+                          {item.plan.preconditions[language].map((text, index) => (
+                            <li key={index}>{text}</li>
+                          ))}
+                        </ul>
+                      </details>
+                      <dl className="grid gap-3 md:grid-cols-3">
+                        {(["backup", "restart", "rollback"] as const).map((step) => (
+                          <div key={step}>
+                            <dt className="font-medium">
+                              {c[step]} ·{" "}
+                              {item.plan![step].status === "unknown"
+                                ? c.unknown
+                                : item.plan![step].status === "manual_approval_required"
+                                  ? c.manualApproval
+                                  : item.plan![step].status}
+                            </dt>
+                            <dd className="mt-1 text-muted-foreground">
+                              {item.plan![step][language]}
+                            </dd>
+                          </div>
+                        ))}
+                      </dl>
+                      <p>
+                        <strong>{c.verifyMethod}:</strong> {item.plan.verification[language]}
+                      </p>
+                      <p>
+                        <strong>{c.workaround}:</strong>{" "}
+                        {item.plan.vendor_workaround.status === "unsupported"
+                          ? c.noWorkaround
+                          : item.plan.vendor_workaround.status}
+                      </p>
+                      <details className="text-xs text-muted-foreground">
+                        <summary className="cursor-pointer">{c.details}</summary>
+                        <p>{item.plan.runbook_id}</p>
+                        <p className="break-all">runbook SHA-256: {item.plan.runbook_sha256}</p>
+                        <p className="break-all">plan SHA-256: {item.plan.plan_sha256}</p>
+                      </details>
+                    </section>
+                  )}
                 <ul className="list-inside list-disc text-muted-foreground">
                   {item.limitations.map((limit, index) => (
                     <li key={index}>{limit}</li>
@@ -1186,7 +1875,13 @@ function RemediationPanel({
                       size="sm"
                       variant="outline"
                       key={citation.source_id}
-                      onClick={() => onSource(citation, selected)}
+                      onClick={() =>
+                        onSource(
+                          citation,
+                          scope === "device" ? selected : undefined,
+                          scope === "finding" ? selected : undefined,
+                        )
+                      }
                     >
                       {c.openSource}: {citation.advisory_id ?? citation.source_id} ·{" "}
                       {citation.status}

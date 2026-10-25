@@ -44,6 +44,7 @@ from api.routes import operator_evidence as operator_evidence_routes
 from api.routes import operator_actions as operator_actions_routes
 from api.routes import operator_remediation as operator_remediation_routes
 from api.routes import operator_comparison as operator_comparison_routes
+from api.routes import operator_planner as operator_planner_routes
 from api.routes import mcp as mcp_routes
 from api.routes import mfa as mfa_routes
 from api.routes import passkeys as passkeys_routes
@@ -598,6 +599,7 @@ def create_app() -> FastAPI:
     include_api_router(operator_actions_routes.router)
     include_api_router(operator_remediation_routes.router)
     include_api_router(operator_comparison_routes.router)
+    include_api_router(operator_planner_routes.router)
     include_api_router(mcp_routes.router)
     include_api_router(runs_routes.router)
     include_api_router(jobs_routes.router)

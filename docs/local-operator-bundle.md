@@ -1,5 +1,86 @@
 # Offline operator bundle integrity and launch
 
+## Complete Mac workstation package
+
+`scripts/operator-offline-bundle.py` packages the primary Mac profile as a
+directory: exact Git source, compiled UI, Qwen3.5-9B Q4_K_M and CPU embedding
+GGUF weights, cached arm64 runtime/application/PostgreSQL images, licenses,
+required image SBOM and an additional SPDX file inventory. This is distinct
+from the native executable manifest below. The script does not download inputs.
+
+Prepare inputs on a connected staging workstation. Compile the UI from the
+same exact commit as `--source-ref`; the exporter checks the supplied revision
+binding, while the administrator attests the build provenance. Generate the
+image SBOM against all three exact cached image IDs, using an approved scanner
+such as Syft; include each image ID and transitive package inventory in the
+JSON document. The required wrapper is `{"schema_version":1,"images":{` followed
+by each exact `sha256:...` image ID mapped to its complete SPDX 2.2/2.3 document
+with nonempty `packages`, or CycloneDX document with nonempty `components`.
+Close both objects with `}}`. Verification requires all three exact image IDs;
+inventory completeness and scanner provenance still require review. A file
+inventory does not replace an image SBOM. Review upstream
+runtime, Qwen, embedding and image licenses, and pass every applicable license
+using repeated `--license` flags. Apache guidance licensing and provenance are
+included in the source catalog. Feed snapshots are optional `--feeds` input;
+their freshness and coverage need separate acceptance.
+
+```sh
+python scripts/operator-offline-bundle.py export \
+  --destination .operator-local/bundle/release --source-ref "$REVISION" \
+  --ui-source-revision "$REVISION" --ui ui/out \
+  --model "$MODEL_GGUF" --model-revision "$MODEL_REVISION" \
+  --model-sha256 "$MODEL_SHA256" --embedding "$EMBEDDING_GGUF" \
+  --embedding-revision "$EMBEDDING_REVISION" --embedding-sha256 "$EMBEDDING_SHA256" \
+  --runtime-image "$PINNED_RUNTIME" --app-image "$PINNED_APPLICATION" \
+  --postgres-image "$PINNED_POSTGRES" --image-sbom "$IMAGE_SBOM" \
+  --license "$RUNTIME_LICENSE" --license "$MODEL_LICENSE" --license "$EMBEDDING_LICENSE"
+python scripts/operator-offline-bundle.py verify .operator-local/bundle/release \
+  --manifest-sha256 "$INDEPENDENTLY_TRUSTED_MANIFEST_SHA256"
+python scripts/operator-offline-bundle.py import .operator-local/bundle/release \
+  --manifest-sha256 "$INDEPENDENTLY_TRUSTED_MANIFEST_SHA256" \
+  --destination .operator-local/restored-workstation --start
+```
+
+Transfer the printed manifest SHA through a separately authenticated channel.
+Do not treat a digest next to an untrusted download as provenance. Verification
+hashes every payload before tar parsing, Docker load or startup. It rejects
+unlisted files, symlinks, hard links, traversal, devices, duplicate paths and
+oversized payloads. Only a new destination is accepted. Import copies and
+rechecks the payloads before loading images and verifies their IDs and arm64
+architecture. `--without-docker-load` performs materialization only and cannot
+start services. Bounds are 32 GiB total payload, 16 GiB per file, and 1 GiB
+expanded source/UI/feed archive with 30,000 members each.
+
+Fresh startup creates a random private Compose project, internal network and
+new private credentials, migrates PostgreSQL, starts the bounded model and CPU
+embedding services, API/worker and compiled UI gateway on loopback port 8085.
+Models have no published ports or external network. The fresh instance enables
+operator reads and embeddings; scan start remains disabled. Startup checks
+authenticated operator status and UI delivery. After both model containers
+start, the importer inspects their exact image IDs/revision, complete command
+lines, nonroot identity, read-only filesystem and model binds, absence of
+published ports, and ownership of their single internal network. It binds this
+record to the already hashed immutable imported model payloads and mounts the
+atomic integrity record read-only into recreated API/worker containers.
+The startup check requires `runtime_status=ready` and `analysis_available=true`,
+including live model and embedding health. It does not rehash models during
+inference. Model quality, actual traffic
+capture and restore correctness require recorded acceptance drills.
+
+Stop only that imported project, retaining its database and artifacts:
+
+```sh
+python scripts/operator-offline-bundle.py stop .operator-local/restored-workstation \
+  --manifest-sha256 "$INDEPENDENTLY_TRUSTED_MANIFEST_SHA256"
+```
+
+Keep the previous immutable bundle and backed-up installation for rollback;
+never update weights or database files in place. Use the
+[recovery drill](local-operator-recovery-drill.md) to validate cancellation,
+restart, database/artifact restore, schema rollback and feature disable.
+
+## Native executable manifest
+
 The verifier and launcher are implemented for #585. No runtime binary, model
 weights, tokenizer, CUDA library, embedding runner or license is downloaded or
 redistributed by this repository. A verified manifest is an integrity result;

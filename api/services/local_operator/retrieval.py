@@ -1,7 +1,8 @@
-"""Bounded published evidence: exact identifiers + PostgreSQL simple full text.
+"""Current published evidence with optional pinned local hybrid retrieval.
 
-This is not semantic search. Authorization belongs to every gateway/API call;
-this module additionally checks tenant/run publication eligibility on every read.
+Authorization belongs to every gateway/API call; this module additionally checks
+tenant/run publication eligibility on every read. Semantic generation is local,
+explicitly configured and never replaces exact CVE/package filters.
 """
 from __future__ import annotations
 
@@ -111,7 +112,7 @@ def _metadata(row):
             "indexed_at": row.indexed_at.isoformat() + "Z"}
 
 
-def refresh_run(settings, principal, run_id):
+def _refresh_exact_run(settings, principal, run_id):
     counts, citation, findings, findings_hash, observed, state = _capture(settings, principal, run_id)
     now = datetime.now(UTC).replace(tzinfo=None)
     snapshot_id = uuid4().hex
@@ -150,6 +151,14 @@ def refresh_run(settings, principal, run_id):
         return _metadata(snapshot)
 
 
+def refresh_run(settings, principal, run_id):
+    result = _refresh_exact_run(settings, principal, run_id)
+    if getattr(settings, "operator_embeddings_enabled", False):
+        from . import semantic
+        result.update(semantic.refresh(settings, principal, semantic.run_corpus(settings, principal, run_id)))
+    return result
+
+
 def _current(settings, principal, row):
     _, citation, _, findings_hash, _, _ = _capture(settings, principal, row.run_id)
     if (citation.source_hash != row.summary_hash or citation.snapshot_id != row.publication_snapshot
@@ -159,7 +168,7 @@ def _current(settings, principal, row):
 
 def _item(doc, snapshot):
     citation = {"source_id": doc.source_id, "source_hash": doc.source_hash,
-                "snapshot_id": snapshot.snapshot_id, "source_type": "run",
+                "snapshot_id": snapshot.snapshot_id, "source_type": "finding" if doc.artifact == "vulnerabilities.json" else "document",
                 "observed_at": doc.observed_at.isoformat() + "Z", "status": "partial"}
     return {**citation, "citation": citation, "document_hash": doc.document_hash,
             "source_artifact": doc.artifact,
@@ -180,6 +189,11 @@ def search(settings, principal, run_id, query="", cve=None, package=None, limit=
         raise _error("operator_invalid_query")
     if type(limit) is not int or not 1 <= limit <= 50 or type(max_context_chars) is not int or not 128 <= max_context_chars <= 24000:
         raise _error("operator_invalid_limit")
+    semantic_enabled = getattr(settings, "operator_embeddings_enabled", False)
+    if semantic_enabled and query.strip() and not CVE.fullmatch(query.strip()):
+        from . import semantic
+        return semantic.search_run(settings, principal, run_id, query=query, cve=cve, package=package,
+            limit=limit, max_context_chars=max_context_chars, source_artifact=source_artifact)
     from .gateway import read_evidence
     read_evidence(settings, principal, run_id)
     with tenant_scope.tenant(principal.tenant_id), get_session(settings.postgres_url) as db:
@@ -223,7 +237,12 @@ def search(settings, principal, run_id, query="", cve=None, package=None, limit=
                 break
             items.append(item)
             total += size
-        return {**result, "items": items}
+    if semantic_enabled:
+        from . import semantic
+        result.update(semantic.metadata(settings, principal, semantic.run_corpus(settings, principal, run_id)))
+        # No embedding query was performed for empty or exact-CVE requests.
+        result["mode"] = "exact_fulltext"
+    return {**result, "items": items}
 
 
 def get_citation(settings, principal, source_id, snapshot_id, source_hash):
@@ -311,4 +330,5 @@ def prune_invalid(settings, limit=20):
             removed += db.execute(delete(models.OperatorEvidenceSnapshot).where(
                 models.OperatorEvidenceSnapshot.snapshot_id == snapshot.snapshot_id,
                 models.OperatorEvidenceSnapshot.tenant_id == snapshot.tenant_id)).rowcount
-    return removed
+    from . import semantic
+    return removed + semantic.prune_invalid(settings, limit=limit)

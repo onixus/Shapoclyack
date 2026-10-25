@@ -556,3 +556,11 @@ scan Job and CronJob use the image's.
   [provenance](configuration.md#provenance-what-the-image-actually-shipped)
 - [Operations — enrichment data in a release build](operations.md#enrichment-data-in-a-release-build)
 - [Retro CVE matching](retro-cve-matching.md) and [software → CVE matching](software-cve-matching.md) — the datasets' consumers
+
+## Complete offline operator workstation
+
+For the Mac operator profile, follow the [complete workstation bundle export,
+verification, import and fresh startup instructions](local-operator-bundle.md#complete-mac-workstation-package).
+The package includes source, compiled UI, model and embedding weights, pinned
+cached images, licenses and image SBOM; transfer the trusted manifest digest
+independently. Feed freshness and measured runtime acceptance remain separate.

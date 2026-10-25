@@ -4,6 +4,39 @@ import { operatorApi } from "@/lib/operator-api";
 
 beforeEach(() => vi.restoreAllMocks());
 describe("operator transport boundaries", () => {
+  it("binds finding remediation and source reads to fixed tenant-scoped routes", async () => {
+    const get = vi.spyOn(api, "get").mockResolvedValue({ data: {} });
+    await operatorApi.findingRemediation("a", "finding/1", "en");
+    expect(get).toHaveBeenLastCalledWith(
+      "/operator/remediation/findings/finding%2F1",
+      expect.objectContaining({ params: { tenant_id: "a", language: "en" } }),
+    );
+    await operatorApi.findingRemediationSource("a", "finding/1", {
+      source_id: "guide/1",
+      snapshot_id: "snap",
+      source_hash: "hash",
+    });
+    expect(get).toHaveBeenLastCalledWith(
+      "/operator/remediation/findings/finding%2F1/sources/guide%2F1",
+      expect.objectContaining({
+        params: { tenant_id: "a", snapshot_id: "snap", source_hash: "hash" },
+      }),
+    );
+  });
+  it("queues planner requests with an explicit tenant and the caller's idempotency key", async () => {
+    const post = vi.spyOn(api, "post").mockResolvedValue({ data: {} });
+    const body = {
+      request: "Summarize selected run",
+      language: "en" as const,
+      context: { run_id: "run1" },
+    };
+    await operatorApi.plan("a", "s/foreign", body, "same-request");
+    expect(post).toHaveBeenCalledWith("/operator/sessions/s%2Fforeign/plan", body, {
+      params: { tenant_id: "a" },
+      signal: undefined,
+      headers: { "Idempotency-Key": "same-request" },
+    });
+  });
   it("resolves run summary citations with digest and snapshot revalidation", async () => {
     const get = vi.spyOn(api, "get").mockResolvedValue({ data: {} });
     await operatorApi.evidence("a", {

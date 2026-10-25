@@ -77,6 +77,23 @@ def test_local_origin_uses_fixed_target(ingress):
     assert ingress[1] == ["/health"]
 
 
+def test_imported_workstation_uses_deployment_owned_origin_port(ingress, monkeypatch):
+    monkeypatch.setenv("OCTO_OPERATOR_CONSOLE_PORT", "8085")
+    configured = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(configured)
+    monkeypatch.setattr(proxy_module, "LOCAL_ORIGINS", configured.LOCAL_ORIGINS)
+    assert send(ingress, headers={"Origin": "http://127.0.0.1:8085"}) == (200, b"fixed-upstream")
+    assert send(ingress, headers={"Origin": "https://127.0.0.1:8085"})[0] == 403
+    assert send(ingress, headers={"Origin": "http://127.0.0.1:8086"})[0] == 403
+
+
+@pytest.mark.parametrize("port", ["0", "80", "65536", "8085/path", "8085,9999", "٨٠٨٥"])
+def test_invalid_deployment_origin_port_rejected(monkeypatch, port):
+    monkeypatch.setenv("OCTO_OPERATOR_CONSOLE_PORT", port)
+    with pytest.raises(ValueError, match="deployment-owned"):
+        spec.loader.exec_module(importlib.util.module_from_spec(spec))
+
+
 def test_cli_without_browser_origin_uses_fixed_target(ingress):
     assert send(ingress) == (200, b"fixed-upstream")
     assert ingress[1] == ["/health"]

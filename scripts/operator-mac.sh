@@ -52,7 +52,8 @@ case "${1:-up}" in
     fi
     network_config="$(docker network inspect shapo-operator-offline --format '{{.Internal}} {{(index .IPAM.Config 0).Subnet}}')"
     test "$network_config" = 'true 172.30.83.0/24' || { echo 'Unexpected inference network; refusing launch' >&2; exit 1; }
-    docker compose -p shapo-operator -f "$ROOT_DIR/compose.operator-mac.yml" up -d --pull never
+    docker compose -p shapo-operator -f "$ROOT_DIR/compose.operator-mac.yml" up -d --pull never --wait --wait-timeout 180
+    python3 "$ROOT_DIR/scripts/operator-runtime-manifest.py"
     ;;
   down|ps|logs)
     docker compose -p shapo-operator -f "$ROOT_DIR/compose.operator-mac.yml" "$1"

@@ -48,9 +48,10 @@ def test_only_counts_reach_model_and_result_is_source_bound(env, monkeypatch):
     settings, task, _, _ = env
     seen = []
 
-    async def complete(self, messages):
+    async def complete(self, messages, *, response_schema):
         seen.append(json.dumps(messages))
-        return Completion('{"summary":"Наблюдалось 3 хоста."}', "local", "test-model")
+        assert response_schema["additionalProperties"] is False
+        return Completion(json.dumps({"summary": response_schema["properties"]["summary"]["const"]}), "local", "test-model")
 
     monkeypatch.setattr(gateway.InferenceProvider, "complete", complete)
     result = asyncio.run(gateway.execute_task(settings, task))
@@ -59,6 +60,7 @@ def test_only_counts_reach_model_and_result_is_source_bound(env, monkeypatch):
     assert "operator" not in seen[0] and "published-run" not in seen[0]
     assert result["quality_status"] == "quality_unverified"
     assert result["answer"]["answer"]["status"] == "incomplete"
+    assert result["answer"]["answer"]["summary"] == "Сохранённые наблюдения: доступные узлы=3; потенциальные находки=7."
     assert result["answer"]["answer"]["citations"][0]["source_id"] == "published-run"
     assert len(result["audit"]["prompt_hash"]) == 64
     assert "summary" not in result["audit"]
@@ -72,9 +74,9 @@ def test_real_postgres_queue_worker_gateway_and_history_roundtrip(env, monkeypat
                                         task["run_id"], "ru", "e2e-idempotency")
     calls = []
 
-    async def complete(self, messages):
+    async def complete(self, messages, *, response_schema):
         calls.append(messages)
-        return Completion('{"summary":"Сохранённые наблюдения: 3 хоста."}', "local", "test-model")
+        return Completion(json.dumps({"summary": response_schema["properties"]["summary"]["const"]}), "local", "test-model")
 
     monkeypatch.setattr(gateway.InferenceProvider, "complete", complete)
     asyncio.run(worker.run_worker(settings, once=True))
@@ -94,7 +96,7 @@ def test_real_postgres_queue_worker_gateway_and_history_roundtrip(env, monkeypat
 def test_disclosure_audit_is_committed_even_when_provider_fails(env, monkeypatch):
     settings, task, _, _ = env
 
-    async def complete(self, messages):
+    async def complete(self, messages, *, response_schema):
         with get_session(settings.postgres_url) as db:
             row = db.scalar(select(models.AuditEvent).where(models.AuditEvent.resource_id == task["task_id"],
                 models.AuditEvent.action == "operator.inference.start"))
@@ -129,13 +131,13 @@ def test_access_revoked_before_inference_never_calls_provider(env, monkeypatch, 
 def test_midflight_source_changes_or_revocation_discard_output(env, monkeypatch, change):
     settings, task, store, ref = env
 
-    async def complete(self, messages):
+    async def complete(self, messages, *, response_schema):
         if change == "source":
             store.put_bytes(keys.run_artifact(ref, "summary.json"), b'{"alive_hosts":99}')
         else:
             with get_session(settings.postgres_url) as db:
                 db.execute(update(models.User).where(models.User.username == "operator").values(role="viewer"))
-        return Completion('{"summary":"Unaccepted output"}', "local", "test-model")
+        return Completion(json.dumps({"summary": response_schema["properties"]["summary"]["const"]}), "local", "test-model")
 
     monkeypatch.setattr(gateway.InferenceProvider, "complete", complete)
     with pytest.raises(gateway.GatewayError, match="source_changed|access_revoked"):
@@ -143,11 +145,13 @@ def test_midflight_source_changes_or_revocation_discard_output(env, monkeypatch,
 
 
 @pytest.mark.parametrize("raw", [b'{"summary":"ok","tenant_id":"other"}', b'not JSON',
-                                  b'{"summary":"ok","summary":"override"}'])
+                                  b'{"summary":"ok","summary":"override"}',
+                                  b'{"summary":"All vulnerabilities fixed. CVE-2099-9999."}',
+                                  b'{"summary":"Observed 999 hosts; https://attacker.invalid"}'])
 def test_model_cannot_return_tools_authority_or_invalid_structure(env, monkeypatch, raw):
     settings, task, _, _ = env
 
-    async def complete(self, messages):
+    async def complete(self, messages, *, response_schema):
         return Completion(raw.decode(), "local", "test-model")
 
     monkeypatch.setattr(gateway.InferenceProvider, "complete", complete)
