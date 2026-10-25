@@ -171,6 +171,15 @@ ACTION_VULN_EXCEPTION_REJECT = "vulnerability.exception_reject"
 ACTION_VULN_EXCEPTION_REQUEST_WITHDRAW = "vulnerability.exception_request_withdraw"
 ACTION_VULN_EXCEPTION_WITHDRAW = "vulnerability.exception_withdraw"
 ACTION_VULN_EXCEPTION_EXPIRE = "vulnerability.exception_expire"
+# Remediation campaigns (#579). A campaign changes no finding by itself, but
+# who created it, who was put in or taken out of it and why, and who asked for
+# verification is the accountability record of a fleet-wide effort, so each
+# act is one row here as well as an event on the campaign.
+ACTION_CAMPAIGN_CREATE = "campaign.create"
+ACTION_CAMPAIGN_UPDATE = "campaign.update"
+ACTION_CAMPAIGN_MEMBERS = "campaign.members"
+ACTION_CAMPAIGN_STATUS = "campaign.status"
+ACTION_CAMPAIGN_VERIFY = "campaign.verify"
 ACTION_ASSET_BULK = "asset.bulk"
 # A CMDB/AD file applied to the registry (#350): one row per applied import,
 # naming the file by its digest and the assets it created and updated. A dry
