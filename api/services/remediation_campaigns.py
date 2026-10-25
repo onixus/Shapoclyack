@@ -53,8 +53,9 @@ import hashlib
 import logging
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import and_, case, func, or_, select, update
 
 from api.db import models
@@ -107,25 +108,6 @@ CATEGORIES = (
 )
 RESOLVED = ("verified", "accepted_risk", "false_positive")
 
-#: Selection keys that are finding filters (see ``vulnerabilities.finding_filters``).
-FILTER_KEYS = (
-    "state",
-    "states",
-    "severity",
-    "asset_id",
-    "source",
-    "finding_type",
-    "detector_source",
-    "network_exposure",
-    "assignee",
-    "unassigned",
-    "sla",
-    "exception_state",
-    "stale_days",
-    "in_kev",
-    "q",
-)
-
 _INCONCLUSIVE_KINDS = ("verification_inconclusive", "verification_unreachable")
 
 
@@ -175,6 +157,35 @@ def _due(value: Any) -> datetime | None:
     return vulns._naive(value)
 
 
+class SelectionFilters(BaseModel):
+    """The filters a selection may narrow problem keys with: the findings list's
+    own, each with its closed vocabulary or numeric bounds. Strict types, so
+    ``"false"`` is not a bool and ``"abc"`` is not a number; anything else is a
+    422 instead of a 500 or a silently different selection."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    state: Literal["OPEN", "ACKNOWLEDGED", "PLANNED", "FIXING", "VERIFYING", "CLOSED"] | None = None
+    states: list[Literal["OPEN", "ACKNOWLEDGED", "PLANNED", "FIXING", "VERIFYING", "CLOSED"]] | None = Field(
+        default=None, max_length=6
+    )
+    severity: Literal["critical", "high", "medium", "low", "unknown"] | None = None
+    asset_id: str | None = Field(default=None, min_length=1, max_length=256)
+    source: Literal["scan", "endpoint_software", "retro_match"] | None = None
+    finding_type: vulns.FindingType | None = None
+    detector_source: vulns.DetectorSource | None = None
+    network_exposure: vulns.NetworkExposure | None = None
+    assignee: str | None = Field(default=None, min_length=1, max_length=256)
+    unassigned: bool | None = None
+    sla: Literal["on_track", "due_soon", "breached", "accepted", "none"] | None = None
+    exception_state: Literal[
+        "none", "exception_requested", "exception_approved", "exception_rejected", "exception_expired"
+    ] | None = None
+    stale_days: int | None = Field(default=None, ge=1, le=3650)
+    in_kev: bool | None = None
+    q: str | None = Field(default=None, max_length=200)
+
+
 def normalise_selection(selection: Any) -> dict[str, Any]:
     """Validate the shape of a selection; never trusts what a preview returned."""
     if not isinstance(selection, dict):
@@ -191,12 +202,16 @@ def normalise_selection(selection: Any) -> dict[str, Any]:
         raise ValueError("invalid finding id")
     if len(ids) > MAX_MEMBERS:
         raise ValueError(f"at most {MAX_MEMBERS} findings per selection")
-    filters = selection.get("filters") or {}
-    if not isinstance(filters, dict):
+    raw_filters = selection.get("filters") or {}
+    if not isinstance(raw_filters, dict):
         raise ValueError("filters must be an object")
-    bad = set(filters) - set(FILTER_KEYS)
-    if bad:
-        raise ValueError(f"unknown filter(s): {', '.join(sorted(bad))}")
+    try:
+        filters = SelectionFilters.model_validate(raw_filters).model_dump(exclude_none=True)
+    except ValidationError as exc:
+        problems = "; ".join(
+            f"{'.'.join(str(part) for part in e['loc'])}: {e['msg']}" for e in exc.errors()[:5]
+        )
+        raise ValueError(f"invalid filters: {problems}") from exc
     if not keys and not ids:
         raise ValueError("select at least one problem or finding")
     return {"problem_keys": keys, "vuln_ids": ids, "filters": filters}
@@ -414,6 +429,7 @@ def _progress(session: Any, campaign_ids: list[str], now: datetime) -> dict[str,
             "excluded": 0,
             "categories": {c: 0 for c in CATEGORIES},
             "recurred": 0,
+            "vanished": 0,
             "assets": 0,
             "tickets": {"linked_findings": 0, "distinct_tickets": 0},
         }
@@ -465,6 +481,11 @@ def _progress(session: Any, campaign_ids: list[str], now: datetime) -> dict[str,
         .group_by(M.campaign_id)
     ):
         out[cid]["tickets"]["distinct_tickets"] = count
+    for cid, tracked in session.execute(
+        select(C.campaign_id, C.tracked_members).where(C.campaign_id.in_(campaign_ids))
+    ):
+        # Membership rows that no longer exist because their finding was deleted.
+        out[cid]["vanished"] = max(0, (tracked or 0) - out[cid]["total"] - out[cid]["excluded"])
     for value in out.values():
         cats = value["categories"]
         value["unresolved"] = value["total"] - sum(cats[c] for c in RESOLVED)
@@ -494,7 +515,13 @@ def _reconcile(
     if campaign.status == STATUS_CANCELLED:
         return
     total, unresolved = progress["total"], progress["unresolved"]
-    if campaign.status == STATUS_ACTIVE and total > 0 and unresolved == 0:
+    if (
+        campaign.status == STATUS_ACTIVE
+        and total > 0
+        and unresolved == 0
+        # Members whose finding was deleted are unaccounted for, not done.
+        and not progress.get("vanished")
+    ):
         claimed = session.execute(
             update(C)
             .where(C.campaign_id == campaign.campaign_id, C.status == STATUS_ACTIVE)
@@ -570,10 +597,14 @@ def _campaign_dict(campaign: Any, progress: dict[str, Any], now: datetime) -> di
     }
 
 
-def _load(session: Any, tenant_id: str, campaign_id: str) -> Any:
-    row = session.execute(
-        select(C).where(C.campaign_id == campaign_id, C.tenant_id == tenant_id)
-    ).scalar_one_or_none()
+def _load(session: Any, tenant_id: str, campaign_id: str, *, lock: bool = False) -> Any:
+    """The tenant's campaign. ``lock`` takes the row ``FOR UPDATE``: membership
+    changes serialise per campaign, so two concurrent adds of one finding cannot
+    both insert it (the second waits, then sees the first's row)."""
+    query = select(C).where(C.campaign_id == campaign_id, C.tenant_id == tenant_id)
+    if lock:
+        query = query.with_for_update()
+    row = session.execute(query).scalar_one_or_none()
     if row is None:
         raise LookupError("Campaign not found")
     return row
@@ -637,6 +668,7 @@ def create_campaign(
             status_changed_at=now,
             composition_hash=digest,
             snapshot_size=len(resolved),
+            tracked_members=len(resolved),
             selection=selection,
             created_by=actor,
             created_at=now,
@@ -852,7 +884,7 @@ def add_members(
     selection = normalise_selection(selection)
     now = _now()
     with get_session(settings.postgres_url) as session:
-        campaign = _load(session, tenant_id, campaign_id)
+        campaign = _load(session, tenant_id, campaign_id, lock=True)
         if campaign.status == STATUS_CANCELLED:
             raise CampaignConflict("a cancelled campaign takes no new members; resume it first")
         resolved, skipped = _resolve(session, tenant_id, selection)
@@ -893,6 +925,7 @@ def add_members(
                 readded.append(vuln_id)
                 results.append({"id": vuln_id, "outcome": "readded"})
         if added or readded:
+            campaign.tracked_members = (campaign.tracked_members or 0) + len(added)
             campaign.updated_at = now
             _event(
                 session,
@@ -934,7 +967,7 @@ def exclude_members(
         raise ValueError(f"at most {MAX_MEMBERS} findings per request")
     now = _now()
     with get_session(settings.postgres_url) as session:
-        campaign = _load(session, tenant_id, campaign_id)
+        campaign = _load(session, tenant_id, campaign_id, lock=True)
         if campaign.status == STATUS_CANCELLED:
             raise CampaignConflict("a cancelled campaign cannot change members; resume it first")
         members = {

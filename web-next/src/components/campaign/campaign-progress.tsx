@@ -99,6 +99,7 @@ export function CategoryCards({
       <p className="text-xs text-muted-foreground">
         {t("campaign.progress.unresolved", { count: progress.unresolved })}
         {progress.recurred ? ` · ${t("campaign.progress.recurred", { count: progress.recurred })}` : ""}
+        {progress.vanished ? ` · ${t("campaign.progress.vanished", { count: progress.vanished })}` : ""}
         {" · "}
         {t("campaign.progress.note")}
       </p>

@@ -82,10 +82,23 @@ leak counts. Role: `viewer`.
 **Cost.** One grouped query for the page, one for the whole-selection totals, one
 count, and one grouped query per facet (owners, teams, exposure sources) bounded
 by the page size — six statements whatever the number of problems
-(`tests/test_problems.py::test_the_query_count_does_not_grow_…`). Measured on
-20 000 findings / 2 000 problems / 1 000 assets (local Postgres 16, no extra
-indexes): 45–85 ms per page for the default, `instances`/`breached` sorts,
-filtered and deep-offset lists; a drill-down 19 ms.
+(`tests/test_problems.py::test_the_query_count_does_not_grow_…`). Measured on a
+local Postgres 16 with no extra indexes (best of three, one tenant):
+
+| Volume | Problems page (default / sorted / deep offset) | Filtered (`severity`, open) | Drill-down |
+|---|---|---|---|
+| 20 000 findings, 2 000 problems | 77–85 ms | 45 ms | 19 ms |
+| 100 000 findings, 5 000 problems | 0.46–0.47 s | 0.20–0.24 s | 0.10 s |
+
+The cost grows linearly with the tenant's findings: the grouping key is an
+expression over the CVE/template/script columns, so it is a sequential scan of the
+tenant's rows with a hash aggregate, not an index lookup. That is fine for a
+console page up to roughly 100 000 findings per tenant; beyond that, or for
+polling dashboards, a persisted key column with an index (a later expand/contract
+change, deliberately not done here because it would touch ingest, which #449 owns)
+is the way out. Campaigns on the same 100 000 findings: preview of 1 000 findings
+0.12 s, create 0.46 s, detail 13 ms, members page 0.5 s (0.1 s with a category
+filter).
 
 ## Remediation campaigns (`/api/remediation-campaigns`)
 
@@ -106,6 +119,8 @@ filtered and deep-offset lists; a drill-down 19 ms.
    `Idempotency-Key` makes a retry replay the first answer (`200`, `replayed:
    true`) instead of creating a second campaign; the same key with a different body
    is `409`; a failed request gives its key back.
+   A selection's `filters` are typed and bounded like `/api/problems`' (closed
+   vocabularies, `stale_days` 1–3650, strict booleans); anything else is `422`.
 
 The composition is a **snapshot**: findings that match the same filters later are
 not added. The only ways in and out are the explicit operations below.
@@ -147,7 +162,7 @@ Computed in SQL from the live findings, mutually exclusive, never summed into
 | `closed_unverified` | CLOSED without a machine verdict (manually or because a ticket was resolved) |
 | `unavailable` | could not be verified: closed as unreachable, the campaign's last dispatch was refused/unsupported, or the last verification came back inconclusive (partial coverage / unsupported detector — the gaps are shown per member) |
 
-Plus `total`, `excluded`, `unresolved`, `recurred` (members that were reopened
+Plus `total`, `excluded`, `unresolved`, `vanished` (members whose finding was deleted), `recurred` (members that were reopened
 after they joined), `assets` and `tickets` (`linked_findings`,
 `distinct_tickets` — existing links only). A ticket resolution, a manual close and
 a finished campaign never set `machine_verified`; and while a finding is
@@ -180,7 +195,12 @@ exactly the per-finding button's. The answer is `200` with a result per finding 
 retro-matched finding is closed by its own source), `failed` (dispatch refused:
 scope, sensors, scanning disabled, an unexpected error), `not_member`, `deferred`
 (over the cap of 25 dispatches per request; send the rest). One refusal never
-undoes the dispatches that went out. `Idempotency-Key` is honoured. A dispatch is
+undoes the dispatches that went out. `Idempotency-Key` is honoured: a request
+refused before dispatching anything (unknown or cancelled campaign, bad body) gives
+its key back, but an unexpected failure that may come after some jobs went out
+**keeps** it, so a retry with the same key cannot dispatch those findings twice
+(the reservation lapses on its own after the idempotency lease, 15 minutes; the
+campaign's history shows what was sent). A dispatch is
 not a verdict: a member is `verified` only when the run closes the finding as
 machine-verified, and timeouts, unsupported detectors and partial coverage appear
 as `verification_inconclusive` on the member with what was not covered.
@@ -209,7 +229,14 @@ would leave completion and recurrence unrecorded for a campaign nobody writes to
 Known limitation: `remediation_campaign_members.vuln_id` is `ON DELETE CASCADE`. If
 a finding row is deleted (its asset is deleted, or a tenant purge) the membership
 and its history of that finding disappear with it; the campaign's `snapshot_size`
-and events keep the counts and ids they recorded.
+and events keep the counts and ids they recorded. The loss is **visible, not
+silent**: the campaign counts membership rows ever created (`tracked_members`),
+progress reports the shortfall as `vanished`, and a campaign with `vanished > 0`
+is never marked `completed`. Explicitly excluded members are accounted for and do
+not count as vanished.
+
+Membership changes (add, exclude) lock the campaign row, so two concurrent adds of
+one finding yield `added` and `already_member`, never an error.
 
 Ticket sync holds a finding in `VERIFYING` only while the linked verification job is
 alive (`queued`, `claimed`, `running`, `cancelling`). `verification_job_id` is never

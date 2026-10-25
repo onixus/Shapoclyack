@@ -388,6 +388,24 @@ def test_drill_down_reproduces_the_row_under_the_same_filters(env):
     assert listed["total"] == drill["total"]
 
 
+def test_the_findings_route_itself_filters_by_problem_key(env):
+    """Through the real route: an unknown query parameter is silently ignored by
+    FastAPI, which once made the console's drill-down show every finding."""
+    client, _, _, ids = env
+    headers = auth_headers(client, "viewer")
+    everything = client.get("/api/vulnerabilities", params={"limit": 100}, headers=headers).json()
+    assert everything["total"] == 10
+    narrowed = client.get(
+        "/api/vulnerabilities",
+        params={"problem_key": "cve:CVE-2024-2222", "limit": 100},
+        headers=headers,
+    ).json()
+    assert narrowed["total"] == 2
+    assert {i["vuln_id"] for i in narrowed["items"]} == set(ids["c2"])
+    bad = client.get("/api/vulnerabilities", params={"problem_key": "nope"}, headers=headers)
+    assert bad.status_code == 422
+
+
 def test_drill_down_explains_a_difference_caused_by_later_changes(env):
     client, settings, tenant_id, _ = env
     headers = auth_headers(client, "viewer")

@@ -46,7 +46,7 @@ class Selection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     problem_keys: list[str] = Field(default_factory=list, max_length=service.MAX_PROBLEM_KEYS)
     vuln_ids: list[str] = Field(default_factory=list, max_length=service.MAX_MEMBERS)
-    filters: dict[str, Any] = Field(default_factory=dict)
+    filters: service.SelectionFilters = Field(default_factory=service.SelectionFilters)
 
 
 class CampaignCreate(BaseModel):
@@ -332,9 +332,15 @@ def verify(
             audit=audit,
             vuln_ids=body.vuln_ids,
         )
-    except BaseException:
+    except HTTPException:
+        # Refused before anything was dispatched (unknown campaign, cancelled,
+        # bad body): the key goes back.
         guard.release()
         raise
+    # Any other failure may come after some jobs were dispatched. The key is
+    # deliberately kept: a retry with it would dispatch those findings a second
+    # time. The reservation lapses by itself (idempotency lease), and the
+    # campaign's own history records what went out.
     guard.store(report)
     return report
 

@@ -2007,6 +2007,10 @@ export const en = {
   "campaign.col.ticket": "Ticket",
   "campaign.recurred": "came back",
   "campaign.edit": "Edit",
+  "campaign.progress.vanished": "{count} disappeared from the system (finding deleted)",
+  "campaign.notFound": "Campaign not found",
+  "campaign.members.selectAll": "Select every finding on this page",
+  "problems.selectAll": "Select every problem on this page",
   "campaign.members.excludeCount": "{count} findings will be excluded; the history keeps who did it and why.",
 } as const;
 
@@ -4010,6 +4014,10 @@ export const ru: Record<MsgKey, string> = {
   "campaign.col.ticket": "Тикет",
   "campaign.recurred": "вернулась",
   "campaign.edit": "Изменить",
+  "campaign.progress.vanished": "Исчезли из системы (находка удалена): {count}",
+  "campaign.notFound": "Кампания не найдена",
+  "campaign.members.selectAll": "Выбрать все находки на этой странице",
+  "problems.selectAll": "Выбрать все проблемы на этой странице",
   "campaign.members.excludeCount": "Будет исключено находок: {count}; в истории останутся автор и причина.",
 };
 

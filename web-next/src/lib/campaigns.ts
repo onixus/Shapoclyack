@@ -177,6 +177,8 @@ export type CampaignProgress = {
   categories: Record<CampaignCategory, number>;
   unresolved: number;
   recurred: number;
+  /** Members whose finding was deleted: unaccounted for, and they block completion. */
+  vanished?: number;
   assets: number;
   tickets: { linked_findings: number; distinct_tickets: number };
 };
@@ -343,6 +345,27 @@ export const campaignsApi = {
   resume: (id: string, reason: string) =>
     call(api.post<Campaign>(`${BASE}/${encodeURIComponent(id)}/resume`, { reason })),
 };
+
+/**
+ * A due date is picked as a *local* calendar day and stored as the end of that
+ * local day. Reading it back must use the local day too: `iso.slice(0, 10)` is
+ * the UTC day, which in UTC-8 is the next day, and saving the form untouched
+ * would move the deadline by a day.
+ */
+export function localDateInput(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+export function dueAtFromInput(day: string): string | null {
+  return day ? new Date(`${day}T23:59:59`).toISOString() : null;
+}
+
+/** Reason recorded when the console resumes a campaign: a stable machine value,
+ * not UI text, so history and audit do not change with the interface language. */
+export const CONSOLE_RESUME_REASON = "console:resume";
 
 /** Selection a campaign is created from: the visible filters narrow what a
  * problem key expands to (open findings only unless the caller chose states). */

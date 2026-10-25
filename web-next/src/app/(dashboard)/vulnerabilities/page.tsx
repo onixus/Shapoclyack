@@ -517,6 +517,8 @@ function VulnerabilitiesInner() {
               key={mode}
               type="button"
               role="tab"
+              id={`vulns-tab-${mode}`}
+              aria-controls="vulns-panel"
               aria-selected={view === mode}
               onClick={() => changeView(mode)}
               className={
@@ -599,6 +601,7 @@ function VulnerabilitiesInner() {
         const query = params.toString();
         router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
       }} />
+      <div role="tabpanel" id="vulns-panel" aria-labelledby={`vulns-tab-${view}`} className="space-y-6">
       {view === "problems" ? (
         <ProblemsTable
           filters={sharedFilters}
@@ -709,6 +712,7 @@ function VulnerabilitiesInner() {
       />
         </>
       ) : null}
+      </div>
       {campaignSelection ? (
         <CreateCampaignDialog
           open

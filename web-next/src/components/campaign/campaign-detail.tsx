@@ -31,7 +31,14 @@ import {
 } from "@/hooks/use-campaigns";
 import { usePagination } from "@/hooks/use-pagination";
 import { useAuthStore } from "@/lib/auth-store";
-import type { CampaignCategory, CampaignMember, VerifyReport } from "@/lib/campaigns";
+import {
+  CONSOLE_RESUME_REASON,
+  dueAtFromInput,
+  localDateInput,
+  type CampaignCategory,
+  type CampaignMember,
+  type VerifyReport,
+} from "@/lib/campaigns";
 import { CAMPAIGN_STATUS, SEVERITY_STATUS, VULN_LIFECYCLE_STATUS } from "@/lib/config/statuses";
 import { useT } from "@/lib/i18n";
 import { useRelativeTime } from "@/lib/i18n/datetime";
@@ -251,7 +258,7 @@ export function CampaignDetail({ id }: { id: string }) {
   if (campaign.error || !data) {
     return (
       <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">
-        {campaign.error?.message ?? "Campaign not found"}
+        {campaign.error?.message ?? t("campaign.notFound")}
       </p>
     );
   }
@@ -305,7 +312,7 @@ export function CampaignDetail({ id }: { id: string }) {
                 </Button>
               </>
             ) : (
-              <Button size="sm" onClick={() => statusChange.mutate({ action: "resume", reason: "resumed from the console" })}>
+              <Button size="sm" onClick={() => statusChange.mutate({ action: "resume", reason: CONSOLE_RESUME_REASON })}>
                 {t("campaign.resume")}
               </Button>
             )}
@@ -325,7 +332,7 @@ export function CampaignDetail({ id }: { id: string }) {
                 name: String(form.get("name") || data.name),
                 owner: String(form.get("owner") || "") || null,
                 description: String(form.get("description") || ""),
-                due_at: due ? new Date(`${due}T23:59:59`).toISOString() : null,
+                due_at: dueAtFromInput(due),
               },
               { onSuccess: () => setEditing(false) },
             );
@@ -341,7 +348,7 @@ export function CampaignDetail({ id }: { id: string }) {
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="edit-due">{t("campaign.field.due")}</Label>
-            <Input id="edit-due" name="due" type="date" defaultValue={data.due_at ? data.due_at.slice(0, 10) : ""} />
+            <Input id="edit-due" name="due" type="date" defaultValue={localDateInput(data.due_at)} />
           </div>
           <div className="space-y-1.5 sm:col-span-2">
             <Label htmlFor="edit-description">{t("campaign.field.action")}</Label>
@@ -355,7 +362,7 @@ export function CampaignDetail({ id }: { id: string }) {
         </form>
       ) : null}
 
-      <CategoryCards progress={data.progress} active={category} onSelect={(next) => { setCategory(next); members.reset(); }} />
+      <CategoryCards progress={data.progress} active={category} onSelect={(next) => { setCategory(next); setSelected([]); members.reset(); }} />
 
       <section aria-label={t("campaign.members.title")} className="space-y-2">
         <h2 className="text-sm font-semibold">{t("campaign.members.title")}</h2>
@@ -373,7 +380,7 @@ export function CampaignDetail({ id }: { id: string }) {
                   selected,
                   onChange: setSelected,
                   max: 200,
-                  selectAllLabel: "Select every finding on this page",
+                  selectAllLabel: t("campaign.members.selectAll"),
                   actions: (ids) => (
                     <>
                       <Button
@@ -395,14 +402,14 @@ export function CampaignDetail({ id }: { id: string }) {
             offset: members.offset,
             limit: members.limit,
             total,
-            onOffsetChange: members.setOffset,
+            onOffsetChange: (offset) => { setSelected([]); members.setOffset(offset); },
             search: "",
             searchRevision: 0,
             onSearchChange: () => undefined,
             sortableColumns: ["severity", "state", "asset_id"],
             sort: members.sort,
             order: members.order,
-            onSortChange: members.setSort,
+            onSortChange: (sort, order) => { setSelected([]); members.setSort(sort, order); },
           }}
         />
       </section>

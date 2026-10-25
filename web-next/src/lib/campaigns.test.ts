@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { api } from "@/lib/api";
 import {
   campaignsApi,
+  dueAtFromInput,
   findingFilterParams,
+  localDateInput,
   problemsApi,
   selectionFromFilters,
 } from "@/lib/campaigns";
@@ -110,5 +112,25 @@ describe("problem and campaign request contracts (#579)", () => {
     });
     // Explicit findings are taken as they are: filters never drop one silently.
     expect(selectionFromFilters([], ["v1", "v2"], { severity: "high" })).toEqual({ vuln_ids: ["v1", "v2"] });
+  });
+});
+
+describe("campaign due dates in a negative UTC offset", () => {
+  const original = process.env.TZ;
+  beforeAll(() => {
+    process.env.TZ = "America/Los_Angeles"; // UTC-8 in November
+  });
+  afterAll(() => {
+    if (original === undefined) delete process.env.TZ;
+    else process.env.TZ = original;
+  });
+
+  it("shows the local day and saves the same instant back", () => {
+    // End of 29 November local time is already 30 November in UTC.
+    const stored = "2026-11-30T07:59:59.000Z";
+    expect(localDateInput(stored)).toBe("2026-11-29");
+    expect(dueAtFromInput("2026-11-29")).toBe(stored);
+    expect(dueAtFromInput("")).toBeNull();
+    expect(localDateInput(null)).toBe("");
   });
 });

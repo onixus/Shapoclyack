@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useCampaignPreview, useCreateCampaign } from "@/hooks/use-campaigns";
-import type { Campaign, CampaignSelection } from "@/lib/campaigns";
+import { dueAtFromInput, type Campaign, type CampaignSelection } from "@/lib/campaigns";
 import { useT } from "@/lib/i18n";
 
 /**
@@ -74,7 +74,7 @@ export function CreateCampaignDialog({
               name: name.trim(),
               description: description.trim(),
               owner: owner.trim() || null,
-              due_at: due ? new Date(`${due}T23:59:59`).toISOString() : null,
+              due_at: dueAtFromInput(due),
               selection,
               composition_hash: data.composition_hash,
             });

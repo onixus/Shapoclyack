@@ -731,3 +731,115 @@ def test_viewers_read_but_cannot_write(env):
     )
     assert [r.status_code for r in writes] == [403] * len(writes)
     assert client.get(URL).status_code == 401
+
+
+# --------------------------------------------------------------------------
+# Typed filters, concurrent adds, vanished findings
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "filters",
+    [
+        {"states": 5},
+        {"states": "OPEN"},
+        {"states": ["BOGUS"]},
+        {"state": 5},
+        {"state": "open "},
+        {"stale_days": "abc"},
+        {"stale_days": 10**12},
+        {"stale_days": -5},
+        {"stale_days": 0},
+        {"q": 5},
+        {"q": "x" * 5000},
+        {"in_kev": "false"},
+        {"in_kev": 1},
+        {"unassigned": "yes"},
+        {"severity": "spicy"},
+        {"sla": "whenever"},
+        {"assignee": ["a"]},
+        {"asset_id": ""},
+        {"nonsense": True},
+    ],
+)
+def test_garbage_selection_filters_are_422_not_500_and_not_silently_ignored(env, filters):
+    client, _, _, _, operator = env
+    selection = {**C1, "filters": filters}
+    assert client.post(f"{URL}/preview", json=selection, headers=operator).status_code == 422
+    assert _create(client, operator, selection).status_code == 422
+    assert client.get(URL, headers=operator).json()["total"] == 0
+
+
+def test_valid_filters_are_kept_in_their_typed_form_and_bounded(env):
+    client, _, _, _, operator = env
+    created = _create(
+        client, operator,
+        {**C1, "filters": {"severity": "high", "in_kev": False, "states": ["OPEN", "FIXING"]}},
+    )
+    assert created.status_code == 201, created.text
+    stored = created.json()["selection"]["filters"]
+    assert stored == {"severity": "high", "in_kev": False, "states": ["OPEN", "FIXING"]}
+    assert created.json()["snapshot_size"] == 2
+
+
+def test_two_concurrent_adds_of_one_finding_do_not_collide(env, monkeypatch):
+    import threading
+
+    client, settings, tenant_id, ids, operator = env
+    cid = _create(client, operator, {"vuln_ids": [ids["c1"][0]]}).json()["campaign_id"]
+    barrier = threading.Barrier(2)
+    real = campaigns._resolve
+
+    def meet(session, tenant, selection):
+        # Both writers reach the point between "is it a member?" and "insert it"
+        # together. Serialised by the campaign row lock, the second never gets
+        # here until the first has committed, so the barrier simply times out.
+        try:
+            barrier.wait(timeout=2)
+        except threading.BrokenBarrierError:
+            pass
+        return real(session, tenant, selection)
+
+    monkeypatch.setattr(campaigns, "_resolve", meet)
+    outcomes: list = []
+
+    def add():
+        try:
+            report = campaigns.add_members(
+                settings, tenant_id=tenant_id, campaign_id=cid, actor="a", audit=None,
+                selection={"vuln_ids": [ids["c1"][1]]}, reason="same host class",
+            )
+            outcomes.append(report["results"][0]["outcome"])
+        except Exception as exc:  # noqa: BLE001 - the test reports what escaped
+            outcomes.append(repr(exc))
+
+    threads = [threading.Thread(target=add) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(30)
+    assert sorted(outcomes) == ["added", "already_member"], outcomes
+    got = campaigns.get_campaign(settings, tenant_id=tenant_id, campaign_id=cid)
+    assert got["progress"]["total"] == 2 and got["progress"]["vanished"] == 0
+
+
+def test_a_deleted_finding_is_reported_as_vanished_and_never_completes_the_campaign(env):
+    client, settings, tenant_id, ids, operator = env
+    a, b = ids["c2"]
+    cid = _create(client, operator, {"vuln_ids": [a, b]}).json()["campaign_id"]
+    with get_session(settings.postgres_url) as session:
+        session.delete(session.get(models.Vulnerability, b))  # asset cleanup, purge, ...
+    _verify_closed(settings, a)
+
+    got = _campaign(client, operator, cid)
+    assert got["progress"]["total"] == 1 and got["snapshot_size"] == 2
+    assert got["progress"]["vanished"] == 1
+    # The one remaining member is verified, but one member is unaccounted for.
+    assert got["status"] == "active"
+    # An explicit exclusion is accounted for; a vanished finding is not.
+    other = _create(client, operator, {"vuln_ids": [ids["c1"][0], ids["c1"][1]]}).json()["campaign_id"]
+    client.post(f"{URL}/{other}/members/exclude", json={"vuln_ids": [ids["c1"][1]], "reason": "not ours"},
+                headers=operator)
+    _verify_closed(settings, ids["c1"][0])
+    done = _campaign(client, operator, other)
+    assert done["progress"]["vanished"] == 0 and done["status"] == "completed"

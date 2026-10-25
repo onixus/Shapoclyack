@@ -46,6 +46,7 @@ def upgrade():
         sa.Column("reopen_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("composition_hash", sa.String(), nullable=False, server_default=""),
         sa.Column("snapshot_size", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("tracked_members", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("selection", _json(), nullable=False),
         sa.Column("created_by", sa.String(), nullable=True),
         sa.Column("created_at", sa.DateTime(), nullable=False),

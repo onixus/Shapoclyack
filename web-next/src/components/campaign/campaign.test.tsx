@@ -219,4 +219,36 @@ describe("campaign detail (#579)", () => {
     expect(screen.queryByRole("button", { name: "Request verification" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
   });
+
+  it("keeps the stored due date when the edit form is saved untouched (UTC-8)", async () => {
+    const original = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    try {
+      setup(campaign({ due_at: "2026-11-30T07:59:59.000Z" }));
+      const update = vi.spyOn(lib.campaignsApi, "update").mockResolvedValue(campaign());
+      const user = userEvent.setup();
+      await screen.findByText("Upgrade openssl");
+      await user.click(screen.getByRole("button", { name: "Edit" }));
+      expect(screen.getByLabelText("Target date")).toHaveValue("2026-11-29");
+      await user.click(screen.getByRole("button", { name: "Save changes" }));
+      await waitFor(() => expect(update).toHaveBeenCalled());
+      expect(update.mock.calls[0][1]).toMatchObject({ due_at: "2026-11-30T07:59:59.000Z" });
+    } finally {
+      if (original === undefined) delete process.env.TZ;
+      else process.env.TZ = original;
+    }
+  });
+
+  it("drops the selection when the category filter changes, so Exclude never reaches unseen rows", async () => {
+    setup();
+    const user = userEvent.setup();
+    await screen.findByText("SEC-7");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await user.click(screen.getByRole("checkbox", { name: "Select vln_1" }));
+    expect(await screen.findByRole("button", { name: "Exclude selected…" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Unavailable \/ not verified/ }));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Exclude selected…" })).not.toBeInTheDocument(),
+    );
+  });
 });

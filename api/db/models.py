@@ -1845,6 +1845,10 @@ class RemediationCampaign(Base):
     # showed and what was frozen.
     composition_hash: Mapped[str] = mapped_column(default="")
     snapshot_size: Mapped[int] = mapped_column(default=0, server_default="0")
+    # Membership rows ever created (snapshot plus later additions). Rows vanish
+    # with their finding (ON DELETE CASCADE); the gap against what is left is
+    # reported as ``vanished`` and blocks completion.
+    tracked_members: Mapped[int] = mapped_column(default=0, server_default="0")
     # The selection that produced the snapshot (problem keys, ids, filters).
     # Provenance only; it is never re-evaluated.
     selection: Mapped[dict] = mapped_column(_JSON_DOC, default=dict)
