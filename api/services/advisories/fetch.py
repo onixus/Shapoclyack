@@ -28,6 +28,7 @@ refresh job and expects every fetcher to follow. docs/air-gap.md has the table.
 from __future__ import annotations
 
 import bz2
+import http.client
 import json
 import logging
 import os
@@ -52,6 +53,12 @@ UBUNTU_USN_URL = "https://usn.ubuntu.com/usn-db/database.json.bz2"
 DEFAULT_MAX_BYTES = 128 * 1024 * 1024
 DEFAULT_TIMEOUT_SECONDS = 60.0
 DEFAULT_DEADLINE_SECONDS = 300.0
+#: A feed download is one long request to a public host; one stalled read used to
+#: cost the whole dataset (an image build fell back to the seed on a single
+#: ``The read operation timed out``). Transient failures are retried from the
+#: start, each attempt with its own deadline.
+DEFAULT_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = 5.0
 # Canonical's complete USN database was 353,793,362 bytes on 2026-10-20,
 # or 44,819,883 as bz2. Keep the shared network cap, and allow bounded
 # expansion for Ubuntu only; Debian and MSRC retain their existing ceilings.
@@ -175,6 +182,23 @@ class FetchTooLargeError(RuntimeError):
     """The response exceeded the byte ceiling and was abandoned mid-stream."""
 
 
+class FetchDeadlineError(TimeoutError):
+    """The whole download outlived its deadline. Not retried: a slower retry of
+    the same feed would only spend the deadline again."""
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """Worth another attempt: the network or the server failed, the feed is not wrong."""
+    if isinstance(exc, (FetchDeadlineError, FetchTooLargeError)):
+        return False
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code == 429 or exc.code >= 500
+    return isinstance(
+        exc,
+        (TimeoutError, ConnectionError, urllib.error.URLError, http.client.HTTPException),
+    )
+
+
 def fetch_enabled() -> bool:
     return os.environ.get("OCTO_ADVISORY_FETCH_ENABLED", "false").strip().lower() in (
         "1",
@@ -184,7 +208,7 @@ def fetch_enabled() -> bool:
     )
 
 
-def fetch_json(
+def _fetch_json_once(
     url: str,
     *,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
@@ -225,7 +249,7 @@ def fetch_json(
     def check_deadline() -> float:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise TimeoutError(f"{redact_url(url)} exceeded its fetch deadline")
+            raise FetchDeadlineError(f"{redact_url(url)} exceeded its fetch deadline")
         return remaining
 
     def append(data: bytes) -> None:
@@ -288,6 +312,34 @@ def fetch_json(
     payload = json.loads(decoded.decode("utf-8"))
     check_deadline()
     return payload
+
+
+def fetch_json(
+    url: str,
+    *,
+    attempts: int = DEFAULT_ATTEMPTS,
+    **kwargs: Any,
+) -> Any:
+    """:func:`_fetch_json_once`, retried on transient network/server failures.
+
+    Each attempt has the full ``deadline_seconds``. A feed that is too large,
+    over its deadline, malformed or redirected downgrade-wise fails at once.
+    """
+    if attempts < 1:
+        raise ValueError("attempts must be at least 1")
+    for attempt in range(1, attempts + 1):
+        try:
+            return _fetch_json_once(url, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - classified below, re-raised if not transient
+            if attempt == attempts or not _is_transient(exc):
+                raise
+            delay = RETRY_BACKOFF_SECONDS * attempt
+            LOG.warning(
+                "advisories: %s failed (%s: %s); retrying in %gs (attempt %d of %d)",
+                redact_url(url), type(exc).__name__, exc, delay, attempt + 1, attempts,
+            )
+            time.sleep(delay)
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def build_dataset(
