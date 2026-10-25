@@ -107,6 +107,66 @@ def test_a_fully_executed_run_passes_the_gate(tmp_path: Path):
     assert "nats: 2 ran, 0 skipped, 0 never ran, 2 collected" in result.stdout
 
 
+def _write_manual_runtime_case(directory: Path, *, forced_skip=False):
+    body = "pytest.skip('runtime deliberately unavailable')" if forced_skip else "pass"
+    (directory / "test_manual_runtime.py").write_text(
+        "import os, pytest\n"
+        "pytestmark = [pytest.mark.operator_runtime,\n"
+        " pytest.mark.skipif(not os.environ.get('OCTO_POSTGRES_URL'), reason='OCTO_POSTGRES_URL not set'),\n"
+        " pytest.mark.skipif(os.environ.get('OCTO_OPERATOR_EMBEDDING_ACCEPTANCE') != '1',\n"
+        " reason='OCTO_OPERATOR_EMBEDDING_ACCEPTANCE=1 requires provisioned pinned local runtime')]\n"
+        "def test_manual_hardware():\n " + body + "\n"
+    )
+
+
+def test_manual_runtime_skip_is_visible_separately_and_does_not_claim_postgres_execution(tmp_path):
+    _write_manual_runtime_case(tmp_path)
+    result = _run_gate(tmp_path, env={"OCTO_OPERATOR_EMBEDDING_ACCEPTANCE": None})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "postgres: 3 ran, 0 skipped, 0 never ran, 3 collected" in result.stdout
+    assert "operator_runtime: 0 ran, 1 skipped, 0 never ran, 1 collected; manual pinned-runtime gate not provisioned" in result.stdout
+
+
+@pytest.mark.parametrize("forced_skip", [False, True])
+def test_explicit_runtime_opt_in_requires_its_case_to_really_execute(tmp_path, forced_skip):
+    _write_manual_runtime_case(tmp_path, forced_skip=forced_skip)
+    result = _run_gate(tmp_path, env={"OCTO_OPERATOR_EMBEDDING_ACCEPTANCE": "1"})
+    if forced_skip:
+        assert result.returncode != 0
+        assert "FAILED operator_runtime: 0 ran, 1 skipped" in result.stdout
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "operator_runtime: 1 ran, 0 skipped, 0 never ran, 1 collected; explicit pinned-runtime opt-in" in result.stdout
+
+
+def test_explicit_runtime_opt_in_cannot_pass_with_no_hardware_case_collected(tmp_path):
+    result = _run_gate(tmp_path, env={"OCTO_OPERATOR_EMBEDDING_ACCEPTANCE": "1"})
+    assert result.returncode != 0
+    assert "0 collected although OCTO_OPERATOR_EMBEDDING_ACCEPTANCE=1" in result.stdout
+
+
+def test_manual_marker_cannot_hide_an_ordinary_postgres_case_without_explicit_runtime_reason(tmp_path):
+    (tmp_path / "test_bad_manual.py").write_text(
+        "import pytest\n@pytest.mark.operator_runtime\n"
+        "@pytest.mark.skipif(True, reason='OCTO_POSTGRES_URL not set')\n"
+        "def test_wrong_scope():pass\n"
+    )
+    result = _run_gate(tmp_path)
+    assert result.returncode != 0
+    assert "operator_runtime must retain its explicit pinned-runtime opt-in skip reason" in result.stdout + result.stderr
+
+
+def test_skip_inside_an_ordinary_postgres_test_call_still_fails_the_gate(tmp_path):
+    (tmp_path / "test_pg_call_skip.py").write_text(
+        "import pytest\n"
+        "pytestmark = pytest.mark.skipif(False, reason='OCTO_POSTGRES_URL declared available')\n"
+        "def test_unexecuted_database_contract():pytest.skip('not actually exercised')\n"
+    )
+    result = _run_gate(tmp_path)
+    assert result.returncode != 0
+    assert "postgres: 3 ran, 1 skipped, 0 never ran, 4 collected" in result.stdout
+
+
 def test_a_selection_that_runs_two_tests_cannot_pass_as_the_whole_suite(tmp_path: Path):
     """The hole this gate had: ``-k`` deselects after the collection hook counted.
 

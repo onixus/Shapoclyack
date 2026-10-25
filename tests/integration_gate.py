@@ -10,6 +10,12 @@ declares the infrastructure available, and then:
 * at the end, a gated suite that collected nothing, skipped anything, or left
   anything unexecuted fails the run.
 
+The explicit ``operator_runtime`` marker describes an additional pinned-model
+hardware dependency, not ordinary database availability. Its collected, run and
+skipped counts remain visible in a separate ledger. PG/NATS CI does not claim
+that manual acceptance; setting its runtime opt-in to 1 makes its own missing,
+skipped or unexecuted cases fail too. Ordinary PG/NATS cases keep zero skips.
+
 The hooks live here rather than in tests/conftest.py so a test can drive them
 through a real pytest session (tests/test_integration_gate.py writes a throwaway suite
 whose conftest imports this module). tests/conftest.py re-exports them, which is
@@ -41,6 +47,8 @@ INTEGRATION_SUITES: dict[str, str] = {
     "postgres": "OCTO_POSTGRES_URL",
     "nats": "OCTO_NATS_URL",
 }
+OPERATOR_RUNTIME_SCOPE = "operator_runtime"
+OPERATOR_RUNTIME_OPT_IN = "OCTO_OPERATOR_EMBEDDING_ACCEPTANCE"
 
 # Fallback names the marks accept, so the gate recognises a suite gated on the
 # bare variable too (tests/test_nats_live.py takes OCTO_NATS_URL or NATS_URL).
@@ -49,9 +57,10 @@ _SUITE_URL_VARS: dict[str, tuple[str, ...]] = {
     "nats": ("OCTO_NATS_URL", "NATS_URL"),
 }
 
-_collected: dict[str, set[str]] = {name: set() for name in INTEGRATION_SUITES}
-_executed: dict[str, set[str]] = {name: set() for name in INTEGRATION_SUITES}
-_skipped: dict[str, set[str]] = {name: set() for name in INTEGRATION_SUITES}
+_SCOPES = (*INTEGRATION_SUITES, OPERATOR_RUNTIME_SCOPE)
+_collected: dict[str, set[str]] = {name: set() for name in _SCOPES}
+_executed: dict[str, set[str]] = {name: set() for name in _SCOPES}
+_skipped: dict[str, set[str]] = {name: set() for name in _SCOPES}
 
 
 def require_integration() -> bool:
@@ -108,13 +117,19 @@ def integration_gate_problems(counts: dict[str, tuple[int, int, int]]) -> list[s
                 f"by -k/-m, or the session stopped early) although {var} is "
                 "declared available"
             )
+    if os.environ.get(OPERATOR_RUNTIME_OPT_IN) == "1":
+        collected, executed, skipped = counts.get(OPERATOR_RUNTIME_SCOPE, (0, 0, 0))
+        if collected == 0 or skipped or executed != collected:
+            problems.append(f"{OPERATOR_RUNTIME_SCOPE}: {executed} ran, {skipped} skipped, "
+                f"{collected - executed - skipped} never ran, {collected} collected although "
+                f"{OPERATOR_RUNTIME_OPT_IN}=1 explicitly declares the pinned runtime available")
     return problems
 
 
 def integration_counts() -> dict[str, tuple[int, int, int]]:
     return {
         name: (len(_collected[name]), len(_executed[name]), len(_skipped[name]))
-        for name in INTEGRATION_SUITES
+        for name in _SCOPES
     }
 
 
@@ -131,6 +146,7 @@ def pytest_configure(config) -> None:  # noqa: ARG001 - pytest hook signature
     Fails here rather than at the end: the matrix stage takes minutes, and a
     missing URL is knowable before the first test.
     """
+    config.addinivalue_line("markers", "operator_runtime: explicit pinned local model runtime hardware acceptance; separate from ordinary PostgreSQL/NATS CI")
     if not require_integration():
         return
     missing = [
@@ -153,6 +169,10 @@ def pytest_collection_modifyitems(config, items) -> None:  # noqa: ARG001 - pyte
             str(mark.kwargs.get("reason", "")) for mark in item.iter_markers("skipif")
         )
         name = suite_for_reason(reasons)
+        if item.get_closest_marker("operator_runtime") is not None:
+            if OPERATOR_RUNTIME_OPT_IN not in reasons:
+                raise pytest.UsageError("operator_runtime must retain its explicit pinned-runtime opt-in skip reason")
+            name = OPERATOR_RUNTIME_SCOPE
         if name is not None:
             _collected[name].add(item.nodeid)
 
@@ -161,9 +181,11 @@ def pytest_runtest_logreport(report) -> None:
     for name, nodes in _collected.items():
         if report.nodeid not in nodes:
             continue
-        if report.when == "setup" and report.skipped:
-            # Where a skipif mark takes effect.
+        if report.skipped:
+            # skipif takes effect in setup; an explicit pytest.skip can also
+            # occur inside the call. Neither may masquerade as execution.
             _skipped[name].add(report.nodeid)
+            _executed[name].discard(report.nodeid)
         elif report.when == "call" or (report.when == "setup" and report.failed):
             # A test that errored in setup still executed as far as the gate is
             # concerned: the session is red for a reason that names itself.
@@ -177,9 +199,13 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:  # no
     problems = integration_gate_problems(counts)
     terminalreporter.section("integration gate")
     for name, (collected, executed, skipped) in sorted(counts.items()):
+        suffix = ""
+        if name == OPERATOR_RUNTIME_SCOPE:
+            suffix = ("; explicit pinned-runtime opt-in" if os.environ.get(OPERATOR_RUNTIME_OPT_IN) == "1"
+                else "; manual pinned-runtime gate not provisioned by ordinary PG/NATS CI")
         terminalreporter.write_line(
             f"{name}: {executed} ran, {skipped} skipped, "
-            f"{collected - executed - skipped} never ran, {collected} collected"
+            f"{collected - executed - skipped} never ran, {collected} collected{suffix}"
         )
     for problem in problems:
         terminalreporter.write_line(f"FAILED {problem}", red=True)

@@ -50,13 +50,18 @@ SOURCE_PATHS = (
     "api/services/patch_gap.py", "api/services/software_cve_match.py", "api/services/package_identity.py",
     "api/services/rpm_identity.py", "api/services/version_compare.py", "api/services/advisories/base.py",
     "api/services/advisories/coverage.py", "api/services/advisories/rpm.py", "api/services/advisories/msrc.py",
-    "scripts/operator-evaluate.py", "scripts/operator-capacity.py", "scripts/operator-acceptance-drill.py", "compose.operator-mac.yml",
+    "scripts/operator-evaluate.py", "scripts/operator-capacity.py", "scripts/operator-acceptance-drill.py",
+    "scripts/operator-observe.py", "scripts/operator-quality-watchdog.py", "compose.operator-mac.yml",
 )
 MODEL_SHA256 = "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
 RUNTIME_OVERRIDE = None
 DEVELOPMENT_EXPOSED_CASE_IDS = (
     "analysis-ru-cve-critical-https", "analysis-en-cwe-tls", "analysis-ru-unknown-empty",
     "analysis-en-exposed-mysql", "planning-ru-compare", "planning-en-foreign-object",
+    # Conservative exposure includes failed exchanges and uncertain inflight
+    # requests from the interrupted 5cec1cf1 acceptance attempt.
+    "analysis-ru-cve-high-ssh", "analysis-ru-cve-medium-smb", "analysis-ru-cve-low-http",
+    "analysis-ru-cve-info-dns", "analysis-ru-cve-unknown-redis",
 )
 
 
@@ -80,26 +85,106 @@ def write_json(path, value):
     Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
 
 
+def _sync_directory(directory):
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def begin_execution(output, case, *, phase, ordinal=None, soak_iteration=None):
+    if phase not in {"initial", "soak"} or (phase == "soak" and (type(soak_iteration) is not int or soak_iteration < 1)):
+        raise ValueError("Invalid execution phase/iteration")
+    identity = {"phase": phase, "execution_id": f"initial:{case['case_id']}" if phase == "initial" else f"soak:{soak_iteration}:{case['case_id']}"}
+    if phase == "soak":
+        identity["soak_iteration"] = soak_iteration
+    pending = {**identity, "case_id": case["case_id"], "kind": case["kind"], "ordinal": ordinal,
+               "started_at": datetime.now(UTC).isoformat(), "status": "evaluation_started"}
+    output = Path(output)
+    if (output / "inflight.json").exists():
+        raise ValueError("Recover the previous inflight execution before starting another")
+    descriptor, temporary = tempfile.mkstemp(prefix=".inflight-", dir=output)
+    try:
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(canonical(pending) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, output / "inflight.json")
+        _sync_directory(output)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    return identity
+
+
+def complete_execution(output, record, *, phase):
+    output = Path(output)
+    with (output / ("soak-records.jsonl" if phase == "soak" else "records.jsonl")).open("a") as handle:
+        handle.write(canonical(record) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    (output / "inflight.json").unlink(missing_ok=True)
+    _sync_directory(output)
+
+
+def soak_history(output):
+    path = Path(output) / "soak-records.jsonl"
+    records = [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+    last = 0
+    for item in records:
+        iteration = item.get("soak_iteration")
+        if (type(iteration) is not int or iteration <= last or item.get("phase") != "soak"
+                or item.get("execution_id") != f"soak:{iteration}:{item.get('case_id')}"):
+            raise ValueError("Invalid persisted soak execution order/identity")
+        last = iteration
+    return records
+
+
 def recover_inflight(output, records, selected):
     """A crashed request has an uncertain result, never a free final retry."""
     journal = Path(output) / "inflight.json"
     if not journal.exists():
         return records
     pending = json.loads(journal.read_text())
+    phase = pending.get("phase", "initial")
+    if phase not in {"initial", "soak"}:
+        raise ValueError("Invalid inflight phase")
     completed = {record["case_id"] for record in records}
     case = next((case for case in selected if case["case_id"] == pending["case_id"]), None)
     if case is None:
         raise ValueError("Inflight journal refers to an unscheduled case")
+    if phase == "soak":
+        iteration = pending.get("soak_iteration")
+        if type(iteration) is not int or iteration < 1 or pending.get("execution_id") != f"soak:{iteration}:{case['case_id']}":
+            raise ValueError("Invalid soak execution identity")
+        previous = soak_history(output)
+        iterations = [item["soak_iteration"] for item in previous]
+        existing = next((item for item in previous if item["soak_iteration"] == iteration), None)
+        if existing is not None:
+            if existing["case_id"] != case["case_id"]:
+                raise ValueError("Soak execution identity changed")
+            journal.unlink()
+            _sync_directory(output)
+        else:
+            if iterations and iteration <= iterations[-1]:
+                raise ValueError("Stale soak execution")
+            complete_execution(output, {"case_id": case["case_id"], "kind": case["kind"], "language": case["language"],
+                "phase": "soak", "execution_id": pending["execution_id"], "soak_iteration": iteration,
+                "valid": False, "model_invoked": None, "elapsed_seconds": None,
+                "error_code": "evaluation_interrupted_before_receipt", "recovered_inflight": True}, phase="soak")
+        return records  # never replace the initial gold result with a soak result
+    if pending.get("execution_id", f"initial:{case['case_id']}") != f"initial:{case['case_id']}":
+        raise ValueError("Invalid initial execution identity")
     if pending["case_id"] not in completed:
         record = {"case_id": case["case_id"], "kind": case["kind"], "language": case["language"],
+                  "phase": "initial", "execution_id": f"initial:{case['case_id']}",
                   "valid": False, "model_invoked": None, "elapsed_seconds": None,
                   "error_code": "evaluation_interrupted_before_receipt", "recovered_inflight": True}
         records.append(record)
-        with (Path(output) / "records.jsonl").open("a") as handle:
-            handle.write(canonical(record) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-    journal.unlink()
+        complete_execution(output, record, phase="initial")
+    else:
+        journal.unlink()
+        _sync_directory(output)
     return records
 
 
@@ -584,34 +669,31 @@ async def run(args):
     for number, case in enumerate(selected, 1):
         if case["case_id"] in completed:
             continue  # Failed cases count too; final resume never retries them.
-        write_json(output / "inflight.json", {"case_id": case["case_id"], "kind": case["kind"],
-                   "ordinal": number, "started_at": datetime.now(UTC).isoformat(), "status": "evaluation_started"})
+        identity = begin_execution(output, case, phase="initial", ordinal=number)
         record = await evaluate_one(case, config)
+        record.update(identity)
         records.append(record)
-        with (output / "records.jsonl").open("a") as handle:
-            handle.write(canonical(record) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        (output / "inflight.json").unlink(missing_ok=True)
+        complete_execution(output, record, phase="initial")
         write_json(output / "report.json", summarize(dataset, records, stage=stage))
         print(f"{number}/{len(selected)} {case['case_id']} {'PASS' if score_case(case, record) else 'FAIL'} {record['elapsed_seconds']:.2f}s", flush=True)
         if record.get("interrupted"):
             interrupted = True
             break
-    soak_count = 0
-    soak_errors = 0
+    soak_records = soak_history(output) if args.resume else []
+    soak_count = len(soak_records)
+    soak_iteration = max((item["soak_iteration"] for item in soak_records), default=0)
+    soak_errors = sum(not item["valid"] for item in soak_records)
     consecutive_errors = 0
     while not interrupted and args.soak_seconds and monotonic() - run_started < args.soak_seconds:
-        case = selected[soak_count % len(selected)]
+        case = selected[soak_iteration % len(selected)]
+        soak_iteration += 1
+        identity = begin_execution(output, case, phase="soak", soak_iteration=soak_iteration)
         record = await evaluate_one(case, config)
-        record["soak_iteration"] = soak_count + 1
+        record.update(identity)
         soak_count += 1
         soak_errors += not record["valid"]
         consecutive_errors = 0 if record["valid"] else consecutive_errors + 1
-        with (output / "soak-records.jsonl").open("a") as handle:
-            handle.write(canonical(record) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
+        complete_execution(output, record, phase="soak")
         print(f"soak {soak_count} {case['case_id']} {'VALID' if record['valid'] else 'FAIL'} elapsed={monotonic() - run_started:.1f}s", flush=True)
         if record.get("interrupted") or consecutive_errors >= 3:
             break  # preserve failure rather than hammer an unavailable runtime

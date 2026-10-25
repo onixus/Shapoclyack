@@ -7,6 +7,7 @@ overwrites a directory; fresh startup uses a new private Compose project.
 from __future__ import annotations
 
 import argparse
+import codecs
 from datetime import UTC, datetime
 import hashlib
 import ipaddress
@@ -33,11 +34,30 @@ IMAGE = re.compile(r"(?:sha256:[a-f0-9]{64}|[a-z0-9][a-z0-9._/:-]*:[A-Za-z0-9._-
 MAX_TOTAL = 32 * 1024**3
 MAX_FILE = 16 * 1024**3
 MAX_TREE = 1024**3
+MAX_FEED_TREE = 4 * 1024**3  # Same expanded bound as the native enrichment bundle.
 MAX_MEMBERS = 30000
 CORE = {"source": "source.tar", "ui": "ui.tar", "images": "images.tar",
         "model": "model.gguf", "embedding": "embedding.gguf", "sbom": "sbom.spdx.json",
-        "image_sbom": "image-sbom.json"}
-OPTIONAL = {"feeds": "feeds.tar"}
+        "image_sbom": "image-sbom.json", "feeds": "feeds.tar", "feed_inventory": "feed-inventory.json"}
+OPTIONAL = {}
+FEED_SPECS = {
+    "cvss4": ("cvss4/cvss4.json", 1000, True), "epss": ("epss/epss-overlay.json", 1000, True),
+    "kev": ("kev/kev-overlay.json", 100, True), "exploit": ("exploit/exploit-overlay.json", 1000, True),
+    "advisories_debian": ("advisories/debian-advisories.json", 100000, False),
+    "advisories_ubuntu": ("advisories/ubuntu-advisories.json", 10000, False),
+    "advisories_msrc": ("advisories/msrc-advisories.json", 5000, False),
+    "advisories_rhel": ("advisories/rhel-advisories.json", 1, False),
+    "advisories_suse": ("advisories/suse-advisories.json", 1, False),
+    "advisories_alas": ("advisories/alas-advisories.json", 1, False),
+    "nvd_cpe": ("nvd-cpe/nvd-cpe-ranges.json", 5000, False), "bdu_fstec": ("bdu/bdu-overlay.json", 1000, False),
+    "geoip": ("geoip/geoip.mmdb", 0, False), "asn": ("asn/asn.mmdb", 0, False)}
+FEED_SUPPORT = {"geoip/geoip.mmdb", "geoip/geoip-overlay.json", "asn/asn.mmdb", "cvss4/cvss4.sha256",
+    "wordlists/subdomains-small.txt", "wordlists/bucket-names-small.txt"}
+FEED_REQUIRED = {relative for relative, _, required in FEED_SPECS.values() if required}
+FEED_ALLOWED = {relative for relative, _, _ in FEED_SPECS.values()} | FEED_SUPPORT | {"enrichment-manifest.json"}
+FEED_HEADER_BYTES = 65536
+FEED_PARSE_BYTES = 32 * 1024 * 1024
+FEED_ADMIN_FILES = {".enrichment-bundle.lock", "enrichment-bundle.json", "enrichment-bundle-history.jsonl"}
 SOURCE_FILES = {"api/app.py", "api/db/migrate.py", "scanner/config/default.yaml", "scripts/operator-console-proxy.py"}
 MANIFEST_KEYS = {"schema_version", "kind", "platform", "source_revision", "ui_source_revision",
     "runtime_reference", "runtime_revision", "image_ids", "model", "model_revision", "embedding", "embedding_revision", "context_tokens",
@@ -139,14 +159,14 @@ def archive_members(path, *, limit=MAX_TREE):
         raise BundleError("bundle_archive_invalid") from None
 
 
-def extract(path, target):
-    archive_members(path)
+def extract(path, target, *, limit=MAX_TREE):
+    archive_members(path, limit=limit)
     target.mkdir(mode=0o755)
     with tarfile.open(path, "r:") as archive:
         archive.extractall(target, filter="data")
 
 
-def tree_archive(source, target):
+def tree_archive(source, target, *, limit=MAX_TREE):
     source = Path(source)
     if source.is_symlink() or not source.is_dir():
         raise BundleError("bundle_source_tree_invalid")
@@ -160,7 +180,7 @@ def tree_archive(source, target):
                 raise BundleError("bundle_archive_members_exceeded")
             if path.is_file():
                 total += path.stat().st_size
-                if total > MAX_TREE:
+                if total > limit:
                     raise BundleError("bundle_archive_size_exceeded")
             info = archive.gettarinfo(str(path), path.relative_to(source).as_posix())
             info.uid = info.gid = info.mtime = 0
@@ -171,7 +191,7 @@ def tree_archive(source, target):
                     archive.addfile(info, handle)
             else:
                 archive.addfile(info)
-    archive_members(target)
+    archive_members(target, limit=limit)
 
 
 def image_info(reference):
@@ -209,6 +229,267 @@ def copy_checked(source, target, expected=None):
 def artifact(root, role, name):
     path = regular(root, name)
     return {"role": role, "path": name, "size": path.stat().st_size, "sha256": digest(path)}
+
+
+def feed_freshness(updated, now):
+    """The data stamp alone establishes age; packaging time never supplies it."""
+    if not isinstance(updated, str) or not updated or len(updated) > 64:
+        return "unknown"
+    try:
+        stamp = datetime.fromisoformat(updated.replace("Z", "+00:00"))
+        stamp = stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp.astimezone(UTC)
+    except ValueError:
+        return "unknown"
+    days = (now - stamp).total_seconds() / 86400
+    return "unknown" if days < -1 else "stale" if days > 30 else "fresh_by_feed_date_only"
+
+
+def feed_header(raw):
+    """Parse only bounded top-level JSON metadata, stopping before entries."""
+    text = codecs.getincrementaldecoder("utf-8")().decode(raw, final=False)
+    decoder = json.JSONDecoder(object_pairs_hook=unique)
+    position, values = 0, {}
+    def whitespace():
+        nonlocal position
+        while position < len(text) and text[position].isspace():
+            position += 1
+    whitespace()
+    if position >= len(text) or text[position] != "{":
+        raise ValueError("JSON feed object required")
+    position += 1
+    while position < len(text):
+        whitespace()
+        key, position = decoder.raw_decode(text, position)
+        if not isinstance(key, str) or key in values:
+            raise ValueError("Duplicate feed metadata")
+        whitespace()
+        if position >= len(text) or text[position] != ":":
+            raise ValueError("Invalid feed header")
+        position += 1
+        whitespace()
+        if key == "entries":
+            if position >= len(text) or text[position] not in "[{":
+                raise ValueError("Feed entries required")
+            end = "}" if text[position] == "{" else "]"
+            position += 1
+            whitespace()
+            return values, position < len(text) and text[position] != end
+        value, position = decoder.raw_decode(text, position)
+        values[key] = value
+        whitespace()
+        if position >= len(text) or text[position] != ",":
+            raise ValueError("Bounded feed entries unavailable")
+        position += 1
+    raise ValueError("Bounded feed entries unavailable")
+
+
+def inspect_feed(path, *, minimum, origin, now):
+    with path.open("rb") as handle:
+        header, nonempty = feed_header(handle.read(FEED_HEADER_BYTES))
+    count, checked = None, False
+    if path.stat().st_size <= FEED_PARSE_BYTES:
+        content = json.loads(path.read_bytes(), object_pairs_hook=unique)
+        entries = content.get("entries") if isinstance(content, dict) else None
+        count = len(entries) if isinstance(entries, (list, dict)) else None
+        checked = count is not None
+        header = content
+    source = header.get("source")
+    source = source if isinstance(source, str) and re.fullmatch(r"[A-Za-z0-9_.+ -]{1,128}", source) else None
+    updated = header.get("updated") if isinstance(header.get("updated"), str) and len(header["updated"]) <= 64 else None
+    seed = bool(source and "seed" in source.lower()) or origin == "seed"
+    return {"source": source, "updated": updated, "origin": origin, "entries": count,
+        "entry_count_checked": checked, "min_entries": minimum, "nonempty": nonempty,
+        "usable": bool(checked and count >= minimum), "freshness_at_snapshot": feed_freshness(updated, now),
+        "coverage": "seed_or_unknown" if seed or not checked or count < minimum else "not_assessed"}
+
+
+def stage_feeds(source, destination, inventory_path):
+    """Snapshot native local data only; never write or refresh the input tree."""
+    source, destination = Path(source), Path(destination)
+    if source.is_symlink() or not source.is_dir() or destination.exists():
+        raise BundleError("bundle_feed_source_invalid")
+    files = []
+    for path in source.rglob("*"):
+        if path.is_symlink() or not (path.is_file() or path.is_dir()):
+            raise BundleError("bundle_feed_source_unsafe")
+        if path.is_file() and path.relative_to(source).as_posix() not in FEED_ADMIN_FILES:
+            relative = path.relative_to(source).as_posix()
+            if relative not in FEED_ALLOWED:
+                raise BundleError("bundle_feed_file_unsupported")
+            files.append((path, relative))
+    names = {relative for _, relative in files}
+    if not FEED_REQUIRED.issubset(names) or "enrichment-manifest.json" not in names:
+        raise BundleError("bundle_feed_required_file_missing")
+    if sum(path.stat().st_size for path, _ in files) > MAX_FEED_TREE:
+        raise BundleError("bundle_feed_tree_too_large")
+    previous_path = source / "enrichment-manifest.json"
+    if previous_path.stat().st_size > 262144:
+        raise BundleError("bundle_feed_manifest_too_large")
+    try:
+        previous = json.loads(previous_path.read_bytes(), object_pairs_hook=unique)["datasets"]
+        if not isinstance(previous, dict):
+            raise ValueError
+    except (ValueError, KeyError, TypeError, RecursionError):
+        raise BundleError("bundle_feed_manifest_invalid") from None
+    destination.mkdir(mode=0o700)
+    for path, relative in files:
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        copy_checked(path, target)
+    now, datasets = datetime.now(UTC), {}
+    for name, (relative, minimum, required) in FEED_SPECS.items():
+        path = destination / relative
+        record = {"path": relative, "required": required, "present": path.is_file()}
+        if path.is_file():
+            before = previous.get(name) or {}
+            origin = before.get("origin") if isinstance(before, dict) else None
+            origin = origin if origin in {"seed", "fetch", "cached", "stale", "bundle"} else "unknown"
+            try:
+                if path.suffix == ".mmdb":
+                    raise ValueError("Binary coverage is not established by JSON inspection")
+                record.update(inspect_feed(path, minimum=minimum, origin=origin, now=now))
+            except (ValueError, TypeError, RecursionError, UnicodeError):
+                if required:
+                    raise BundleError("bundle_feed_header_invalid") from None
+                record.update(source=None, updated=None, origin=origin, usable=False, freshness_at_snapshot="unknown", coverage="unknown")
+            carried = before.get("source_origin") if isinstance(before, dict) else None
+            if carried in {"seed", "fetch", "cached", "stale", "bundle", "missing", "unknown"}:
+                record["source_origin"] = carried
+            if required and not record.get("nonempty"):
+                raise BundleError("bundle_feed_required_dataset_empty")
+        else:
+            record.update(usable=False, freshness_at_snapshot="unknown", coverage="missing")
+        datasets[name] = record
+    regenerated = {"generated_at": now.isoformat(), "datasets": {
+        name: {**record, "path": "/app/scanner/data/" + record["path"]} for name, record in datasets.items()},
+        "inspection": "bounded local source data; packaging time is not feed date; no coverage completeness assertion"}
+    manifest_path = destination / "enrichment-manifest.json"
+    manifest_path.chmod(0o600)
+    manifest_path.write_text(json.dumps(regenerated, sort_keys=True, indent=2) + "\n")
+    manifest_path.chmod(0o444)
+    inventory = {"schema_version": 1, "captured_at": now.isoformat(), "freshness_max_age_days": 30,
+        "coverage_complete": False, "datasets": datasets,
+        "files": [{"path": path.relative_to(destination).as_posix(), "size": path.stat().st_size, "sha256": digest(path)}
+            for path in sorted(destination.rglob("*")) if path.is_file()]}
+    inventory_path.write_text(json.dumps(inventory, sort_keys=True, indent=2) + "\n")
+    inventory_path.chmod(0o444)
+    return inventory
+
+
+def verify_feeds(archive_path, inventory_path):
+    archive_members(archive_path, limit=MAX_FEED_TREE)
+    if inventory_path.stat().st_size > 262144:
+        raise BundleError("bundle_feed_inventory_too_large")
+    try:
+        value = json.loads(inventory_path.read_bytes(), object_pairs_hook=unique)
+        if (set(value) != {"schema_version", "captured_at", "freshness_max_age_days", "coverage_complete", "datasets", "files"}
+                or type(value["schema_version"]) is not int or value["schema_version"] != 1
+                or value["coverage_complete"] is not False or value["freshness_max_age_days"] != 30
+                or not isinstance(value["datasets"], dict) or set(value["datasets"]) != set(FEED_SPECS)):
+            raise ValueError
+        captured = datetime.fromisoformat(value["captured_at"])
+        if captured.tzinfo is None:
+            raise ValueError
+        records = value["files"]
+        metadata_fields = {"path", "required", "present", "source", "updated", "origin", "source_origin", "entries",
+            "entry_count_checked", "min_entries", "nonempty", "usable", "freshness_at_snapshot", "coverage"}
+        for name, (relative, _, required) in FEED_SPECS.items():
+            metadata = value["datasets"][name]
+            if (not isinstance(metadata, dict) or set(metadata) - metadata_fields
+                    or metadata.get("path") != relative or metadata.get("required") is not required
+                    or type(metadata.get("present")) is not bool or type(metadata.get("usable")) is not bool
+                    or metadata.get("freshness_at_snapshot") not in {"unknown", "stale", "fresh_by_feed_date_only"}
+                    or metadata.get("coverage") not in {"missing", "unknown", "seed_or_unknown", "not_assessed"}
+                    or "origin" in metadata and metadata["origin"] not in {"seed", "fetch", "cached", "stale", "bundle", "unknown"}
+                    or "source_origin" in metadata and metadata["source_origin"] not in {"seed", "fetch", "cached", "stale", "bundle", "missing", "unknown"}):
+                raise ValueError
+        if not isinstance(records, list) or not 5 <= len(records) <= len(FEED_ALLOWED):
+            raise ValueError
+        expected = {}
+        for record in records:
+            if (not isinstance(record, dict) or set(record) != {"path", "size", "sha256"}
+                    or record["path"] not in FEED_ALLOWED or record["path"] in expected
+                    or type(record["size"]) is not int or not 0 < record["size"] <= MAX_FEED_TREE
+                    or not isinstance(record["sha256"], str) or not HASH.fullmatch(record["sha256"])):
+                raise ValueError
+            expected[record["path"]] = record
+        if not (FEED_REQUIRED | {"enrichment-manifest.json"}).issubset(expected):
+            raise ValueError
+        seen = set()
+        native = {relative: name for name, (relative, _, _) in FEED_SPECS.items()}
+        with tarfile.open(archive_path, "r:") as archive:
+            for member in archive:
+                if member.isdir():
+                    continue
+                if not member.isfile():
+                    raise ValueError
+                record = expected.get(member.name)
+                if record is None or member.name in seen or member.size != record["size"]:
+                    raise ValueError
+                seen.add(member.name)
+                digest_value, header = hashlib.sha256(), bytearray()
+                complete = bytearray() if member.name in native and not member.name.endswith(".mmdb") and member.size <= FEED_PARSE_BYTES or member.name == "enrichment-manifest.json" else None
+                with archive.extractfile(member) as handle:
+                    while chunk := handle.read(1024 * 1024):
+                        digest_value.update(chunk)
+                        if len(header) < FEED_HEADER_BYTES:
+                            header.extend(chunk[:FEED_HEADER_BYTES - len(header)])
+                        if complete is not None:
+                            if len(complete) + len(chunk) > FEED_PARSE_BYTES:
+                                raise ValueError
+                            complete.extend(chunk)
+                if digest_value.hexdigest() != record["sha256"]:
+                    raise ValueError
+                if member.name in native:
+                    name = native[member.name]
+                    metadata = value["datasets"][name]
+                    try:
+                        if member.name.endswith(".mmdb"):
+                            raise ValueError("Binary coverage remains unknown")
+                        actual, nonempty = feed_header(header)
+                    except (ValueError, UnicodeError):
+                        if (member.name in FEED_REQUIRED or metadata.get("coverage") != "unknown"
+                                or metadata.get("usable") is not False or metadata.get("source") is not None
+                                or metadata.get("updated") is not None or metadata.get("freshness_at_snapshot") != "unknown"):
+                            raise ValueError from None
+                        continue
+                    count, checked = None, False
+                    if complete is not None:
+                        content = json.loads(complete, object_pairs_hook=unique)
+                        entries = content.get("entries") if isinstance(content, dict) else None
+                        count = len(entries) if isinstance(entries, (dict, list)) else None
+                        checked = count is not None
+                        actual = content
+                    source = actual.get("source")
+                    source = source if isinstance(source, str) and re.fullmatch(r"[A-Za-z0-9_.+ -]{1,128}", source) else None
+                    updated = actual.get("updated") if isinstance(actual.get("updated"), str) and len(actual["updated"]) <= 64 else None
+                    if (metadata.get("source") != source or metadata.get("updated") != updated
+                            or metadata.get("freshness_at_snapshot") != feed_freshness(updated, captured)
+                            or member.name in FEED_REQUIRED and not nonempty):
+                        raise ValueError
+                    minimum = FEED_SPECS[name][1]
+                    coverage = "seed_or_unknown" if (source and "seed" in source.lower()) or metadata.get("origin") == "seed" or not checked or count < minimum else "not_assessed"
+                    if (metadata.get("entries") != count or metadata.get("entry_count_checked") is not checked
+                            or metadata.get("nonempty") is not nonempty or type(metadata.get("min_entries")) is not int
+                            or metadata.get("min_entries") != minimum
+                            or metadata.get("usable") is not bool(checked and count >= minimum)
+                            or metadata.get("coverage") != coverage):
+                        raise ValueError
+                elif member.name == "enrichment-manifest.json":
+                    enriched = json.loads(complete, object_pairs_hook=unique)
+                    projected = {name: {**record, "path": "/app/scanner/data/" + record["path"]}
+                        for name, record in value["datasets"].items()}
+                    if enriched.get("datasets") != projected or enriched.get("generated_at") != value["captured_at"]:
+                        raise ValueError
+        if seen != set(expected):
+            raise ValueError
+        for name, (relative, _, _) in FEED_SPECS.items():
+            metadata = value["datasets"][name]
+            if metadata.get("path") != relative or metadata.get("present") is not (relative in expected):
+                raise ValueError
+    except (ValueError, TypeError, KeyError, RecursionError, UnicodeError, tarfile.TarError):
+        raise BundleError("bundle_feed_inventory_invalid") from None
+    return value
 
 
 def image_sbom(path, image_ids):
@@ -258,6 +539,10 @@ def export_bundle(args):
     image_sbom(args.image_sbom, {role: info["Id"] for role, info in images.items()})
     target.mkdir(mode=0o700)
     try:
+        with tempfile.TemporaryDirectory(prefix="operator-feed-stage-") as temporary:
+            snapshot = Path(temporary) / "feeds"
+            stage_feeds(args.feeds, snapshot, target / "feed-inventory.json")
+            tree_archive(snapshot, target / "feeds.tar", limit=MAX_FEED_TREE)
         run(["git", "archive", "--format=tar", "--output=" + str(target / "source.tar"), revision])
         archive_members(target / "source.tar")
         tree_archive(args.ui, target / "ui.tar")
@@ -275,9 +560,6 @@ def export_bundle(args):
             name = f"license-{index:03d}.txt"
             copy_checked(license_file, target / name)
             artifacts.append(artifact(target, "license", name))
-        if args.feeds:
-            tree_archive(args.feeds, target / "feeds.tar")
-            artifacts.append(artifact(target, "feeds", "feeds.tar"))
         copy_checked(args.image_sbom, target / "image-sbom.json")
         artifacts.append(artifact(target, "image_sbom", "image-sbom.json"))
         sbom = {"spdxVersion": "SPDX-2.3", "dataLicense": "CC0-1.0", "SPDXID": "SPDXRef-DOCUMENT",
@@ -296,7 +578,7 @@ def export_bundle(args):
             "model_revision": args.model_revision, "embedding_revision": args.embedding_revision,
             "context_tokens": 8192, "parallel": 1, "artifacts": artifacts,
             "created_at": datetime.now(UTC).isoformat(),
-            "feed_status": "included_unaccepted" if args.feeds else "source_seed_only_unaccepted",
+            "feed_status": "local_snapshot_included_freshness_and_coverage_not_guaranteed",
             "sbom_scope": "bundle_files_and_required_separate_image_inventory"}
         raw = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
         (target / "manifest.json").write_bytes(raw)
@@ -329,6 +611,7 @@ def verify_bundle(root, trusted):
     if (not isinstance(value, dict) or set(value) != MANIFEST_KEYS or type(value["schema_version"]) is not int
             or value["schema_version"] != 1 or value["kind"] != "shapoclyack-operator-mac-offline"
             or value["platform"] != "linux/arm64" or not isinstance(value["source_revision"], str)
+            or value["feed_status"] != "local_snapshot_included_freshness_and_coverage_not_guaranteed"
             or not REVISION.fullmatch(value["source_revision"]) or value["ui_source_revision"] != value["source_revision"]
             or not isinstance(value["runtime_revision"], str) or not REVISION.fullmatch(value["runtime_revision"])
             or not isinstance(value["runtime_reference"], str)
@@ -377,9 +660,10 @@ def verify_bundle(root, trusted):
         if digest(regular(root, item["path"])) != item["sha256"]:
             raise BundleError("bundle_artifact_mismatch")
     image_sbom(regular(root, roles["image_sbom"]["path"]), value["image_ids"])
+    verify_feeds(regular(root, roles["feeds"]["path"]), regular(root, roles["feed_inventory"]["path"]))
     for role in ("source", "ui", "feeds"):
         if role in roles:
-            inspected = archive_members(root / roles[role]["path"])
+            inspected = archive_members(root / roles[role]["path"], limit=MAX_FEED_TREE if role == "feeds" else MAX_TREE)
             if role == "source" and not SOURCE_FILES.issubset(inspected["files"]):
                 raise BundleError("bundle_source_incomplete")
             if role == "ui" and ("operator.html" not in inspected["files"]
@@ -515,7 +799,7 @@ def import_bundle(bundle, trusted, destination, *, load=True, start=False, port=
         verify_bundle(payloads, trusted)
         for role in ("source", "ui", "feeds"):
             if any(item["role"] == role for item in manifest["artifacts"]):
-                extract(payloads / (CORE | OPTIONAL)[role], destination / role)
+                extract(payloads / (CORE | OPTIONAL)[role], destination / role, limit=MAX_FEED_TREE if role == "feeds" else MAX_TREE)
         if load:
             run(["docker", "image", "load", "--input", str(payloads / "images.tar")], timeout=1800)
             for image in manifest["image_ids"].values():
@@ -664,7 +948,7 @@ def main():
     export.add_argument("--app-image", required=True, type=checked_image)
     export.add_argument("--postgres-image", required=True, type=checked_image)
     export.add_argument("--license", required=True, action="append", type=Path)
-    export.add_argument("--feeds", type=Path)
+    export.add_argument("--feeds", type=Path, required=True)
     export.add_argument("--image-sbom", type=Path, required=True)
     for name in ("verify", "import", "stop"):
         command = commands.add_parser(name)

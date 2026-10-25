@@ -31,9 +31,11 @@ benchmark, **not an independently sampled vendor corpus or a domain-expert
 certification**. Synthetic CVE identifiers do not assert real vulnerabilities.
 
 Six named cases were selected for development pilots before prompt freeze.
-The report separately identifies this development-exposed subset and the other
-184 cases. All 190 still count once in the unchanged final gates. The corpus
-is not described as an entirely hidden holdout set.
+The interrupted acceptance attempt at `5cec1cf1` conservatively exposes five
+additional IDs, including connection failures and an uncertain inflight request.
+The report identifies these 11 exposed cases and the other 179 cases separately.
+All 190 still count once in the unchanged final gates. The corpus is not
+described as an entirely hidden holdout set.
 
 The frozen classification rubric describes observed records: critical/high
 severity proposes high priority, medium proposes medium, low/info proposes low,

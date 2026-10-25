@@ -57,8 +57,8 @@ def test_perfect_supplied_records_only_verify_scorer_not_model_quality():
     assert report["category_macro_f1"]["value"] == 1.0
     assert report["citation_precision"]["value"] == 1.0
     assert report["tool_accuracy"]["total"] == 70
-    assert report["subgroups"]["development_exposed"]["total"] == 6
-    assert report["subgroups"]["untouched_by_development_pilot"]["total"] == 184
+    assert report["subgroups"]["development_exposed"]["total"] == 11
+    assert report["subgroups"]["untouched_by_development_pilot"]["total"] == 179
     assert report["fixed_claim_support"]["total"] > 0
     assert not report["release_acceptance_claimed"]
 
@@ -190,3 +190,59 @@ def test_recorded_result_with_stale_journal_is_not_duplicated(tmp_path):
     evaluation.write_json(tmp_path / "inflight.json", {"case_id": case["case_id"]})
     assert evaluation.recover_inflight(tmp_path, [record], [case]) == [record]
     assert not (tmp_path / "records.jsonl").exists()
+
+
+def test_soak_inflight_recovery_preserves_initial_gold_and_failed_iteration(tmp_path):
+    case = CASES[0]
+    initial = record_from_gold(case)
+    initial_bytes = evaluation.canonical(initial) + "\n"
+    (tmp_path / "records.jsonl").write_text(initial_bytes)
+    identity = evaluation.begin_execution(tmp_path, case, phase="soak", soak_iteration=1)
+    result = evaluation.recover_inflight(tmp_path, [initial], [case])
+    assert result == [initial] and initial["valid"]
+    assert (tmp_path / "records.jsonl").read_text() == initial_bytes
+    recovered = json.loads((tmp_path / "soak-records.jsonl").read_text())
+    assert recovered["execution_id"] == identity["execution_id"]
+    assert recovered["phase"] == "soak" and recovered["soak_iteration"] == 1
+    assert not recovered["valid"] and recovered["recovered_inflight"]
+    assert recovered["error_code"] == "evaluation_interrupted_before_receipt"
+    next_identity = evaluation.begin_execution(tmp_path, case, phase="soak", soak_iteration=2)
+    assert next_identity["execution_id"] != recovered["execution_id"]
+
+
+def test_completed_soak_with_stale_journal_is_not_duplicated_or_moved_to_initial(tmp_path):
+    case = CASES[0]
+    identity = evaluation.begin_execution(tmp_path, case, phase="soak", soak_iteration=3)
+    record = {**record_from_gold(case), **identity}
+    (tmp_path / "soak-records.jsonl").write_text(evaluation.canonical(record) + "\n")
+    assert evaluation.recover_inflight(tmp_path, [], [case]) == []
+    assert len((tmp_path / "soak-records.jsonl").read_text().splitlines()) == 1
+    assert not (tmp_path / "records.jsonl").exists()
+    assert not (tmp_path / "inflight.json").exists()
+
+
+def test_journal_is_atomic_fsynced_and_cannot_overwrite_uncertain_execution(tmp_path, monkeypatch):
+    syncs = []
+    replacements = []
+    original_replace = evaluation.os.replace
+    def replace(source, target):
+        assert json.loads(Path(source).read_text())["phase"] == "initial"
+        replacements.append((source, target))
+        original_replace(source, target)
+    monkeypatch.setattr(evaluation.os, "replace", replace)
+    monkeypatch.setattr(evaluation.os, "fsync", lambda descriptor: syncs.append(descriptor))
+    identity = evaluation.begin_execution(tmp_path, CASES[0], phase="initial", ordinal=1)
+    assert identity["execution_id"] == "initial:" + CASES[0]["case_id"]
+    assert len(replacements) == 1 and len(syncs) == 2
+    assert not list(tmp_path.glob(".inflight-*"))
+    with pytest.raises(ValueError, match="Recover"):
+        evaluation.begin_execution(tmp_path, CASES[0], phase="soak", soak_iteration=1)
+
+
+def test_resume_cannot_count_a_duplicated_soak_execution_as_new_load(tmp_path):
+    case = CASES[0]
+    record = {**record_from_gold(case), "phase": "soak", "soak_iteration": 1,
+              "execution_id": f"soak:1:{case['case_id']}"}
+    (tmp_path / "soak-records.jsonl").write_text((evaluation.canonical(record) + "\n") * 2)
+    with pytest.raises(ValueError, match="execution order/identity"):
+        evaluation.soak_history(tmp_path)

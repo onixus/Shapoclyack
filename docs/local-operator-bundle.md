@@ -21,8 +21,30 @@ inventory completeness and scanner provenance still require review. A file
 inventory does not replace an image SBOM. Review upstream
 runtime, Qwen, embedding and image licenses, and pass every applicable license
 using repeated `--license` flags. Apache guidance licensing and provenance are
-included in the source catalog. Feed snapshots are optional `--feeds` input;
-their freshness and coverage need separate acceptance.
+included in the source catalog. The complete package requires `--feeds` with
+the actual local native feed tree and its enrichment manifest. Export snapshots
+it privately and regenerates only that copy's metadata; it never refreshes or
+rewrites the input directory. The four native core datasets (CVSS4, EPSS, KEV,
+exploit) and manifest must exist and contain entries. Available optional vendor,
+CPE, geolocation and ASN data are carried too; missing optional data remain
+explicitly missing. Unsupported paths, links, empty required datasets and
+unbounded/malformed required JSON headers are rejected.
+
+`feed-inventory.json` separately records each payload's byte size/SHA-256 and
+dataset-stamped source/date. Import checks these hashes against `feeds.tar`
+before Docker load, verifies native metadata against bounded actual headers,
+and cross-checks the regenerated enrichment manifest. Up to 32 MiB per JSON
+dataset is fully parsed for entry counts; larger optional files carry unknown
+counts/coverage. Snapshot time never substitutes for an absent feed date.
+Age over thirty days is stale; missing/future/invalid dates are unknown.
+Seed or insufficient coverage stays unknown even with a recent date. A carried
+`source_origin=stale` remains stale across another offline snapshot. Native
+writer locks and installation history are not distributed as knowledge data;
+an unfinished installation journal or other unsupported files must be resolved
+before export. These
+package inventory labels do not replace each runtime consumer's own freshness
+and applicability policy. `coverage_complete` is always false: having all
+available bytes offline does not establish a fresh or complete knowledge base.
 
 ```sh
 python scripts/operator-offline-bundle.py export \
@@ -33,6 +55,7 @@ python scripts/operator-offline-bundle.py export \
   --embedding-revision "$EMBEDDING_REVISION" --embedding-sha256 "$EMBEDDING_SHA256" \
   --runtime-image "$PINNED_RUNTIME" --app-image "$PINNED_APPLICATION" \
   --postgres-image "$PINNED_POSTGRES" --image-sbom "$IMAGE_SBOM" \
+  --feeds "$LOCAL_NATIVE_FEED_DIRECTORY" \
   --license "$RUNTIME_LICENSE" --license "$MODEL_LICENSE" --license "$EMBEDDING_LICENSE"
 python scripts/operator-offline-bundle.py verify .operator-local/bundle/release \
   --manifest-sha256 "$INDEPENDENTLY_TRUSTED_MANIFEST_SHA256"
@@ -49,7 +72,8 @@ oversized payloads. Only a new destination is accepted. Import copies and
 rechecks the payloads before loading images and verifies their IDs and arm64
 architecture. `--without-docker-load` performs materialization only and cannot
 start services. Bounds are 32 GiB total payload, 16 GiB per file, and 1 GiB
-expanded source/UI/feed archive with 30,000 members each.
+expanded source/UI archive, 4 GiB for the native feed tree (matching its
+existing enrichment-bundle bound), and 30,000 members per archive.
 
 Fresh startup creates a random private Compose project, internal network and
 new private credentials, migrates PostgreSQL, starts the bounded model and CPU

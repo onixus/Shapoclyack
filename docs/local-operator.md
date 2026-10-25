@@ -25,6 +25,10 @@ retains separate measured gates and frozen inputs. Physical NVIDIA acceptance
 is tracked independently in [#609](https://github.com/onixus/Shapoclyack/issues/609);
 Mac is the primary profile by the owner's decision.
 
+Measured results, failed attempts and outstanding release gates are recorded
+in the [Mac acceptance status](local-operator-acceptance-status.md). Implemented
+features do not by themselves close those gates.
+
 | Work | Issue | State / required evidence |
 |---|---|---|
 | Architecture, contracts and acceptance specification | #584 | Defined here; contract fixtures implemented |

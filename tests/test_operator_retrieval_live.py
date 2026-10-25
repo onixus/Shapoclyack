@@ -23,9 +23,9 @@ from tests.test_operator_remediation import feed_for
 FIXTURE = Path(__file__).parent / "fixtures/operator_retrieval_eval.json"
 DATASET_SHA256 = "d18074d87edc89d9e646c8cfe9d46ab4dc4dc6076ba3cc5bb153b1c0b3790092"
 ROOT = Path(__file__).parents[1]
-pytestmark = [requires_postgres, pytest.mark.skipif(
+pytestmark = [requires_postgres, pytest.mark.operator_runtime, pytest.mark.skipif(
     os.environ.get("OCTO_OPERATOR_EMBEDDING_ACCEPTANCE") != "1",
-    reason="requires explicitly provisioned pinned local CPU embedding runtime; mocks are not acceptance")]
+    reason="OCTO_OPERATOR_EMBEDDING_ACCEPTANCE=1 requires explicitly provisioned pinned local CPU embedding runtime; mocks are not acceptance")]
 
 
 def percentile(values, fraction):
