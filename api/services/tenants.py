@@ -12,6 +12,7 @@ if ``settings.postgres_url`` is empty rather than silently disabling anything.
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import secrets
 import uuid
@@ -26,6 +27,10 @@ from api.db.engine import get_session
 from api.services import audit as audit_service
 from api.settings import Settings
 
+# passlib 1.7.4 probes ``bcrypt.__about__``, which bcrypt >= 4.1 removed, and logs
+# a "(trapped) error reading bcrypt version" traceback at WARNING on first use.
+# It is caught and hashing is unaffected; keep real errors, drop the noise.
+logging.getLogger("passlib.handlers.bcrypt").setLevel(logging.ERROR)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 DEFAULT_TENANT_ID = "default"
 
