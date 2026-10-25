@@ -28,10 +28,12 @@ import json
 import logging
 import os
 import threading
+import weakref
 import zlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
+from itertools import islice
 from pathlib import Path
 from typing import Any, Iterator, Protocol, runtime_checkable
 
@@ -161,6 +163,9 @@ def _coerce_record(
 ) -> AdvisoryRecord | None:
     """One dataset entry → an :class:`AdvisoryRecord`, or ``None`` if unusable.
 
+    Not on the production path any more (the loader packs rows via
+    :func:`_coerce_entry`); kept as the reference the loader tests compare with.
+
     Dropped rather than raised: a single malformed entry in a third-party feed
     must not take the whole dataset — and therefore every match on the
     installation — offline.
@@ -217,7 +222,10 @@ class _PackedStore:
         self.count = count
         self.provider = provider
         self.feed_date = feed_date
-        self.bucket = lru_cache(maxsize=512)(self._decode)
+        # The cache must not keep ``self`` alive (a bound method would make a
+        # reference cycle, and a replaced dataset would linger until a gc pass).
+        store = weakref.ref(self)
+        self.bucket = lru_cache(maxsize=512)(lambda key: store()._decode(key))
 
     def _decode(self, key: tuple[str, str]) -> tuple[AdvisoryRecord, ...]:
         release, source_package = key
@@ -271,7 +279,20 @@ class _PackedRecords(Sequence):
             yield from self._store.bucket(key)
 
     def __getitem__(self, index):  # type: ignore[override]
-        return tuple(self)[index]
+        """Walks buckets up to ``index`` instead of decoding the whole feed."""
+        size = len(self)
+        if isinstance(index, slice):
+            start, stop, step = index.indices(size)
+            if step < 0:
+                raise NotImplementedError("negative slice steps are not supported")
+            return tuple(islice(self, start, stop, step))
+        if not isinstance(index, int):
+            raise TypeError("record indices must be integers or slices")
+        if index < 0:
+            index += size
+        if not 0 <= index < size:
+            raise IndexError("record index out of range")
+        return next(islice(self, index, index + 1))
 
 
 @dataclass
@@ -330,6 +351,11 @@ class _JsonReader:
         self.pos = 0
         self.eof = False
         self.grow = _CHUNK_CHARS
+        # What has been dropped from the front of the window, so an error can
+        # be reported at the file offset ``json.loads`` would give.
+        self.consumed = 0
+        self.lines = 0
+        self.line_start = 0
 
     def fill(self) -> bool:
         if self.eof:
@@ -338,6 +364,13 @@ class _JsonReader:
         if not chunk:
             self.eof = True
             return False
+        dropped = self.buf[: self.pos]
+        if dropped:
+            self.lines += dropped.count("\n")
+            newline = dropped.rfind("\n")
+            if newline >= 0:
+                self.line_start = self.consumed + newline + 1
+            self.consumed += len(dropped)
         self.buf = self.buf[self.pos:] + chunk
         self.pos = 0
         # A genuinely broken document keeps failing at the same place; double
@@ -362,17 +395,28 @@ class _JsonReader:
         while True:
             try:
                 obj, end = _JSON.raw_decode(self.buf, self.pos)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as exc:
                 if self.fill():
                     continue
-                raise
+                # fill() has not moved the window: the position is still in it.
+                raise self.error(exc.msg, exc.pos) from None
             if end == len(self.buf) and self.fill():
                 continue  # a number or literal may continue in the next chunk
             self.pos = end
             return obj
 
+    def error(self, message: str, at: int) -> json.JSONDecodeError:
+        """A ``JSONDecodeError`` at window offset ``at``, numbered as in the file."""
+        newline = self.buf.rfind("\n", 0, at)
+        lineno = 1 + self.lines + self.buf.count("\n", 0, at)
+        colno = at - newline if newline >= 0 else self.consumed + at - self.line_start + 1
+        exc = json.JSONDecodeError(message, "", 0)
+        exc.pos, exc.lineno, exc.colno = self.consumed + at, lineno, colno
+        exc.args = (f"{message}: line {lineno} column {colno} (char {exc.pos})",)
+        return exc
+
     def fail(self, message: str) -> json.JSONDecodeError:
-        return json.JSONDecodeError(message, "", 0)
+        return self.error(message, self.pos)
 
 
 def _stream_document(stream: Any) -> Iterator[tuple]:
@@ -416,21 +460,21 @@ def _stream_document(stream: Any) -> Iterator[tuple]:
                     while True:
                         yield ("entry", reader.value())
                         nxt = reader.peek()
+                        if nxt not in ("]", ","):
+                            raise reader.fail("Expecting ',' delimiter")
                         reader.pos += 1
                         if nxt == "]":
                             break
-                        if nxt != ",":
-                            raise reader.fail("Expecting ',' delimiter")
             elif key == "entries":
                 yield ("entries_value", reader.value())
             else:
                 yield ("meta", key, reader.value())
             nxt = reader.peek()
+            if nxt not in ("}", ","):
+                raise reader.fail("Expecting ',' delimiter")
             reader.pos += 1
             if nxt == "}":
                 break
-            if nxt != ",":
-                raise reader.fail("Expecting ',' delimiter")
     if reader.peek():
         raise reader.fail("Extra data")
 

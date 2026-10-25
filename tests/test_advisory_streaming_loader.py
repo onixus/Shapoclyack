@@ -208,3 +208,118 @@ def test_decoded_records_are_the_same_objects_while_cached(tmp_path):
     data = base._load_dataset(path, provider="p")
     key = next(iter(data.index))
     assert data.lookup(*key) is data.lookup(*key)
+
+
+def loads_error(text):
+    try:
+        json.loads(text)
+    except json.JSONDecodeError as exc:
+        return exc
+    return None
+
+
+def streamed_error(path, provider="p"):
+    try:
+        with path.open("r", encoding="utf-8", newline="") as stream:
+            for _ in base._stream_document(stream):
+                pass
+    except json.JSONDecodeError as exc:
+        return exc
+    return None
+
+
+def _broken_documents():
+    body = json.dumps(
+        {"entries": [{"cve_ids": ["CVE-1-1"], "release": "x", "source_package": "p"}] * 3,
+         "updated": "d"},
+        indent=2,
+    )
+    docs = [body[:cut] for cut in range(len(body))]  # every truncation
+    docs += [
+        body + " x", body + "\n\n  }", body.replace(",", ";", 4),
+        '{\n  "a": 1,\n  "b" 2\n}', '{\n"entries": [\n{},\n]\n}', '{\n"a":\n\n}',
+        '﻿{}', "", "  \n ", '{"entries": [1 2]}', '{"entries": [1}', '{"a": 1 "b": 2}',
+        '{"a": 1,}', "\n\n[1,\n2,\n", '{"s": "unterminated\n',
+    ]
+    return docs
+
+
+@pytest.mark.parametrize("size", [7, 1 << 20])
+def test_error_positions_match_json_loads(tmp_path, monkeypatch, size):
+    monkeypatch.setattr(base, "_CHUNK_CHARS", size)
+    path = tmp_path / "f.json"
+    checked = 0
+    for text in _broken_documents():
+        expected = loads_error(text)
+        path.write_text(text, encoding="utf-8", newline="")
+        got = streamed_error(path)
+        if expected is None:
+            assert got is None or text.lstrip()[:1] != "{", text
+            continue
+        assert got is not None, text
+        assert (got.msg, got.pos, got.lineno, got.colno) == (
+            expected.msg, expected.pos, expected.lineno, expected.colno,
+        ), text
+        assert str(got) == str(expected)
+        checked += 1
+    assert checked > 200
+
+
+def test_the_dataset_error_carries_the_file_position(tmp_path, monkeypatch):
+    monkeypatch.setattr(base, "_CHUNK_CHARS", 7)
+    path = tmp_path / "f.json"
+    text = '{\n  "entries": [\n    {},\n    {"a": }\n  ]\n}'
+    path.write_text(text)
+    data = base._load_dataset(path, provider="p")
+    assert data.error == f"invalid JSON: {loads_error(text)}"
+
+
+def _big_dataset(tmp_path, n=40):
+    path = tmp_path / "big.json"
+    path.write_text(json.dumps({"entries": random_entries(random.Random(9), n)}))
+    return base._load_dataset(path, provider="p")
+
+
+def test_indexing_records_does_not_decode_everything(tmp_path):
+    data = _big_dataset(tmp_path, 400)
+    everything = list(data.records)
+    assert len(everything) > 50
+    decoded = []
+    real = data.records._store._decode
+    data.records._store.bucket = lambda key: decoded.append(key) or real(key)
+    assert data.records[0] == everything[0]
+    assert len(decoded) == 1 < len(data.index)
+    assert data.records[-1] == everything[-1]
+    assert data.records[3:9] == tuple(everything[3:9])
+    assert data.records[::7] == tuple(everything[::7])
+    assert data.records[10**6:] == ()
+    with pytest.raises(IndexError):
+        data.records[len(everything)]
+    with pytest.raises(IndexError):
+        data.records[-len(everything) - 1]
+    with pytest.raises(NotImplementedError):
+        data.records[::-1]
+    with pytest.raises(TypeError):
+        data.records["x"]
+
+
+def test_a_replaced_dataset_is_freed_without_a_gc_pass(tmp_path):
+    import gc
+    import weakref
+
+    from api.services.advisories.ubuntu import UbuntuAdvisoryProvider
+
+    path = tmp_path / "f.json"
+    path.write_text(json.dumps({"entries": random_entries(random.Random(2), 60)}))
+    provider = UbuntuAdvisoryProvider(path)
+    dataset = provider.dataset()
+    key = next(iter(dataset.index))
+    dataset.lookup(*key)  # populate the bucket cache
+    store = weakref.ref(dataset.index._store)
+    del dataset
+    gc.disable()
+    try:
+        provider.reload()
+        assert store() is None
+    finally:
+        gc.enable()
