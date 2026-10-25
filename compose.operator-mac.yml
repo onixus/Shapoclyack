@@ -2,7 +2,7 @@
 # scripts/operator-mac.sh verifies the pinned model before starting this file.
 services:
   inference:
-    image: ghcr.io/ggml-org/llama.cpp@sha256:20c4196fc08b459a34ef78aaa05b101333b2fac687e30ec99f37b3c9dc071b44
+    image: ghcr.io/ggml-org/llama.cpp:server@sha256:20c4196fc08b459a34ef78aaa05b101333b2fac687e30ec99f37b3c9dc071b44
     platform: linux/arm64
     user: "65532:65532"
     read_only: true
@@ -58,13 +58,55 @@ services:
       - "0"
       - --n-predict
       - "1024"
+      - --temp
+      - "0"
+      - --seed
+      - "42"
       - --reasoning
       - "off"
       - --offline
       - --no-webui
       - --no-agent
       - --no-ui-mcp-proxy
-  gateway:
+  embeddings:
+    image: ghcr.io/ggml-org/llama.cpp:server@sha256:20c4196fc08b459a34ef78aaa05b101333b2fac687e30ec99f37b3c9dc071b44
+    platform: linux/arm64
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    cpus: 2
+    restart: "on-failure:3"
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://127.0.0.1:8084/health]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 6
+    networks:
+      operator_offline:
+        ipv4_address: 172.30.83.5
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=32m,mode=1777"]
+    environment:
+      HF_HUB_OFFLINE: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      DO_NOT_TRACK: "1"
+    volumes:
+      - type: bind
+        source: ${OPERATOR_MODELS_DIR:?required}/Qwen3-Embedding-0.6B-Q8_0.gguf
+        target: /models/embedding.gguf
+        read_only: true
+        bind:
+          create_host_path: false
+    command: [--model, /models/embedding.gguf, --alias, Qwen3-Embedding-0.6B,
+              --host, 0.0.0.0, --port, "8084", --embedding, --pooling, last,
+              --ctx-size, "8192", --batch-size, "8192", --ubatch-size, "8192",
+              --threads, "2", --n-gpu-layers, "0", --parallel, "1",
+              --offline, --no-webui, --no-agent, --no-ui-mcp-proxy]
+  gateway: &model_gateway
     # Docker Desktop does not publish ports from internal-only networks.
     # This credential-free fixed-target ingress keeps inference without egress.
     image: sha256:d0c3811794d5e8ba0ab27e32705c34410ca7e6208c6a34d32a57a9ef6af387bf
@@ -86,6 +128,15 @@ services:
       gateway_ingress: {}
     healthcheck: {disable: true}
     depends_on: [inference]
+  embedding_gateway:
+    <<: *model_gateway
+    command: [python, /operator-proxy.py, embeddings]
+    ports: ["127.0.0.1:8084:8080"]
+    networks:
+      operator_offline:
+        ipv4_address: 172.30.83.6
+      gateway_ingress: {}
+    depends_on: [embeddings]
 networks:
   operator_offline:
     name: shapo-operator-offline

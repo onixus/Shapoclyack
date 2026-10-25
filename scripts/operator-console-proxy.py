@@ -72,7 +72,8 @@ class Proxy(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        if sys.argv[1:] != ["inference"]:
-            raise SystemExit("Only the fixed inference target may be selected")
-        Proxy.upstream = ("172.30.83.2", 8082)
+        targets = {"inference": ("172.30.83.2", 8082), "embeddings": ("172.30.83.5", 8084)}
+        if len(sys.argv) != 2 or sys.argv[1] not in targets:
+            raise SystemExit("Only fixed model targets may be selected")
+        Proxy.upstream = targets[sys.argv[1]]
     ThreadingHTTPServer(("0.0.0.0", 8080), Proxy).serve_forever()

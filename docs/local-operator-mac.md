@@ -9,7 +9,7 @@ Pinned inputs:
 
 | Input | Immutable value |
 |---|---|
-| llama.cpp image index | `ghcr.io/ggml-org/llama.cpp@sha256:20c4196fc08b459a34ef78aaa05b101333b2fac687e30ec99f37b3c9dc071b44` |
+| llama.cpp image index | `ghcr.io/ggml-org/llama.cpp:server@sha256:20c4196fc08b459a34ef78aaa05b101333b2fac687e30ec99f37b3c9dc071b44` |
 | Runtime source revision | `8e5a58df87ab59dfceb5b961ae26691e39f30c24` (b11854) |
 | Model repository | `unsloth/Qwen3.5-9B-GGUF` |
 | Model revision | `3885219b6810b007914f3a7950a8d1b469d598a5` |

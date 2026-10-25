@@ -58,7 +58,9 @@ pipeline {
 
   options {
     timestamps()
-    disableConcurrentBuilds()
+    // A newer revision supersedes this branch's older validation. Abort the
+    // obsolete run so it cannot hold the exact-head build behind its full suite.
+    disableConcurrentBuilds(abortPrevious: true)
     buildDiscarder(logRotator(numToKeepStr: '20'))
     // 150, а не 90: стадии на gaming-amd64 (~67 минут, pytest на VM вдвое
     // медленнее мака) идут до стадий образа на маке (~31 минута в main #75),
