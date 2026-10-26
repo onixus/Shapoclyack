@@ -21,6 +21,7 @@ PRIVATE = ROOT / ".operator-local"
 COMPOSE = ROOT / "compose.operator-console.yml"
 PROJECT = "shapo-operator-console"
 URL = "http://127.0.0.1:8083"
+IMAGE_UID, IMAGE_GID = 1000, 1000  # the unprivileged user of the application image
 IMAGES = ("sha256:d0c3811794d5e8ba0ab27e32705c34410ca7e6208c6a34d32a57a9ef6af387bf",
           "sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea")
 
@@ -43,10 +44,15 @@ def initialize():
         target = PRIVATE / directory
         if target.is_symlink():
             raise SystemExit("Refusing symlink for stand data")
-        target.mkdir(mode=0o777, exist_ok=True)
-        # The private parent stays 0700 on macOS; container UID 1000 receives
-        # this directory alone, never credentials or its sibling database.
-        target.chmod(0o777)
+        target.mkdir(mode=0o700, exist_ok=True)
+        # Private to one uid: the image user when this process may chown (root,
+        # or already that uid), otherwise the invoking user, whom compose()
+        # then runs the containers as. Never world-writable.
+        try:
+            os.chown(target, IMAGE_UID, IMAGE_GID)
+        except PermissionError:
+            pass
+        target.chmod(0o700)
     postgres_data = PRIVATE / "postgres-data"
     if postgres_data.is_symlink():
         raise SystemExit("Refusing symlink for stand database")
@@ -70,7 +76,7 @@ def initialize():
     postgres = {"POSTGRES_USER": "operator_console", "POSTGRES_DB": "operator_console",
                 "POSTGRES_PASSWORD": credentials["postgres_password"]}
     config = {
-        "OCTO_ENV": "dev", "OCTO_API_HOST": "0.0.0.0", "OCTO_API_PORT": "8080",
+        "OCTO_ENV": "prod", "OCTO_API_HOST": "0.0.0.0", "OCTO_API_PORT": "8080",
         "OCTO_OUTPUT_DIR": "/app/scanner/output", "OCTO_STATE_DIR": "/app/scanner/state",
         "OCTO_POSTGRES_URL": "postgresql+psycopg://operator_console:"
         + credentials["postgres_password"] + "@postgres:5432/operator_console",
@@ -78,7 +84,7 @@ def initialize():
                                       "password": credentials["password"], "role": "admin"}]),
         "OCTO_JWT_SECRET": credentials["jwt_secret"], "OCTO_MASTER_KEY": credentials["master_key"],
         "OCTO_API_CORS": URL + ",http://localhost:8083", "OCTO_PUBLIC_BASE_URL": URL,
-        "OCTO_REFRESH_COOKIE_SECURE": "false", "OCTO_WEB_DIST": "/app/web/dist",
+        "OCTO_REFRESH_COOKIE_SECURE": "true", "OCTO_HSTS_ENABLED": "false", "OCTO_WEB_DIST": "/app/web/dist",
         "OCTO_ALLOW_SCAN_START": "false", "OCTO_JOB_EXECUTION_MODE": "agent",
         "OCTO_OPERATOR_ENABLED": "true", "OCTO_OPERATOR_WORKER_ENABLED": "true",
         "OCTO_OPERATOR_PROVIDER": "local", "OCTO_OPERATOR_ALLOW_EXTERNAL": "false",
@@ -110,7 +116,12 @@ def initialize():
 
 
 def compose(*args):
-    return subprocess.run(["docker", "compose", "-p", PROJECT, "-f", str(COMPOSE), *args], cwd=ROOT, check=True)
+    state = PRIVATE / "state"
+    owner = state.stat() if state.is_dir() else None
+    env = {**os.environ, "OPERATOR_STATE_UID": str(owner.st_uid if owner else IMAGE_UID),
+           "OPERATOR_STATE_GID": str(owner.st_gid if owner else IMAGE_GID)}
+    return subprocess.run(["docker", "compose", "-p", PROJECT, "-f", str(COMPOSE), *args],
+                          cwd=ROOT, check=True, env=env)
 
 
 def smoke():
