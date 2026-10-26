@@ -219,3 +219,105 @@ def test_poll_gap_past120_cannot_erase_previous_case_deadline(tmp_path, monkeypa
     assert result["status"] == "failed" and result["reason"] == "case_completion_control_gap"
     failure = next(row for row in receipt.events if row["kind"] == "watchdog_failure")
     assert failure["execution_id"] == "initial:case-1" and failure["elapsed_seconds"] == 124
+
+
+def test_native_journal_is_bounded_and_read_only_after_identity_check():
+    calls = []
+    def command(argv):
+        calls.append(argv)
+        return json.dumps([state()]) if argv[0] == "inspect" else json.dumps(journal())
+    assert watchdog.read_container_journal(CID, NAME, NONCE, "/artifacts/results", command) == journal()
+    assert calls[0] == ["inspect", CID]
+    assert calls[1][:4] == ["exec", CID, "python", "-c"]
+    assert calls[1][-1] == "/artifacts/results"
+    with pytest.raises(ValueError, match="Oversized"):
+        watchdog.read_container_journal(CID, NAME, NONCE, "/artifacts/results",
+            lambda argv: json.dumps([state()]) if argv[0] == "inspect" else " " * 8193)
+
+
+@pytest.mark.parametrize("directory", ["relative", "/a/../b", "/a//b", "/a/", "/"])
+def test_native_journal_rejects_ambiguous_paths(directory):
+    with pytest.raises(ValueError, match="canonical absolute"):
+        watchdog.container_path(directory)
+
+
+@pytest.mark.parametrize("kind,writable", [("bind", True), ("volume", False)])
+def test_native_mode_refuses_host_bind_and_readonly_results(kind, writable):
+    value = state()
+    value["Mounts"] = [{"Type": kind, "Driver": "local", "Name": "owned",
+                       "Destination": "/artifacts", "RW": writable}]
+    with pytest.raises(ValueError, match="writable local Docker volume"):
+        watchdog.require_native_output_mount(CID, NAME, NONCE, "/artifacts/results", lambda _: json.dumps([value]))
+
+
+def test_terminal_export_fsyncs_new_host_copy_and_retains_uncertain_journal(tmp_path):
+    destination = tmp_path / "results"
+    calls = []
+    def command(argv):
+        calls.append(argv)
+        if argv[0] == "inspect":
+            return json.dumps([state(False)])
+        assert argv[:2] == ["cp", CID + ":/artifacts/results"]
+        temporary = Path(argv[-1])
+        temporary.mkdir()
+        (temporary / "records.jsonl").write_text('{"valid":false}\n')
+        (temporary / "inflight.json").write_text(json.dumps(journal()))
+        return ""
+    proof = watchdog.export_native_results(CID, NAME, NONCE, "/artifacts/results", destination, command)
+    assert proof["native_evidence_retained"] and len(proof["sha256"]) == 2
+    assert json.loads((destination / "inflight.json").read_text()) == journal()
+    with pytest.raises(ValueError, match="overwrite"):
+        watchdog.export_native_results(CID, NAME, NONCE, "/artifacts/results", destination, command)
+    assert [call[0] for call in calls] == ["inspect", "cp", "inspect"]
+
+
+def test_export_never_copies_running_or_foreign_results(tmp_path):
+    calls = []
+    def command(argv):
+        calls.append(argv)
+        return json.dumps([state(True)])
+    with pytest.raises(ValueError, match="terminal"):
+        watchdog.export_native_results(CID, NAME, NONCE, "/artifacts/results", tmp_path / "results", command)
+    assert calls == [["inspect", CID]]
+
+
+def test_native_export_failure_cannot_turn_successful_exit_into_pass(tmp_path, monkeypatch):
+    args = SimpleNamespace(cidfile=tmp_path / "native.cid", receipt=tmp_path / "watchdog.json",
+        runtime_arguments=["image", "--require-native-filesystem"], run_directory=tmp_path / "results",
+        container_run_directory="/artifacts/results")
+    def command(argv):
+        if argv[0] == "create":
+            args.cidfile.write_text(CID)
+        return CID
+    monkeypatch.setattr(watchdog, "docker", command)
+    monkeypatch.setattr(watchdog, "owned_state", lambda *_: state(False)["State"])
+    monkeypatch.setattr(watchdog, "require_native_output_mount", lambda *_: {"Type": "volume", "RW": True})
+    def monitor(*a, **kw):
+        assert kw["poll_seconds"] == 2 and callable(kw["journal_reader"])
+        return {"status": "passed", "reason": None}
+    monkeypatch.setattr(watchdog, "monitor", monitor)
+    def failed_export(*_):
+        raise OSError("Host export unavailable")
+    monkeypatch.setattr(watchdog, "export_native_results", failed_export)
+    assert watchdog.launch(args) == 1
+    result = json.loads(args.receipt.read_text())
+    assert result["status"] == "failed" and result["native_results_export_failed"]
+    assert result["native_evidence_retained"]
+
+
+def test_two_second_native_poll_keeps_old_boundary_failure(tmp_path):
+    current = [0.0]
+    def read(_):
+        if current[0] < 119:
+            return journal()
+        current[0] = 124  # bounded RPC plus host gap crosses old deadline
+        return journal("case-2", BASE + timedelta(seconds=123))
+    def command(_):
+        value = state(current[0] < 124)
+        value["State"]["ExitCode"] = 0
+        return json.dumps([value])
+    result = watchdog.monitor(CID, NAME, NONCE, tmp_path, watchdog.Receipt(tmp_path / "receipt.json"),
+        command=command, journal_reader=read, poll_seconds=2,
+        monotonic=lambda: current[0], utc_now=lambda: BASE + timedelta(seconds=current[0]),
+        sleep=lambda seconds: current.__setitem__(0, min(119, current[0] + seconds)))
+    assert result["status"] == "failed" and result["reason"] == "case_completion_control_gap"

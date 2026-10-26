@@ -86,11 +86,55 @@ def write_json(path, value):
 
 
 def _sync_directory(directory):
-    descriptor = os.open(directory, os.O_RDONLY)
+    descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def durable_storage_preflight(directory, *, require_native=False):
+    """Exercise the exact journal durability operations before any inference.
+
+    A successful file fsync alone does not establish durable rename/unlink.
+    Unsupported directory fsync is a hard error, never a best-effort success.
+    """
+    directory = Path(directory)
+    filesystem = "unidentified"
+    mountinfo = Path("/proc/self/mountinfo")
+    if mountinfo.is_file():
+        mounts = []
+        for line in mountinfo.read_text().splitlines():
+            before, separator, after = line.partition(" - ")
+            fields = before.split()
+            if separator and len(fields) >= 5:
+                mount = fields[4].replace("\\040", " ").replace("\\134", "\\")
+                if directory.resolve().is_relative_to(Path(mount)):
+                    mounts.append((len(mount), after.split()[0]))
+        if mounts:
+            filesystem = max(mounts)[1]
+    if require_native and filesystem != "ext4":
+        raise ValueError("durable_storage_requires_native_ext4")
+    descriptor, temporary = tempfile.mkstemp(prefix=".durability-", dir=directory)
+    temporary = Path(temporary)
+    renamed = temporary.with_suffix(".renamed")
+    payload = b"operator-durability-preflight-v1\n"
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, renamed)
+        _sync_directory(directory)
+        if renamed.read_bytes() != payload:
+            raise ValueError("durable_storage_readback_failed")
+        renamed.unlink()
+        _sync_directory(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+        renamed.unlink(missing_ok=True)
+    return {"version": "file-rename-directory-fsync-v1", "passed": True,
+            "filesystem_type": filesystem, "native_ext4_required": require_native}
 
 
 def begin_execution(output, case, *, phase, ordinal=None, soak_iteration=None):
@@ -624,7 +668,17 @@ async def run(args):
     elif not args.development:
         raise ValueError("Final runs require independently reviewed frozen provenance")
     output = Path(args.output)
+    missing_directories = []
+    cursor = output
+    while not cursor.exists():
+        missing_directories.append(cursor)
+        cursor = cursor.parent
     output.mkdir(parents=True, exist_ok=args.resume)
+    # Persist each newly created directory's link in its parent, not only the
+    # later journal entries inside the output directory itself.
+    for created in reversed(missing_directories):
+        _sync_directory(created.parent)
+    storage = durable_storage_preflight(output, require_native=args.require_native_filesystem)
     stage = "development" if args.development else "final"
     if args.manifest:
         (output / "manifest.json").write_bytes(Path(args.manifest).read_bytes())
@@ -646,6 +700,8 @@ async def run(args):
                "runtime": runtime_provenance(), "analysis_prompt_version": analysis.PROMPT_VERSION,
                "planner_prompt_version": planner.PROMPT_VERSION, "model_sha256_pinned": MODEL_SHA256,
                "model_bytes_reverified": bool(args.manifest),
+               "result_journal_format": "operator-executions-v2",
+               "storage_durability_preflight": storage,
                "runtime_provenance_mode": "externally_sealed_controller" if args.provenance_json else "live_docker_inspection"}
     if args.resume:
         previous = json.loads((output / "run.json").read_text())
@@ -701,6 +757,7 @@ async def run(args):
     if sampler is not None:
         await sampler
     report = summarize(dataset, records, stage=stage)
+    report["storage_durability_preflight"] = storage
     report["raw_records_sha256"] = file_digest(output / "records.jsonl")
     report["source_unchanged_after_run"] = (not args.manifest or manifest["source_sha256"] == source_provenance())
     if not report["source_unchanged_after_run"]:
@@ -743,6 +800,8 @@ def main():
     run_parser.add_argument("--resume", action="store_true")
     run_parser.add_argument("--provenance-json")
     run_parser.add_argument("--external-resource-sampling", action="store_true")
+    run_parser.add_argument("--require-native-filesystem", action="store_true",
+                            help="Require Linux ext4 results storage in addition to durable journal preflight")
     run_parser.add_argument("--kind", choices=("analysis", "remediation", "planning", "degraded", "security"), action="append")
     run_parser.add_argument("--base-url", default="http://127.0.0.1:8082/v1")
     args = parser.parse_args()

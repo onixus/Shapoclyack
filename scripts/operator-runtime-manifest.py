@@ -45,6 +45,10 @@ def build(model_dir):
                 raise ValueError("Runtime has external network")
         if value["HostConfig"].get("PortBindings"):
             raise ValueError("Runtime has direct published ports")
+        ipv6 = value["HostConfig"].get("Sysctls", {})
+        if any(ipv6.get(key) != "1" for key in (
+                "net.ipv6.conf.all.disable_ipv6", "net.ipv6.conf.default.disable_ipv6")):
+            raise ValueError("Runtime IPv4-only namespace mismatch")
         image = inspect("image", value["Image"])
         if image["Config"]["Labels"].get("org.opencontainers.image.revision") != REVISION:
             raise ValueError("Runtime revision mismatch")
@@ -72,7 +76,7 @@ def build(model_dir):
                 raise ValueError("Runtime argument mismatch")
         if "--offline" not in arguments or "--no-agent" not in arguments:
             raise ValueError("Runtime offline/tool boundary missing")
-        containers[role] = {"image_id": value["Image"], "arguments": arguments}
+        containers[role] = {"image_id": value["Image"], "arguments": arguments, "sysctls": ipv6}
     return {"schema_version": 1, "profile": "mac-arm64-cpu", "model": MODEL,
             "model_sha256": PINS["Qwen3.5-9B-Q4_K_M.gguf"], "runtime_image": RUNTIME,
             "runtime_revision": REVISION, "context_tokens": 8192, "parallel": 1,

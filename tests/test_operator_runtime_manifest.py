@@ -26,7 +26,8 @@ def runtime(tmp_path, monkeypatch):
         if role == "inference":
             args += ["--ctx-size", "8192", "--temp", "0", "--seed", "42", "--reasoning", "off", "--n-predict", "1024"]
         containers[role] = {"Config": {"Image": manifest.RUNTIME, "User": "65532:65532", "Cmd": args},
-            "State": {"Status": "running"}, "HostConfig": {"ReadonlyRootfs": True, "PortBindings": {}},
+            "State": {"Status": "running"}, "HostConfig": {"ReadonlyRootfs": True, "PortBindings": {},
+                "Sysctls": {"net.ipv6.conf.all.disable_ipv6": "1", "net.ipv6.conf.default.disable_ipv6": "1"}},
             "NetworkSettings": {"Networks": {"private": {}}}, "Image": "actual-image-id",
             "Mounts": [{"Type": "bind", "Source": str(source), "Destination": target, "RW": False}]}
     def inspect(kind, name):
@@ -42,6 +43,14 @@ def runtime(tmp_path, monkeypatch):
 def test_verified_runtime_binds_actual_model_files(runtime):
     root, _ = runtime
     assert manifest.build(root)["profile"] == "mac-arm64-cpu"
+
+
+@pytest.mark.parametrize("role", ["inference", "embeddings"])
+def test_runtime_requires_ipv4_only_namespace(runtime, role):
+    root, containers = runtime
+    containers[role]["HostConfig"]["Sysctls"]["net.ipv6.conf.all.disable_ipv6"] = "0"
+    with pytest.raises(ValueError, match="IPv4-only"):
+        manifest.build(root)
 
 
 @pytest.mark.parametrize("mode", ["source", "writable", "destination", "shadow", "argument", "duplicate", "unknown_flag"])

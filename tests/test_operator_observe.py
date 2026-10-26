@@ -39,11 +39,111 @@ def test_truncated_frames_and_ipv6():
     assert observe.packet_metadata(bytes(12) + b"\x08\x00" + b"\x4f" * 20) is None
     ip = bytearray(40)
     ip[0], ip[6] = 0x60, 6
+    ip[4:6] = struct.pack("!H", 4)
     ip[8:24] = socket.inet_pton(socket.AF_INET6, "::1")
     ip[24:40] = socket.inet_pton(socket.AF_INET6, "::1")
     value = observe.packet_metadata(bytes(12) + b"\x86\xdd" + ip + struct.pack("!HH", 20000, 8082))
     assert value["destination"] == "::1"
     assert value["destination_port"] == 8082
+
+
+def ipv6_frame(source, destination, payload, protocol=58, hop_limit=255):
+    ip = bytearray(40)
+    ip[0], ip[6], ip[7] = 0x60, protocol, hop_limit
+    ip[4:6] = struct.pack("!H", len(payload))
+    ip[8:24] = socket.inet_pton(socket.AF_INET6, source)
+    ip[24:40] = socket.inet_pton(socket.AF_INET6, destination)
+    return bytes(12) + b"\x86\xdd" + ip + payload
+
+
+def dad_frame(source="::", destination="ff02::1:ff84:75b5", kind=135, hop_limit=255, target="fe80::5441:1cff:fe84:75b5"):
+    return ipv6_frame(source, destination, bytes([kind, 0]) + bytes(6) + socket.inet_pton(socket.AF_INET6, target), hop_limit=hop_limit)
+
+
+def mld_frame(source="fe80::1", destination="ff02::16", kind=143, hop_limit=1, alert=0):
+    hbh = bytes([58, 0, 5, 2, 0, alert, 1, 0])
+    return ipv6_frame(source, destination, hbh + bytes([kind, 0]) + bytes(6), protocol=0, hop_limit=hop_limit)
+
+
+def test_control_candidates_require_positive_protocol_scope_metadata():
+    dad = observe.packet_metadata(dad_frame())
+    mld = observe.packet_metadata(mld_frame())
+    assert dad["link_local_control_candidate"] == "duplicate_address_detection_ns"
+    assert mld["link_local_control_candidate"] == "mldv2_listener_report"
+    assert mld["protocol"] == 58 and mld["extension_headers"] == [0]
+    assert mld["icmpv6_type"] == 143 and mld["hop_limit"] == 1
+    assert not any("payload" in key for key in dad | mld)
+
+
+@pytest.mark.parametrize("packet", [
+    dad_frame(kind=128), dad_frame(hop_limit=64), dad_frame(source="2001:db8::1"),
+    dad_frame(destination="ff02::16"), dad_frame(target="fe80::2"), dad_frame(target="2001:db8::8475:b5"),
+    mld_frame(kind=128), mld_frame(hop_limit=64), mld_frame(source="2001:db8::1"),
+    mld_frame(destination="ff05::16"), mld_frame(alert=1),
+])
+def test_no_blanket_icmpv6_or_multicast_exemption(packet):
+    assert "link_local_control_candidate" not in observe.packet_metadata(packet)
+
+
+@pytest.mark.parametrize("frame,payload_size", [(dad_frame(), 4), (mld_frame(), 12)])
+def test_ethernet_padding_cannot_supply_control_message_body(frame, payload_size):
+    frame = bytearray(frame)
+    frame[18:20] = struct.pack("!H", payload_size)
+    assert "link_local_control_candidate" not in observe.packet_metadata(frame)
+
+
+def test_ethernet_padding_cannot_invent_dns_ports():
+    frame = bytearray(ipv6_frame("fe80::1", "ff02::16", struct.pack("!HH", 40000, 53), protocol=17))
+    frame[18:20] = struct.pack("!H", 2)
+    value = observe.packet_metadata(frame)
+    assert value["decode_error"] == "truncated_transport"
+    assert "destination_port" not in value
+
+
+def capture_frames(monkeypatch, frames):
+    stop = observe.StopRequest()
+    pending = iter(enumerate(frames))
+    class Handle:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def settimeout(self, _seconds): pass
+        def recv(self, _size):
+            index, frame = next(pending)
+            if index == len(frames) - 1:
+                stop.request(signal.SIGTERM)
+            return frame
+        def getsockopt(self, *args): return struct.pack("II", len(frames), 2)
+    monkeypatch.setattr(observe.socket, "AF_PACKET", 17, raising=False)
+    monkeypatch.setattr(observe.socket, "socket", lambda *args: Handle())
+    return observe.capture(3600, ["127.0.0.0/8", "172.30.83.0/24"], stop)
+
+
+def test_control_candidates_remain_unexpected_and_drop_dns_checks_unchanged(monkeypatch):
+    dns = ipv6_frame("fe80::1", "2001:db8::53", bytes([17, 0]) + bytes(6) + struct.pack("!HH", 41000, 53), protocol=0)
+    result = capture_frames(monkeypatch, [dad_frame(), mld_frame(), dns])
+    assert result["link_local_control_candidates"] == {"duplicate_address_detection_ns": 1, "mldv2_listener_report": 1}
+    assert sum(result["unexpected_destinations"].values()) == 3
+    assert result["dns_packets"] == 1 and result["kernel_drops"] == 2
+    assert result["receive_errors"] == {} and not result["payload_retained"]
+
+
+@pytest.mark.parametrize("payload,protocol,error", [
+    (bytes([17, 2]) + bytes(6), 0, "truncated_extension"),
+    (bytes([17, 0, 5, 9]) + bytes(4), 0, "malformed_hop_options"),
+    ((bytes([0, 0]) + bytes(6)) * 9, 0, "extension_limit"),
+    (bytes([17, 0]) + bytes(6), 44, "fragmented_transport"),
+    (bytes([17, 0, 0, 8]) + bytes(4), 44, "later_fragment"),
+    (bytes(8), 50, "opaque_encapsulation"),
+    (b"\x00", 17, "truncated_transport"),
+])
+def test_undecodable_ipv6_fails_closed_in_existing_receive_error_gate(monkeypatch, payload, protocol, error):
+    frame = ipv6_frame("fe80::1", "ff02::16", payload, protocol=protocol)
+    metadata = observe.packet_metadata(frame)
+    assert metadata["decode_error"] == error
+    assert "source_port" not in metadata and "link_local_control_candidate" not in metadata
+    result = capture_frames(monkeypatch, [frame])
+    assert result["receive_errors"] == {"ipv6_decode_" + error: 1}
+    assert sum(result["unexpected_destinations"].values()) == 1
 
 
 def test_capture_signal_flushes_cumulative_packet_and_kernel_drop_counts(monkeypatch):

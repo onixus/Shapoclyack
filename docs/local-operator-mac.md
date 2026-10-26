@@ -44,7 +44,14 @@ fixed-target gateways. The services have a dedicated Docker
 internal network, read-only root/weights, unprivileged UID, no capabilities,
 no privilege escalation and bounded PID/CPU/RAM. It has no Docker socket,
 host filesystem tools, external MCP or provider credentials. Offline mode is
-also passed to llama-server. It runs four CPU threads, zero GPU layers and a
+also passed to llama-server.
+
+The two model namespaces disable IPv6 through `all` and `default` sysctls;
+the fixed endpoints use IPv4. Startup attestation checks this policy. This
+prevents unsolicited IPv6 neighbor/multicast traffic rather than exempting
+unclassified packets from the offline observation gate.
+
+It runs four CPU threads, zero GPU layers and a
 7-GiB memory ceiling; Docker Desktop needs adequate free memory in addition
 to existing containers. This ceiling is not a measured model peak or promise
 of latency. A failure must be reported, without changing quantization/context

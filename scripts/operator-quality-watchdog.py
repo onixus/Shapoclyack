@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import time
@@ -77,6 +77,84 @@ def read_journal(directory):
     return json.loads(raw)
 
 
+CONTAINER_JOURNAL_READER = """import json,sys
+from pathlib import Path
+p=Path(sys.argv[1])/'inflight.json'
+if p.is_symlink(): raise ValueError('Symlink journal')
+if not p.exists(): print('null')
+else:
+ with p.open('rb') as f: raw=f.read(8193)
+ if len(raw)>8192: raise ValueError('Oversized journal')
+ print(json.dumps(json.loads(raw)))
+"""
+
+
+def container_path(value):
+    if (not isinstance(value, str) or not value.startswith("/") or len(value) > 512
+            or any(part in {"", ".", ".."} for part in value[1:].split("/"))
+            or str(PurePosixPath(value)) != value):
+        raise ValueError("A canonical absolute container output directory is required")
+    return value
+
+
+def read_container_journal(cid, name, nonce, directory, command=docker):
+    directory = container_path(directory)
+    if not owned_state(cid, name, nonce, command).get("Running"):
+        return None  # the terminal export retains any unresolved durable journal
+    raw = command(["exec", cid, "python", "-c", CONTAINER_JOURNAL_READER, directory])
+    if len(raw.encode()) > 8192:
+        raise ValueError("Oversized container journal")
+    return json.loads(raw)
+
+
+def require_native_output_mount(cid, name, nonce, directory, command=docker):
+    directory = container_path(directory)
+    value = owned_inspection(cid, name, nonce, command)
+    mounts = [mount for mount in value.get("Mounts", [])
+              if directory == mount.get("Destination") or directory.startswith(mount.get("Destination", "") + "/")]
+    if not mounts:
+        raise ValueError("Native output directory has no volume mount")
+    selected = max(mounts, key=lambda mount: len(mount["Destination"]))
+    if selected.get("Type") != "volume" or selected.get("Driver") != "local" or selected.get("RW") is not True:
+        raise ValueError("Native output requires a writable local Docker volume")
+    return {key: selected.get(key) for key in ("Type", "Name", "Driver", "Destination", "RW")}
+
+
+def export_native_results(cid, name, nonce, directory, destination, command=docker):
+    """Copy only terminal owned results, retain native evidence on every failure."""
+    if owned_state(cid, name, nonce, command).get("Running"):
+        raise ValueError("Cannot export results before confirmed terminal state")
+    directory = container_path(directory)
+    destination = Path(destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Refusing to overwrite exported evidence")
+    temporary = destination.with_name("." + destination.name + ".export-" + uuid4().hex)
+    # Docker cp of an absent destination creates it with source-directory contents.
+    # No -L: never follow a symlink supplied by the container.
+    command(["cp", cid + ":" + directory, str(temporary)])
+    if not temporary.is_dir() or temporary.is_symlink():
+        raise ValueError("Missing exported result directory")
+    hashes = {}
+    for path in temporary.iterdir():
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("Exported results contain an unsupported entry")
+        with path.open("rb") as handle:
+            hashes[path.name] = hashlib.file_digest(handle, "sha256").hexdigest()
+            os.fsync(handle.fileno())
+    descriptor = os.open(temporary, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.rename(temporary, destination)
+    descriptor = os.open(destination.parent, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return {"directory": str(destination), "sha256": hashes, "native_evidence_retained": True}
+
+
 class CaseClock:
     """Bind source UTC once, then use monotonic time so clocks cannot reset it."""
     def __init__(self):
@@ -128,7 +206,7 @@ class CaseClock:
         return True
 
 
-def owned_state(cid, name, nonce, command=docker):
+def owned_inspection(cid, name, nonce, command=docker):
     value = json.loads(command(["inspect", cid]))[0]
     if not isinstance(value, dict) or not isinstance(value.get("Config"), dict):
         raise ValueError("Malformed runner inspection")
@@ -136,7 +214,11 @@ def owned_state(cid, name, nonce, command=docker):
     if (value.get("Id") != cid or value.get("Name") != "/" + name
             or not isinstance(labels, dict) or labels.get(LABEL) != nonce):
         raise ValueError("Runner ownership mismatch; refusing signal")
-    return value["State"]
+    return value
+
+
+def owned_state(cid, name, nonce, command=docker):
+    return owned_inspection(cid, name, nonce, command)["State"]
 
 
 def send_owned(cid, name, nonce, number, receipt, command=docker):
@@ -148,7 +230,7 @@ def send_owned(cid, name, nonce, number, receipt, command=docker):
 
 def monitor(cid, name, nonce, directory, receipt, *, command=docker,
             monotonic=time.monotonic, utc_now=lambda: datetime.now(UTC), sleep=time.sleep,
-            initial_failure=None):
+            initial_failure=None, journal_reader=None, poll_seconds=0.5):
     clock = CaseClock()
     began = monotonic()
     last_progress = began
@@ -169,7 +251,7 @@ def monitor(cid, name, nonce, directory, receipt, *, command=docker,
         now = monotonic()
         # Even a Docker inspection failure must not reset an observed deadline.
         try:
-            journal = read_journal(directory)
+            journal = (journal_reader or read_journal)(directory)
             now = monotonic()
             previous_case = clock.current
             same = isinstance(journal, dict) and journal.get("execution_id", f"initial:{journal.get('case_id')}") == previous_case
@@ -185,7 +267,7 @@ def monitor(cid, name, nonce, directory, receipt, *, command=docker,
                                source_started_at=clock.source_started_at, bound_monotonic=clock.started)
             if journal is None and previous_case is not None:
                 last_progress = now
-        except (ValueError, TypeError, KeyError, AttributeError, OSError) as exc:
+        except (ValueError, TypeError, KeyError, AttributeError, OSError, subprocess.SubprocessError) as exc:
             invalid_since = now if invalid_since is None else invalid_since
             if now - invalid_since >= 3 and violation is None:
                 violation, hard_at = "invalid_inflight_journal", now + CLEANUP_SECONDS
@@ -224,7 +306,7 @@ def monitor(cid, name, nonce, directory, receipt, *, command=docker,
                         state = None
                     return {"status": "failed", "reason": violation, "container_state": state,
                             "duration_seconds": monotonic() - began, "hard_deadline_reached": True}
-        sleep(0.5)
+        sleep(poll_seconds)
 
 
 def launch(args):
@@ -232,6 +314,13 @@ def launch(args):
     if cidfile.exists() or cidfile.is_symlink() or cidfile.parent.is_symlink():
         raise ValueError("A new non-symlink cidfile is required")
     runtime = args.runtime_arguments
+    native_directory = getattr(args, "container_run_directory", None)
+    if native_directory:
+        container_path(native_directory)
+        if args.run_directory.exists() or args.run_directory.is_symlink():
+            raise ValueError("Native evidence export requires a new host results directory")
+        if "--require-native-filesystem" not in runtime:
+            raise ValueError("Native mode requires evaluator ext4 durability preflight")
     if runtime[:1] == ["--"]:
         runtime = runtime[1:]
     forbidden = {"--name", "--cidfile", "--label", "--label-file", "-l", "--rm", "--detach", "-d"}
@@ -244,6 +333,10 @@ def launch(args):
                    cleanup_seconds=CLEANUP_SECONDS, hard_seconds=HARD_SECONDS,
                    controller_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
     cid = None
+    monitor_options = {}
+    if native_directory:
+        monitor_options = {"journal_reader": lambda _: read_container_journal(cid, name, nonce, native_directory),
+                           "poll_seconds": 2.0}
     result = {"status": "failed", "reason": "launch_failed"}
     try:
         # Separate create from start: if creation times out before the CLI can
@@ -256,8 +349,12 @@ def launch(args):
         if not re.fullmatch(r"[a-f0-9]{64}", cid):
             raise ValueError("Invalid immutable container ID")
         owned_state(cid, name, nonce)
+        if native_directory:
+            mount = require_native_output_mount(cid, name, nonce, native_directory)
+            receipt.record("native_result_volume", mount=mount, container_directory=native_directory,
+                           host_export_directory=str(args.run_directory), poll_seconds=2.0)
         docker(["start", cid])
-        result = monitor(cid, name, nonce, args.run_directory, receipt)
+        result = monitor(cid, name, nonce, args.run_directory, receipt, **monitor_options)
     except (subprocess.SubprocessError, ValueError, OSError, KeyError, IndexError, TypeError) as exc:
         receipt.record("controller_failed", exception=type(exc).__name__)
         # A timed-out start may already be running our verified container. Its
@@ -268,10 +365,20 @@ def launch(args):
                 if re.fullmatch(r"[a-f0-9]{64}", candidate):
                     owned_state(candidate, name, nonce)
                     cid = candidate
-                    result = monitor(cid, name, nonce, args.run_directory, receipt, initial_failure="launch_or_controller_failed")
+                    result = monitor(cid, name, nonce, args.run_directory, receipt,
+                                     initial_failure="launch_or_controller_failed", **monitor_options)
         except (subprocess.SubprocessError, ValueError, OSError, KeyError, IndexError, TypeError) as cleanup_error:
             receipt.record("launch_cleanup_unavailable", exception=type(cleanup_error).__name__)
     finally:
+        if native_directory and cid:
+            try:
+                exported = export_native_results(cid, name, nonce, native_directory, args.run_directory)
+                receipt.record("native_results_exported", **exported)
+                result["native_results_export"] = exported
+            except (subprocess.SubprocessError, ValueError, OSError, KeyError, IndexError, TypeError) as exc:
+                receipt.record("native_results_export_failed", exception=type(exc).__name__)
+                result.update(status="failed", native_results_export_failed=True,
+                              native_evidence_retained=True)
         receipt.finish(container_id=cid, name=name, **result)
     return 0 if result["status"] == "passed" else 1
 
@@ -281,6 +388,8 @@ def main():
     parser.add_argument("--cidfile", required=True, type=Path)
     parser.add_argument("--receipt", required=True, type=Path)
     parser.add_argument("--run-directory", required=True, type=Path)
+    parser.add_argument("--container-run-directory",
+                        help="Poll a native Docker-volume journal and export terminal evidence into new --run-directory")
     parser.add_argument("runtime_arguments", nargs=argparse.REMAINDER,
                         help="Existing sealed Docker options, immutable image and evaluator argv after --")
     return launch(parser.parse_args())

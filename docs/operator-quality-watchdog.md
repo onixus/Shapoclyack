@@ -7,6 +7,54 @@ controller creates the runner with its own fresh name, nonce label and `--cidfil
 verifies ownership, then starts it separately;
 the supplied options must not override them or use `--rm`. No image is pulled.
 
+On Docker Desktop for Mac, use a **new native Docker results volume**. The
+2026-10-26 bind-mounted pilot returned one valid response in 26.71 seconds,
+then directory `fsync` failed with `EBADF` on VirtioFS. That attempt remains a
+failed harness attempt; its response and unresolved journal are retained. File
+`fsync` alone cannot establish durable journal rename or deletion. The evaluator
+now exercises write/file-fsync/rename/directory-fsync/readback/unlink/directory-fsync
+before any model call. An unsupported operation aborts; it is never ignored.
+
+For native-volume mode, provision a uniquely named empty local Docker volume;
+never reuse a previous attempt's volume. Initialize only its root directory for
+the runner's UID (for example mode `01777` with a network-none, read-only-root,
+capability-dropped setup helper). Keep the volume and stopped runner on success
+and failure. Mount frozen inputs read-only and give the runner no Docker socket.
+Use these additional controller/evaluator arguments:
+
+```sh
+# Controller arguments, before its -- separator:
+--run-directory /absolute/host/new-attempt/exported-results \
+--container-run-directory /artifacts/results
+
+# Docker arguments, after -- and before the pinned image:
+--mount type=volume,src=NEW_OWNED_LOCAL_VOLUME,dst=/artifacts,volume-nocopy
+
+# Evaluator arguments, after the image and script:
+--output /artifacts/results --require-native-filesystem
+```
+
+`exported-results` must not exist at launch. Native mode verifies a writable
+local volume mount and requires the evaluator's ext4 preflight. The host polls
+at two-second intervals, reading at most 8192 bytes of `inflight.json` through
+`docker exec` only after verifying the immutable CID/name/nonce. Each RPC has a
+five-second timeout. Case age is checked before and after polling; a changed or
+missing journal cannot erase the previous deadline. There is no host bind
+mirror whose weaker durability could authorize a retry.
+
+After confirmed terminal state, `docker cp` exports the directory into a new
+temporary host directory. The controller rejects symlinks/special entries,
+hashes and fsyncs each file, fsyncs the directory, renames it into the new host
+destination and fsyncs its parent. Only then does it record the export receipt.
+An export failure makes the controller fail even after process exit zero;
+partial host exports and the authoritative native volume are retained. A
+failed/unconfirmed kill cannot be called a completed export. The native
+`inflight.json` is included even when SIGKILL prevented a final report. Recovery
+uses that original native evidence, never a reconstructed successful receipt.
+
+The remaining host-bind example is for filesystems on which the same durability
+preflight succeeds; it is not the production Mac configuration.
+
 ```sh
 python3 scripts/operator-quality-watchdog.py \
   --cidfile /private/tmp/quality-attempt-new.cid \

@@ -67,6 +67,36 @@ between mandatory PostgreSQL tests and an opt-in real-runtime test required
 correction. A terminal full-project success on the corrected final SHA remains
 required. Earlier successful builds are not substituted.
 
+### Recovery and harness correction — 2026-10-26
+
+Jenkins build 5 on `05607225` finished with **FAILURE**. Both Python matrices
+passed 10,327 tests each; mandatory PostgreSQL and NATS ledgers had zero skipped
+or unexecuted tests. Web passed 732 tests and its 41-route build. Later image
+smoke tests failed creating `/tmp/pytest-of-*` with `ENOSPC`; downstream security
+and SBOM stages did not run. This is not a complete CI pass.
+
+With no active builds or queued work, the owner-authorized Docker Desktop
+restart preserved all 14 existing containers, images and volumes. Only unused
+build cache was removed (677.3 MB plus 13.47 GB). Docker already had approximately
+150 GiB free before this cleanup; do not attribute all recovered disk space to
+this operation. Post-restart verification found roughly 165 GiB available,
+Jenkins and the console responding, and the dev application pods Ready.
+
+A fresh pilot on the original model/context/CPU settings obtained one valid
+answer in 26.71 seconds, then failed directory `fsync` with `EBADF` on the Mac
+shared filesystem while completing the journal. The five remaining pilot cases
+were not executed. Its output and failed watchdog receipt are retained; it is
+not a passing pilot or final accuracy run.
+
+The evaluator now probes file, rename, directory-sync and unlink durability
+before any inference. Production acceptance uses a new native ext4 Docker
+volume for journals. The host watchdog reads only the ownership-checked runner's
+bounded journal and exports terminal results without deleting native evidence.
+Unsupported durability remains a hard failure. Model namespaces also disable
+IPv6; startup/installation attestation verifies this policy instead of ignoring
+unclassified neighbor or multicast traffic. These corrections require fresh
+sealed-source measurement and do not convert previous failures into passes.
+
 ## Evidence locations and remaining gates
 
 The private local evidence root is `.operator-local/evaluation/`, including
@@ -76,9 +106,17 @@ Raw records, uncertain inflight journals, controller receipts and original
 scorer outputs are preserved. Temporary retrieval/UI/operational reports are
 separate from those immutable model records.
 
-To accept the Mac profile, recover stable runtime operation and repeat the
+The exact `05607225` controlled-provider operational drill passed all eight
+phases, including restart, crash/cancellation, backup/restore, rollback/upgrade,
+deletion and feature-off; it made no real model or network scan requests.
+The offline artifact on that source passed export, independent verification and
+fresh import/Docker load, but did not start a runtime. Its feed freshness and
+incomplete vendor coverage remain explicit. Updated source requires a new bundle.
+
+To accept the Mac profile, establish stable runtime operation and complete the
 frozen 190-case evaluation and measured 60-minute bounded load. Also finish the
 30 durable API/worker scenarios, actual fix-to-verification lifecycle, complete
-offline export/import/cold start, final recovery drill and exact-head CI.
+offline cold start and exact-head CI. The completed controlled-provider recovery
+drill does not substitute for those real-model gates.
 Required feed snapshots carry their actual freshness and seed/unknown status;
 offline availability never implies a fresh, complete vendor knowledge base.

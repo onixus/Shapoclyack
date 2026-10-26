@@ -130,6 +130,17 @@ Use the private runtime address `http://172.30.83.2:8082/v1` inside the internal
 network to avoid gateway cancellation/queueing effects. Frozen code and dataset
 mounts stay read-only; the evaluator receives only its own artifact directory.
 
+On Docker Desktop for Mac that artifact directory must be a fresh native Docker
+volume, with `--require-native-filesystem`. Before inference the evaluator
+requires ext4 and tests file fsync, atomic rename, directory fsync, readback and
+durable deletion; an `EBADF` or other unsupported operation is a hard harness
+failure. `run.json` records journal format `operator-executions-v2` and the
+storage-preflight result. Host watchdog native mode reads the bounded journal
+through the verified CID and exports terminal evidence into a new host
+directory; an export failure cannot pass. See
+[the native-volume watchdog protocol](operator-quality-watchdog.md). Native
+volumes and failed attempts remain available even if export/control fails.
+
 The API uses non-streaming completion. HTTP first-byte timing is retained as
 such; it is **not true token TTFT** and the runner explicitly reports TTFT as
 unmeasured. A separate streaming runtime measurement is required to claim true

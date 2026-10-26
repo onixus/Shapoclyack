@@ -50,6 +50,52 @@ def graceful_signals(stop):
             signal.signal(number, handler)
 
 
+def ipv6_transport(frame, offset):
+    """Bounded extension decoding; failure cannot silently hide DNS ports."""
+    protocol, position = frame[offset + 6], offset + 40
+    extensions, router_alert, fragment = [], False, False
+    end = min(len(frame), offset + 40 + struct.unpack("!H", frame[offset + 4:offset + 6])[0])
+    for _ in range(8):
+        if protocol not in (0, 43, 44, 51, 60):
+            break
+        extensions.append(protocol)
+        if position + 2 > end:
+            return protocol, position, fragment, extensions, router_alert, "truncated_extension"
+        size = 8 if protocol == 44 else (frame[position + 1] + (2 if protocol == 51 else 1)) * (4 if protocol == 51 else 8)
+        if protocol == 51 and size < 12:
+            return protocol, position, fragment, extensions, router_alert, "malformed_extension"
+        if position + size > end:
+            return protocol, position, fragment, extensions, router_alert, "truncated_extension"
+        if protocol == 0:
+            cursor = position + 2
+            while cursor < position + size:
+                kind = frame[cursor]
+                if kind == 0:  # Pad1
+                    cursor += 1
+                    continue
+                if cursor + 2 > position + size or cursor + 2 + frame[cursor + 1] > position + size:
+                    return protocol, position, fragment, extensions, router_alert, "malformed_hop_options"
+                router_alert |= kind == 5 and frame[cursor + 1] == 2 and frame[cursor + 2:cursor + 4] == b"\0\0"
+                cursor += 2 + frame[cursor + 1]
+        if protocol == 44:
+            fragment = True
+            # Later fragments have no transport header. Do not invent ports.
+            if struct.unpack("!H", frame[position + 2:position + 4])[0] & 0xFFF8:
+                return frame[position], position + size, True, extensions, router_alert, "later_fragment"
+        protocol, position = frame[position], position + size
+    if protocol in (0, 43, 44, 51, 60):
+        error = "extension_limit"
+    elif fragment:
+        error = "fragmented_transport"
+    elif protocol in (41, 50):
+        error = "opaque_encapsulation"
+    elif protocol in (6, 17, 58) and position + 4 > end:
+        error = "truncated_transport"
+    else:
+        error = None
+    return protocol, position, fragment, extensions, router_alert, error
+
+
 def packet_metadata(frame):
     if len(frame) < 14:
         return None
@@ -72,11 +118,34 @@ def packet_metadata(frame):
     elif kind == 0x86DD and len(frame) >= offset + 40:
         src = socket.inet_ntop(socket.AF_INET6, frame[offset + 8:offset + 24])
         dst = socket.inet_ntop(socket.AF_INET6, frame[offset + 24:offset + 40])
-        protocol, transport, fragmented, family = frame[offset + 6], offset + 40, False, "ipv6"
+        protocol, transport, fragmented, extensions, router_alert, decode_error = ipv6_transport(frame, offset)
+        family = "ipv6"
     else:
         return None
     value = {"family": family, "source": src, "destination": dst, "protocol": protocol}
-    if not fragmented and protocol in (6, 17) and len(frame) >= transport + 4:
+    if family == "ipv6":
+        payload_end = min(len(frame), offset + 40 + struct.unpack("!H", frame[offset + 4:offset + 6])[0])
+        value["hop_limit"] = frame[offset + 7]
+        if extensions:
+            value["extension_headers"] = extensions
+        if decode_error:
+            value["decode_error"] = decode_error
+        if not decode_error and not fragmented and protocol == 58:
+            value["icmpv6_type"], value["icmpv6_code"] = frame[transport:transport + 2]
+            # Descriptive candidates only: no checksum/origin proof and NEVER
+            # an allowlist exemption. Existing unexpected destinations remain.
+            if value["icmpv6_code"] == 0:
+                if (value["icmpv6_type"] == 135 and value["hop_limit"] == 255 and src == "::"
+                        and not extensions and payload_end >= transport + 24):
+                    target = ipaddress.IPv6Address(frame[transport + 8:transport + 24])
+                    solicited = ipaddress.IPv6Address(int(ipaddress.IPv6Address("ff02::1:ff00:0")) | (int(target) & 0xFFFFFF))
+                    if target.is_link_local and ipaddress.IPv6Address(dst) == solicited:
+                        value["link_local_control_candidate"] = "duplicate_address_detection_ns"
+                elif (value["icmpv6_type"] == 143 and value["hop_limit"] == 1
+                        and ipaddress.IPv6Address(src).is_link_local and dst == "ff02::16"
+                        and extensions == [0] and router_alert and payload_end >= transport + 8):
+                    value["link_local_control_candidate"] = "mldv2_listener_report"
+    if not fragmented and not value.get("decode_error") and protocol in (6, 17) and len(frame) >= transport + 4:
         value["source_port"], value["destination_port"] = struct.unpack("!HH", frame[transport:transport + 4])
     return value
 
@@ -86,6 +155,7 @@ def capture(seconds, allowed, stop=None):
     networks = [ipaddress.ip_network(value) for value in allowed]
     counts = Counter()
     unexpected = Counter()
+    control_candidates = Counter()
     packets = 0
     dns = 0
     receive_errors = Counter()
@@ -111,6 +181,10 @@ def capture(seconds, allowed, stop=None):
                 continue
             key = f'{value["source"]}>{value["destination"]}/ip{value["protocol"]}/dst{value.get("destination_port", "none")}'
             counts[key] += 1
+            if value.get("decode_error"):
+                receive_errors["ipv6_decode_" + value["decode_error"]] += 1
+            if value.get("link_local_control_candidate"):
+                control_candidates[value["link_local_control_candidate"]] += 1
             if 53 in (value.get("source_port"), value.get("destination_port")):
                 dns += 1
             destination = ipaddress.ip_address(value["destination"])
@@ -123,8 +197,9 @@ def capture(seconds, allowed, stop=None):
             "planned_seconds": seconds, "stopped_early": stop.requested_at is not None and stop.requested_at < started + seconds,
             "stop_signal": stop.signal,
             "dns_packets": dns, "flows": dict(counts), "unexpected_destinations": dict(unexpected),
+            "link_local_control_candidates": dict(control_candidates),
             "kernel_packets": seen, "kernel_drops": dropped, "receive_errors": dict(receive_errors),
-            "payload_retained": False, "capture_limitations": "AF_PACKET metadata, both directions; IPv6 extension transport ports not decoded"}
+            "payload_retained": False, "capture_limitations": "AF_PACKET metadata, both directions; bounded IPv6 extensions; control candidates do not establish checksum validity/kernel origin or exempt unexpected destinations"}
 
 
 def command(arguments, timeout=15):

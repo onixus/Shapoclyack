@@ -1,8 +1,11 @@
 """Acceptance scorer math and independent domain fixtures, never model results."""
 import copy
+import asyncio
+import errno
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +17,57 @@ evaluation = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(evaluation)
 DATASET = evaluation.load_dataset()
 CASES = DATASET["cases"]
+
+
+def test_durability_preflight_exercises_rename_readback_and_directory_fsync(tmp_path):
+    proof = evaluation.durable_storage_preflight(tmp_path)
+    assert proof["passed"] is True
+    assert proof["version"] == "file-rename-directory-fsync-v1"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_virtiofs_directory_ebadf_aborts_before_any_model_call(tmp_path, monkeypatch):
+    def unsupported(_):
+        raise OSError(errno.EBADF, "Directory fsync unsupported")
+    monkeypatch.setattr(evaluation, "_sync_directory", unsupported)
+    monkeypatch.setattr(evaluation, "evaluate_one", lambda *_: pytest.fail("Storage failure reached model"))
+    args = SimpleNamespace(provenance_json=None, soak_seconds=0, limit=None, case_id=None,
+        manifest=None, development=True, output=str(tmp_path / "results"), resume=False,
+        require_native_filesystem=False)
+    with pytest.raises(OSError) as caught:
+        asyncio.run(evaluation.run(args))
+    assert caught.value.errno == errno.EBADF
+    assert not (tmp_path / "results/inflight.json").exists()
+    assert not (tmp_path / "results/run.json").exists()
+
+
+def test_new_output_ancestors_have_parent_links_fsynced_before_preflight(tmp_path, monkeypatch):
+    synced = []
+    monkeypatch.setattr(evaluation, "_sync_directory", lambda path: synced.append(path))
+    def after_links(directory, **_):
+        assert synced == [tmp_path, tmp_path / "a", tmp_path / "a/b"]
+        assert directory == tmp_path / "a/b/results"
+        raise ValueError("stopped_after_parent_link_validation")
+    monkeypatch.setattr(evaluation, "durable_storage_preflight", after_links)
+    args = SimpleNamespace(provenance_json=None, soak_seconds=0, limit=None, case_id=None,
+        manifest=None, development=True, output=str(tmp_path / "a/b/results"), resume=False,
+        require_native_filesystem=False)
+    with pytest.raises(ValueError, match="parent_link_validation"):
+        asyncio.run(evaluation.run(args))
+
+
+@pytest.mark.parametrize("filesystem", ["ext4", "virtiofs", "overlay"])
+def test_native_mode_requires_actual_ext4_mount_before_inference(tmp_path, monkeypatch, filesystem):
+    is_file, read_text = Path.is_file, Path.read_text
+    monkeypatch.setattr(Path, "is_file", lambda p: True if str(p) == "/proc/self/mountinfo" else is_file(p))
+    monkeypatch.setattr(Path, "read_text", lambda p, *a, **kw:
+        f"1 0 0:1 / / rw - {filesystem} device rw\n" if str(p) == "/proc/self/mountinfo" else read_text(p, *a, **kw))
+    if filesystem != "ext4":
+        with pytest.raises(ValueError, match="requires_native_ext4"):
+            evaluation.durable_storage_preflight(tmp_path, require_native=True)
+    else:
+        proof = evaluation.durable_storage_preflight(tmp_path, require_native=True)
+        assert proof["passed"] and proof["filesystem_type"] == "ext4" and proof["native_ext4_required"]
 
 
 def record_from_gold(case):

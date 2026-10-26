@@ -733,7 +733,9 @@ def deployment(root, manifest, *, port=8085, subnet="172.29.189.0/24"):
     if any(a["role"] == "feeds" for a in manifest["artifacts"]):
         control["volumes"].append(f"{root}/feeds:/app/scanner/data:ro")
     model = {"image": images["runtime"], "pull_policy": "never", "platform": "linux/arm64", "user": "65532:65532",
-        "read_only": True, "dns": ["127.0.0.1"], "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"], "pids_limit": 128,
+        "read_only": True, "dns": ["127.0.0.1"],
+        "sysctls": {"net.ipv6.conf.all.disable_ipv6": "1", "net.ipv6.conf.default.disable_ipv6": "1"},
+        "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"], "pids_limit": 128,
         "mem_limit": "7g", "memswap_limit": "7g", "cpus": 4, "networks": {"isolated": {"ipv4_address": address(2)}},
         "tmpfs": ["/tmp:rw,noexec,nosuid,size=64m,mode=1777"],
         "environment": {"HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1", "DO_NOT_TRACK": "1"},
@@ -873,6 +875,8 @@ def attest_deployment(root, manifest, project, compose_file):
                 or not host["ReadonlyRootfs"] or config["User"] != "65532:65532"
                 or host.get("PortBindings") or config["Cmd"] != compose["services"][role]["command"]
                 or config.get("Entrypoint") != image["Config"].get("Entrypoint")
+                or any(host.get("Sysctls", {}).get(key) != "1" for key in (
+                    "net.ipv6.conf.all.disable_ipv6", "net.ipv6.conf.default.disable_ipv6"))
                 or host.get("Privileged") or not {"ALL"}.issubset(set(host.get("CapDrop") or []))):
             raise BundleError("bundle_runtime_deployment_mismatch")
         networks = value["NetworkSettings"]["Networks"]

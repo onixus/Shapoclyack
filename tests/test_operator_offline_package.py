@@ -359,6 +359,7 @@ def test_generated_startup_is_isolated_offline_nonroot_and_has_no_downloads(modu
         assert service["networks"].keys() == {"isolated"}
         assert service["user"] == "65532:65532" and service["read_only"]
         assert service["dns"] == ["127.0.0.1"]
+        assert service["sysctls"] == {"net.ipv6.conf.all.disable_ipv6": "1", "net.ipv6.conf.default.disable_ipv6": "1"}
         assert "ports" not in service and "build" not in service
         assert "--offline" in service["command"] and "--no-agent" in service["command"]
         assert service["pull_policy"] == "never"
@@ -392,7 +393,8 @@ def running_deployment(module, bundle, tmp_path, monkeypatch):
             "Config": {"Image": manifest["image_ids"]["runtime"], "User": "65532:65532", "Entrypoint": ["/server"],
                 "Cmd": copy.deepcopy(compose["services"][role]["command"])},
             "State": {"Status": "running", "Health": {"Status": "healthy"}},
-            "HostConfig": {"ReadonlyRootfs": True, "PortBindings": {}, "CapDrop": ["ALL"], "Privileged": False},
+            "HostConfig": {"ReadonlyRootfs": True, "PortBindings": {}, "CapDrop": ["ALL"], "Privileged": False,
+                "Sysctls": {"net.ipv6.conf.all.disable_ipv6": "1", "net.ipv6.conf.default.disable_ipv6": "1"}},
             "NetworkSettings": {"Networks": {"owned-network": {}}},
             "Mounts": [{"Type": "bind", "Source": str(root / "payloads" / filename),
                 "Destination": "/models/" + filename, "RW": False}]}
@@ -429,7 +431,7 @@ def test_runtime_attestation_binds_actual_containers_and_imported_immutable_payl
 
 @pytest.mark.parametrize("mutation", ["image", "revision", "stopped", "unhealthy", "root", "writable_root",
     "ports", "arguments", "entrypoint", "privileged", "capabilities", "external_network", "foreign_network",
-    "extra_network", "writable_mount", "foreign_mount", "extra_mount", "mutable_payload"])
+    "extra_network", "writable_mount", "foreign_mount", "extra_mount", "ipv6_enabled", "ipv6_policy_missing", "mutable_payload"])
 def test_uninspected_or_mismatched_runtime_never_gets_integrity_record(module, running_deployment, mutation):
     root, manifest, project, path, containers, network, image = running_deployment
     value = containers["a" * 64]
@@ -467,6 +469,10 @@ def test_uninspected_or_mismatched_runtime_never_gets_integrity_record(module, r
         value["Mounts"][0]["Source"] = "/unverified/model.gguf"
     elif mutation == "extra_mount":
         value["Mounts"].append({"Destination": "/models/other.gguf"})
+    elif mutation == "ipv6_enabled":
+        value["HostConfig"]["Sysctls"]["net.ipv6.conf.all.disable_ipv6"] = "0"
+    elif mutation == "ipv6_policy_missing":
+        value["HostConfig"].pop("Sysctls")
     else:
         (root / "payloads/model.gguf").chmod(0o644)
     with pytest.raises(module.BundleError):
