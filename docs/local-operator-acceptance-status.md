@@ -176,6 +176,15 @@ for pytest temporary files under the unchanged production `scanner` user.
 All seven real probe smoke tests passed on the cached production image with
 that mount, with zero skips. This does not substitute for the final full CI.
 
+The `55308d11` unique-step pilot returned 25 schema-valid responses and no
+repeated steps, including the previously rejected case. Gold accuracy was
+22/25, with three CWE category errors retained; p95 was 23.63 seconds and the
+maximum 27.84 seconds. This verifies sampled native grammar compatibility,
+not the final 190-case quality threshold. Offline deployment now pins the
+PostgreSQL/API addresses and local host aliases, reserves a disjoint dynamic
+address pool, and configures IPv4/resolver guards. Generated-graph tests do not
+establish zero DNS/egress; fresh cold-start observation remains required.
+
 ## Evidence locations and remaining gates
 
 The private local evidence root is `.operator-local/evaluation/`, including

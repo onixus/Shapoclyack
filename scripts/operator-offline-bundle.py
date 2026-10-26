@@ -692,6 +692,11 @@ def deployment(root, manifest, *, port=8085, subnet="172.29.189.0/24"):
     checked_port(str(port))
     network = ipaddress.ip_network(checked_subnet(subnet))
     address = lambda n: str(network.network_address + n)  # noqa: E731
+    # Keep dynamic control/gateway allocation away from all fixed service IPs,
+    # including models that may not have attached when migrations start.
+    dynamic_range = str(list(network.subnets(prefixlen_diff=1))[1])
+    resolver_policy = {"dns": ["127.0.0.1"], "sysctls": {
+        "net.ipv6.conf.all.disable_ipv6": "1", "net.ipv6.conf.default.disable_ipv6": "1"}}
     private = root / ".offline"
     private.mkdir(mode=0o700)
     for name in ("state", "output", "postgres"):
@@ -727,6 +732,7 @@ def deployment(root, manifest, *, port=8085, subnet="172.29.189.0/24"):
     images = manifest["image_ids"]
     project = "shapo-offline-" + secrets.token_hex(6)
     control = {"image": images["application"], "pull_policy": "never", "working_dir": "/app", "user": "1000:1000",
+        **resolver_policy, "extra_hosts": {"postgres": address(3)},
         "read_only": True, "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"], "pids_limit": 256,
         "mem_limit": "768m", "cpus": 1, "env_file": [str(private / "app.env")],
         "tmpfs": ["/tmp:rw,noexec,nosuid,size=64m,mode=1777"], "networks": ["isolated"],
@@ -759,7 +765,8 @@ def deployment(root, manifest, *, port=8085, subnet="172.29.189.0/24"):
             "interval": "10s", "timeout": "5s", "start_period": "60s", "retries": 12}}
     compose = {"services": {
         "postgres": {"image": images["postgres"], "pull_policy": "never", "env_file": [str(private / "postgres.env")],
-            "volumes": [f"{private}/postgres:/var/lib/postgresql/data"], "networks": ["isolated"],
+            **resolver_policy, "volumes": [f"{private}/postgres:/var/lib/postgresql/data"],
+            "networks": {"isolated": {"ipv4_address": address(3)}},
             "mem_limit": "512m", "cpus": 1, "healthcheck": {"test": ["CMD", "pg_isready", "-U", "operator_offline", "-d", "operator_offline"],
                 "interval": "3s", "timeout": "3s", "retries": 30}},
         "inference": model,
@@ -767,6 +774,7 @@ def deployment(root, manifest, *, port=8085, subnet="172.29.189.0/24"):
         "migrate": {**control, "command": ["python", "-m", "api.db.migrate"],
             "depends_on": {"postgres": {"condition": "service_healthy"}}},
         "api": {**control, "command": ["python", "-m", "api"],
+            "networks": {"isolated": {"ipv4_address": address(4)}},
             "depends_on": {"migrate": {"condition": "service_completed_successfully"}},
             "healthcheck": {"test": ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/api/health',timeout=3)"],
                 "interval": "5s", "timeout": "5s", "start_period": "15s", "retries": 30}},
@@ -774,13 +782,15 @@ def deployment(root, manifest, *, port=8085, subnet="172.29.189.0/24"):
             "healthcheck": {"disable": True}, "depends_on": {"api": {"condition": "service_healthy"},
                 "inference": {"condition": "service_healthy"}, "embeddings": {"condition": "service_healthy"}}},
         "gateway": {"image": images["application"], "pull_policy": "never", "user": "1000:1000", "read_only": True,
+            **resolver_policy, "extra_hosts": {"api": address(4)},
             "environment": {"OCTO_OPERATOR_CONSOLE_PORT": str(port)},
             "command": ["python", "/operator-proxy.py"], "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"],
             "pids_limit": 64, "mem_limit": "128m", "cpus": .5, "ports": [f"127.0.0.1:{port}:8080"],
             "volumes": [f"{root}/source/scripts/operator-console-proxy.py:/operator-proxy.py:ro"],
             "networks": ["isolated", "ingress"], "healthcheck": {"disable": True},
             "depends_on": {"api": {"condition": "service_healthy"}}}},
-        "networks": {"isolated": {"internal": True, "ipam": {"config": [{"subnet": str(network)}]}}, "ingress": {}},
+        "networks": {"isolated": {"internal": True, "enable_ipv6": False,
+            "ipam": {"config": [{"subnet": str(network), "ip_range": dynamic_range}]}}, "ingress": {"enable_ipv6": False}},
         "volumes": {"model_weights": {"name": project + "-weights", "external": True}}}
     private_write(private / "compose.json", json.dumps(compose, sort_keys=True, indent=2))
     private_write(private / "deployment.json", json.dumps({"project": project, "port": port}))

@@ -3,10 +3,12 @@ import hashlib
 from datetime import UTC, datetime
 import importlib.util
 import io
+import ipaddress
 import json
 from pathlib import Path
 import tarfile
 import sys
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -378,6 +380,51 @@ def test_generated_startup_is_isolated_offline_nonroot_and_has_no_downloads(modu
     assert "OCTO_ALLOW_SCAN_START=false" in env
     assert credentials["password"] not in compose_file.read_text()
     assert (root / ".offline/credentials.json").stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("subnet", ["172.29.189.0/24", "10.91.42.0/24", "192.168.203.0/24"])
+def test_known_service_connections_use_fixed_hosts_without_dns_and_dynamic_ip_collisions(module, bundle, tmp_path, subnet):
+    root = tmp_path / "deployment"
+    root.mkdir()
+    _, compose_file, _ = module.deployment(root, bundle[1], subnet=subnet)
+    compose = json.loads(compose_file.read_text())
+    services = compose["services"]
+    network = ipaddress.ip_network(subnet)
+    fixed = {role: services[role]["networks"]["isolated"]["ipv4_address"]
+             for role in ("inference", "postgres", "api", "embeddings")}
+    assert [int(ipaddress.ip_address(fixed[role])) - int(network.network_address)
+            for role in ("inference", "postgres", "api", "embeddings")] == [2, 3, 4, 5]
+    assert len(set(fixed.values())) == 4
+    dynamic = ipaddress.ip_network(compose["networks"]["isolated"]["ipam"]["config"][0]["ip_range"])
+    assert dynamic.subnet_of(network) and dynamic.num_addresses >= 4
+    assert all(ipaddress.ip_address(address) not in dynamic for address in fixed.values())
+    # Migrations/ingress can allocate first without consuming not-yet-started model addresses.
+    assert set(str(address) for address in list(dynamic.hosts())[:3]).isdisjoint(fixed.values())
+    env = dict(line.split("=", 1) for line in (root / ".offline/app.env").read_text().splitlines())
+    db_host = urlsplit(env["OCTO_POSTGRES_URL"]).hostname
+    for role in ("migrate", "api", "worker"):
+        assert services[role]["extra_hosts"] == {db_host: fixed["postgres"]}
+    proxy_spec = importlib.util.spec_from_file_location("offline_proxy_binding", SCRIPT.with_name("operator-console-proxy.py"))
+    proxy = importlib.util.module_from_spec(proxy_spec)
+    proxy_spec.loader.exec_module(proxy)
+    assert services["gateway"]["extra_hosts"] == {proxy.Proxy.upstream[0]: fixed["api"]}
+    for key in ("OCTO_OPERATOR_BASE_URL", "OCTO_OPERATOR_EMBEDDINGS_BASE_URL"):
+        assert ipaddress.ip_address(urlsplit(env[key]).hostname) in network
+    for role, service in services.items():
+        assert service["dns"] == ["127.0.0.1"], role
+        assert all(service["sysctls"][key] == "1" for key in (
+            "net.ipv6.conf.all.disable_ipv6", "net.ipv6.conf.default.disable_ipv6")), role
+    assert compose["networks"]["isolated"]["enable_ipv6"] is False
+    assert compose["networks"]["ingress"]["enable_ipv6"] is False
+
+
+@pytest.mark.parametrize("subnet", ["2001:db8::/64", "172.29.189.0/25", "8.8.8.0/24", "172.29.189.1/24"])
+def test_fixed_alias_deployment_rejects_ipv6_public_or_noncanonical_ranges(module, bundle, tmp_path, subnet):
+    import argparse
+
+    with pytest.raises(argparse.ArgumentTypeError):
+        module.deployment(tmp_path, bundle[1], subnet=subnet)
+    assert not (tmp_path / ".offline").exists()
 
 
 @pytest.fixture
