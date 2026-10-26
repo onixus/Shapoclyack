@@ -61,6 +61,15 @@ that turns an uncertain action into a fresh network job. A definitive service
 refusal before dispatch is `failed`; a refusal encountered during dispatch is
 conservatively `unknown`.
 
+Verification also holds a fail-fast claim shared with campaign and ordinary
+verification entrypoints. Its native job key binds tenant, finding, current
+detector plan and lifecycle epoch, so a lost finding receipt reconciles an
+existing job rather than dispatching another. Current admission and confirmed
+plan checks still apply. A known job that has already finished or is cancelling
+requires manual reconciliation: the finding is not parked in `VERIFYING` after
+its completion event. The operator execution remains `unknown` and includes
+the known job link/status for inspection; confirming it again never redispatches.
+
 Session deletion and retention refuse conversations with `executing` or
 `unknown` proposals, preserving reconciliation evidence. A session admits at
 most 100 retained proposals. Privacy erasure and tenant purge follow the

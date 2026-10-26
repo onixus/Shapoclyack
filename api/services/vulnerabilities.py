@@ -42,15 +42,18 @@ import json
 import logging
 import re
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
+from threading import Lock
 from urllib.parse import urlparse
+from weakref import WeakValueDictionary
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, or_, select, text
 
 from api.db import models
-from api.db.engine import get_session, insert_or_skip
+from api.db.engine import get_engine, get_session, insert_or_skip
 from api.services import bdu_fstec
 from api.services import audit as audit_service
 from api.services import exploit_evidence
@@ -81,6 +84,16 @@ LOG = logging.getLogger("shapoclyack.vulnerabilities")
 
 class VerificationDispatchError(RuntimeError):
     """A verification scan could not be started, so the finding stays put."""
+
+
+class VerificationReconciliationRequired(VerificationDispatchError):
+    """A known durable dispatch cannot safely be parked or dispatched again."""
+    def __init__(self, job, *, job_status=None):
+        self.job_id = job.job_id
+        self.job_status = job_status or getattr(job, "status", "unknown")
+        self.requires_reconciliation = True
+        super().__init__(json.dumps({"error": "verification_requires_reconciliation",
+            "requires_reconciliation": True, "job_id": self.job_id, "job_status": self.job_status}, sort_keys=True))
 
 
 #: Fallback remediation windows, in days, when the tenant has no matching
@@ -2631,7 +2644,72 @@ def verification_plan_digest(row: models.Vulnerability, plan: VerificationPlan) 
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
 
 
+def _verification_intent_key(row: models.Vulnerability, plan: VerificationPlan) -> str:
+    # Attribution/comments can change updated_at without authorizing a new
+    # verification. Only lifecycle/previous dispatch and detector identity count.
+    epoch = {"tenant_id": row.tenant_id, "vuln_id": row.vuln_id,
+        "state_changed_at": row.state_changed_at, "previous_job_id": row.verification_job_id,
+        "plan_sha256": verification_plan_digest(row, plan)}
+    return "verification:" + hashlib.sha256(json.dumps(epoch, sort_keys=True,
+        separators=(",", ":"), default=str).encode()).hexdigest()
+
+
+_verification_locks = WeakValueDictionary()
+_verification_locks_guard = Lock()
+
+
+@contextmanager
+def _verification_dispatch_claim(settings: Settings, tenant_id: str, vuln_id: str):
+    """Fence every native entry point through dispatch and its finding receipt.
+
+    Try-only: an operator may already hold actor/tenant authority locks. Waiting
+    here could invert a concurrent native caller's lock order. The independent
+    advisory transaction holds no finding row lock across jobs.start_scan's
+    separate transactions. Hashed bigint keys are separate from leader locks'
+    two-integer namespace. SQLite is single-process and uses a keyed mutex.
+    """
+    identity = json.dumps(["verification-dispatch-v1", tenant_id, vuln_id], separators=(",", ":"))
+    if get_engine(settings.postgres_url).dialect.name == "postgresql":
+        key = int.from_bytes(hashlib.sha256(identity.encode()).digest()[:8], "big", signed=True)
+        with get_session(settings.postgres_url) as session:
+            if not session.scalar(text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": key}):
+                raise VerificationDispatchError("Verification dispatch for this finding is already in progress; retry after it finishes")
+            yield
+    else:
+        with _verification_locks_guard:
+            lock = _verification_locks.get(identity)
+            if lock is None:
+                lock = Lock()
+                _verification_locks[identity] = lock
+        if not lock.acquire(blocking=False):
+            raise VerificationDispatchError("Verification dispatch for this finding is already in progress; retry after it finishes")
+        try:
+            yield
+        finally:
+            lock.release()
+
+
 def trigger_verification(
+    settings: Settings,
+    *,
+    tenant_id: str | None,
+    vuln_id: str,
+    actor: str | None = None,
+    expected_plan_sha256: str | None = None,
+) -> dict[str, Any] | None:
+    # Resolve authority before claiming an identifier; a foreign/missing row
+    # cannot reserve another tenant's finding. Re-read state/plan after claim.
+    with get_session(settings.postgres_url) as session:
+        row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
+        if row is None:
+            return None
+        owning_tenant = row.tenant_id
+    with _verification_dispatch_claim(settings, owning_tenant, vuln_id):
+        return _trigger_verification_claimed(settings, tenant_id=owning_tenant,
+            vuln_id=vuln_id, actor=actor, expected_plan_sha256=expected_plan_sha256)
+
+
+def _trigger_verification_claimed(
     settings: Settings,
     *,
     tenant_id: str | None,
@@ -2694,6 +2772,7 @@ def trigger_verification(
         plan = _verification_plan(session, row)
         if expected_plan_sha256 is not None and verification_plan_digest(row, plan) != expected_plan_sha256:
             raise VerificationDispatchError("Confirmed verification plan changed; prepare a new proposal")
+        verification_key = _verification_intent_key(row, plan)
 
         owning_tenant = row.tenant_id
         port = str(row.port).strip() if row.port is not None else None
@@ -2777,6 +2856,7 @@ def trigger_verification(
         skip_nse=False,
         agent_group=requested_group,
     )
+    replayed = False
     try:
         job = jobs_service.start_scan(
             settings,
@@ -2797,7 +2877,14 @@ def trigger_verification(
             # coverage evidence it will be judged on.
             min_overlay_version=plan.overlay_version,
             verification_of=vuln_id,
+            idempotency_key=verification_key,
         )
+    except jobs_service.IdempotentReplay as exc:
+        # start_scan still performed current native admission before the unique
+        # insert reconciled this durable job; no replacement was dispatched.
+        job, replayed = exc.job, True
+        if job.tenant_id != owning_tenant or job.scan_options.get("verification_of") != vuln_id:
+            raise VerificationDispatchError("Idempotency key does not identify this native verification") from exc
     except scan_scopes.ScanScopeDenied as exc:
         LOG.warning("Verification dispatch refused by scope for %s: %s", vuln_id, exc)
         denied = {str(target).lower() for target in exc.targets}
@@ -2823,9 +2910,25 @@ def trigger_verification(
         ) from exc
 
     with get_session(settings.postgres_url) as session:
-        row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
+        # New AND replayed dispatches can finish before their finding receipt.
+        # Completion writes the job before publication/verification ingestion.
+        # Lock it only AFTER start_scan's separate transaction has ended:
+        # either the job is terminal (do not strand VERIFYING), or its
+        # completion waits until this finding receipt is committed.
+        stored_job = session.scalar(select(models.Job).where(models.Job.job_id == job.job_id,
+            models.Job.tenant_id == owning_tenant).with_for_update())
+        if stored_job is None:
+            raise VerificationReconciliationRequired(job, job_status="missing")
+        if (stored_job.status not in {job_states.QUEUED, job_states.CLAIMED, job_states.RUNNING}
+                or stored_job.idempotency_key != verification_key
+                or (stored_job.scan_options or {}).get("verification_of") != vuln_id):
+            raise VerificationReconciliationRequired(stored_job)
+        row = session.scalar(select(models.Vulnerability).where(models.Vulnerability.vuln_id == vuln_id,
+            models.Vulnerability.tenant_id == owning_tenant).with_for_update())
         if row is None:
-            return None
+            raise VerificationReconciliationRequired(stored_job)
+        if _verification_intent_key(row, _verification_plan(session, row)) != verification_key:
+            raise VerificationReconciliationRequired(stored_job)
         previous = row.state
         row.state = vuln_states.VERIFYING
         row.state_changed_at = now
@@ -2858,6 +2961,8 @@ def trigger_verification(
                 "cve": row.cve,
                 "script_id": row.script_id,
                 "plan": plan.as_detail(),
+                "idempotency_key": verification_key,
+                "reconciled": replayed,
                 **({"regrouped": {**regrouped, "dispatched_group": job.agent_group}} if regrouped else {}),
             },
         )

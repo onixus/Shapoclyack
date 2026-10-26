@@ -294,6 +294,12 @@ def confirm(settings, context, proposal_id, arguments_sha256, audit_context):
         else:
             try:
                 result = _dispatch(settings, row, permissions, audit_context)
+            except vulnerabilities.VerificationReconciliationRequired as exc:
+                row.status = execution.status = "unknown"
+                execution.payload = {"error": "verification_requires_reconciliation",
+                    "job_id": exc.job_id, "job_status": exc.job_status,
+                    "result": {"job_id": exc.job_id, "job_status": exc.job_status},
+                    "requires_reconciliation": True}
             except Exception:
                 # The effect may already have committed. Never replay it.
                 row.status = execution.status = "unknown"

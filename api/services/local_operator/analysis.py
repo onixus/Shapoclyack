@@ -51,7 +51,7 @@ TEXT = {
         "review_configuration": "Review the relevant configuration with an authorized operator.",
         "confirm_exposure": "Confirm the observed exposure within the authorized scope.",
         "request_fresh_scan": "Request fresh evidence within the authorized scope.",
-        "reason": "Selected evidence is incomplete; model quality has not been measured. "
+        "reason": "Selected evidence is incomplete; this answer's quality is unverified. "
                   "Proposed labels require human review and do not change findings or risk.",
     },
     "ru": {
@@ -61,7 +61,7 @@ TEXT = {
         "review_configuration": "Проверьте соответствующую конфигурацию с уполномоченным оператором.",
         "confirm_exposure": "Подтвердите наблюдаемую доступность в разрешённой области проверки.",
         "request_fresh_scan": "Запросите свежие данные в разрешённой области проверки.",
-        "reason": "Выбранные данные неполны; качество модели не измерено. "
+        "reason": "Выбранные данные неполны; качество этого ответа не подтверждено. "
                   "Предложенные метки требуют проверки человеком и не изменяют находки или риск.",
     },
 }
