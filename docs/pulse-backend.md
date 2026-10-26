@@ -861,6 +861,49 @@ a unicast station address (not zero, broadcast or multicast, as for
 name a single label, and at most 8192 entries, 16 `hostnames[]` per host and
 8 names per source are read. Measurements: [ADR 0002](adr/0002-replacing-nmap-functions.md).
 
+### Neighbour table limits
+
+The kernel keeps neighbour (ARP) entries in a table bounded by
+`net.ipv4.neigh.default.gc_thresh1/2/3` (defaults 128/512/1024; IPv6 has the
+same keys under `net.ipv6.neigh.default`). Above `gc_thresh3` the kernel evicts
+entries. A segment with more on-link candidates than that (a /20 has 4094)
+loses live hosts silently: Pulse reads the neighbours through `ip -4 neigh`
+after resolution, and an evicted host is simply not there.
+
+- **Symptom.** `neighbour table overflow` in `dmesg`, fewer live hosts than
+  expected on large segments, and the Pulse warning
+  `ARP candidates exceed ... gc_thresh3`, which appears in `discovery.warnings`
+  only once [GenDec#53](https://github.com/onixus/GenDec/issues/53) lands; the
+  pinned GenDec v1.1.0 may not emit it, so rely on `dmesg` and `--check`.
+- **Check.** `scripts/neigh-table-limits.sh --check --hosts 5000 [--ipv6]`
+  prints the current values and exits 1 when the candidates do not fit. The
+  verdict uses the numbers `--apply` would set: it fails when the current
+  `gc_thresh3` is below the sized target (next power of two at or above twice
+  the hosts, at least 4096) or `gc_thresh2` is below half of it, because above
+  the soft `gc_thresh2` the garbage collector already evicts entries. Other exit
+  codes: 2 usage error or not root, 3 not Linux, 4 `gc_thresh` keys not visible
+  (container, or IPv6 disabled with `--ipv6`).
+- **Apply.** `sudo scripts/neigh-table-limits.sh --apply --hosts 5000 --persist`
+  sets `gc_thresh3` to the next power of two at or above twice the hosts
+  (at least 4096), `gc_thresh2` to half of it, `gc_thresh1` to an eighth, and
+  writes `/etc/sysctl.d/90-shapoclyack-neigh.conf` (idempotent). `--thresh3 N`
+  sets the value explicitly (1024 to 1048576; `--force` lowers the minimum to 8);
+  existing higher values are kept unless `--force`. All keys, IPv6 included,
+  are verified before the first write, so a missing IPv6 key leaves everything
+  untouched. Without `--persist` the values are lost on reboot (the script
+  warns).
+- **Containers.** The neighbour table is shared by every network namespace on
+  a host, and the kernel exposes `gc_thresh1/2/3` only in the initial
+  namespace: `docker run --sysctl net.ipv4.neigh.default.gc_thresh3=...` fails
+  (no such file) and pod `securityContext.sysctls` cannot set them, allowlist
+  or not. Set them on the host, i.e. the scanner nodes for `overlays/prod`
+  (`hostNetwork: true`), for instance with a node bootstrap or a privileged
+  DaemonSet that writes the sysctl.d file. Neighbour entries of all containers
+  on the node count towards the same limit.
+
+Follow-up (pre-flight check, sizing policy, chunking):
+[Shapoclyack#612](https://github.com/onixus/Shapoclyack/issues/612).
+
 ## Nmap
 
 Nmap is not bundled in the images (NPSL, [#97](https://github.com/onixus/Shapoclyack/issues/97))

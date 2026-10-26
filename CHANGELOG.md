@@ -23,6 +23,12 @@ All notable changes to Shapoclyack are documented in this file.
   that explains a changed count, campaign creation with a composition preview,
   and `/campaigns`. See
   [docs/remediation-campaigns.md](docs/remediation-campaigns.md).
+- `scripts/neigh-table-limits.sh` checks and raises the kernel neighbour table
+  limits (`gc_thresh1/2/3`) for L2 discovery. `--check` fails on the same
+  gc_thresh3/gc_thresh2 targets `--apply` would set, `--apply` verifies every
+  key (IPv6 included) before the first write, `--thresh3` is bounded to
+  1024..1048576 and a non-Linux host exits 3. See `docs/pulse-backend.md`,
+  "Neighbour table limits" (#612).
 
 ### Changed
 
