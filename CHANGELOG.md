@@ -4,6 +4,15 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- `scripts/neigh-table-limits.sh` checks and raises the kernel neighbour table
+  limits (`gc_thresh1/2/3`) for L2 discovery. `--check` fails on the same
+  gc_thresh3/gc_thresh2 targets `--apply` would set, `--apply` verifies every
+  key (IPv6 included) before the first write, `--thresh3` is bounded to
+  1024..1048576 and a non-Linux host exits 3. See `docs/pulse-backend.md`,
+  "Neighbour table limits" (#612).
+
 ### Changed
 
 - Image builds fetch enrichment data (NVD/CVSS4, EPSS, KEV, GeoIP, vendor
