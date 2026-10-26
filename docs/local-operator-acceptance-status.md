@@ -158,6 +158,24 @@ The original corpus, gold and thresholds remain unchanged. Future reports must
 describe its development exposure honestly; independent generalization needs
 separately authored and reviewed evidence.
 
+On `8fdafa6d`, the cache-disabled 24-case pilot returned 24 schema-valid answers,
+22 matching gold; two CWE category errors remained. Complete-response p95 was
+23.38 seconds. Both model containers retained their process epochs, with no
+OOM/restart, sampling errors, DNS/external packets or kernel capture drops.
+The follow-up full attempt was stopped after 46 completed records when a model
+answer repeated `request_fresh_scan` in `next_steps`. The validator correctly
+rejected it. This was a repeated next step, not a repeated evidence source;
+the shared `duplicate_selection` error code covers both. Its interrupted last
+exchange, missing cases and failed load gate are preserved. The roughly
+12-minute run supports short-run resource stability only, not hour acceptance.
+The next generation contract restricts next steps to the existing legal unique
+arrays, while leaving source selection and category/priority labels free.
+
+The image-smoke `ENOSPC` correction supplies a bounded 128-MiB writable tmpfs
+for pytest temporary files under the unchanged production `scanner` user.
+All seven real probe smoke tests passed on the cached production image with
+that mount, with zero skips. This does not substitute for the final full CI.
+
 ## Evidence locations and remaining gates
 
 The private local evidence root is `.operator-local/evaluation/`, including

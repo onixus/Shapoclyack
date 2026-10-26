@@ -8,13 +8,14 @@ from __future__ import annotations
 import json
 import re
 from copy import deepcopy
+from itertools import permutations
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.services.local_operator.contracts import Citation
 
-PROMPT_VERSION = "finding-analysis-labels-v6"
+PROMPT_VERSION = "finding-analysis-labels-v7"
 MAX_OUTPUT_BYTES = 32768
 MAX_ITEMS = 40
 SERVICES = frozenset({"http", "https", "ssh", "smtp", "dns", "ftp", "smb", "rdp", "mysql",
@@ -117,6 +118,16 @@ def output_schema(retrieval_result, *, language=None):
         recommendations["maxItems"] = 0
         schema["properties"]["summary"] = {"type": "string", "const": "insufficient_evidence"}
         return schema
+    # The pinned runtime's grammar converter supports array-valued enum, but
+    # does not implement uniqueItems. Preserve every legal nonempty ordering
+    # of these four choices while excluding duplicates before generation.
+    # Share the definition instead of repeating 64 arrays for every source.
+    steps = deepcopy(schema["$defs"]["Selection"]["properties"]["next_steps"])
+    choices = steps["items"]["enum"]
+    steps["enum"] = [list(order) for size in range(1, len(choices) + 1)
+                     for order in permutations(choices, size)]
+    schema["$defs"]["UniqueNextSteps"] = steps
+    schema["$defs"]["Selection"]["properties"]["next_steps"] = {"$ref": "#/$defs/UniqueNextSteps"}
     variants = []
     for citation in eligible:
         variant = deepcopy(schema["$defs"]["Selection"])
@@ -186,7 +197,8 @@ def build_prompt(language, retrieval_result):
          "empty context still gets category unknown and proposed_priority unknown, never an empty selection. "
          "Never select a source whose status is stale. Only for state missing, stale or unknown, or when no "
          "non-stale source exists, abstain: summary insufficient_evidence and recommendations []. "
-         "Choose only relevant allowed next_steps. No remediation or comparison claims are supported."},
+         "Choose only relevant allowed next_steps, without repeating a step. "
+         "No remediation or comparison claims are supported."},
         {"role": "user", "content": json.dumps({"language": language,
          "state": retrieval_result["state"], "sources": sources}, ensure_ascii=False, sort_keys=True)},
     ]

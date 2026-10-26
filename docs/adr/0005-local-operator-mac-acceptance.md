@@ -23,10 +23,17 @@ remain usable when the optional AI feature is disabled or unavailable.
 ## Decision
 
 The primary workstation is Apple M5 Pro, 15 CPU, 24 GiB physical RAM, Docker
-Desktop Linux ARM64 CPU containers with a 12-GiB VM budget. Use Qwen3.5-9B GGUF
+Desktop Linux ARM64 CPU containers with a 16-GiB VM budget. The owner-authorized
+2026-10-26 maintenance increased the original 12-GiB budget after builds and
+queue emptied; engine memory was measured at 16,747,139,072 bytes. This selection
+does not establish sustained fit or quality acceptance. Use Qwen3.5-9B GGUF
 Q4_K_M, 8192 total context, one active inference, four inference CPU threads and
 a separate CPU Qwen3-Embedding-0.6B Q8_0 service. Pin runtime image/source and both
-model revisions/digests. Sampling is temperature 0, seed 42.
+model revisions/digests. Sampling is temperature 0, seed 42. Keep inference
+bounded at 7 GiB and embeddings at 1.5 GiB, with native read-only GGUF storage.
+Explicitly disable the inference server's RAM prompt cache (`--cache-ram 0`);
+the upstream 8-GiB default is unsuitable as an unbounded extra budget inside
+this container. All resource limits still require measured acceptance.
 
 Freeze labelled RU/EN cases and source/prompt/scorer hashes before the final
 model run. Retain tool accuracy >=95%, category macro-F1 >=0.85, citation

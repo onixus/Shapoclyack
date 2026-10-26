@@ -64,6 +64,23 @@ semantic errors from the failed run are replayed as scoring regressions, not
 silently repaired. These tests do not prove that the revised prompt improves
 actual model quality; that needs another measured run.
 
+The subsequent cache-0 run failed the unchanged contract when one response
+repeated `request_fresh_scan` in `next_steps`. Its source appeared only once;
+the shared `duplicate_selection` error did not mean a repeated source.
+Generation contract `finding-analysis-labels-v7` enumerates all 64 nonempty
+unique permutations of the four allowed steps, shared through one schema
+definition. Every previously legal step selection/order remains possible;
+source subsets/order and category/priority labels remain free. Validation
+continues to reject duplicate steps without repair.
+
+This uses the pinned runtime's
+[array-valued enum parser](https://github.com/ggml-org/llama.cpp/blob/8e5a58df87ab59dfceb5b961ae26691e39f30c24/common/json-schema.cpp#L260)
+and [literal grammar generation](https://github.com/ggml-org/llama.cpp/blob/8e5a58df87ab59dfceb5b961ae26691e39f30c24/common/json-schema-to-grammar.cpp#L890).
+The converter does not enforce `uniqueItems`; that keyword alone would not
+prevent this response. Generic tuple/prefix constraints also change source
+selection semantics and are not used. Schema/validator regressions are not a
+new actual-runtime quality result; the failed attempt remains preserved.
+
 Remediation cases call the actual planner, then the native local remediation
 renderer/comparator over a synthetic accepted inventory and a local vendor
 snapshot. Only the fixture data provider is substituted; production identity,

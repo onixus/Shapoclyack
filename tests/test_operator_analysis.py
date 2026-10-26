@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+from itertools import permutations, product
 from pathlib import Path
 
 import pytest
@@ -124,6 +125,43 @@ def test_generation_schema_keeps_each_registered_reference_tuple_together():
     assert len(serialized.encode()) < 65536
     assert retrieval == frozen
     assert ModelAnalysis.model_json_schema()["properties"]["recommendations"]["items"] == {"$ref": "#/$defs/Selection"}
+
+
+def test_generation_step_choices_preserve_every_unique_order_and_exclude_repetition():
+    retrieval = copy.deepcopy(CASES[0]["retrieval"])
+    second = copy.deepcopy(retrieval["items"][0])
+    second["source_id"] = second["citation"]["source_id"] = "second-source"
+    retrieval["items"].append(second)
+    schema = output_schema(retrieval, language="en")
+    steps = schema["$defs"]["UniqueNextSteps"]
+    choices = steps["items"]["enum"]
+    expected = {order for size in range(1, 5) for order in permutations(choices, size)}
+    actual = {tuple(order) for order in steps["enum"]}
+    assert len(actual) == len(steps["enum"]) == 64
+    assert actual == expected
+    assert () not in actual
+    for size in range(2, 5):
+        for order in product(choices, repeat=size):
+            if len(set(order)) != size:
+                assert order not in actual
+    variants = schema["properties"]["recommendations"]["items"]["anyOf"]
+    assert len(variants) == 2
+    assert all(v["properties"]["next_steps"] == {"$ref": "#/$defs/UniqueNextSteps"} for v in variants)
+    # No forced source prefix/order or all-source minimum, and no forced labels.
+    assert schema["properties"]["recommendations"]["minItems"] == 1
+    assert schema["properties"]["recommendations"]["maxItems"] == 2
+    assert "prefixItems" not in schema["properties"]["recommendations"]
+    for variant in variants:
+        for label in ("category", "proposed_priority"):
+            assert "enum" in variant["properties"][label] and "const" not in variant["properties"][label]
+
+
+def test_actual_duplicate_next_step_response_is_still_rejected_without_repair():
+    case = copy.deepcopy(CASES[0])
+    selection = case["model_output"]["recommendations"][0]
+    selection["next_steps"] = ["request_fresh_scan", "request_fresh_scan"]
+    with pytest.raises(AnalysisError, match="duplicate_selection"):
+        validate_output(json.dumps(case["model_output"]), case["language"], case["retrieval"])
 
 
 @pytest.mark.parametrize("state", ["missing", "stale", "unknown"])
