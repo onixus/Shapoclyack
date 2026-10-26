@@ -113,7 +113,7 @@ afterEach(() => {
 });
 
 describe("operator console", () => {
-  it("shows verified startup integrity and live readiness separately from model quality", async () => {
+  it("shows manifest-attested startup integrity and live readiness separately from model quality", async () => {
     vi.mocked(operatorApi.status).mockResolvedValue({
       provider: "local",
       model: "Qwen-real",
@@ -130,7 +130,9 @@ describe("operator console", () => {
       task_submission_enabled: true,
     });
     renderConsole();
-    expect(await screen.findByText(/Model integrity was verified at startup/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Model confirmed by its manifest at startup/),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/Runtime readiness has not been checked/)).not.toBeInTheDocument();
     expect(screen.getByText(/Model SHA-256: bbbbbbbbbbbbbbbb/)).toBeInTheDocument();
     expect(screen.getByText("Context tokens: 8192")).toBeInTheDocument();
@@ -387,6 +389,84 @@ describe("operator console", () => {
     expect(operatorApi.confirm).not.toHaveBeenCalled();
   });
 
+  async function restoreStoredPlan(override: Partial<OperatorProposal>) {
+    savedSession();
+    sessionStorage.setItem(
+      `operator-proposal:${JSON.stringify(["tenant-a", "alice", "s1"])}`,
+      "plan1",
+    );
+    vi.mocked(operatorApi.proposal).mockResolvedValue({ ...plan, ...override });
+    renderConsole();
+    expect(
+      await screen.findByText(/This plan expired or is no longer awaiting/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Confirm this plan" })).not.toBeInTheDocument();
+  }
+  it("refuses a plan that belongs to another tenant", async () => {
+    await restoreStoredPlan({ tenant_id: "tenant-b" });
+  });
+  it("refuses a plan that belongs to another session", async () => {
+    await restoreStoredPlan({ session_id: "s2" });
+  });
+  it("refuses a plan that is no longer in preview", async () => {
+    await restoreStoredPlan({ status: "executed" });
+  });
+
+  it("re-enables confirmation after a failed confirm and shows failed without pending", async () => {
+    savedSession();
+    sessionStorage.setItem(
+      `operator-proposal:${JSON.stringify(["tenant-a", "alice", "s1"])}`,
+      "plan1",
+    );
+    vi.mocked(operatorApi.confirm).mockRejectedValueOnce(new Error("503"));
+    renderConsole();
+    const confirm = await screen.findByRole("button", { name: "Confirm this plan" });
+    await userEvent.click(screen.getByRole("checkbox", { name: /I reviewed/ }));
+    await userEvent.click(confirm);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/could not be completed/);
+    expect(screen.queryByText(/Confirmation sent/)).not.toBeInTheDocument();
+    await waitFor(() => expect(confirm).toBeEnabled());
+    await userEvent.click(confirm);
+    await waitFor(() => expect(operatorApi.confirm).toHaveBeenCalledTimes(2));
+  });
+
+  it("explains a server-side stale plan instead of a generic failure", async () => {
+    savedSession();
+    sessionStorage.setItem(
+      `operator-proposal:${JSON.stringify(["tenant-a", "alice", "s1"])}`,
+      "plan1",
+    );
+    vi.mocked(operatorApi.confirm).mockRejectedValueOnce({
+      response: { status: 409, data: { detail: "stale_proposal" } },
+    });
+    renderConsole();
+    const confirm = await screen.findByRole("button", { name: "Confirm this plan" });
+    await userEvent.click(screen.getByRole("checkbox", { name: /I reviewed/ }));
+    await userEvent.click(confirm);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/server rejected this plan/);
+    expect(screen.queryByText(/could not be completed/)).not.toBeInTheDocument();
+  });
+
+  it("does not crash on null scope entries in a plan impact", async () => {
+    savedSession();
+    sessionStorage.setItem(
+      `operator-proposal:${JSON.stringify(["tenant-a", "alice", "s1"])}`,
+      "plan1",
+    );
+    vi.mocked(operatorApi.proposal).mockResolvedValue({
+      ...plan,
+      impact: {
+        ...(plan.impact as object),
+        approved_scope: {
+          approved: true,
+          entries: [null, { effect: "allow", kind: "cidr", value: "192.0.2.0/24" }],
+        },
+      },
+    });
+    renderConsole();
+    expect(await screen.findByText(/allow · cidr · 192.0.2.0\/24/)).toBeInTheDocument();
+  });
+
   it("requires a new acknowledgement when a refreshed plan digest changes", async () => {
     savedSession();
     sessionStorage.setItem(
@@ -434,6 +514,48 @@ describe("operator console", () => {
     expect(screen.queryByText("Prepare an action")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New session" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Queue analysis" })).toBeDisabled();
+  });
+
+  it("renders a runbook whose preconditions lack the active language key", async () => {
+    vi.mocked(operatorApi.remediation).mockResolvedValue({
+      device_id: "d1",
+      state: "complete",
+      quality_status: "deterministic",
+      reason: null,
+      truncated: false,
+      items: [
+        {
+          kind: "package_upgrade",
+          package: "openssl",
+          installed_version: "1",
+          target_version: "2",
+          status: "fix_available",
+          cve_ids: [],
+          upgrade_command: null,
+          sources: [],
+          limitations: [],
+          verification: { method: "endpoint_inventory", requires_confirmation: true },
+          plan: {
+            origin: "shapoclyack_operator_runbook",
+            runbook_id: "r",
+            runbook_sha256: "a".repeat(64),
+            plan_sha256: "b".repeat(64),
+            preconditions: { ru: ["только русский"] },
+            backup: { status: "unknown", en: "b", ru: "b" },
+            restart: { status: "unknown", en: "r", ru: "r" },
+            rollback: { status: "unknown", en: "k", ru: "k" },
+            verification: { method: "m", en: "v", ru: "v" },
+            vendor_workaround: { status: "unsupported", reason: "x" },
+          },
+        },
+      ],
+    } as never);
+    renderConsole("tenant-a", false);
+    await userEvent.type(await screen.findByLabelText("Endpoint device ID"), "d1");
+    await userEvent.click(screen.getByRole("button", { name: "Find fixes" }));
+    expect(
+      await screen.findByRole("region", { name: "Operator runbook · manual review required" }),
+    ).toBeVisible();
   });
 
   it.each(["en", "ru"] as const)(

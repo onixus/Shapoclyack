@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type UseMutationResult,
+} from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -22,7 +27,8 @@ import {
 
 const copy = {
   en: {
-    runtimeReady: "Model integrity was verified at startup and runtime health is available.",
+    runtimeReady:
+      "Model confirmed by its manifest at startup (weights are not re-hashed); runtime health is available.",
     runtimeUnavailable: "Runtime is unavailable. Check its health before requesting model work.",
     modelDigest: "Model SHA-256",
     contextBudget: "Context tokens",
@@ -124,6 +130,8 @@ const copy = {
       "Confirmation sent. Refresh the server state to reconcile an uncertain response before taking another action.",
     stale:
       "This plan expired or is no longer awaiting confirmation. Prepare a new preview when required.",
+    staleServer:
+      "The server rejected this plan: it expired or is no longer awaiting confirmation. Nothing was executed. Prepare a new preview.",
     remediation: "Find a vendor-backed fix",
     device: "Endpoint device ID",
     remediationScope: "Remediation context",
@@ -158,7 +166,8 @@ const copy = {
     busy: "A task is queued or running. Its state is restored from the server; reconnecting does not submit it again.",
   },
   ru: {
-    runtimeReady: "Целостность модели проверена при запуске; runtime доступен.",
+    runtimeReady:
+      "Модель подтверждена манифестом при запуске (веса не пересчитываются); runtime доступен.",
     runtimeUnavailable: "Runtime недоступен. Проверьте его состояние перед задачами модели.",
     modelDigest: "SHA-256 модели",
     contextBudget: "Токенов контекста",
@@ -258,6 +267,8 @@ const copy = {
       "Подтверждение отправлено. При неопределённом ответе обновите состояние сервера перед следующим действием.",
     stale:
       "План истёк или уже не ожидает подтверждения. При необходимости подготовьте новый предпросмотр.",
+    staleServer:
+      "Сервер отклонил этот план: он истёк или уже не ожидает подтверждения. Ничего не выполнено. Подготовьте новый предпросмотр.",
     remediation: "Найти исправление из advisory",
     device: "ID устройства endpoint",
     remediationScope: "Контекст исправления",
@@ -1152,21 +1163,21 @@ function Task({
           </p>
           <p className="whitespace-pre-wrap text-sm">{answer.summary}</p>
           <p className="text-sm text-muted-foreground">{answer.reason}</p>
-          {answer.recommendations?.map((item) => (
-            <div key={item.source_id} className="rounded bg-muted p-3 text-sm">
+          {answer.recommendations?.map((item, index) => (
+            <div key={`${index}:${item.source_id}`} className="rounded bg-muted p-3 text-sm">
               <p>
                 {item.source_id}: {item.category} · {item.proposed_priority}
               </p>
               <ul className="list-inside list-disc">
-                {item.next_steps.map((step) => (
-                  <li key={step}>{step}</li>
+                {item.next_steps.map((step, stepIndex) => (
+                  <li key={`${stepIndex}:${step}`}>{step}</li>
                 ))}
               </ul>
             </div>
           ))}
-          {answer.citations?.map((citation) => (
+          {answer.citations?.map((citation, index) => (
             <Button
-              key={citation.source_id}
+              key={`${index}:${citation.source_id}`}
               size="sm"
               variant="outline"
               onClick={() => onSource(citation)}
@@ -1220,8 +1231,52 @@ function ActionPanel({
   const [group, setGroup] = useState("");
   const [resource, setResource] = useState("");
   const [acknowledged, acknowledge] = useState("");
-  const [confirmSent, setConfirmSent] = useState(false);
-  const [now, setNow] = useState(Date.now());
+  const proposal = useQuery({
+    queryKey: [...operatorKey(tenant, actor), "proposal", proposalId],
+    queryFn: ({ signal }) => operatorApi.proposal(tenant, proposalId, signal),
+    enabled: Boolean(proposalId),
+    retry: false,
+    refetchOnReconnect: true,
+  });
+  const prepare = useMutation({
+    mutationKey: [...operatorKey(tenant, actor), "prepare"],
+    mutationFn: () => {
+      const args =
+        action === "start_scan"
+          ? {
+              ...(ranges.trim() ? { ranges: ranges.trim() } : {}),
+              ...(domains.trim() ? { domains: domains.trim() } : {}),
+              ports: ports.trim(),
+              mode,
+              ...(udp.trim() ? { ports_udp: udp.trim() } : {}),
+              ...(intent.trim() ? { intent: intent.trim() } : {}),
+              ...(group.trim() ? { agent_group: group.trim() } : {}),
+            }
+          : action === "cancel_scan"
+            ? { job_id: resource.trim() }
+            : { vuln_id: resource.trim() };
+      return operatorApi.prepare(tenant, session, action, args);
+    },
+    retry: false,
+    onSuccess: (data) => {
+      if (!active.current) return;
+      setProposalId(data.proposal_id);
+      remember(proposalStorage, data.proposal_id);
+      acknowledge("");
+      confirm.reset();
+    },
+  });
+  const confirm = useMutation({
+    mutationKey: [...operatorKey(tenant, actor), "confirm"],
+    mutationFn: (data: OperatorProposal) =>
+      operatorApi.confirm(tenant, data.proposal_id, data.arguments_sha256),
+    retry: false,
+    onSettled: () => {
+      if (!active.current) return;
+      void proposal.refetch();
+    },
+  });
+  const resetConfirm = confirm.reset;
   useEffect(() => {
     if (!draft || !["prepare_scan", "cancel_scan", "verify_finding"].includes(draft.plan.tool))
       return;
@@ -1250,57 +1305,8 @@ function ActionPanel({
     setProposalId("");
     remember(proposalStorage, "");
     acknowledge("");
-    setConfirmSent(false);
-  }, [draft, proposalStorage]);
-  const proposal = useQuery({
-    queryKey: [...operatorKey(tenant, actor), "proposal", proposalId],
-    queryFn: ({ signal }) => operatorApi.proposal(tenant, proposalId, signal),
-    enabled: Boolean(proposalId),
-    retry: false,
-    refetchOnReconnect: true,
-  });
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-  const prepare = useMutation({
-    mutationKey: [...operatorKey(tenant, actor), "prepare"],
-    mutationFn: () => {
-      const args =
-        action === "start_scan"
-          ? {
-              ...(ranges.trim() ? { ranges: ranges.trim() } : {}),
-              ...(domains.trim() ? { domains: domains.trim() } : {}),
-              ports,
-              mode,
-              ...(udp.trim() ? { ports_udp: udp.trim() } : {}),
-              ...(intent.trim() ? { intent: intent.trim() } : {}),
-              ...(group.trim() ? { agent_group: group.trim() } : {}),
-            }
-          : action === "cancel_scan"
-            ? { job_id: resource.trim() }
-            : { vuln_id: resource.trim() };
-      return operatorApi.prepare(tenant, session, action, args);
-    },
-    retry: false,
-    onSuccess: (data) => {
-      if (!active.current) return;
-      setProposalId(data.proposal_id);
-      remember(proposalStorage, data.proposal_id);
-      acknowledge("");
-      setConfirmSent(false);
-    },
-  });
-  const confirm = useMutation({
-    mutationKey: [...operatorKey(tenant, actor), "confirm"],
-    mutationFn: (data: OperatorProposal) =>
-      operatorApi.confirm(tenant, data.proposal_id, data.arguments_sha256),
-    retry: false,
-    onSettled: () => {
-      if (!active.current) return;
-      void proposal.refetch();
-    },
-  });
+    resetConfirm();
+  }, [draft, proposalStorage, resetConfirm]);
   const data = proposal.data;
   const executionResult = data?.execution?.result;
   const resultJobId =
@@ -1311,11 +1317,10 @@ function ActionPanel({
     /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(executionResult.job_id)
       ? executionResult.job_id
       : null;
-  const valid =
-    data?.tenant_id === tenant &&
-    data.session_id === session &&
-    data.status === "preview" &&
-    Date.parse(data.expires_at) > now;
+  const rejectedAsStale =
+    confirm.isError &&
+    (confirm.error as { response?: { data?: { detail?: unknown } } } | null)?.response?.data
+      ?.detail === "stale_proposal";
   return (
     <Card>
       <CardHeader>
@@ -1333,7 +1338,7 @@ function ActionPanel({
                 setProposalId(event.target.value);
                 remember(proposalStorage, event.target.value);
                 acknowledge("");
-                setConfirmSent(false);
+                confirm.reset();
               }}
             >
               <option value="">—</option>
@@ -1454,7 +1459,10 @@ function ActionPanel({
             {c.prepare}
           </Button>
         </form>
-        {(prepare.isError || proposal.isError || confirm.isError) && <p role="alert">{c.failed}</p>}
+        {(prepare.isError || proposal.isError || (confirm.isError && !rejectedAsStale)) && (
+          <p role="alert">{c.failed}</p>
+        )}
+        {rejectedAsStale && <p role="alert">{c.staleServer}</p>}
         {data && (
           <section className="space-y-3 rounded-lg border p-4" aria-label={c.preview}>
             <h3 className="font-semibold">{c.preview}</h3>
@@ -1470,41 +1478,16 @@ function ActionPanel({
               {c.expiry}: {data.expires_at}
             </p>
             <PlanImpact proposal={data} c={c} />
-            {valid ? (
-              <>
-                <label className="flex items-start gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={acknowledged === data.arguments_sha256}
-                    onChange={(event) =>
-                      acknowledge(event.target.checked ? data.arguments_sha256 : "")
-                    }
-                  />
-                  {c.acknowledge}
-                </label>
-                <Button
-                  disabled={
-                    !canOperate ||
-                    acknowledged !== data.arguments_sha256 ||
-                    confirmSent ||
-                    confirm.isPending
-                  }
-                  onClick={() => {
-                    setConfirmSent(true);
-                    confirm.mutate(data);
-                  }}
-                >
-                  {c.confirm}
-                </Button>
-              </>
-            ) : (
-              <p className="text-sm">{c.stale}</p>
-            )}
-            {confirmSent && (
-              <p role="status" className="text-sm">
-                {c.confirmPending}
-              </p>
-            )}
+            <ConfirmGate
+              data={data}
+              tenant={tenant}
+              session={session}
+              canOperate={canOperate}
+              c={c}
+              acknowledged={acknowledged}
+              onAcknowledge={acknowledge}
+              confirm={confirm}
+            />
             <Button
               variant="outline"
               size="sm"
@@ -1537,6 +1520,71 @@ function ActionPanel({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+// The one-second clock lives here so that only the confirmation controls
+// re-render each tick, not the whole action form. The client clock is a hint:
+// the server stays authoritative and rejects an expired plan (409 stale_proposal).
+function ConfirmGate({
+  data,
+  tenant,
+  session,
+  canOperate,
+  c,
+  acknowledged,
+  onAcknowledge,
+  confirm,
+}: {
+  data: OperatorProposal;
+  tenant: string;
+  session: string;
+  canOperate: boolean;
+  c: Copy;
+  acknowledged: string;
+  onAcknowledge: (value: string) => void;
+  confirm: UseMutationResult<OperatorProposal, Error, OperatorProposal>;
+}) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const valid =
+    data.tenant_id === tenant &&
+    data.session_id === session &&
+    data.status === "preview" &&
+    Date.parse(data.expires_at) > now;
+  // Derived, not latched: an error or a reset makes the button available again.
+  const sent = confirm.isPending || confirm.isSuccess;
+  return (
+    <>
+      {valid ? (
+        <>
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={acknowledged === data.arguments_sha256}
+              onChange={(event) => onAcknowledge(event.target.checked ? data.arguments_sha256 : "")}
+            />
+            {c.acknowledge}
+          </label>
+          <Button
+            disabled={!canOperate || acknowledged !== data.arguments_sha256 || sent}
+            onClick={() => confirm.mutate(data)}
+          >
+            {c.confirm}
+          </Button>
+        </>
+      ) : (
+        <p className="text-sm">{c.stale}</p>
+      )}
+      {sent && (
+        <p role="status" className="text-sm">
+          {c.confirmPending}
+        </p>
+      )}
+    </>
   );
 }
 
@@ -1638,9 +1686,11 @@ function PlanImpact({ proposal, c }: { proposal: OperatorProposal; c: Copy }) {
   };
   for (const [key, label] of Object.entries(policyLabels))
     if (key in policy) rows.push([label, policy[key]]);
-  const entries = Array.isArray(scope.entries)
-    ? (scope.entries as { effect: string; kind: string; value: string }[])
-    : [];
+  // Server data is untrusted: tolerate null/non-object rows inside entries.
+  const entries = (Array.isArray(scope.entries) ? scope.entries : []).filter(
+    (entry): entry is { effect: string; kind: string; value: string } =>
+      entry != null && typeof entry === "object",
+  );
   return (
     <div className="space-y-2">
       <h4 className="text-sm font-semibold">{c.impact}</h4>
@@ -1820,7 +1870,7 @@ function RemediationPanel({
                       <details>
                         <summary className="cursor-pointer font-medium">{c.preconditions}</summary>
                         <ul className="mt-2 list-inside list-disc space-y-1">
-                          {item.plan.preconditions[language].map((text, index) => (
+                          {(item.plan.preconditions?.[language] ?? []).map((text, index) => (
                             <li key={index}>{text}</li>
                           ))}
                         </ul>
@@ -1830,24 +1880,25 @@ function RemediationPanel({
                           <div key={step}>
                             <dt className="font-medium">
                               {c[step]} ·{" "}
-                              {item.plan![step].status === "unknown"
+                              {item.plan![step]?.status === "unknown" || !item.plan![step]?.status
                                 ? c.unknown
                                 : item.plan![step].status === "manual_approval_required"
                                   ? c.manualApproval
                                   : item.plan![step].status}
                             </dt>
                             <dd className="mt-1 text-muted-foreground">
-                              {item.plan![step][language]}
+                              {item.plan![step]?.[language]}
                             </dd>
                           </div>
                         ))}
                       </dl>
                       <p>
-                        <strong>{c.verifyMethod}:</strong> {item.plan.verification[language]}
+                        <strong>{c.verifyMethod}:</strong> {item.plan.verification?.[language]}
                       </p>
                       <p>
                         <strong>{c.workaround}:</strong>{" "}
-                        {item.plan.vendor_workaround.status === "unsupported"
+                        {!item.plan.vendor_workaround ||
+                        item.plan.vendor_workaround.status === "unsupported"
                           ? c.noWorkaround
                           : item.plan.vendor_workaround.status}
                       </p>
@@ -1864,8 +1915,8 @@ function RemediationPanel({
                     <li key={index}>{limit}</li>
                   ))}
                 </ul>
-                {item.sources.map((citation) => (
-                  <div key={citation.source_id} className="space-y-1">
+                {item.sources.map((citation, citationIndex) => (
+                  <div key={`${citationIndex}:${citation.source_id}`} className="space-y-1">
                     <p className="text-xs text-muted-foreground">
                       {[citation.provider, citation.feed_date, citation.observed_at]
                         .filter(Boolean)
@@ -1874,7 +1925,6 @@ function RemediationPanel({
                     <Button
                       size="sm"
                       variant="outline"
-                      key={citation.source_id}
                       onClick={() =>
                         onSource(
                           citation,

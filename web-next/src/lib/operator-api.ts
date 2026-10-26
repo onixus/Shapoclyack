@@ -222,8 +222,9 @@ export const operatorApi = {
       await api.get<OperatorSession>(`/operator/sessions/${id(session)}`, options(tenant, signal))
     ).data;
   },
-  async createSession(tenant: string) {
-    return (await api.post<OperatorSession>("/operator/sessions", {}, options(tenant))).data;
+  async createSession(tenant: string, signal?: AbortSignal) {
+    return (await api.post<OperatorSession>("/operator/sessions", {}, options(tenant, signal)))
+      .data;
   },
   async submit(
     tenant: string,
@@ -238,9 +239,14 @@ export const operatorApi = {
       })
     ).data;
   },
-  async cancel(tenant: string, task: string) {
-    return (await api.post<OperatorTask>(`/operator/tasks/${id(task)}/cancel`, {}, options(tenant)))
-      .data;
+  async cancel(tenant: string, task: string, signal?: AbortSignal) {
+    return (
+      await api.post<OperatorTask>(
+        `/operator/tasks/${id(task)}/cancel`,
+        {},
+        options(tenant, signal),
+      )
+    ).data;
   },
   async evidence(tenant: string, citation: Citation, signal?: AbortSignal) {
     const path =
@@ -263,12 +269,13 @@ export const operatorApi = {
     session: string,
     action: ProposalAction,
     args: Record<string, unknown>,
+    signal?: AbortSignal,
   ) {
     return (
       await api.post<OperatorProposal>(
         `/operator/sessions/${id(session)}/proposals`,
         { action, arguments: args },
-        options(tenant),
+        options(tenant, signal),
       )
     ).data;
   },
@@ -280,12 +287,12 @@ export const operatorApi = {
       )
     ).data;
   },
-  async confirm(tenant: string, proposal: string, hash: string) {
+  async confirm(tenant: string, proposal: string, hash: string, signal?: AbortSignal) {
     return (
       await api.post<OperatorProposal>(
         `/operator/proposals/${id(proposal)}/confirm`,
         { arguments_sha256: hash },
-        options(tenant),
+        options(tenant, signal),
       )
     ).data;
   },
