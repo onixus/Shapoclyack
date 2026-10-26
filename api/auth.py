@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -20,6 +21,10 @@ from api.settings import Settings, load_settings
 if TYPE_CHECKING:
     from api.services.mfa import Requirement
 
+# passlib 1.7.4 probes ``bcrypt.__about__``, which bcrypt >= 4.1 removed, and logs
+# a "(trapped) error reading bcrypt version" traceback at WARNING on first use.
+# It is caught and hashing is unaffected; keep real errors, drop the noise.
+logging.getLogger("passlib.handlers.bcrypt").setLevel(logging.ERROR)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme = HTTPBearer(auto_error=False)
 

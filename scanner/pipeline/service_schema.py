@@ -61,7 +61,7 @@ class OsRecord(BaseModel):
     host: str = ""
 
 
-#: Pulse finding classes (``pulse.scan.v2``). ``plugin_script`` is a Rhai
+#: Pulse finding classes (``pulse.scan.v2``, unchanged in v3). ``plugin_script`` is a Rhai
 #: plugin's finding (``cve_id`` is ``SCRIPT-<NAME>``, not a CVE; see
 #: ``pulse_plugins.py``). ``exposure`` and ``tls`` carry no
 #: CVE id; ``keyword_cve`` is an unverified NVD keyword hit, not a confirmed
@@ -92,7 +92,7 @@ class CveRecord(BaseModel):
     match_reason: str = ""
     source: str = "pulse"
     refs: list[str] = Field(default_factory=list)
-    # Hypothesis metadata (Pulse pulse.scan.v2).
+    # Hypothesis metadata (Pulse pulse.scan.v2 and v3).
     finding_class: str = "version_cve"
     confidence: int = Field(default=0, ge=0, le=100)
     requires_confirmation: bool = False

@@ -94,7 +94,7 @@ def test_loader_does_not_hide_programming_errors(provider, monkeypatch):
     def broken(*args, **kwargs):
         raise RuntimeError("broken normalizer")
 
-    monkeypatch.setattr(base, "_coerce_record", broken)
+    monkeypatch.setattr(base, "_coerce_entry", broken)
     with pytest.raises(RuntimeError, match="broken normalizer"):
         base.load_dataset(provider.path(), provider=provider.name)
 

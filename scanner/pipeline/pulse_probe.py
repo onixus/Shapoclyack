@@ -103,6 +103,27 @@ from .utils import run_command, save_json, write_lines
 #: (pulse 1.1.0 prints ``2026.07.29-h1``).
 _RULESET = re.compile(r"(\d{4})\.(\d{1,2})\.(\d{1,2})(?:-h(\d+))?")
 
+#: ``meta.schema`` values the parsers are known to read (APEX boundary
+#: ``pulse-engine-v3`` in apex-contract/manifest.json). v3 (GenDec#33/#35)
+#: only adds optional fields - ``distro``/``distro_revision`` per row,
+#: ``meta.mode``, ``hosts[]``, ``discovery`` - so the v2 the pinned v1.4.0
+#: binary prints stays accepted until the pin moves past it. Another value is
+#: still parsed, field by field as always, but logged: a v4 should be read
+#: before it is trusted. Caveat: the pinned Pulse v1.4.0 prints v2, so the v3
+#: ``hosts[]`` handling in l2_discovery is exercised on synthetic reports only
+#: until a real v3 binary has been run against it.
+REPORT_SCHEMAS = ("pulse.scan.v2", "pulse.scan.v3")
+#: ``meta.schema`` comes from the tool's output: kept short before it reaches a
+#: log line, ``raw.json`` or ``report_schemas``.
+REPORT_SCHEMA_MAX_LEN = 64
+#: Distinct unknown values kept per run (a hostile report could vary it per chunk).
+REPORT_SCHEMAS_MAX = 8
+
+
+def _report_schema(value: Any) -> str:
+    """``meta.schema`` as a string of at most ``REPORT_SCHEMA_MAX_LEN`` characters; ``""`` if not a string."""
+    return value.strip()[:REPORT_SCHEMA_MAX_LEN] if isinstance(value, str) else ""
+
 
 #: Port-to-name table handed to ``--services-db``. Built from the IANA registry
 #: (scripts/build-pulse-services.py), never from nmap-services. Lives beside the
@@ -1074,6 +1095,8 @@ def _run_pulse_probe(
     # a CVE proves nothing about it (api/services/verification_coverage.py).
     rulesets: set[str] = set()
     pulse_versions: set[str] = set()
+    report_schemas: set[str] = set()
+    warned_schemas: set[str] = set()
     consecutive_crashes = 0
     consecutive_timeouts = 0
     scan_mode = "syn" if syn else "connect"
@@ -1267,6 +1290,17 @@ def _run_pulse_probe(
                 rulesets.add(str(meta["ruleset"]))
             if meta.get("version"):
                 pulse_versions.add(str(meta["version"]))
+            schema = _report_schema(meta.get("schema"))
+            if schema and (schema in report_schemas or len(report_schemas) < REPORT_SCHEMAS_MAX):
+                report_schemas.add(schema)
+                if schema not in REPORT_SCHEMAS and schema not in warned_schemas:
+                    warned_schemas.add(schema)
+                    logging.warning(
+                        "pulse_probe: report schema %r is not one of %s; parsing it as %s",
+                        schema,
+                        ", ".join(REPORT_SCHEMAS),
+                        REPORT_SCHEMAS[-1],
+                    )
             services, os_recs, cves = parse_pulse_json(
                 payload, plugin_shas=_shas(plugin_receipt) if script_dir else {}
             )
@@ -1351,6 +1385,7 @@ def _run_pulse_probe(
         # if two ever answered, the claim made for the run is the weaker one.
         "ruleset": min(rulesets, key=ruleset_order) if rulesets else None,
         "pulse_version": min(pulse_versions) if pulse_versions else None,
+        "report_schemas": sorted(report_schemas),
         "chunk_hosts": size,
         "plugins": plugin_receipt,
         **diagnostics,

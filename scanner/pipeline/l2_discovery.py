@@ -59,6 +59,15 @@ MDNS_PARSE_LIMIT = 1024
 _NETBIOS_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-]{0,14}")
 _HOST_RUN_RE = re.compile(r"[A-Za-z0-9_.-]+")
 _HOST_LABEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*")
+_MAC_RE = re.compile(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}")
+#: ``hosts[].hostnames[].source`` (pulse.scan.v3) -> evidence script id; the
+#: first two are the ids the banner parsers below already use.
+#: Caps on what one report may make us hold: ``hosts[]`` is untrusted input from
+#: a tool whose answers come from hosts on the segment.
+PULSE_HOSTS_LIMIT = 8192
+PULSE_HOSTNAMES_PER_HOST = 16
+PULSE_NAMES_PER_SOURCE = 8
+_NAME_SOURCES = {"netbios": "pulse:netbios-ns", "mdns": "pulse:mdns", "llmnr": "pulse:llmnr"}
 
 
 def _host_count(network: ipaddress.IPv4Network) -> int:
@@ -254,12 +263,27 @@ def neighbour_macs(interface: str = "") -> dict[str, str]:
             complete = int(flags, 16) & 0x2
         except ValueError:
             continue
-        if not complete or set(mac.replace(":", "")) <= {"0"}:
+        usable = usable_mac(mac)
+        if not complete or usable is None:
             continue
         if interface and device != interface:
             continue
-        macs[ip] = mac.upper()
+        macs[ip] = usable
     return macs
+
+
+def usable_mac(value: Any) -> str | None:
+    """Upper-case ``aa:bb:..`` for a unicast station MAC, else ``None``.
+
+    The zero MAC (an entry the kernel gave up on) and group addresses
+    (broadcast ``ff:..`` and every other multicast, low bit of the first
+    octet) identify no host. Shared by the ARP reader and ``hosts[].mac``.
+    """
+    if not isinstance(value, str) or not _MAC_RE.fullmatch(value):
+        return None
+    if set(value.replace(":", "")) <= {"0"} or int(value[:2], 16) & 1:
+        return None
+    return value.upper()
 
 
 def _pulse_rows(payload: Any, scope: list[str]) -> list[dict[str, Any]]:
@@ -320,6 +344,22 @@ def valid_hostname(name: str) -> bool:
     return all(label and len(label) <= 63 and re.fullmatch(r"[A-Za-z0-9_-]+", label) for label in name.split("."))
 
 
+def valid_mdns_name(name: str) -> bool:
+    """A ``<label>[.<label>]*.local`` host name; no ``_`` service labels, not ``local`` alone."""
+    labels = name.split(".")
+    return (
+        len(labels) >= 2
+        and labels[-1].lower() == "local"
+        and valid_hostname(name)
+        and all(_HOST_LABEL_RE.fullmatch(label) for label in labels)
+    )
+
+
+def valid_llmnr_name(name: str) -> bool:
+    """LLMNR resolves single-label names only; ``localhost`` is never a peer's name."""
+    return bool(_HOST_LABEL_RE.fullmatch(name)) and len(name) <= 63 and name.lower() != "localhost"
+
+
 def mdns_names(banner: str) -> list[str]:
     """``*.local`` host names in a UDP/5353 banner; service types are not names.
 
@@ -344,9 +384,65 @@ def mdns_names(banner: str) -> list[str]:
                 host.append(before)
             if host:
                 name = ".".join([*reversed(host), label])
-                if valid_hostname(name):
+                if valid_mdns_name(name):
                     names.append(name)
     return merge_name_lists(names)
+
+
+def _pulse_hosts(payload: Any, scope: list[str]) -> list[dict[str, Any]]:
+    """In-scope IPv4 ``hosts[]`` entries (pulse.scan.v3, GenDec#35); none before v3.
+
+    ``method: local`` is the sensor's own address: the ARP sweep never
+    reported it, so it does not become an alive host here either.
+    """
+    raw = payload.get("hosts") if isinstance(payload, dict) else None
+    entries: list[dict[str, Any]] = []
+    for entry in (raw if isinstance(raw, list) else [])[:PULSE_HOSTS_LIMIT]:
+        if not isinstance(entry, dict) or entry.get("method") == "local":
+            continue
+        ip = str(entry.get("ip") or "")
+        try:
+            ipaddress.IPv4Address(ip)
+        except ValueError:
+            continue
+        if host_in_batch_scope(ip, scope):
+            entries.append(entry)
+    return entries
+
+
+def _reported_names(entry: dict[str, Any]) -> dict[str, list[str]]:
+    """Names Pulse resolved itself for one ``hosts[]`` entry, by evidence script id.
+
+    The same checks as the banner parsers apply: a NetBIOS name has to look
+    like one, an mDNS name like ``mdns_names`` returns (``*.local``, no ``_``
+    labels), an LLMNR name is a single label. At most ``PULSE_HOSTNAMES_PER_HOST``
+    entries are looked at and ``PULSE_NAMES_PER_SOURCE`` names kept per source.
+    """
+    found: dict[str, list[str]] = {}
+    pairs: list[tuple[str, Any]] = []
+    hostnames = entry.get("hostnames")
+    for item in (hostnames if isinstance(hostnames, list) else [])[:PULSE_HOSTNAMES_PER_HOST]:
+        if isinstance(item, dict):
+            pairs.append((str(item.get("source") or ""), item.get("name")))
+    netbios = entry.get("netbios")
+    if isinstance(netbios, dict):
+        pairs.append(("netbios", netbios.get("name")))
+    for source, name in pairs:
+        script_id = _NAME_SOURCES.get(source)
+        if script_id is None or not isinstance(name, str):
+            continue
+        name = name.strip()
+        if len(name) > 253:
+            continue
+        if source == "netbios":
+            valid = bool(_NETBIOS_NAME_RE.fullmatch(name))
+        elif source == "mdns":
+            valid = valid_mdns_name(name)
+        else:
+            valid = valid_llmnr_name(name)
+        if valid:
+            found[script_id] = merge_name_lists(found.get(script_id, []), [name])[:PULSE_NAMES_PER_SOURCE]
+    return found
 
 
 def parse_pulse_l2(
@@ -355,13 +451,23 @@ def parse_pulse_l2(
     """Alive hosts (with MAC), names by host and name evidence from Pulse JSON.
 
     Everything is constrained to ``scope``: a row for an address outside the
-    selected networks is dropped before it can seed discovery.
+    selected networks is dropped before it can seed discovery. A v3 report's
+    ``hosts[]`` adds its addresses, its MAC (preferred over ``macs``, which is
+    read from the kernel afterwards) and the names Pulse parsed itself; the
+    banner rows are still read, since v2 reports carry nothing else.
     """
     rows = _pulse_rows(payload, scope)
-    alive = sorted({str(row["ip"]) for row in rows}, key=ipaddress.IPv4Address)
-    hosts = [{"host": ip, "mac": (macs or {}).get(ip), "vendor": None} for ip in alive]
+    reported = _pulse_hosts(payload, scope)
+    reported_macs = {str(entry["ip"]): mac for entry in reported if (mac := usable_mac(entry.get("mac")))}
+    alive = sorted(
+        {str(row["ip"]) for row in rows} | {str(entry["ip"]) for entry in reported}, key=ipaddress.IPv4Address
+    )
+    hosts = [
+        {"host": ip, "mac": reported_macs.get(ip) or (macs or {}).get(ip), "vendor": None} for ip in alive
+    ]
     mapping: dict[str, list[str]] = {}
     evidence: list[dict[str, Any]] = []
+    first: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
         banner = row.get("banner")
         port = row.get("port")
@@ -376,7 +482,20 @@ def parse_pulse_l2(
         ip = str(row["ip"])
         if names:
             mapping[ip] = merge_name_lists(mapping.get(ip, []), names)
-        evidence.append({"host": ip, "script_id": script_id, "names": names, "output": banner[:4096]})
+        item = {"host": ip, "script_id": script_id, "names": names, "output": banner[:4096]}
+        evidence.append(item)
+        first.setdefault((ip, script_id), item)
+    for entry in reported:
+        ip = str(entry["ip"])
+        for script_id, names in _reported_names(entry).items():
+            mapping[ip] = merge_name_lists(mapping.get(ip, []), names)
+            item = first.get((ip, script_id))
+            if item is None:
+                # Only the accepted names, serialised whole (never cut mid-JSON).
+                output = json.dumps({"names": names}, sort_keys=True)
+                evidence.append({"host": ip, "script_id": script_id, "names": names, "output": output})
+            else:
+                item["names"] = merge_name_lists(item["names"], names)
     return hosts, mapping, evidence
 
 

@@ -26,10 +26,15 @@
       ]
     },
     {
-      "name": "pulse-engine-v1",
+      "name": "pulse-engine-v3",
       "kind": "native-adapter",
-      "event_type": "apex.pulse.scan_report.v1",
-      "payload_contract": "GenDec/docs/schema.json"
+      "event_type": "apex.pulse.scan_report.v3",
+      "payload_contract": "GenDec/docs/schema.json",
+      "payload_schema_id": "https://pulse.dev/schemas/v3/scan-report.json",
+      "accepted_report_schemas": [
+        "pulse.scan.v2",
+        "pulse.scan.v3"
+      ]
     }
   ],
   "native_contracts": [
