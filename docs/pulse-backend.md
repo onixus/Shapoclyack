@@ -853,7 +853,13 @@ add evidence rows (`pulse:netbios-ns`, `pulse:mdns`, `pulse:llmnr`). The
 banner rows are still parsed, so a v2 report gives exactly the result it gave
 before. The command line has not changed yet: `--discover-only`,
 `--discover-names`, `--discover-rate` and `-e` replace the workarounds only
-once the pinned Pulse release has them. Measurements: [ADR 0002](adr/0002-replacing-nmap-functions.md).
+once the pinned Pulse release has them. **Not yet seen from a real binary:**
+the pinned release prints `pulse.scan.v2`, so the `hosts[]` handling is
+verified on synthetic reports only. `hosts[]` is untrusted input: a MAC must be
+a unicast station address (not zero, broadcast or multicast, as for
+`/proc/net/arp`), an mDNS name must be `*.local` without `_` labels, an LLMNR
+name a single label, and at most 8192 entries, 16 `hostnames[]` per host and
+8 names per source are read. Measurements: [ADR 0002](adr/0002-replacing-nmap-functions.md).
 
 ## Nmap
 
