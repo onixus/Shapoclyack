@@ -34,4 +34,17 @@ def test_apex_contract_preserves_asset_and_evidence_identity():
 
     boundaries = {item["name"]: item for item in manifest["boundaries"]}
     assert "lariska-agent-v1" in boundaries
-    assert boundaries["pulse-engine-v1"]["event_type"] == "apex.pulse.scan_report.v1"
+    pulse = boundaries["pulse-engine-v3"]
+    assert pulse["event_type"] == "apex.pulse.scan_report.v3"
+    assert pulse["payload_schema_id"] == "https://pulse.dev/schemas/v3/scan-report.json"
+    assert "pulse-engine-v1" not in boundaries
+
+
+def test_pulse_boundary_lists_the_report_schemas_the_adapter_reads():
+    from scanner.pipeline.pulse_probe import REPORT_SCHEMAS
+
+    boundaries = {item["name"]: item for item in _manifest()["boundaries"]}
+    accepted = boundaries["pulse-engine-v3"]["accepted_report_schemas"]
+    assert accepted == list(REPORT_SCHEMAS)
+    # The boundary's event version and the newest report schema move together.
+    assert accepted[-1] == "pulse.scan.v3"

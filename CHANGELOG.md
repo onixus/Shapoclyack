@@ -26,6 +26,16 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- The Pulse boundary in `apex-contract/manifest.json` follows Pulse's report
+  bump (GenDec#52/#53): `pulse-engine-v1` / `apex.pulse.scan_report.v1`
+  becomes `pulse-engine-v3` / `apex.pulse.scan_report.v3`, payload schema
+  `https://pulse.dev/schemas/v3/scan-report.json`. The adapter reads both
+  `pulse.scan.v2` (the pinned v1.4.0 binary) and `pulse.scan.v3`
+  (`REPORT_SCHEMAS` in `scanner/pipeline/pulse_probe.py`, recorded per run in
+  `pulse/raw.json`); any other `meta.schema` is parsed but logged. L2 discovery
+  takes alive hosts, MACs and NetBIOS/mDNS/LLMNR names from a v3 report's
+  `hosts[]`; a v2 report gives the same result as before.
+
 - Image builds fetch enrichment data (NVD/CVSS4, EPSS, KEV, GeoIP, vendor
   advisories) once per build instead of once per image and architecture: the
   fetch moved into an `enrichment` stage that runs on the build platform and is

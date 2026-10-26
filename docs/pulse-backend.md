@@ -250,7 +250,7 @@ for the same reason.
 | `tls_posture.json` | Unified TLS findings (pulse-tls / probe; `nmap-nse` only from a run recorded before #548) |
 | `os.json` | `octo.os.v1` OS guesses |
 | `pulse_cves.json` | Pulse findings (`octo.cve.v1`: version_cve / keyword_cve / exposure / tls) |
-| `pulse/raw.json` | Merged raw Pulse JSON |
+| `pulse/raw.json` | Merged raw Pulse JSON; `adapter.report_schemas` lists the `meta.schema` values seen (`pulse.scan.v2` and `pulse.scan.v3` are read, another one is parsed but logged) |
 | `pulse/REPORT_PRIMARY` | Marker: report prefers Pulse services/OS |
 
 `diff_pulse_nmap.json` and `nmap/**` are no longer written. A run directory
@@ -814,7 +814,7 @@ One run does it all:
   The dropped parts go to `skipped_networks` as `not_on_interface:<iface>`. An unreadable route table skips the stage
   (`interface.unverifiable`). Without `interface` no route check is made, as
   before.
-- **MAC.** Not in Pulse's output. After the run the adapter reads the kernel
+- **MAC.** Not in a `pulse.scan.v2` report. After the run the adapter reads the kernel
   neighbour table (`/proc/net/arp`), complete entries only, of the configured
   interface when one is set, for alive in-scope hosts. A host whose entry
   vanished has `mac: null`. `vendor` is always `null`: there is no OUI
@@ -841,7 +841,19 @@ One run does it all:
 Pulse is missing MAC and names in structured output, a packet-rate cap in
 discovery, a discovery-only mode and an interface choice
 ([GenDec#35](https://github.com/onixus/GenDec/issues/35)); the workarounds above
-go away when it lands. Measurements: [ADR 0002](adr/0002-replacing-nmap-functions.md).
+go away when it lands.
+
+**`pulse.scan.v3` reports** (GenDec#33/#35, APEX event
+`apex.pulse.scan_report.v3`) are already read when a newer binary prints
+them: every in-scope `hosts[]` entry is an alive host (except `method: local`,
+the sensor's own address, which the ARP sweep never reported either); its
+`mac` wins over the kernel read; names from `hostnames[]` (`netbios`, `mdns`,
+`llmnr`) and `netbios.name` pass the same shape checks as the banner names and
+add evidence rows (`pulse:netbios-ns`, `pulse:mdns`, `pulse:llmnr`). The
+banner rows are still parsed, so a v2 report gives exactly the result it gave
+before. The command line has not changed yet: `--discover-only`,
+`--discover-names`, `--discover-rate` and `-e` replace the workarounds only
+once the pinned Pulse release has them. Measurements: [ADR 0002](adr/0002-replacing-nmap-functions.md).
 
 ## Nmap
 

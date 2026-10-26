@@ -103,6 +103,15 @@ from .utils import run_command, save_json, write_lines
 #: (pulse 1.1.0 prints ``2026.07.29-h1``).
 _RULESET = re.compile(r"(\d{4})\.(\d{1,2})\.(\d{1,2})(?:-h(\d+))?")
 
+#: ``meta.schema`` values the parsers are known to read (APEX boundary
+#: ``pulse-engine-v3`` in apex-contract/manifest.json). v3 (GenDec#33/#35)
+#: only adds optional fields - ``distro``/``distro_revision`` per row,
+#: ``meta.mode``, ``hosts[]``, ``discovery`` - so the v2 the pinned v1.4.0
+#: binary prints stays accepted until the pin moves past it. Another value is
+#: still parsed, field by field as always, but logged: a v4 should be read
+#: before it is trusted.
+REPORT_SCHEMAS = ("pulse.scan.v2", "pulse.scan.v3")
+
 
 #: Port-to-name table handed to ``--services-db``. Built from the IANA registry
 #: (scripts/build-pulse-services.py), never from nmap-services. Lives beside the
@@ -1074,6 +1083,7 @@ def _run_pulse_probe(
     # a CVE proves nothing about it (api/services/verification_coverage.py).
     rulesets: set[str] = set()
     pulse_versions: set[str] = set()
+    report_schemas: set[str] = set()
     consecutive_crashes = 0
     consecutive_timeouts = 0
     scan_mode = "syn" if syn else "connect"
@@ -1267,6 +1277,16 @@ def _run_pulse_probe(
                 rulesets.add(str(meta["ruleset"]))
             if meta.get("version"):
                 pulse_versions.add(str(meta["version"]))
+            if meta.get("schema"):
+                report_schemas.add(str(meta["schema"]))
+                if meta["schema"] not in REPORT_SCHEMAS:
+                    logging.warning(
+                        "pulse_probe chunk %s: report schema %s is not one of %s; parsing it as %s",
+                        idx,
+                        meta["schema"],
+                        ", ".join(REPORT_SCHEMAS),
+                        REPORT_SCHEMAS[-1],
+                    )
             services, os_recs, cves = parse_pulse_json(
                 payload, plugin_shas=_shas(plugin_receipt) if script_dir else {}
             )
@@ -1351,6 +1371,7 @@ def _run_pulse_probe(
         # if two ever answered, the claim made for the run is the weaker one.
         "ruleset": min(rulesets, key=ruleset_order) if rulesets else None,
         "pulse_version": min(pulse_versions) if pulse_versions else None,
+        "report_schemas": sorted(report_schemas),
         "chunk_hosts": size,
         "plugins": plugin_receipt,
         **diagnostics,
