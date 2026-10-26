@@ -450,6 +450,38 @@ def test_report_schema_is_recorded_and_an_unknown_one_logged(tmp_path, monkeypat
     assert ("is not one of pulse.scan.v2, pulse.scan.v3" in caplog.text) is warned
 
 
+def test_report_schema_from_the_report_is_bounded_and_warned_once(tmp_path, monkeypatch, caplog):
+    def chunk(schema):
+        return json.dumps({"meta": {"schema": schema}, "open": [{"ip": "10.0.0.1", "port": 22, "service": "ssh"}]})
+
+    long_schema = "pulse.scan.v9" + "x" * 500
+    with caplog.at_level(logging.WARNING):
+        _run_probe(
+            tmp_path, monkeypatch, [chunk(long_schema)], open_ports=("10.0.0.1:22/tcp", "10.0.0.2:22/tcp"), chunk_hosts=1
+        )
+    raw = json.loads((tmp_path / "pulse" / "raw.json").read_text(encoding="utf-8"))
+    assert [len(item) for item in raw["adapter"]["report_schemas"]] == [64]
+    assert "x" * 65 not in caplog.text and "x" * 65 not in json.dumps(raw["adapter"])
+    assert caplog.text.count("is not one of") == 1
+
+
+def test_non_string_report_schema_is_ignored(tmp_path, monkeypatch, caplog):
+    stdout = json.dumps({"meta": {"schema": {"a": ["b"]}}, "open": [{"ip": "10.0.0.1", "port": 22, "service": "ssh"}]})
+    with caplog.at_level(logging.WARNING):
+        _run_probe(tmp_path, monkeypatch, [stdout])
+    raw = json.loads((tmp_path / "pulse" / "raw.json").read_text(encoding="utf-8"))
+    assert raw["adapter"]["report_schemas"] == []
+    assert "is not one of" not in caplog.text
+
+
+def test_report_schema_helper_trims_and_rejects_non_strings():
+    from scanner.pipeline import pulse_probe
+
+    assert pulse_probe._report_schema("  pulse.scan.v3 ") == "pulse.scan.v3"
+    assert pulse_probe._report_schema("y" * 100) == "y" * 64
+    assert pulse_probe._report_schema(None) == "" and pulse_probe._report_schema(3) == ""
+
+
 def test_all_closed_chunk_is_reprobed_after_a_settle_pause(tmp_path, monkeypatch):
     """naabu proved the port open, so all-closed is a contradiction, not a result."""
     calls, sleeps = _run_probe(tmp_path, monkeypatch, [_ALL_CLOSED, _ONE_SERVICE])

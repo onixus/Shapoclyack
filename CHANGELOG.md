@@ -23,6 +23,12 @@ All notable changes to Shapoclyack are documented in this file.
   that explains a changed count, campaign creation with a composition preview,
   and `/campaigns`. See
   [docs/remediation-campaigns.md](docs/remediation-campaigns.md).
+- `scripts/neigh-table-limits.sh` checks and raises the kernel neighbour table
+  limits (`gc_thresh1/2/3`) for L2 discovery. `--check` fails on the same
+  gc_thresh3/gc_thresh2 targets `--apply` would set, `--apply` verifies every
+  key (IPv6 included) before the first write, `--thresh3` is bounded to
+  1024..1048576 and a non-Linux host exits 3. See `docs/pulse-backend.md`,
+  "Neighbour table limits" (#612).
 
 ### Changed
 
@@ -34,7 +40,11 @@ All notable changes to Shapoclyack are documented in this file.
   (`REPORT_SCHEMAS` in `scanner/pipeline/pulse_probe.py`, recorded per run in
   `pulse/raw.json`); any other `meta.schema` is parsed but logged. L2 discovery
   takes alive hosts, MACs and NetBIOS/mDNS/LLMNR names from a v3 report's
-  `hosts[]`; a v2 report gives the same result as before.
+  `hosts[]`; a v2 report gives the same result as before. `hosts[]` is
+  untrusted: MACs must be unicast (the `/proc/net/arp` rules), mDNS names
+  `*.local` without `_` labels, LLMNR names a single label, and entry counts,
+  names per host and `meta.schema` length are capped. Only synthetic v3 reports
+  have been tried; the pinned binary prints v2.
 
 - Image builds fetch enrichment data (NVD/CVSS4, EPSS, KEV, GeoIP, vendor
   advisories) once per build instead of once per image and architecture: the
