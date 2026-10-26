@@ -52,6 +52,7 @@ function filtersKey(filters: VulnerabilityListFilters): Record<string, unknown> 
     finding_type: filters.finding_type ?? "",
     detector_source: filters.detector_source ?? "",
     network_exposure: filters.network_exposure ?? "",
+    problem_key: filters.problem_key ?? "",
   };
 }
 

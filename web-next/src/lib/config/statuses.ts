@@ -266,6 +266,14 @@ export const VULN_LIFECYCLE_STATUS: Record<VulnLifecycleState, StatusStyle> = {
   CLOSED: { label: "closed", className: SUCCESS },
 };
 
+/** Remediation campaign status (#579). `completed` is derived by the API and
+ * means every member is verified, an accepted risk or a false positive. */
+export const CAMPAIGN_STATUS: Record<string, StatusStyle> = {
+  active: { label: "active", className: INFO_SKY },
+  completed: { label: "completed", className: SUCCESS },
+  cancelled: { label: "cancelled", variant: "secondary", className: MUTED },
+};
+
 export const SLA_STATUS: Record<SlaState, StatusStyle> = {
   on_track: { label: "on track", className: SUCCESS },
   due_soon: { label: "due soon", className: IN_PROGRESS },
