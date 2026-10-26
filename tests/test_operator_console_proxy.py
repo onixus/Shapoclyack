@@ -52,7 +52,7 @@ def ingress():
 def send(ingress, path="/health", method="GET", headers=None):
     connection = HTTPConnection(*ingress[0], timeout=3)
     try:
-        connection.request(method, path, headers=headers or {})
+        connection.request(method, path, headers={"Host": "127.0.0.1:8083", **(headers or {})})
         response = connection.getresponse()
         return response.status, response.read()
     finally:
@@ -110,3 +110,66 @@ def test_body_smuggling_and_unbounded_lengths_denied_before_read(ingress, header
 def test_connect_cannot_create_a_tunnel(ingress):
     assert send(ingress, "external.invalid:443", method="CONNECT")[0] == 501
     assert not ingress[1]
+
+
+@pytest.mark.parametrize("host", ["attacker.invalid", "127.0.0.1", "127.0.0.1:9999", "localhost:8083.attacker.invalid",
+                                  "127.0.0.1:8083, attacker.invalid"])
+def test_foreign_host_header_never_reaches_upstream(ingress, host):
+    assert send(ingress, headers={"Host": host})[0] == 421
+    assert not ingress[1]
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1:8083", "LOCALHOST:8083", "127.0.0.1:8082", "localhost:8084"])
+def test_loopback_hosts_are_served(ingress, host):
+    assert send(ingress, headers={"Host": host})[0] == 200
+
+
+def test_missing_host_header_is_refused(ingress):
+    connection = HTTPConnection(*ingress[0], timeout=3)
+    try:
+        connection.putrequest("GET", "/health", skip_host=True)
+        connection.endheaders()
+        assert connection.getresponse().status == 421
+    finally:
+        connection.close()
+    assert not ingress[1]
+
+
+@pytest.fixture
+def model_ingress(ingress, monkeypatch):
+    monkeypatch.setattr(proxy_module.Proxy, "allowed_paths", proxy_module.MODEL_PATHS)
+    return ingress
+
+
+@pytest.mark.parametrize("path", ["/health", "/v1/models", "/v1/models?x=1"])
+def test_model_proxy_serves_the_read_endpoints(model_ingress, path):
+    assert send(model_ingress, path)[0] == 200
+    assert model_ingress[1] == [path]
+
+
+@pytest.mark.parametrize("path", ["/v1/chat/completions", "/v1/embeddings"])
+def test_model_proxy_lets_the_post_endpoints_through_to_the_upstream(model_ingress, path):
+    # Reached the stub upstream, which implements GET only: 501 rather than the proxy's 404.
+    assert send(model_ingress, path, method="POST", headers={"Content-Length": "0"})[0] == 501
+
+
+@pytest.mark.parametrize("name", ["inference", "embeddings"])
+def test_selecting_a_model_target_installs_the_path_allowlist(monkeypatch, name):
+    monkeypatch.setattr(proxy_module.Proxy, "upstream", ("api", 8080))
+    monkeypatch.setattr(proxy_module.Proxy, "allowed_paths", None)
+    proxy_module.select_model_target(name)
+    assert proxy_module.Proxy.allowed_paths == proxy_module.MODEL_PATHS
+    assert proxy_module.Proxy.upstream == proxy_module.MODEL_TARGETS[name]
+    assert set(proxy_module.MODEL_PATHS) == {"/health", "/v1/models", "/v1/chat/completions", "/v1/embeddings"}
+
+
+@pytest.mark.parametrize("path,method", [("/props", "GET"), ("/slots", "GET"), ("/metrics", "GET"), ("/tokenize", "POST"),
+                                         ("/v1/completions", "POST"), ("/health/../props", "GET"), ("/v1/chat/completions", "GET"),
+                                         ("/v1/embeddings", "DELETE"), ("/", "GET"), ("/v1/models/", "GET")])
+def test_model_proxy_refuses_other_llama_server_routes_and_methods(model_ingress, path, method):
+    assert send(model_ingress, path, method=method)[0] == 404
+    assert not model_ingress[1]
+
+
+def test_api_ingress_keeps_serving_console_paths(ingress):
+    assert send(ingress, "/operator")[0] == 200 and ingress[1] == ["/operator"]

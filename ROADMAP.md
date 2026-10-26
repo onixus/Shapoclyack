@@ -819,7 +819,9 @@ hosted-provider opt-in. [ADR 0005](docs/adr/0005-local-operator-mac-acceptance.m
 records the owner's primary Mac ARM64 CPU container profile; physical NVIDIA
 8 GiB acceptance is separate [#609](https://github.com/onixus/Shapoclyack/issues/609).
 Adapter and contract tests do not establish
-model quality, live provider access or deployed assistant acceptance.
+model quality, live provider access or deployed assistant acceptance. The quality
+gate reports `exposed_only` (not passed) while every case was seen in development,
+and Kubernetes deployment of the operator is unsupported.
 
 ### Not doing, and why
 

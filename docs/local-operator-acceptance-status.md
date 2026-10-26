@@ -28,6 +28,12 @@ NVIDIA acceptance remains separate in #609 under ADR 0005.
   Analysis, reviewed configuration change and real verification are still
   pending; the positive scan alone does not complete the end-to-end gate.
 
+Note on the evaluator verdict: because all 190 benchmark cases are development
+exposed, a fully green final run reports `quality_gate_status: exposed_only`
+with `quality_gate_passed: false` and a non-zero exit, and a final run also
+needs a soak of at least 3600 seconds. Figures above are descriptive local runs
+and are not re-verified by the pull request.
+
 ## Failed and incomplete measurements
 
 The frozen domain/security corpus has 190 cases and SHA-256

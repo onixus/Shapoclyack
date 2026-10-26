@@ -124,6 +124,14 @@ literals inside the isolated subnet. Egress itself is enforced by the compose
 `internal` network; this check only stops a misconfigured hosted provider from
 being started.
 
+The loopback ingress (`scripts/operator-console-proxy.py`) accepts only a
+single `Host` header naming a loopback authority on the stand's ports (a
+foreign or missing `Host` gets 421, which blocks DNS rebinding), and the two
+model targets forward only `/health`, `/v1/models`, `/v1/chat/completions` and
+`/v1/embeddings` with their expected methods; llama.cpp's other routes (`/props`,
+`/slots`, `/metrics`, `/tokenize`, ...) answer 404. The API ingress still
+serves the console and API paths.
+
 **Kubernetes is not supported for the local operator.** `k8s/` deploys no
 inference runtime, operator worker or `OCTO_OPERATOR_*` settings, so there is
 no NetworkPolicy to add and none is shipped; LO-09 (no external egress) holds
