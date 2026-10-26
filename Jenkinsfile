@@ -13,7 +13,9 @@
 //   * образ собирается только под нативный linux/arm64, без QEMU-матрицы;
 //   * стадии 'SSH deploy (live sshd)' в ci.yml нет вовсе.
 
-def PIP_CACHE = '-v shapoclyack-pip-cache:/root/.cache/pip'
+def ABORT_SUPERSEDED_BUILDS = env.BRANCH_NAME != 'main'
+
+def PIP_CACHE ='-v shapoclyack-pip-cache:/root/.cache/pip'
 
 // Откуда Linux-узел берёт исходники: SCM-путь джобы локальный, маковский.
 def GITHUB_REPO = 'https://github.com/onixus/Shapoclyack.git'
@@ -60,7 +62,9 @@ pipeline {
     timestamps()
     // A newer revision supersedes this branch's older validation. Abort the
     // obsolete run so it cannot hold the exact-head build behind its full suite.
-    disableConcurrentBuilds(abortPrevious: true)
+    // Not on main: a quick follow-up merge must not cancel the build of the
+    // commit before it, which is the record of what main actually passed.
+    disableConcurrentBuilds(abortPrevious: ABORT_SUPERSEDED_BUILDS)
     buildDiscarder(logRotator(numToKeepStr: '20'))
     // 150, а не 90: стадии на gaming-amd64 (~67 минут, pytest на VM вдвое
     // медленнее мака) идут до стадий образа на маке (~31 минута в main #75),

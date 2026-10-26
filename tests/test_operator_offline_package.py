@@ -3,6 +3,7 @@ import hashlib
 from datetime import UTC, datetime
 import importlib.util
 import io
+import os
 import ipaddress
 import json
 from pathlib import Path
@@ -604,3 +605,142 @@ def test_uninspected_or_mismatched_runtime_never_gets_integrity_record(module, r
         module.attest_deployment(root, manifest, project, path)
     assert not (root / ".offline/verification.json").exists()
     assert "OCTO_OPERATOR_RUNTIME_MANIFEST_SHA256" not in (root / ".offline/app.env").read_text()
+
+
+def _env_file(path):
+    return dict(line.split("=", 1) for line in path.read_text().splitlines())
+
+
+def test_offline_deployment_runs_the_api_in_production_mode_with_generated_secrets(module, bundle, tmp_path, monkeypatch):
+    from api import settings as api_settings
+
+    root = tmp_path / "installation"
+    root.mkdir()
+    module.deployment(root, bundle[1])
+    env = _env_file(root / ".offline/app.env")
+    assert env["OCTO_ENV"] == "prod" and env["OCTO_REFRESH_COOKIE_SECURE"] == "true"
+    assert len(env["OCTO_JWT_SECRET"]) >= 64 and len(env["OCTO_MASTER_KEY"]) >= 64
+    for key in [k for k in os.environ if k.startswith("OCTO_")]:
+        monkeypatch.delenv(key)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    # The real production validator must accept the generated configuration.
+    settings = api_settings.load_settings()
+    assert settings.env == api_settings.ENV_PROD
+    # ... and the dev escape hatch must not be what lets it through.
+    monkeypatch.setenv("OCTO_JWT_SECRET", api_settings.DEFAULT_JWT_SECRET)
+    with pytest.raises(api_settings.InsecureConfigurationError):
+        api_settings.load_settings()
+
+
+def test_state_and_output_are_private_and_owned_by_the_image_user_when_chown_is_allowed(module, bundle, tmp_path, monkeypatch):
+    chowned = []
+    monkeypatch.setattr(module.os, "chown", lambda path, uid, gid: chowned.append((Path(path).name, uid, gid)))
+    root = tmp_path / "installation"
+    root.mkdir()
+    _, compose_file, _ = module.deployment(root, bundle[1])
+    for name in ("state", "output"):
+        assert (root / ".offline" / name).stat().st_mode & 0o777 == 0o700
+    assert sorted(chowned) == [("output", 1000, 1000), ("state", 1000, 1000)]
+    compose = json.loads(compose_file.read_text())
+    assert all(compose["services"][name]["user"] == "1000:1000" for name in ("migrate", "api", "worker"))
+
+
+def test_unprivileged_install_runs_control_containers_as_the_owner_not_world_writable(module, bundle, tmp_path, monkeypatch):
+    def refuse(*_):
+        raise PermissionError
+    monkeypatch.setattr(module.os, "chown", refuse)
+    root = tmp_path / "installation"
+    root.mkdir()
+    _, compose_file, _ = module.deployment(root, bundle[1])
+    for name in ("state", "output"):
+        assert (root / ".offline" / name).stat().st_mode & 0o007 == 0
+        assert (root / ".offline" / name).stat().st_mode & 0o777 == 0o700
+    expected = f"{os.geteuid()}:{os.getegid()}"
+    compose = json.loads(compose_file.read_text())
+    assert all(compose["services"][name]["user"] == expected for name in ("migrate", "api", "worker"))
+
+
+def test_failure_cleanup_only_removes_the_directory_this_call_created(module, tmp_path):
+    made, foreign = tmp_path / "made", tmp_path / "foreign"
+    made.mkdir()
+    foreign.mkdir()  # both exist at once, so the two cannot share an inode
+    (foreign / "precious").write_text("x")
+    identity = module.directory_identity(made)
+    (made / "partial").write_text("x")
+    module.discard_created(made, identity)
+    assert not made.exists()
+    # The path now holds somebody else's directory: keep it.
+    module.discard_created(foreign, identity)
+    assert (foreign / "precious").exists()
+    # A symlink swapped in for the created directory is never followed.
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "precious").write_text("x")
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    module.discard_created(link, module.directory_identity(target))
+    assert (target / "precious").exists()
+    module.discard_created(tmp_path / "never-created", identity)  # absent is fine
+
+
+def test_failed_import_does_not_remove_a_destination_it_did_not_create(module, bundle, tmp_path, monkeypatch):
+    destination = tmp_path / "existing"
+    destination.mkdir()
+    (destination / "precious").write_text("x")
+    with pytest.raises(module.BundleError, match="bundle_destination_exists"):
+        module.import_bundle(bundle[0], bundle[2], destination, load=False)
+    assert (destination / "precious").exists()
+
+
+def test_generated_offline_profile_passes_the_start_check(module, bundle, tmp_path):
+    root = tmp_path / "installation"
+    root.mkdir()
+    module.deployment(root, bundle[1])
+    module.check_offline_profile(root / ".offline/app.env", "172.29.189.0/24")
+
+
+@pytest.mark.parametrize("key,value,code", [
+    ("OCTO_OPERATOR_PROVIDER", "openrouter", "bundle_offline_profile_external_provider"),
+    ("OCTO_OPERATOR_ALLOW_EXTERNAL", "true", "bundle_offline_profile_external_provider"),
+    ("OCTO_OPERATOR_BASE_URL", "http://10.9.9.9:8082/v1", "bundle_offline_profile_inference_outside_network"),
+    ("OCTO_OPERATOR_BASE_URL", "http://inference.example:8082/v1", "bundle_offline_profile_inference_outside_network"),
+    ("OCTO_OPERATOR_EMBEDDINGS_BASE_URL", "https://api.example.com/v1", "bundle_offline_profile_inference_outside_network"),
+])
+def test_start_refuses_a_hosted_provider_or_inference_outside_the_isolated_network(module, bundle, tmp_path, monkeypatch, key, value, code):
+    real_deployment = module.deployment
+    calls = []
+
+    def tampered(root, manifest, **kwargs):
+        result = real_deployment(root, manifest, **kwargs)
+        env = root / ".offline/app.env"
+        env.write_text("".join(f"{k}={value if k == key else v}\n" for k, v in _env_file(env).items()))
+        return result
+    monkeypatch.setattr(module, "deployment", tampered)
+    monkeypatch.setattr(module, "image_info", lambda image: {"Id": image})
+    monkeypatch.setattr(module, "run", lambda command, **_: calls.append(command) or b"")
+    monkeypatch.setattr(module, "stage_deployment_models", lambda *a, **k: pytest.fail("staged before the profile check"))
+    with pytest.raises(module.BundleError, match=code):
+        module.import_bundle(bundle[0], bundle[2], tmp_path / "installation", load=True, start=True)
+    assert not any("up" in command for command in calls)
+
+
+def test_console_stand_uses_production_mode_and_private_data_dirs(tmp_path, monkeypatch):
+    from api import settings as api_settings
+
+    spec = importlib.util.spec_from_file_location("operator_console_stand", SCRIPT.with_name("operator-console.py"))
+    stand = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(stand)
+    monkeypatch.setattr(stand, "PRIVATE", tmp_path / ".operator-local")
+    monkeypatch.setattr(stand.os, "chown", lambda *_: (_ for _ in ()).throw(PermissionError()))
+    stand.initialize()
+    for name in ("state", "output"):
+        assert (stand.PRIVATE / name).stat().st_mode & 0o777 == 0o700
+    env = _env_file(stand.PRIVATE / "console.env")
+    assert env["OCTO_ENV"] == "prod"
+    for key in [k for k in os.environ if k.startswith("OCTO_")]:
+        monkeypatch.delenv(key)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    assert api_settings.load_settings().env == api_settings.ENV_PROD
+    assert "OPERATOR_STATE_UID" in stand.COMPOSE.read_text()

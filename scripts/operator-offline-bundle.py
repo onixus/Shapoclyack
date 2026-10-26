@@ -25,6 +25,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 import uuid
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -518,6 +519,21 @@ def image_sbom(path, image_ids):
         raise BundleError("bundle_image_sbom_invalid") from None
 
 
+def directory_identity(path):
+    status = os.lstat(path)
+    return status.st_dev, status.st_ino
+
+
+def discard_created(path, identity):
+    """Remove a failed run's directory only if it is still the one this call made."""
+    try:
+        status = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(status.st_mode) and (status.st_dev, status.st_ino) == identity:
+        shutil.rmtree(path)
+
+
 def export_bundle(args):
     target = args.destination.absolute()
     if target.exists() or target.is_symlink():
@@ -539,6 +555,7 @@ def export_bundle(args):
         raise BundleError("bundle_runtime_revision_missing")
     image_sbom(args.image_sbom, {role: info["Id"] for role, info in images.items()})
     target.mkdir(mode=0o700)
+    created = directory_identity(target)
     try:
         with tempfile.TemporaryDirectory(prefix="operator-feed-stage-") as temporary:
             snapshot = Path(temporary) / "feeds"
@@ -588,7 +605,7 @@ def export_bundle(args):
         return {"bundle": str(target), "manifest_sha256": trusted, "source_revision": revision,
             "trust_transfer": "Distribute this digest through a separately authenticated channel"}
     except Exception:
-        shutil.rmtree(target)
+        discard_created(target, created)
         raise
 
 
@@ -688,6 +705,30 @@ def private_write(path, data):
         handle.write(data)
 
 
+IMAGE_UID, IMAGE_GID = 1000, 1000  # the application image's unprivileged user
+
+
+def own_for_image(*directories):
+    """Create private 0700 data directories the control containers can write.
+
+    They belong to the image's uid/gid when this process may chown (root, or
+    already that uid). Otherwise the directories stay with the invoking user and
+    the returned ``user`` makes the containers run as that same uid:gid, so the
+    mode never has to be widened to world-writable.
+    """
+    try:
+        for directory in directories:
+            directory.mkdir(mode=0o700)
+            os.chown(directory, IMAGE_UID, IMAGE_GID)
+            directory.chmod(0o700)
+        return f"{IMAGE_UID}:{IMAGE_GID}"
+    except PermissionError:
+        for directory in directories:
+            directory.mkdir(mode=0o700, exist_ok=True)
+            directory.chmod(0o700)
+        return f"{os.geteuid()}:{os.getegid()}"
+
+
 def deployment(root, manifest, *, port=8085, subnet="172.29.189.0/24"):
     checked_port(str(port))
     network = ipaddress.ip_network(checked_subnet(subnet))
@@ -699,13 +740,11 @@ def deployment(root, manifest, *, port=8085, subnet="172.29.189.0/24"):
         "net.ipv6.conf.all.disable_ipv6": "1", "net.ipv6.conf.default.disable_ipv6": "1"}}
     private = root / ".offline"
     private.mkdir(mode=0o700)
-    for name in ("state", "output", "postgres"):
-        (private / name).mkdir(mode=0o777 if name != "postgres" else 0o700)
-        if name != "postgres":
-            (private / name).chmod(0o777)
+    (private / "postgres").mkdir(mode=0o700)
+    owner = own_for_image(private / "state", private / "output")
     password, jwt = secrets.token_hex(24), secrets.token_hex(32)
     credentials = {"username": "operator-offline", "password": secrets.token_urlsafe(32)}
-    env = {"OCTO_ENV": "dev", "PYTHONDONTWRITEBYTECODE": "1", "OCTO_API_HOST": "0.0.0.0",
+    env = {"OCTO_ENV": "prod", "PYTHONDONTWRITEBYTECODE": "1", "OCTO_API_HOST": "0.0.0.0",
         "OCTO_API_PORT": "8080", "OCTO_OUTPUT_DIR": "/operator/output", "OCTO_STATE_DIR": "/operator/state",
         "OCTO_POSTGRES_URL": "postgresql+psycopg://operator_offline:" + password + "@postgres:5432/operator_offline",
         "OCTO_API_USERS": json.dumps([{**credentials, "role": "admin"}]), "OCTO_JWT_SECRET": jwt,
@@ -719,7 +758,7 @@ def deployment(root, manifest, *, port=8085, subnet="172.29.189.0/24"):
         "OCTO_OPERATOR_EMBEDDINGS_REVISION": manifest["embedding_revision"],
         "OCTO_OPERATOR_EMBEDDINGS_MODEL_SHA256": next(a["sha256"] for a in manifest["artifacts"] if a["role"] == "embedding"),
         "OCTO_WEB_DIST": "/app/web/dist", "OCTO_ALLOW_SCAN_START": "false", "OCTO_JOB_EXECUTION_MODE": "agent",
-        "OCTO_REFRESH_COOKIE_SECURE": "false", "OCTO_API_CORS": f"http://127.0.0.1:{port}",
+        "OCTO_REFRESH_COOKIE_SECURE": "true", "OCTO_HSTS_ENABLED": "false", "OCTO_API_CORS": f"http://127.0.0.1:{port}",
         "OCTO_PUBLIC_BASE_URL": f"http://127.0.0.1:{port}", "OCTO_AGENT_TOKEN": ""}
     for feature in ("NATS_OUTBOX", "CH_INGEST", "SCHEDULER_DISPATCH", "REPORT_DISPATCH", "REPORTS", "SOFTWARE_MATCH",
             "RETRO_MATCH", "SLA_ESCALATION", "JOB_REAPER", "RUN_PUBLICATION_WORKER", "WEBHOOKS", "WEBHOOK_DISPATCH",
@@ -731,7 +770,7 @@ def deployment(root, manifest, *, port=8085, subnet="172.29.189.0/24"):
     private_write(private / "credentials.json", json.dumps(credentials))
     images = manifest["image_ids"]
     project = "shapo-offline-" + secrets.token_hex(6)
-    control = {"image": images["application"], "pull_policy": "never", "working_dir": "/app", "user": "1000:1000",
+    control = {"image": images["application"], "pull_policy": "never", "working_dir": "/app", "user": owner,
         **resolver_policy, "extra_hosts": {"postgres": address(3)},
         "read_only": True, "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"], "pids_limit": 256,
         "mem_limit": "768m", "cpus": 1, "env_file": [str(private / "app.env")],
@@ -797,6 +836,26 @@ def deployment(root, manifest, *, port=8085, subnet="172.29.189.0/24"):
     return project, private / "compose.json", credentials
 
 
+def check_offline_profile(app_env, subnet):
+    """Refuse to start when the written configuration could reach beyond the isolated network.
+
+    The compose network is internal, but a hosted provider (or an inference URL
+    outside it) would still be configured; the offline profile must fail closed
+    at start instead of relying on the network alone to make it fail later.
+    """
+    values = dict(line.split("=", 1) for line in Path(app_env).read_text().splitlines() if "=" in line)
+    if values.get("OCTO_OPERATOR_PROVIDER") != "local" or values.get("OCTO_OPERATOR_ALLOW_EXTERNAL") != "false":
+        raise BundleError("bundle_offline_profile_external_provider")
+    network = ipaddress.ip_network(checked_subnet(subnet))
+    for key in ("OCTO_OPERATOR_BASE_URL", "OCTO_OPERATOR_EMBEDDINGS_BASE_URL"):
+        try:
+            host = ipaddress.ip_address(urlsplit(values.get(key, "")).hostname or "")
+        except ValueError:
+            raise BundleError("bundle_offline_profile_inference_outside_network") from None
+        if host not in network:
+            raise BundleError("bundle_offline_profile_inference_outside_network")
+
+
 def native_models():
     """Use the same checksum-bound, network-free volume stager as Mac startup."""
     spec = importlib.util.spec_from_file_location("operator_native_models", Path(__file__).with_name("operator-runtime-manifest.py"))
@@ -829,6 +888,7 @@ def import_bundle(bundle, trusted, destination, *, load=True, start=False, port=
     if destination.exists() or destination.is_symlink():
         raise BundleError("bundle_destination_exists")
     destination.mkdir(mode=0o700)
+    created = directory_identity(destination)
     payloads = destination / "payloads"
     payloads.mkdir(mode=0o700)
     try:
@@ -851,6 +911,7 @@ def import_bundle(bundle, trusted, destination, *, load=True, start=False, port=
             if not load:
                 raise BundleError("bundle_start_requires_image_load")
             project, compose, credentials = deployment(destination, manifest, port=port, subnet=subnet)
+            check_offline_profile(destination / ".offline/app.env", subnet)
             stage_deployment_models(destination, manifest, compose)
             run(["docker", "compose", "-p", project, "-f", str(compose), "up", "-d", "--pull", "never"], timeout=600)
             attest_deployment(destination, manifest, project, compose)
@@ -885,7 +946,7 @@ def import_bundle(bundle, trusted, destination, *, load=True, start=False, port=
         # Keep this new installation for diagnostics if startup created a
         # deployment; never remove files still mounted by running containers.
         if not (destination / ".offline").exists():
-            shutil.rmtree(destination)
+            discard_created(destination, created)
         raise
 
 

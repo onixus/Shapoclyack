@@ -100,6 +100,45 @@ including live model and embedding health. It does not rehash models during
 inference. Model quality, actual traffic
 capture and restore correctness require recorded acceptance drills.
 
+### Deployment profile and egress
+
+The imported API and the loopback console stand
+(`scripts/operator-console.py`) run with `OCTO_ENV=prod`: fresh JWT, master-key
+and database secrets are generated per installation (chmod 600), and the API's
+production validator accepts the configuration without the development
+escape hatch. `OCTO_REFRESH_COOKIE_SECURE=true` is kept although the console is
+served over plain `http://127.0.0.1`; Chromium and Firefox treat loopback as a
+secure context, Safari may drop the refresh cookie (the session then ends with
+its first access token, use another browser). `OCTO_HSTS_ENABLED=false`
+because browsers ignore the header over http. The state and output directories
+are mode 0700 and owned by the image user (uid 1000) when the importer may
+chown; otherwise they stay with the invoking user and the control containers
+run as that uid:gid. They are never world-writable. A failed export/import
+deletes its destination only if it is still the directory that call created.
+
+Before the first `docker compose up` the importer re-reads the written
+`app.env` and refuses to start (`bundle_offline_profile_external_provider`,
+`bundle_offline_profile_inference_outside_network`) unless the provider is
+`local`, `OCTO_OPERATOR_ALLOW_EXTERNAL=false` and both inference URLs are IP
+literals inside the isolated subnet. Egress itself is enforced by the compose
+`internal` network; this check only stops a misconfigured hosted provider from
+being started.
+
+The loopback ingress (`scripts/operator-console-proxy.py`) accepts only a
+single `Host` header naming a loopback authority on the stand's ports (a
+foreign or missing `Host` gets 421, which blocks DNS rebinding), and the two
+model targets forward only `/health`, `/v1/models`, `/v1/chat/completions` and
+`/v1/embeddings` with their expected methods; llama.cpp's other routes (`/props`,
+`/slots`, `/metrics`, `/tokenize`, ...) answer 404. The API ingress still
+serves the console and API paths.
+
+**Kubernetes is not supported for the local operator.** `k8s/` deploys no
+inference runtime, operator worker or `OCTO_OPERATOR_*` settings, so there is
+no NetworkPolicy to add and none is shipped; LO-09 (no external egress) holds
+only for this compose profile. A future k8s deployment must add an egress
+NetworkPolicy for the API and worker pods allowing only the inference and
+embedding endpoints (plus DNS and Postgres) before the operator is enabled there.
+
 Stop only that imported project, retaining its database, model volume and artifacts:
 
 ```sh

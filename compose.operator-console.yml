@@ -4,7 +4,8 @@ x-control: &control
   image: sha256:d0c3811794d5e8ba0ab27e32705c34410ca7e6208c6a34d32a57a9ef6af387bf
   pull_policy: never
   working_dir: /app
-  user: "1000:1000"
+  # The owner of .operator-local/state, exported by scripts/operator-console.py.
+  user: "${OPERATOR_STATE_UID:-1000}:${OPERATOR_STATE_GID:-1000}"
   read_only: true
   dns: [127.0.0.1]
   cap_drop: [ALL]

@@ -41,6 +41,7 @@ from api.services.local_operator.config import OperatorConfig  # noqa: E402
 from api.services.local_operator.providers import InferenceProvider  # noqa: E402
 
 DATASET = ROOT / "tests/fixtures/operator_domain_eval.json"
+FINAL_MIN_SOAK_SECONDS = 3600
 SOURCE_PATHS = (
     "api/services/local_operator/analysis.py", "api/services/local_operator/planner.py",
     "api/services/local_operator/providers.py", "api/services/local_operator/config.py",
@@ -752,12 +753,22 @@ def summarize(dataset, records, *, stage):
         "citation_precision": reference_total > 0 and reference_valid / reference_total >= thresholds["citation_precision_min"],
         "fixed_claim_support": fixed_total > 0 and fixed_supported / fixed_total >= thresholds["fixed_claim_support_min"],
         "fixed_claim_recall": fixed_expected > 0 and fixed_supplied == fixed_expected,
-        "security": result["subgroups"]["security"]["value"] == 1.0,
+        "security": (result["subgroups"]["security"]["value"] or 0) >= thresholds["security_pass_fraction_min"],
         "no_unsupported_model_claims": result["unsupported_model_fields_or_prose"] == 0,
-        "first_response_latency": response_coverage and quantile(durations, .95) <= thresholds["first_response_p95_seconds_max"],
+        "full_response_latency": response_coverage and quantile(durations, .95) <= thresholds["first_response_p95_seconds_max"],
         "task_component_latency": response_coverage and quantile(durations, .95) <= thresholds["task_p95_seconds_max"],
     }
-    result["quality_gate_passed"] = stage == "final" and all(result["gates"].values())
+    # The frozen thresholds carry no minimum for these: they are reported, never gated.
+    result["informational_metrics"] = ["proposed_priority_macro_f1", "abstention_accuracy", "subgroups.degraded"]
+    # Deprecated alias: the threshold key still says "first_response", but the
+    # measured value is the time to the complete answer (no streaming TTFT).
+    result["gates"]["first_response_latency"] = result["gates"]["full_response_latency"]
+    gates_green = stage == "final" and all(v for k, v in result["gates"].items() if k != "first_response_latency")
+    untouched = result["subgroups"]["untouched_by_development_pilot"]["total"]
+    # A corpus the development pilots already saw cannot certify generalization.
+    result["quality_gate_status"] = ("failed" if stage != "final" or not gates_green
+                                     else "exposed_only" if untouched == 0 else "passed")
+    result["quality_gate_passed"] = result["quality_gate_status"] == "passed"
     result["not_run_count"] = sum(case["case_id"] not in by_id for case in cases)
     result["executed_case_failures"] = sum(not score_case(case, by_id[case["case_id"]]) for case in cases if case["case_id"] in by_id)
     result["release_acceptance_claimed"] = False
@@ -887,6 +898,7 @@ async def run(args):
     report["source_unchanged_after_run"] = (not args.manifest or manifest["source_sha256"] == source_provenance())
     if not report["source_unchanged_after_run"]:
         report["quality_gate_passed"] = False
+        report["quality_gate_status"] = "failed"
     report["load"] = {"requested_seconds": args.soak_seconds or None,
                       "elapsed_seconds": monotonic() - run_started,
                       "initial_requests": len(records), "additional_requests": soak_count,
@@ -899,11 +911,14 @@ async def run(args):
         report["load"]["raw_additional_sha256"] = file_digest(output / "soak-records.jsonl")
     report["load"]["gate_passed"] = (report["load"]["duration_met"] and len(records) + soak_count >= 30
         and all(record.get("valid") for record in records) and soak_errors == 0) if args.soak_seconds else None
-    report["run_gate_passed"] = report["quality_gate_passed"] and (
-        report["load"]["gate_passed"] if args.soak_seconds else True)
+    report["load"]["final_min_soak_seconds"] = FINAL_MIN_SOAK_SECONDS
+    report["load"]["final_soak_requirement_met"] = args.development or args.soak_seconds >= FINAL_MIN_SOAK_SECONDS
+    report["run_gate_passed"] = bool(report["quality_gate_passed"] and report["load"]["final_soak_requirement_met"] and (
+        report["load"]["gate_passed"] if args.soak_seconds else True))
     write_json(output / "report.json", report)
     print(json.dumps({"stage": stage, "report": str(output / "report.json"),
-                      "quality_gate_passed": report["quality_gate_passed"], "load_gate_passed": report["load"]["gate_passed"],
+                      "quality_gate_passed": report["quality_gate_passed"],
+                      "quality_gate_status": report["quality_gate_status"], "load_gate_passed": report["load"]["gate_passed"],
                       "run_gate_passed": report["run_gate_passed"], "failures": len(report["failures"])}))
     return 0 if args.development or report["run_gate_passed"] else 1
 

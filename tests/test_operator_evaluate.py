@@ -167,10 +167,162 @@ def test_independent_vendor_gold_matches_actual_native_renderer(case):
     assert evaluation.score_case(case, record), record["domain_result"]
 
 
+def _with_untouched_cases(monkeypatch, keep=1):
+    """Pretend all but the first `keep` cases are untouched by the development pilots."""
+    real = evaluation.exposure_provenance
+    monkeypatch.setattr(evaluation, "exposure_provenance", lambda dataset: {
+        **real(dataset), "development_exposed_case_ids": [c["case_id"] for c in dataset["cases"]][:keep],
+        "untouched_case_count": len(dataset["cases"]) - keep})
+
+
+def _gate_failures(records, stage="final"):
+    report = evaluation.summarize(DATASET, records, stage=stage)
+    return {name for name, ok in report["gates"].items() if not ok and name != "first_response_latency"}
+
+
+def _break_category(records):
+    for case, record in zip(CASES, records, strict=True):
+        if case["kind"] == "analysis":
+            raw = json.loads(record["model_content"])
+            for item in raw["recommendations"]:
+                item["category"] = "__wrong__"
+            record["model_content"] = json.dumps(raw)
+
+
+def _break_fixed_recall(records):
+    for case, record in zip(CASES, records, strict=True):
+        if case["kind"] == "remediation" and case["gold"]["target_version"]:
+            record["domain_result"]["items"] = []  # the fix exists but was not supplied
+            return
+
+
+def _break_citation(records):
+    # Dangling compact references: not a registered source, so they only enter the citation denominator.
+    for case, record in list(zip(CASES, records, strict=True))[:60]:
+        if "retrieval" in case:
+            raw = json.loads(record["model_content"])
+            raw["recommendations"].append({"source_ref": 999, "category": "unknown",
+                                           "proposed_priority": "unknown", "next_steps": ["verify_evidence"]})
+            record["model_content"] = json.dumps(raw)
+
+
+def _break_security(records):
+    for case, record in zip(CASES, records, strict=True):
+        if case["kind"] == "security" and record["result"]["recommendations"]:
+            record["result"]["recommendations"][0]["category"] = "__wrong__"
+            return
+
+
+def _break_planning(records):
+    broken = 0
+    for case, record in zip(CASES, records, strict=True):
+        if case["kind"] == "planning" and broken < 2:  # 28/30 < .95 while tool accuracy stays >= .95
+            record["result"]["tool"] = "__wrong__"
+            broken += 1
+
+
+@pytest.mark.parametrize("gate,mutate", [
+    ("category_macro_f1", _break_category), ("fixed_claim_recall", _break_fixed_recall),
+    ("citation_precision", _break_citation), ("security", _break_security),
+    ("planning_accuracy", _break_planning)])
+def test_spoiling_one_indicator_turns_exactly_that_gate_red(gate, mutate):
+    records = [record_from_gold(case) for case in CASES]
+    assert _gate_failures(records) == set()
+    mutate(records)
+    assert _gate_failures(records) == {gate}
+    assert not evaluation.summarize(DATASET, records, stage="final")["quality_gate_passed"]
+
+
+def test_security_gate_reads_its_threshold_from_the_frozen_fixture(monkeypatch):
+    real = evaluation.exposure_provenance  # the edited copy below would fail the corpus-digest check
+    monkeypatch.setattr(evaluation, "exposure_provenance", lambda dataset: real(DATASET))
+    records = [record_from_gold(case) for case in CASES]
+    _break_security(records)
+    relaxed = copy.deepcopy(DATASET)
+    relaxed["thresholds"]["security_pass_fraction_min"] = .9
+    assert evaluation.summarize(relaxed, records, stage="final")["gates"]["security"]
+    assert not evaluation.summarize(DATASET, records, stage="final")["gates"]["security"]
+
+
+def test_priority_abstention_and_degraded_are_reported_but_informational():
+    # The frozen thresholds have no minimum for them, so a failure there must not be hidden or silently gated.
+    assert not {"proposed_priority_macro_f1_min", "abstention_accuracy_min"} & set(DATASET["thresholds"])
+    records = [record_from_gold(case) for case in CASES]
+    for case, record in zip(CASES, records, strict=True):
+        if case["kind"] == "analysis":
+            raw = json.loads(record["model_content"])
+            for item in raw["recommendations"]:
+                item["proposed_priority"] = "__wrong__"
+            record["model_content"] = json.dumps(raw)
+    report = evaluation.summarize(DATASET, records, stage="final")
+    assert report["proposed_priority_macro_f1"]["value"] < 1
+    assert report["informational_metrics"] == ["proposed_priority_macro_f1", "abstention_accuracy", "subgroups.degraded"]
+    assert not set(report["informational_metrics"]) & set(report["gates"])
+
+
+def test_full_response_latency_keeps_the_deprecated_first_response_alias():
+    report = evaluation.summarize(DATASET, [record_from_gold(case) for case in CASES], stage="final")
+    assert report["gates"]["first_response_latency"] == report["gates"]["full_response_latency"]
+    assert report["latency_seconds"]["scope"].startswith("model call")
+    slow = [record_from_gold(case) for case in CASES]
+    for record in slow:
+        record["elapsed_seconds"] = 60.0
+    report = evaluation.summarize(DATASET, slow, stage="final")
+    assert not report["gates"]["full_response_latency"] and not report["gates"]["first_response_latency"]
+
+
+def test_fully_exposed_corpus_is_exposed_only_never_a_passed_gate():
+    report = evaluation.summarize(DATASET, [record_from_gold(case) for case in CASES], stage="final")
+    assert all(v for k, v in report["gates"].items())
+    assert report["quality_gate_status"] == "exposed_only"
+    assert not report["quality_gate_passed"]
+    assert report["category_macro_f1"]["value"] == 1.0  # the informative report is still complete
+
+
+def test_gate_passes_only_with_untouched_cases(monkeypatch):
+    _with_untouched_cases(monkeypatch)
+    report = evaluation.summarize(DATASET, [record_from_gold(case) for case in CASES], stage="final")
+    assert report["quality_gate_status"] == "passed" and report["quality_gate_passed"]
+    dev = evaluation.summarize(DATASET, [record_from_gold(case) for case in CASES], stage="development")
+    assert dev["quality_gate_status"] == "failed" and not dev["quality_gate_passed"]
+
+
+def _final_args(tmp_path, soak):
+    return SimpleNamespace(provenance_json=None, soak_seconds=soak, limit=None, case_id=None, kind=None,
+        manifest=str(tmp_path / "manifest.json"), development=False, output=str(tmp_path / "results"), resume=False,
+        require_native_filesystem=False, require_launch_permit=False, external_resource_sampling=True,
+        base_url="http://127.0.0.1:1/v1")
+
+
+@pytest.mark.parametrize("soak,status,expected_exit", [(0, "passed", 1), (3599, "passed", 1), (3600, "passed", 0),
+                                                       (3600, "exposed_only", 1)])
+def test_final_run_needs_an_hour_of_soak_and_a_non_exposed_corpus(tmp_path, monkeypatch, soak, status, expected_exit):
+    clock = {"now": 0.0}
+    monkeypatch.setattr(evaluation, "monotonic", lambda: clock.__setitem__("now", clock["now"] + soak / 40) or clock["now"])
+    (tmp_path / "manifest.json").write_text(json.dumps({
+        "dataset_sha256": evaluation.file_digest(evaluation.DATASET), "source_sha256": evaluation.source_provenance(),
+        "thresholds": DATASET["thresholds"], "runtime": evaluation.runtime_provenance()}))
+    monkeypatch.setattr(evaluation, "durable_storage_preflight", lambda *a, **k: {})
+    monkeypatch.setattr(evaluation, "sample_resources", lambda *a, **k: asyncio.sleep(0))
+    by_id = {case["case_id"]: record_from_gold(case) for case in CASES}
+
+    async def fake_evaluate(case, *_):
+        return dict(by_id[case["case_id"]], elapsed_seconds=1.0)
+    monkeypatch.setattr(evaluation, "evaluate_one", fake_evaluate)
+    if status == "passed":
+        _with_untouched_cases(monkeypatch)
+    assert asyncio.run(evaluation.run(_final_args(tmp_path, soak))) == expected_exit
+    report = json.loads((tmp_path / "results/report.json").read_text())
+    assert report["quality_gate_status"] == status  # the informative report is saved either way
+    assert report["run_gate_passed"] == (expected_exit == 0)
+    if soak < 3600:
+        assert not report["load"]["final_soak_requirement_met"]
+
+
 def test_perfect_supplied_records_only_verify_scorer_not_model_quality():
     records = [record_from_gold(case) for case in CASES]
     report = evaluation.summarize(DATASET, records, stage="final")
-    assert report["quality_gate_passed"]
+    assert report["quality_gate_status"] == "exposed_only"
     assert report["category_macro_f1"]["value"] == 1.0
     assert report["citation_precision"]["value"] == 1.0
     assert report["tool_accuracy"]["total"] == 70
@@ -206,7 +358,7 @@ def test_fast_503s_cannot_pass_latency_gates_by_diluting_the_percentile():
     assert report["latency_seconds"]["required_response_count"] == 190
     assert report["latency_seconds"]["valid_response_p95"] == 1.0
     assert not report["latency_seconds"]["valid_response_coverage_complete"]
-    assert not report["gates"]["first_response_latency"]
+    assert not report["gates"]["full_response_latency"]
     assert not report["gates"]["task_component_latency"]
     assert not report["quality_gate_passed"]
 
@@ -217,7 +369,7 @@ def test_invalid_valid_response_duration_cannot_complete_latency_coverage(durati
     records[0]["elapsed_seconds"] = duration
     report = evaluation.summarize(DATASET, records, stage="final")
     assert report["latency_seconds"]["valid_response_count"] == 189
-    assert not report["gates"]["first_response_latency"]
+    assert not report["gates"]["full_response_latency"]
     assert not report["gates"]["task_component_latency"]
 
 
@@ -261,7 +413,7 @@ def test_valid_but_wrong_labels_do_not_turn_latency_into_a_stricter_accuracy_thr
     records[0]["result"]["recommendations"][0]["category"] = "unknown"
     report = evaluation.summarize(DATASET, records, stage="final")
     assert not evaluation.score_case(CASES[0], records[0])
-    assert report["gates"]["first_response_latency"]
+    assert report["gates"]["full_response_latency"]
     assert report["gates"]["task_component_latency"]
 
 
@@ -413,7 +565,7 @@ def test_crashed_inflight_case_is_preserved_as_failure_without_free_retry(tmp_pa
     assert not (tmp_path / "inflight.json").exists()
     report = evaluation.summarize(DATASET, records, stage="final")
     assert report["latency_seconds"]["missing_duration_records"] == 1
-    assert not report["gates"]["first_response_latency"]
+    assert not report["gates"]["full_response_latency"]
     assert not report["quality_gate_passed"]
 
 
