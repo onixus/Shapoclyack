@@ -135,13 +135,14 @@ def test_native_mode_requires_actual_ext4_mount_before_inference(tmp_path, monke
 def record_from_gold(case):
     record = {"case_id": case["case_id"], "valid": True, "model_invoked": True, "elapsed_seconds": 1.0}
     if "retrieval" in case:
-        sources = {item["source_id"]: item for item in case["retrieval"]["items"]}
+        sources = {item["source_id"]: index for index, item in enumerate(
+            item for item in case["retrieval"]["items"] if item["citation"]["status"] != "stale")}
         raw = {"language": case["language"], "summary": case["gold"]["summary"], "recommendations": [
-            {**{key: sources[label["source_id"]][key] for key in ("source_id", "source_hash", "snapshot_id")},
+            {"source_ref": sources[label["source_id"]],
              "category": label["category"], "proposed_priority": label["proposed_priority"], "next_steps": ["verify_evidence"]}
             for label in case["gold"]["labels"]]}
         record["model_content"] = json.dumps(raw)
-        record["result"] = analysis.validate_output(record["model_content"], case["language"], case["retrieval"])
+        record["result"] = analysis.validate_output(record["model_content"], case["language"], analysis.bind(case["retrieval"]))
     else:
         record["model_content"] = json.dumps({"tool": case["gold"]["tool"]})
         record["result"] = planner.validate_output(record["model_content"], planner.PlanRequest.model_validate(case["planner_request"]))
@@ -242,17 +243,17 @@ def test_actual_failed_run_label_errors_stay_wrong_without_auto_repair(case_id, 
     case = next(c for c in CASES if c["case_id"] == case_id)
     record = record_from_gold(case)
     raw = json.loads(record["model_content"])
-    selected = next(item for item in raw["recommendations"] if item["source_id"] == source_id)
+    source_ref = next(i for i, item in enumerate(case["retrieval"]["items"]) if item["source_id"] == source_id)
+    selected = next(item for item in raw["recommendations"] if item["source_ref"] == source_ref)
     assert selected[field] != wrong
     selected[field] = wrong
     record["model_content"] = json.dumps(raw)
-    record["result"] = analysis.validate_output(record["model_content"], case["language"], case["retrieval"])
+    record["result"] = analysis.validate_output(record["model_content"], case["language"], analysis.bind(case["retrieval"]))
     assert next(item for item in record["result"]["recommendations"] if item["source_id"] == source_id)[field] == wrong
     assert not evaluation.score_case(case, record)
-    variants = analysis.output_schema(case["retrieval"], language=case["language"])["properties"]["recommendations"]["items"]["anyOf"]
-    for variant in variants:
-        assert "const" not in variant["properties"][field]
-        assert wrong in variant["properties"][field]["enum"]
+    selection = analysis.output_schema(analysis.bind(case["retrieval"]), language=case["language"])["$defs"]["CompactSelection"]
+    assert "const" not in selection["properties"][field]
+    assert wrong in selection["properties"][field]["enum"]
 
 
 def test_valid_but_wrong_labels_do_not_turn_latency_into_a_stricter_accuracy_threshold():
@@ -269,7 +270,7 @@ def test_abstain_everything_cannot_pass_accuracy_or_citation_gate():
     for case, record in zip(CASES, records, strict=True):
         if "retrieval" in case:
             record["model_content"] = json.dumps({"language": case["language"], "summary": "insufficient_evidence", "recommendations": []})
-            record["result"] = analysis.validate_output(record["model_content"], case["language"], case["retrieval"])
+            record["result"] = analysis.validate_output(record["model_content"], case["language"], analysis.bind(case["retrieval"]))
     report = evaluation.summarize(DATASET, records, stage="final")
     assert report["category_macro_f1"]["value"] == 0
     assert report["citation_precision"]["value"] is None
@@ -288,6 +289,49 @@ def test_wrong_fixed_version_and_foreign_reference_are_unsupported_claims():
     assert report["unsupported_reference_or_fixed_claims"] == 2
     assert report["fixed_claim_support"]["value"] < 1
     assert not report["quality_gate_passed"]
+
+
+@pytest.mark.parametrize("ref", [True, 0.0, "0", -1, 999, None, {}, []])
+def test_invalid_compact_references_count_as_unsupported_even_when_output_is_invalid(ref):
+    case = CASES[0]
+    raw = json.loads(record_from_gold(case)["model_content"])
+    raw["recommendations"][0]["source_ref"] = ref
+    record = {"case_id": case["case_id"], "valid": False, "model_invoked": True,
+              "model_content": json.dumps(raw), "elapsed_seconds": 1.0}
+    report = evaluation.summarize(DATASET, [record], stage="development")
+    assert report["citation_precision"]["total"] == 1
+    assert report["citation_precision"]["correct"] == 0
+    assert report["unsupported_reference_or_fixed_claims"] == 1
+
+
+def test_duplicate_compact_ref_cannot_inflate_reference_precision_or_recall():
+    case = CASES[0]
+    raw = json.loads(record_from_gold(case)["model_content"])
+    raw["recommendations"].append(copy.deepcopy(raw["recommendations"][0]))
+    record = {"case_id": case["case_id"], "valid": False, "model_invoked": True,
+              "model_content": json.dumps(raw), "elapsed_seconds": 1.0}
+    report = evaluation.summarize(DATASET, [record], stage="development")
+    assert report["citation_precision"] == evaluation.proportion(1, 2)
+    assert report["source_selection_recall"]["correct"] == 1
+    assert report["unsupported_reference_or_fixed_claims"] == 1
+
+
+@pytest.mark.parametrize("malformed", [[None], ["source-ref-0"], {"source_ref": 0}, None])
+def test_malformed_compact_selection_claims_are_not_dropped_from_denominator(malformed):
+    record = {"case_id": CASES[0]["case_id"], "valid": False, "model_invoked": True,
+              "model_content": json.dumps({"recommendations": malformed}), "elapsed_seconds": 1.0}
+    report = evaluation.summarize(DATASET, [record], stage="development")
+    assert report["citation_precision"]["total"] == 1
+    assert report["citation_precision"]["correct"] == 0
+
+
+def test_evaluator_checks_expanded_public_citation_against_original_registry():
+    case = CASES[0]
+    record = record_from_gold(case)
+    record["result"]["recommendations"][0]["source_hash"] = "f" * 64
+    report = evaluation.summarize(DATASET, [record], stage="development")
+    assert report["citation_precision"]["value"] == 0
+    assert report["unsupported_reference_or_fixed_claims"] == 1
 
 
 def test_malformed_model_json_cannot_crash_scorer():
@@ -330,14 +374,14 @@ def test_interval_math_macro_f1_and_failure_latency():
 
 def test_positive_runtime_schema_requires_a_proposal_without_fixing_gold_labels():
     case = next(case for case in CASES if case["kind"] == "analysis")
-    schema = analysis.output_schema(case["retrieval"], language=case["language"])
+    schema = analysis.output_schema(analysis.bind(case["retrieval"]), language=case["language"])
     assert schema["properties"]["summary"]["const"] == "review_required"
     assert schema["properties"]["recommendations"]["minItems"] == 1
-    variant = schema["properties"]["recommendations"]["items"]["anyOf"][0]
+    variant = schema["$defs"]["CompactSelection"]
     assert "const" not in variant["properties"]["category"]
     assert "const" not in variant["properties"]["proposed_priority"]
     missing = next(case for case in CASES if case["kind"] == "degraded" and case["retrieval"]["state"] == "missing")
-    abstention = analysis.output_schema(missing["retrieval"], language=missing["language"])
+    abstention = analysis.output_schema(analysis.bind(missing["retrieval"]), language=missing["language"])
     assert abstention["properties"]["summary"]["const"] == "insufficient_evidence"
     assert abstention["properties"]["recommendations"]["maxItems"] == 0
 

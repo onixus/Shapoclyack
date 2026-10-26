@@ -18,7 +18,8 @@ async def execute(settings, task):
     await run_in_threadpool(retrieval.refresh_run, settings, principal, task["run_id"])
     evidence = await run_in_threadpool(retrieval.search, settings, principal, task["run_id"],
                                       source_artifact="vulnerabilities.json")
-    prompt = analysis.build_prompt(task["language"], evidence)
+    binding = analysis.bind(evidence)
+    prompt = analysis.build_prompt(task["language"], binding)
     attempt = None
     if not evidence["items"] or evidence["state"] in {"missing", "stale", "unknown"}:
         raw = json.dumps({"language": task["language"], "summary": "insufficient_evidence",
@@ -26,7 +27,7 @@ async def execute(settings, task):
     else:
         await run_in_threadpool(gateway.authorize_actor, settings, task)
         config = OperatorConfig.from_settings(settings)
-        schema = analysis.output_schema(evidence, language=task["language"])
+        schema = analysis.output_schema(binding, language=task["language"])
         attempt = {"provider": config.provider, "model": config.model,
                    "prompt_version": analysis.PROMPT_VERSION, "tool_version": TOOL_VERSION,
                    "prompt_hash": hashlib.sha256(json.dumps(
@@ -42,7 +43,7 @@ async def execute(settings, task):
         except OperatorProviderError as exc:
             raise gateway.GatewayError(exc.args[0]) from None
     try:
-        result = analysis.validate_output(raw, task["language"], evidence)
+        result = analysis.validate_output(raw, task["language"], binding)
     except analysis.AnalysisError:
         raise gateway.GatewayError("operator_invalid_model_output") from None
     principal = await run_in_threadpool(gateway.authorize_actor, settings, task)

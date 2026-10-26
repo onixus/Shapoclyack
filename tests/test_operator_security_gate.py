@@ -18,6 +18,7 @@ from api.services.local_operator import actions, analysis, mcp
 from api.services.local_operator.config import OperatorConfig, OperatorConfigurationError
 from api.services.local_operator.providers import InferenceProvider, OperatorProviderError
 from tests.conftest import auth_headers, configured_client, make_settings, requires_postgres
+from tests.operator_analysis_wire import compact_fixture_output
 
 CASES = json.loads((Path(__file__).parent / "fixtures/operator_analysis_eval.json").read_text())["cases"]
 ATTACKS = [
@@ -39,6 +40,7 @@ ATTACKS = [
 def evidence_case(language):
     case = copy.deepcopy(next(case for case in CASES if case["expected"] == "accept"
                               and case["model_output"]["recommendations"] and case["language"] == language))
+    case["model_output"] = compact_fixture_output(case["model_output"], case["retrieval"])
     return case
 
 
@@ -47,12 +49,13 @@ def evidence_case(language):
 def test_retrieved_instructions_cannot_enter_analysis_prompt(language, field, payload):
     case = evidence_case(language)
     case["retrieval"]["items"][0]["context"][field] = payload
-    prompt = analysis.build_prompt(language, case["retrieval"])
+    binding = analysis.bind(case["retrieval"])
+    prompt = analysis.build_prompt(language, binding)
     context = json.loads(prompt[1]["content"])["sources"][0]["context"]
     assert field not in context
     assert "attacker.invalid" not in str(prompt)
     assert "раскрыть токен" not in str(prompt)
-    answer = analysis.validate_output(json.dumps(case["model_output"]), language, case["retrieval"])
+    answer = analysis.validate_output(json.dumps(case["model_output"]), language, binding)
     assert answer["quality_status"] == "quality_unverified"
     assert "attacker.invalid" not in str(answer)
 
@@ -67,7 +70,7 @@ def test_model_cannot_supply_authority_effects_or_fixed_versions(language, field
     case = evidence_case(language)
     case["model_output"][field] = value
     with pytest.raises(analysis.AnalysisError):
-        analysis.validate_output(json.dumps(case["model_output"]), language, case["retrieval"])
+        analysis.validate_output(json.dumps(case["model_output"]), language, analysis.bind(case["retrieval"]))
 
 
 @pytest.mark.parametrize("field,value", [

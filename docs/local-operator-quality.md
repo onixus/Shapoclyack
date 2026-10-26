@@ -81,6 +81,35 @@ prevent this response. Generic tuple/prefix constraints also change source
 selection semantics and are not used. Schema/validator regressions are not a
 new actual-runtime quality result; the failed attempt remains preserved.
 
+The later full `2f95902f` attempt was also stopped as failed: at least ten
+completed exchanges already exceeded 30 seconds, so the unchanged nearest-rank
+p95 for 190 cases could not pass. Those records are retained, without replacing
+cases or weakening the latency threshold.
+
+Provider wire `finding-analysis-labels-v8` replaces copied cryptographic source
+tuples with an integer `source_ref` local to the current eligible registry.
+Before prompt creation, the gateway and evaluator capture one immutable
+server-side binding of ordered citations, safe scalar context, snapshot and
+statuses. All three helpers use that same binding and reject mutation of the
+original registry before disclosure. The model sees neither full source IDs,
+source hashes nor snapshot IDs. After validating the strict integer ref, the
+server expands the captured tuple and emits the existing public citation and
+recommendation fields. No category, priority or next step is corrected.
+
+The binding fingerprint remains server-side. Fresh account/source/publication
+checks after inference still apply. Negative, bool, float, out-of-range and
+duplicate refs and forged identity fields fail closed. References never grant
+cross-request or tenant authority. The exported full-reference schema and
+public API/SDK shape remain unchanged; the compact schema is provider-only.
+The frozen gold corpora and thresholds are unchanged. Scoring resolves model
+indices against original fixture sources, checks emitted public tuples, counts
+invalid/malformed/duplicate reference claims, and deduplicates source recall.
+
+This removes identity-copying text from prompt and output generically; unit
+tests establish the binding/shape boundary, not a measured latency gain. A
+new sealed actual-model run is required. The gateway's binding implementation
+is included in evaluator source provenance alongside the prompt and scorer.
+
 Remediation cases call the actual planner, then the native local remediation
 renderer/comparator over a synthetic accepted inventory and a local vendor
 snapshot. Only the fixture data provider is substituted; production identity,

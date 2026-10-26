@@ -46,6 +46,7 @@ SOURCE_PATHS = (
     "api/services/local_operator/providers.py", "api/services/local_operator/config.py",
     "api/services/local_operator/contracts.py", "api/services/local_operator/remediation.py",
     "api/services/local_operator/gateway.py", "api/services/local_operator/actions.py", "api/schemas.py",
+    "api/services/local_operator/analyzer_gateway.py",
     "api/services/local_operator/data/apache24-traceenable-v1.json",
     "api/services/local_operator/data/package-upgrade-runbook-v1.json",
     "api/services/patch_gap.py", "api/services/software_cve_match.py", "api/services/package_identity.py",
@@ -465,8 +466,9 @@ async def evaluate_one(case, config, launch_authorization=None):
     trace = TraceTransport()
     try:
         if "retrieval" in case:
-            messages = analysis.build_prompt(case["language"], case["retrieval"])
-            schema = analysis.output_schema(case["retrieval"], language=case["language"])
+            binding = analysis.bind(case["retrieval"])
+            messages = analysis.build_prompt(case["language"], binding)
+            schema = analysis.output_schema(binding, language=case["language"])
         else:
             request = planner.PlanRequest.model_validate(case["planner_request"])
             messages, schema = planner.build_prompt(request), planner.output_schema(request)
@@ -483,7 +485,7 @@ async def evaluate_one(case, config, launch_authorization=None):
         output = await InferenceProvider(config, transport=trace).complete(messages, response_schema=schema)
         record["model_content"] = output.content
         if "retrieval" in case:
-            record["result"] = analysis.validate_output(output.content, case["language"], case["retrieval"])
+            record["result"] = analysis.validate_output(output.content, case["language"], binding)
         else:
             record["result"] = planner.validate_output(output.content, request)
             if case["kind"] == "remediation" and record["result"]["tool"] == "find_remediation":
@@ -610,7 +612,7 @@ def unsupported_model_fields(case, record):
         items = raw.get("recommendations", [])
         for item in items if isinstance(items, list) else []:
             if isinstance(item, dict):
-                count += len(set(item) - {"source_id", "source_hash", "snapshot_id", "category", "proposed_priority", "next_steps"})
+                count += len(set(item) - {"source_ref", "category", "proposed_priority", "next_steps"})
     return count
 
 
@@ -634,7 +636,7 @@ def summarize(dataset, records, *, stage):
     result["development_exposed_case_ids"] = exposure["development_exposed_case_ids"]
     pairs = {"category": [], "proposed_priority": []}
     clusters = {"category": {}, "proposed_priority": {}}
-    reference_valid = reference_total = 0
+    reference_valid = reference_total = source_unique_valid = 0
     abstain_correct = abstain_total = 0
     tool_correct = tool_total = fixed_supported = fixed_total = 0
     fixed_expected = fixed_supplied = 0
@@ -650,14 +652,29 @@ def summarize(dataset, records, *, stage):
             except ValueError:
                 pass
             selections = raw.get("recommendations", []) if isinstance(raw, dict) else []
-            selected = {item["source_id"]: item for item in selections if isinstance(item, dict)
-                        and isinstance(item.get("source_id"), str)} if isinstance(selections, list) else {}
-            registered = {item["source_id"]: item for item in case["retrieval"]["items"]}
-            for sid, selection in selected.items():
+            malformed_container = not isinstance(selections, list)
+            if malformed_container:
+                selections = [selections]  # malformed container cannot erase an invalid reference claim
+            registered = [item for item in case["retrieval"]["items"] if item["citation"]["status"] != "stale"]
+            selected, supported_ids = {}, set()
+            rendered = {item["source_id"]: item for item in record.get("result", {}).get("recommendations", [])}
+            for selection in selections if isinstance(selections, list) else []:
                 reference_total += 1
-                source = registered.get(sid)
-                reference_valid += bool(source and sid in case["gold"]["source_ids"] and all(
-                    selection.get(key) == source[key] for key in ("source_hash", "snapshot_id")))
+                ref = selection.get("source_ref") if isinstance(selection, dict) else None
+                source = registered[ref] if type(ref) is int and 0 <= ref < len(registered) else None
+                if source is None:
+                    continue
+                sid = source["source_id"]
+                duplicate = sid in selected
+                selected[sid] = selection
+                supported = (not malformed_container and not duplicate and sid in case["gold"]["source_ids"] and not
+                    {"source_id", "source_hash", "snapshot_id"} & selection.keys() and
+                    (not record.get("valid") or all(rendered.get(sid, {}).get(key) == source[key]
+                        for key in ("source_id", "source_hash", "snapshot_id"))))
+                reference_valid += bool(supported)
+                if supported:
+                    supported_ids.add(sid)
+            source_unique_valid += len(supported_ids)
             if case["kind"] == "analysis":
                 for expected in case["gold"]["labels"]:
                     actual = selected.get(expected["source_id"], {}) if record.get("valid") else {}
@@ -687,7 +704,7 @@ def summarize(dataset, records, *, stage):
     result["fixed_claim_recall"] = proportion(fixed_supplied, fixed_expected)
     result["unsupported_reference_or_fixed_claims"] = reference_total - reference_valid + fixed_total - fixed_supported
     result["unsupported_model_fields_or_prose"] = sum(unsupported_model_fields(case, by_id.get(case["case_id"], {})) for case in cases)
-    result["source_selection_recall"] = proportion(reference_valid, sum(len(case["gold"]["source_ids"]) for case in cases if "retrieval" in case))
+    result["source_selection_recall"] = proportion(source_unique_valid, sum(len(case["gold"]["source_ids"]) for case in cases if "retrieval" in case))
     classes = {"category": ("vulnerability", "configuration", "exposure", "unknown"),
                "proposed_priority": ("high", "medium", "low", "unknown")}
     for field, values in pairs.items():

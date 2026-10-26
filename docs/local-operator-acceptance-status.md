@@ -185,6 +185,32 @@ PostgreSQL/API addresses and local host aliases, reserves a disjoint dynamic
 address pool, and configures IPv4/resolver guards. Generated-graph tests do not
 establish zero DNS/egress; fresh cold-start observation remains required.
 
+On `2f95902f`, the native full-8K stress test passed: 8064 processed cold input
+tokens, 128 independently counted output tokens and intact cache 8191. Raw SSE,
+native counters, terminal fsync/export hashes and independent replay agree.
+True first generated token was 234.94 seconds and total time 246.63 seconds;
+these are full-context stress timings, not a typical-operation latency pass.
+Both resident models retained their process epochs without OOM/restart; capture
+had no DNS, external destinations, drops or receive errors.
+
+Its subsequent typical-operation attempt was stopped with 106 completed
+records, including an interrupted final exchange, and 84 cases not run.
+All 60 analysis cases were schema-valid: category macro-F1 was 0.89476 and
+priority macro-F1 1.0, with five CWE category errors retained. This is an
+analysis-subset result, not the complete quality gate. Ten recorded responses
+exceeded 30 seconds; even if every remaining planned response were fast, the
+unchanged 190-case nearest-rank p95 would remain above 30 seconds. The observed
+106-record p95 was 31.97 seconds. The attempt and failed load gate remain
+preserved; no slow case is replaced by a retry.
+
+The next candidate removes long source IDs, hashes and snapshot IDs from the
+model wire. The model selects request-local integer references; the server
+expands their original authorized citation tuples. A held immutable binding
+is captured before dispatch, and changed source order/identity/status/context
+must invalidate it before expansion. Category/priority decisions remain free,
+with no repair to match gold. This reduces redundant copying, but latency and
+full quality still require a fresh measured run.
+
 ## Evidence locations and remaining gates
 
 The private local evidence root is `.operator-local/evaluation/`, including
