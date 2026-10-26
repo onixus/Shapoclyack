@@ -299,6 +299,8 @@ def _final_args(tmp_path, soak):
 def test_final_run_needs_an_hour_of_soak_and_a_non_exposed_corpus(tmp_path, monkeypatch, soak, status, expected_exit):
     clock = {"now": 0.0}
     monkeypatch.setattr(evaluation, "monotonic", lambda: clock.__setitem__("now", clock["now"] + soak / 40) or clock["now"])
+    # Live provenance shells out to docker, which the CI container does not have.
+    monkeypatch.setattr(evaluation, "runtime_provenance", lambda: {"sealed_for_test": True})
     (tmp_path / "manifest.json").write_text(json.dumps({
         "dataset_sha256": evaluation.file_digest(evaluation.DATASET), "source_sha256": evaluation.source_provenance(),
         "thresholds": DATASET["thresholds"], "runtime": evaluation.runtime_provenance()}))
