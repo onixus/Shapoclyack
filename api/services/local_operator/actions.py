@@ -7,9 +7,10 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import asdict
-from datetime import timedelta
+from datetime import datetime, timedelta
 from hashlib import sha256
 import json
+import logging
 from typing import Annotated, Literal
 from uuid import uuid4
 
@@ -20,8 +21,31 @@ from api.core.permissions import SCAN_CANCEL
 from api.db import models, tenant_scope
 from api.db.engine import get_session
 from api.schemas import StartScanRequest
-from api.services import audit, jobs, rbac, scan_admission, vulnerabilities, vuln_states
+from api.services import audit, jobs, maintenance, quotas, rbac, scan_admission, vulnerabilities, vuln_states
 from api.services.local_operator import store
+
+LOG = logging.getLogger("shapoclyack.operator-actions")
+#: An ``executing`` claim older than this has lost its worker and may be closed by an admin.
+STALE_EXECUTING = timedelta(minutes=15)
+#: Failures raised before any side effect can have committed: the claim is closed as
+#: ``failed`` with a reason. Anything else (connection loss, thread/publish errors)
+#: may follow a committed effect and stays ``unknown`` until reconciled or admin-closed.
+PRE_EFFECT_ERRORS = (PermissionError, ValueError, LookupError, store.OperatorStoreError)
+
+
+def is_pre_effect(exc):
+    """True only when ``exc`` proves that no scan/cancellation was committed.
+
+    ``trigger_verification`` wraps *any* failure of the job start in
+    ``VerificationDispatchError`` (including a lost response after the job row
+    committed), so a wrapped error counts only when its cause is itself a
+    pre-effect refusal; an unwrapped one is the function's own refusal.
+    """
+    if isinstance(exc, vulnerabilities.VerificationReconciliationRequired):
+        return False
+    if isinstance(exc, vulnerabilities.VerificationDispatchError):
+        return exc.__cause__ is None or isinstance(exc.__cause__, PRE_EFFECT_ERRORS)
+    return isinstance(exc, PRE_EFFECT_ERRORS)
 
 Id = Annotated[str, Field(min_length=1, max_length=256, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")]
 
@@ -140,6 +164,61 @@ def _execution_view(row):
     return {"execution_id": row.execution_id, "status": row.status, **(row.payload or {})}
 
 
+def _expires_at(row):
+    """Plan expiry as a naive-UTC datetime, comparable with ``store._now()``."""
+    return datetime.fromisoformat(row.payload["expires_at"].removesuffix("Z"))
+
+
+def _utcnow():
+    return store._now()
+
+
+def _expired(row):
+    return _utcnow() >= _expires_at(row)
+
+
+def _failure(exc):
+    """Stable ``(code, retryable)`` for a pre-effect refusal; never the raw message."""
+    if isinstance(exc, quotas.QuotaExceeded):
+        return "quota_exceeded", True
+    if isinstance(exc, maintenance.MaintenanceBlocked):
+        return "maintenance_blocked", True
+    if isinstance(exc, store.OperatorStoreError):
+        return exc.code, False
+    if isinstance(exc, PermissionError):
+        return "not_permitted", False
+    if isinstance(exc, LookupError):
+        return "not_found", False
+    if isinstance(exc, vulnerabilities.VerificationDispatchError):
+        return "verification_dispatch_refused", False
+    if isinstance(exc, ValueError) and "changed" in str(exc):
+        return "stale_proposal", False
+    if isinstance(exc, ValueError):
+        return "preconditions_failed", False
+    return "preconditions_changed", False
+
+
+def _fail(row, execution, exc):
+    code, retryable = _failure(exc)
+    LOG.warning("Confirmed operator action refused before effect: %s (%s)", code, type(exc).__name__)
+    row.status = execution.status = "failed"
+    execution.payload = {"error": code, "retryable": retryable, "no_effect": True}
+    retry_after = getattr(exc, "retry_after_seconds", None)
+    if retry_after is not None:
+        execution.payload["retry_after_seconds"] = retry_after
+
+
+def _audit_subject(row, result=None):
+    """Identifiers and a target digest for the audit trail; never target values."""
+    impact, arguments = row.payload["impact"], row.payload["arguments"]
+    subject = {"targets_sha256": digest(impact.get("targets"))}
+    for key in ("job_id", "vuln_id"):
+        value = arguments.get(key) or (result or {}).get(key)
+        if value:
+            subject[key] = value
+    return subject
+
+
 def _audit(db, row, action, context, **data):
     audit.record(db, context, action="operator.action." + action, resource_type="operator",
         resource_id=row.proposal_id, tenant_id=row.tenant_id,
@@ -147,7 +226,7 @@ def _audit(db, row, action, context, **data):
 
 
 @contextmanager
-def _authority(settings, context):
+def _authority(settings, context, *, writer=True):
     """Hold current account/session, tenant and membership authority through dispatch.
 
     Shared tenant locks allow the ordinary job writer's own tenant status lock.
@@ -157,7 +236,7 @@ def _authority(settings, context):
     with tenant_scope.system("operator confirmed action authority"), get_session(settings.postgres_url) as db:
         # FOR UPDATE also conflicts with the FK key-share lock of a first
         # membership INSERT, fencing the legacy no-grants fallback.
-        user = store._lock_actor(db, settings, principal.username, context.auth_session_id, writer=True)
+        user = store._lock_actor(db, settings, principal.username, context.auth_session_id, writer=writer)
         tenant = db.scalar(select(models.Tenant).where(models.Tenant.tenant_id == principal.tenant_id)
             .with_for_update(read=True))
         if tenant is None or tenant.status != "active":
@@ -211,7 +290,8 @@ def prepare(settings, context, session_id, body, audit_context):
 
 
 def get(settings, context, proposal_id):
-    with _authority(settings, context) as (db, permissions, user):
+    # Status polling must not queue behind the writer lock of a confirm in flight.
+    with _authority(settings, context, writer=False) as (db, permissions, user):
         row = _owned(db, context, proposal_id)
         execution = db.scalar(select(models.OperatorExecution).where(models.OperatorExecution.proposal_id == row.proposal_id,
             models.OperatorExecution.tenant_id == row.tenant_id, models.OperatorExecution.username == row.username))
@@ -262,7 +342,7 @@ def confirm(settings, context, proposal_id, arguments_sha256, audit_context):
                     execution.payload = {"result": {"job_id": job.job_id, "job_status": job.status}, "reconciled": True}
                     _audit(db, row, "reconcile", audit_context, execution_id=execution.execution_id)
             return _view(row, _execution_view(execution))
-        if row.status != "preview" or store._now().isoformat() + "Z" >= row.payload["expires_at"]:
+        if row.status != "preview" or _expired(row):
             raise store.OperatorStoreError("stale_proposal")
         _, current = _preview(settings, row.tenant_id, row.username, row.payload["action"], row.payload["arguments"], permissions)
         if current != row.payload["policy_sha256"]:
@@ -272,25 +352,27 @@ def confirm(settings, context, proposal_id, arguments_sha256, audit_context):
             tenant_id=row.tenant_id, username=row.username, status="executing", payload={}, created_at=store._now())
         row.status = "executing"
         db.add(execution)
-        _audit(db, row, "confirm", audit_context, execution_id=execution_id)
+        _audit(db, row, "confirm", audit_context, execution_id=execution_id, **_audit_subject(row))
     # Recheck after waiting for persistence, with authority locks through effect.
     with _authority(settings, context) as (db, permissions, user):
         row = _owned(db, context, proposal_id, lock=True)
         execution = db.get(models.OperatorExecution, execution_id)
         if row.status != "executing" or execution is None or execution.status != "executing":
             raise store.OperatorStoreError("idempotency_conflict")
+        failure = None
         try:
             if (row.payload["auth_session_sha256"] != digest(context.auth_session_id)
                     or user.token_version != row.payload["actor_token_version"]
-                    or store._now().isoformat() + "Z" >= row.payload["expires_at"]
+                    or _expired(row)
                     or row.payload["arguments_sha256"] != digest({"action": row.payload["action"], "arguments": row.payload["arguments"]})):
                 raise store.OperatorStoreError("stale_proposal")
             _, current = _preview(settings, row.tenant_id, row.username, row.payload["action"], row.payload["arguments"], permissions)
             if current != row.payload["policy_sha256"]:
                 raise store.OperatorStoreError("stale_proposal")
-        except Exception:
-            row.status = execution.status = "failed"
-            execution.payload = {"error": "preconditions_changed"}
+        except Exception as exc:
+            # Nothing was dispatched yet, so any error here is a definite refusal.
+            failure = exc
+            _fail(row, execution, exc)
         else:
             try:
                 result = _dispatch(settings, row, permissions, audit_context)
@@ -300,12 +382,60 @@ def confirm(settings, context, proposal_id, arguments_sha256, audit_context):
                     "job_id": exc.job_id, "job_status": exc.job_status,
                     "result": {"job_id": exc.job_id, "job_status": exc.job_status},
                     "requires_reconciliation": True}
-            except Exception:
-                # The effect may already have committed. Never replay it.
-                row.status = execution.status = "unknown"
-                execution.payload = {"error": "dispatch_outcome_unknown", "requires_reconciliation": True}
+            except Exception as exc:
+                if is_pre_effect(exc):
+                    failure = exc
+                    _fail(row, execution, exc)
+                else:
+                    # The effect may already have committed. Never replay it; an admin
+                    # closes it explicitly (``close``) when reconciliation is impossible.
+                    LOG.warning("Confirmed operator action outcome unknown (%s)", type(exc).__name__)
+                    row.status = execution.status = "unknown"
+                    execution.payload = {"error": "dispatch_outcome_unknown", "requires_reconciliation": True}
             else:
                 row.status = execution.status = "succeeded"
                 execution.payload = {"result": result}
-        _audit(db, row, "result", audit_context, execution_id=execution_id, status=execution.status)
+        _audit(db, row, "result", audit_context, execution_id=execution_id, status=execution.status,
+               **_audit_subject(row, (execution.payload or {}).get("result")),
+               **({"error": execution.payload["error"]} if execution.status == "failed" else {}))
+        view = _view(row, _execution_view(execution))
+    if isinstance(failure, (quotas.QuotaExceeded, maintenance.MaintenanceBlocked)):
+        # The failed state is committed above; the route answers 429/409 with
+        # Retry-After exactly as it does for a refusal at the first check.
+        raise failure
+    return view
+
+
+def close(settings, context, proposal_id, resolution, audit_context):
+    """Administrator closes an action whose outcome could not be determined.
+
+    ``no_effect`` records that the admin verified nothing was created (``failed``);
+    ``effect_confirmed`` that the effect exists (``succeeded``). Nothing is
+    redispatched, and the closed session becomes deletable/expirable.
+    """
+    with _authority(settings, context) as (db, permissions, user):
+        current = store.resolve_role(db, user, context.principal.tenant_id)
+        if current is None or current[1] < 3:
+            raise store.OperatorStoreError("access_revoked")
+        row = db.scalar(select(models.OperatorProposal).where(
+            models.OperatorProposal.proposal_id == proposal_id,
+            models.OperatorProposal.tenant_id == context.principal.tenant_id).with_for_update())
+        if row is None:
+            raise store.OperatorStoreError("not_found")
+        execution = db.scalar(select(models.OperatorExecution).where(
+            models.OperatorExecution.proposal_id == proposal_id,
+            models.OperatorExecution.tenant_id == row.tenant_id))
+        stale = (execution is not None and execution.status == "executing"
+                 and store._now() - execution.created_at >= STALE_EXECUTING)
+        if execution is None or not (execution.status == "unknown" or stale):
+            raise store.OperatorStoreError("stale_proposal")
+        previous = execution.payload or {}
+        status = "failed" if resolution == "no_effect" else "succeeded"
+        row.status = execution.status = status
+        execution.payload = {"closed_by_admin": True, "resolution": resolution,
+            "closed_by": context.principal.username, "previous_error": previous.get("error"),
+            **({"result": previous["result"]} if resolution == "effect_confirmed" and "result" in previous else {}),
+            **({"error": "closed_by_admin_no_effect"} if status == "failed" else {})}
+        _audit(db, row, "close", audit_context, execution_id=execution.execution_id,
+               status=status, resolution=resolution, **_audit_subject(row, previous.get("result")))
         return _view(row, _execution_view(execution))

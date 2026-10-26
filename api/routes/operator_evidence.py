@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict
 from api.auth import TenantPrincipal
 from api.db import tenant_scope
 from api.routes.local_operator import OperatorContext, OperatorSettings, Reader, Writer
-from api.services.local_operator import store
+from api.services.local_operator import store, throttle
 from api.services.local_operator.gateway import COUNT_FIELDS, GatewayError
 
 router = APIRouter(prefix="/operator/evidence", tags=["operator"])
@@ -51,6 +51,16 @@ def _authorize(settings, context: OperatorContext, *, writer=False) -> TenantPri
                                    is_platform_admin=user.role == "admin")
     except store.OperatorStoreError:
         raise HTTPException(status_code=403, detail="operator_access_revoked") from None
+
+
+def _throttle_semantic(settings, principal):
+    """Viewer-triggered semantic search spends the tenant's shared embedding budget."""
+    if not getattr(settings, "operator_embeddings_enabled", False):
+        return
+    wait = throttle.take(settings, principal.tenant_id)
+    if wait is not None:
+        raise HTTPException(status_code=429, detail="operator_semantic_rate_limited",
+                            headers={"Retry-After": str(wait)})
 
 
 def _safe_scalar(key, value):
@@ -104,6 +114,8 @@ def _call(settings, context, action, *, writer=False, **kwargs):
     from api.services.local_operator import retrieval
 
     principal = _authorize(settings, context, writer=writer)
+    if action == "search":
+        _throttle_semantic(settings, principal)
     try:
         result = getattr(retrieval, action)(settings, principal, **kwargs)
         _authorize(settings, context, writer=writer)
@@ -151,6 +163,8 @@ def refresh_evidence(run_id: RunId, body: RefreshEvidence, request: Request,
 def _semantic_call(settings, context, action, *, writer=False, **kwargs):
     from api.services.local_operator import semantic
     principal = _authorize(settings, context, writer=writer)
+    if action == "search_device":
+        _throttle_semantic(settings, principal)
     try:
         result = getattr(semantic, action)(settings, principal, **kwargs)
         if result is None:

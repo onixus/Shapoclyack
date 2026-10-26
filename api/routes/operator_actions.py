@@ -1,11 +1,11 @@
 """Explicit UI confirmation boundary for the optional operator."""
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.routes._audit import AuditDep
-from api.routes.local_operator import OperatorSettings, PathId, Writer
+from api.routes.local_operator import Admin, OperatorSettings, PathId, Writer
 from api.routes.operator_evidence import _query
 from api.services.local_operator import actions, store
 from api.services import maintenance, quotas
@@ -16,6 +16,11 @@ router = APIRouter(prefix="/operator", tags=["operator"])
 class Confirmation(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     arguments_sha256: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
+
+
+class CloseUnknown(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    resolution: Literal["no_effect", "effect_confirmed"]
 
 
 def _call(action, *args):
@@ -57,3 +62,11 @@ def confirm_action(request: Request, proposal_id: PathId, body: Confirmation, co
                    settings: OperatorSettings, audit: AuditDep):
     _query(request, {"tenant_id"})
     return _call(actions.confirm, settings, context, proposal_id, body.arguments_sha256, audit)
+
+
+@router.post("/proposals/{proposal_id}/close")
+def close_unknown_action(request: Request, proposal_id: PathId, body: CloseUnknown, context: Admin,
+                         settings: OperatorSettings, audit: AuditDep):
+    """Tenant admin closes an action stuck in ``unknown`` (or a stale ``executing``)."""
+    _query(request, {"tenant_id"})
+    return _call(actions.close, settings, context, proposal_id, body.resolution, audit)

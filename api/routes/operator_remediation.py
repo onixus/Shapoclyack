@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Path, Query, Request
 from api.db import tenant_scope
 from api.db.engine import get_session
 from api.routes._audit import AuditDep
-from api.routes.local_operator import OperatorSettings, Reader
+from api.routes.local_operator import Admin, OperatorSettings, Reader
 from api.routes.operator_evidence import _authorize, _query
 from api.services import audit as audit_service
 from api.services.local_operator import remediation
@@ -84,7 +84,7 @@ def finding_remediation_source(vuln_id: DeviceId, source_id: DeviceId,
 
 @router.post("/findings/{vuln_id}/applicability-review", status_code=201)
 def review_finding_applicability(vuln_id: DeviceId, body: remediation.ApplicabilityReview,
-                                request: Request, context: Reader, settings: OperatorSettings, audit: AuditDep):
+                                request: Request, context: Admin, settings: OperatorSettings, audit: AuditDep):
     _query(request, {"tenant_id"})
     try:
         result = remediation.review_finding(settings, context, vuln_id=vuln_id, body=body, audit=audit)

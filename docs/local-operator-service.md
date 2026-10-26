@@ -98,6 +98,12 @@ Task state is `queued`, `running`, `succeeded`, `failed`, `cancelled` or
 same idempotency key and exact session/run/language/tool return the existing task;
 changed arguments return 409. This does not create a scan or install a patch.
 
+The single running slot is shared fairly: `claim_next` picks the queued task of
+the tenant that was served least recently (a tenant never served goes first),
+oldest task first within that tenant, instead of a global FIFO by creation time.
+Viewer-triggered semantic searches additionally spend a per-tenant budget of 30
+per minute per API replica (`429 operator_semantic_rate_limited`).
+
 A PostgreSQL advisory leader lock (registered ID 9) selects the worker; a
 transactional queue lock (ID 10), one global running lease, and ownership checks
 fence state changes. Provider calls execute outside database transactions. The

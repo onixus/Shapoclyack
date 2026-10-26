@@ -32,6 +32,19 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- Local scan operator, server side of the #607 review. With a runtime manifest
+  configured the worker refuses every task unless the probe is `ready`
+  (`operator_runtime_not_ready`); status reports `manifest_attested` /
+  `model_integrity=manifest_attested` instead of "verified at startup" (the
+  weights are not re-hashed), and `runtime_verified` stays one release as an
+  alias. `GET /api/operator/status` caches the probe (30 s). A confirmed action
+  that fails before any effect (quota, maintenance, admission change, store
+  refusal) is `failed` with a reason instead of a permanent `unknown`, and a
+  real `unknown` is closed by a tenant admin through
+  `POST /api/operator/proposals/{id}/close`. `applicability-review` requires
+  `admin` on the route. The inference queue is round-robin between tenants and
+  viewer semantic searches have a per-tenant budget. The confirmation audit now
+  carries `job_id`/`vuln_id` and a digest of the targets.
 - The Pulse boundary in `apex-contract/manifest.json` follows Pulse's report
   bump (GenDec#52/#53): `pulse-engine-v1` / `apex.pulse.scan_report.v1`
   becomes `pulse-engine-v3` / `apex.pulse.scan_report.v3`, payload schema

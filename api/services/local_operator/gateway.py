@@ -24,6 +24,7 @@ from api.services.local_operator.contracts import (
     AnswerPayload, Citation, OperatorAnswer, ServerContext,
 )
 from api.services.local_operator.providers import InferenceProvider, OperatorProviderError
+from api.services.local_operator import runtime
 from api.services.local_operator import store as operator_store
 
 PROMPT_VERSION = "run-counts-v2-grounded"
@@ -183,6 +184,12 @@ def read_evidence(settings, principal, run_id):
 async def execute_task(settings, task):
     if not settings.operator_enabled or not settings.operator_worker_enabled:
         raise GatewayError("operator_disabled")
+    if runtime.manifest_configured(settings):
+        # A configured manifest makes readiness mandatory: never infer on a runtime
+        # that is unreachable or does not match the pinned alias/context.
+        state = await run_in_threadpool(runtime.probe, settings)
+        if state["runtime_status"] != "ready":
+            raise GatewayError("operator_runtime_not_ready")
     if task.get("kind") == "plan_request":
         from .planner import execute
         return await execute(settings, task)

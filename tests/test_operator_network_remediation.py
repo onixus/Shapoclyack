@@ -103,6 +103,17 @@ def test_review_requires_current_administrator_not_read_or_scan_authority(env, r
 
 
 @requires_postgres
+@pytest.mark.parametrize("role", ["viewer", "operator"])
+def test_review_route_dependency_refuses_before_the_service_is_reached(env, monkeypatch, role):
+    def reached(*args, **kwargs):
+        pytest.fail("route dependency must refuse non-administrators before the service")
+    monkeypatch.setattr(remediation, "review_finding", reached)
+    response = _review(env, role=role)
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"] == "Admin role required"
+
+
+@requires_postgres
 @pytest.mark.parametrize("reviewed", [1, "true", False])
 def test_review_marker_requires_explicit_json_true(env, reviewed):
     response = _review(env, reviewed=reviewed)

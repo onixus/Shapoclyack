@@ -47,7 +47,9 @@ def test_ready_binds_live_model_and_verified_startup(configured):
     result = probe(settings, transport=transport())
     assert result["runtime_status"] == "ready"
     assert result["runtime_verified"]
-    assert result["model_integrity"] == "verified_at_startup"
+    # Honest naming: the pinned manifest is attested, weight bytes are not re-hashed.
+    assert result["model_integrity"] == "manifest_attested"
+    assert result["manifest_attested"] is True
     assert result["model_sha256"] == manifest["model_sha256"]
     assert str(settings.operator_runtime_manifest_path) not in json.dumps(result)
 
@@ -99,3 +101,54 @@ def test_malformed_live_document_is_sanitized_unavailable(configured, path, body
             return httpx.Response(200, json=body)
         return httpx.Response(200, json={"status": "ok"})
     assert probe(settings, transport=transport(handler))["runtime_status"] == "unavailable"
+
+
+def _gateway_env(settings, monkeypatch, handler=None):
+    """Worker gateway with the real probe over a mock runtime; inference must never start."""
+    import asyncio
+    from api.services.local_operator import gateway, runtime
+    settings.operator_worker_enabled = True
+    real = runtime.probe
+    monkeypatch.setattr(runtime, "probe", lambda s: real(s, transport=transport(handler)))
+    started = []
+    def sentinel(*args, **kwargs):
+        started.append(1)
+        raise AssertionError("inference started on a runtime that is not ready")
+    monkeypatch.setattr(gateway, "authorize_actor", sentinel)
+    task = {"kind": "summarize_run", "language": "en", "task_id": "t", "run_id": "r"}
+    return lambda: asyncio.run(gateway.execute_task(settings, task)), started
+
+
+@pytest.mark.parametrize("mode", ["context", "model", "failure"])
+def test_substituted_runtime_is_not_ready_and_inference_is_refused(configured, monkeypatch, mode):
+    from api.services.local_operator.gateway import GatewayError
+    settings, _ = configured
+    def handler(request):
+        if mode == "failure":
+            return httpx.Response(503)
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        return httpx.Response(200, json={"data": [{"id": "other" if mode == "model" else settings.operator_model,
+                                                   "meta": {"n_ctx": 4096 if mode == "context" else 8192}}]})
+    run, started = _gateway_env(settings, monkeypatch, handler)
+    with pytest.raises(GatewayError) as caught:
+        run()
+    assert caught.value.code == "operator_runtime_not_ready"
+    assert not started
+
+
+def test_ready_runtime_passes_gate_and_reaches_inference_path(configured, monkeypatch):
+    settings, _ = configured
+    run, started = _gateway_env(settings, monkeypatch)
+    with pytest.raises(AssertionError):  # sentinel proves the gate let the task through
+        run()
+    assert started
+
+
+def test_runtime_without_manifest_keeps_previous_behaviour(configured, monkeypatch):
+    settings, _ = configured
+    settings.operator_runtime_manifest_path = None
+    run, started = _gateway_env(settings, monkeypatch, lambda request: pytest.fail("no probe expected"))
+    with pytest.raises(AssertionError):
+        run()
+    assert started

@@ -51,15 +51,39 @@ clicks from dispatching twice. Starts use the stable internal key
 `operator:<proposal_id>`. A confirm retry can reconcile an accepted start to its
 existing job after a lost response; it does not submit a second start.
 
-A service exception after dispatch produces `unknown` with
+A service exception after dispatch whose type proves that nothing was created
+(quota or maintenance refusal, scope/permission denial, a `ValueError` such as
+"Confirmed scan admission changed", an operator-store refusal, a verification
+dispatch refusal of the verification service itself, but not one that wraps an
+arbitrary failure of the job start) produces `failed` with `error`, `no_effect=true` and
+`retryable`. Quota and maintenance refusals are also answered `429`/`409` with
+`Retry-After`, exactly like a refusal at the first check; the same failure in the
+re-check transaction after the claim is logged, committed as `failed` and
+answered the same way. The plan is then spent: retrying means preparing a new
+proposal. Any other exception (a lost connection, a failure after the effect
+was committed, such as starting the executor thread) produces `unknown` with
 `requires_reconciliation=true`, because an effect may already have committed.
 An interrupted claim remains `executing` if no outcome was persisted. A retry
 may recover an existing scan by its key; absence of that job never causes
 automatic replay. Verification and cancellation uncertainty needs manual
 inspection of existing finding/job state. There is no automatic retry or lease
-that turns an uncertain action into a fresh network job. A definitive service
-refusal before dispatch is `failed`; a refusal encountered during dispatch is
-conservatively `unknown`.
+that turns an uncertain action into a fresh network job.
+
+A genuinely `unknown` action (and an `executing` claim older than 15 minutes
+whose process died) is closed by a tenant administrator with
+`POST /api/operator/proposals/{proposal_id}/close` and
+`{"resolution": "no_effect" | "effect_confirmed"}`: the admin records, after
+inspecting jobs and findings, that nothing was created (`failed`) or that the
+effect exists (`succeeded`). Nothing is redispatched. The call requires the
+tenant `admin` role (`403` otherwise), is audited as `operator.action.close`
+with the resolution, and makes the session deletable and expirable again. A
+settled or never-confirmed proposal answers `409`.
+
+The confirmation audit records the proposal, the arguments digest, `job_id` or
+`vuln_id` where the action names one, and `targets_sha256` (a digest of the
+approved targets, never the targets themselves). Plan expiry is compared as a
+datetime, and `GET /api/operator/proposals/{id}` takes only shared locks so
+status polling never waits behind a confirmation in flight.
 
 Verification also holds a fail-fast claim shared with campaign and ordinary
 verification entrypoints. Its native job key binds tenant, finding, current
@@ -71,7 +95,8 @@ its completion event. The operator execution remains `unknown` and includes
 the known job link/status for inspection; confirming it again never redispatches.
 
 Session deletion and retention refuse conversations with `executing` or
-`unknown` proposals, preserving reconciliation evidence. A session admits at
+`unknown` proposals, preserving reconciliation evidence until an administrator
+closes them. A session admits at
 most 100 retained proposals. Privacy erasure and tenant purge follow the
 platform's dedicated audited procedures. Migration
 `0101_operator_actions` extends the existing proposal/execution tables;

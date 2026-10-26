@@ -1,6 +1,8 @@
 """Confirmed actions use real admission and durable claims, never real probes."""
 from datetime import timedelta
 
+import json
+
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -141,6 +143,169 @@ def test_unknown_without_job_never_redispatches_and_preserves_history(env, monke
     assert client.delete(f"/api/operator/sessions/{session}?tenant_id=default", headers=operator).status_code == 409
     with get_session(settings.postgres_url) as db:
         assert len(list(db.scalars(select(models.OperatorExecution)))) == 1
+    # A genuinely unknown outcome has an administrator exit; the operator has none.
+    close = f"/api/operator/proposals/{proposal['proposal_id']}/close?tenant_id=default"
+    assert client.post(close, headers=operator, json={"resolution": "no_effect"}).status_code == 403
+    closed = client.post(close, headers=admin, json={"resolution": "no_effect"})
+    assert closed.status_code == 200, closed.text
+    assert closed.json()["status"] == "failed"
+    assert closed.json()["execution"]["closed_by_admin"] is True
+    assert client.post(close, headers=admin, json={"resolution": "no_effect"}).status_code == 409
+    assert calls == [1]
+    assert client.delete(f"/api/operator/sessions/{session}?tenant_id=default", headers=operator).status_code == 204
+
+
+@requires_postgres
+def test_admin_close_rejects_settled_actions_and_bad_input(env):
+    client, settings, operator, admin, session = env
+    proposal = _prepare(env).json()
+    close = f"/api/operator/proposals/{proposal['proposal_id']}/close?tenant_id=default"
+    assert client.post(close, headers=admin, json={"resolution": "no_effect"}).status_code == 409  # never confirmed
+    assert _confirm(env, proposal).json()["status"] == "succeeded"
+    assert client.post(close, headers=admin, json={"resolution": "no_effect"}).status_code == 409  # settled
+    assert client.post(close, headers=admin, json={"resolution": "whatever"}).status_code == 422
+    assert client.post(close, headers=admin, json={}).status_code == 422
+
+
+@requires_postgres
+def test_admin_close_effect_confirmed_marks_succeeded_and_audits(env, monkeypatch):
+    monkeypatch.setattr(jobs, "start_scan", lambda *a, **k: (_ for _ in ()).throw(ConnectionError("x")))
+    client, settings, operator, admin, session = env
+    proposal = _prepare(env).json()
+    assert _confirm(env, proposal).json()["status"] == "unknown"
+    close = f"/api/operator/proposals/{proposal['proposal_id']}/close?tenant_id=default"
+    closed = client.post(close, headers=admin, json={"resolution": "effect_confirmed"})
+    assert closed.json()["status"] == "succeeded", closed.text
+    with get_session(settings.postgres_url) as db:
+        entry = db.scalar(select(models.AuditEvent).where(models.AuditEvent.action == "operator.action.close"))
+        assert entry is not None
+
+
+@requires_postgres
+@pytest.mark.parametrize("kind,status", [("quota", 429), ("maintenance", 409), ("value", 200), ("store", 200)])
+def test_errors_before_effect_fail_with_reason_and_never_stick_as_unknown(env, monkeypatch, kind, status):
+    from api.services import maintenance
+
+    def refuse(*args, **kwargs):
+        if kind == "quota":
+            raise quotas.QuotaExceeded("limit", tenant_id="default", resource="scans", limit=1, used=1,
+                                       retry_after_seconds=30)
+        if kind == "maintenance":
+            raise maintenance.MaintenanceBlocked("closed", tenant_id="default", reason="freeze")
+        if kind == "value":
+            raise ValueError("Confirmed scan admission changed; prepare a new proposal")
+        raise store.OperatorStoreError("access_revoked")
+
+    monkeypatch.setattr(jobs, "start_scan", refuse)
+    client, settings, operator, admin, session = env
+    proposal = _prepare(env).json()
+    result = _confirm(env, proposal)
+    assert result.status_code == status, result.text
+    if kind == "quota":
+        assert result.headers["Retry-After"] == "30"
+    # The failure is committed either way and a repeat shows it without dispatching again.
+    after = client.get(f"/api/operator/proposals/{proposal['proposal_id']}?tenant_id=default", headers=operator).json()
+    assert after["status"] == "failed", after
+    assert after["execution"]["no_effect"] is True
+    assert after["execution"]["error"] == {"quota": "quota_exceeded", "maintenance": "maintenance_blocked",
+                                           "value": "stale_proposal", "store": "access_revoked"}[kind]
+    assert after["execution"]["retryable"] is (kind in {"quota", "maintenance"})
+    assert _confirm(env, proposal).json()["status"] == "failed"
+    assert jobs.list_jobs(settings)[1] == 0
+    assert client.delete(f"/api/operator/sessions/{session}?tenant_id=default", headers=operator).status_code == 204
+
+
+def test_pre_effect_classification_never_trusts_a_wrapped_lost_response():
+    from api.services import vulnerabilities
+
+    def wrapped(cause):
+        try:
+            try:
+                raise cause
+            except Exception as inner:
+                raise vulnerabilities.VerificationDispatchError("Could not dispatch") from inner
+        except vulnerabilities.VerificationDispatchError as exc:
+            return exc
+
+    assert actions.is_pre_effect(vulnerabilities.VerificationDispatchError("No live sensor"))
+    assert actions.is_pre_effect(wrapped(ValueError("admission changed")))
+    assert actions.is_pre_effect(wrapped(PermissionError("scope")))
+    assert not actions.is_pre_effect(wrapped(ConnectionError("lost response after commit")))
+    assert not actions.is_pre_effect(wrapped(RuntimeError("thread start failed")))
+    assert not actions.is_pre_effect(vulnerabilities.VerificationReconciliationRequired(
+        type("Job", (), {"job_id": "j", "status": "queued"})()))
+    assert not actions.is_pre_effect(ConnectionError("x"))
+    assert not actions.is_pre_effect(RuntimeError("x"))
+
+
+@requires_postgres
+def test_recheck_failures_in_second_transaction_are_logged_and_classified(env, monkeypatch, caplog):
+    proposal = _prepare(env).json()
+    real = actions._preview
+    state = {"calls": 0}
+
+    def second_preview_fails(*args, **kwargs):
+        state["calls"] += 1
+        if state["calls"] == 2:
+            raise quotas.QuotaExceeded("limit", tenant_id="default", resource="scans", limit=1, used=1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(actions, "_preview", second_preview_fails)
+    with caplog.at_level("WARNING"):
+        result = _confirm(env, proposal)
+    assert result.status_code == 429, result.text
+    assert "refused before effect: quota_exceeded" in caplog.text
+    assert jobs.list_jobs(env[1])[1] == 0
+
+
+@requires_postgres
+def test_proposal_expiry_is_compared_as_datetimes_not_strings(env, monkeypatch):
+    from datetime import datetime
+
+    proposal = _prepare(env).json()
+    client, settings, operator, admin, session = env
+    with get_session(settings.postgres_url) as db:
+        row = db.get(models.OperatorProposal, proposal["proposal_id"])
+        # No fractional digits: as a string this sorts AFTER "...00.500000Z".
+        row.payload = {**row.payload, "expires_at": "2026-01-01T00:00:00Z"}
+    monkeypatch.setattr(actions, "_utcnow", lambda: datetime(2026, 1, 1, 0, 0, 0, 500000))
+    assert _confirm(env, proposal).status_code == 409
+    assert jobs.list_jobs(settings)[1] == 0
+
+
+@requires_postgres
+def test_status_polling_does_not_take_the_writer_lock(env, monkeypatch):
+    proposal = _prepare(env).json()
+    client, settings, operator, admin, session = env
+    seen = []
+    real = store._lock_actor
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("writer", True))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(store, "_lock_actor", spy)
+    assert client.get(f"/api/operator/proposals/{proposal['proposal_id']}?tenant_id=default", headers=operator).status_code == 200
+    assert seen == [False]
+    assert _confirm(env, proposal).status_code == 200
+    assert True in seen
+
+
+@requires_postgres
+def test_confirm_audit_binds_target_digest_and_job_identifier(env):
+    client, settings, operator, admin, session = env
+    proposal = _prepare(env).json()
+    assert _confirm(env, proposal).json()["status"] == "succeeded"
+    with get_session(settings.postgres_url) as db:
+        rows = list(db.scalars(select(models.AuditEvent).where(models.AuditEvent.action.in_(
+            ["operator.action.confirm", "operator.action.result"]))))
+    by_action = {row.action: row for row in rows}
+    confirm = by_action["operator.action.confirm"].after
+    assert len(confirm["targets_sha256"]) == 64
+    assert "127.0.0.1" not in json.dumps(confirm)
+    result = by_action["operator.action.result"].after
+    assert result["targets_sha256"] == confirm["targets_sha256"]
+    assert result["job_id"] == jobs.list_jobs(settings)[0][0].job_id
 
 
 @requires_postgres
@@ -275,9 +440,15 @@ def test_policy_interleaving_at_actual_admission_cannot_change_confirmed_plan(en
     monkeypatch.setattr(jobs, "start_scan", interleaving)
     result = _confirm(env, proposal)
     assert result.status_code == 200, result.text
-    assert result.json()["status"] == "unknown"
+    # A refusal at actual admission happens before any effect: failed, not unknown.
+    assert result.json()["status"] == "failed", result.text
+    assert result.json()["execution"]["error"] == "stale_proposal"
+    assert result.json()["execution"]["no_effect"] is True
     assert jobs.list_jobs(env[1])[1] == 0
     assert not list((env[1].state_dir / "job_inputs").glob("*"))
+    # No admin step is needed to clean up the session afterwards.
+    client, settings, operator, admin, session = env
+    assert client.delete(f"/api/operator/sessions/{session}?tenant_id=default", headers=operator).status_code == 204
 
 
 @requires_postgres
@@ -314,7 +485,7 @@ def test_verification_uses_real_lifecycle_and_never_machine_closes(env, monkeypa
     verified = _confirm(env, proposal)
     assert verified.status_code == 200, verified.text
     if changed_during_dispatch:
-        assert verified.json()["status"] == "unknown", verified.text
+        assert verified.json()["status"] == "failed", verified.text
         assert jobs.list_jobs(settings)[1] == 0
         assert vulnerabilities.get_vulnerability(settings, tenant_id="default", vuln_id=vuln_id)["state"] == "FIXING"
         return

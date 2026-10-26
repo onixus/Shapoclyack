@@ -464,11 +464,22 @@ def claim_next(settings, owner, lease_seconds=180):
             .limit(1)
         ):
             return None
+        # Round-robin between tenants: the tenant served least recently goes first (one
+        # never served goes before all), then its oldest task. A tenant that fills its
+        # own queue therefore delays others by at most one inference slot.
+        served = (
+            select(OperatorTask.tenant_id.label("tenant_id"),
+                   func.max(OperatorTask.updated_at).label("last_served"))
+            .where(OperatorTask.status.in_(["running", "succeeded", "failed", "interrupted"]))
+            .group_by(OperatorTask.tenant_id)
+            .subquery()
+        )
         row = db.scalar(
             select(OperatorTask)
             .join(Tenant, Tenant.tenant_id == OperatorTask.tenant_id)
+            .outerjoin(served, served.c.tenant_id == OperatorTask.tenant_id)
             .where(OperatorTask.status == "queued", Tenant.status == "active")
-            .order_by(OperatorTask.created_at, OperatorTask.task_id)
+            .order_by(served.c.last_served.asc().nulls_first(), OperatorTask.created_at, OperatorTask.task_id)
             .with_for_update(of=OperatorTask, skip_locked=True)
             .limit(1)
         )

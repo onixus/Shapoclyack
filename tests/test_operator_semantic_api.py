@@ -154,3 +154,40 @@ def test_explicit_tenant_strict_args_and_foreign_device_access(env):
     assert client.post("/api/tenants", headers=headers["admin"], json={"tenant_id": "other", "name": "Other"}).status_code == 201
     response = client.get(BASE + "/search", headers=headers["admin"], params={"tenant_id": "other", "query": "curl"})
     assert response.status_code == 404 and not calls
+
+
+def test_viewer_semantic_searches_are_budgeted_per_tenant(env):
+    from api.services.local_operator import throttle
+
+    client, settings, headers, calls = env
+    throttle.reset()
+    settings.operator_semantic_queries_per_minute = 3
+    try:
+        assert refresh(env).status_code == 200
+        statuses = [search(env, query="curl").status_code for _ in range(5)]
+        assert statuses == [200, 200, 200, 429, 429], statuses
+        limited = search(env, query="curl")
+        assert limited.json()["detail"] == "operator_semantic_rate_limited"
+        assert 1 <= int(limited.headers["Retry-After"]) <= 60
+        # The budget is per tenant: one flooding tenant leaves another untouched.
+        assert throttle.take(settings, "another-tenant") is None
+        # The tenant's embedding calls stopped at the budget (1 build + 3 queries).
+        assert len(calls) == 4
+    finally:
+        throttle.reset()
+
+
+def test_semantic_budget_window_slides_and_isolates_tenants(monkeypatch):
+    from types import SimpleNamespace
+    from api.services.local_operator import throttle
+
+    throttle.reset()
+    clock = [100.0]
+    monkeypatch.setattr(throttle, "monotonic", lambda: clock[0])
+    settings = SimpleNamespace(operator_semantic_queries_per_minute=2)
+    assert [throttle.take(settings, "a") for _ in range(2)] == [None, None]
+    assert throttle.take(settings, "a") == 60
+    assert throttle.take(settings, "b") is None
+    clock[0] += 61
+    assert throttle.take(settings, "a") is None
+    throttle.reset()
