@@ -7,7 +7,10 @@ export type OperatorStatus = {
   runtime_status: string;
   quality_status: string;
   task_submission_enabled: boolean;
+  /** Deprecated alias of `manifest_attested` (kept one release). */
   runtime_verified?: boolean;
+  /** The runtime matches its manifest; weights are not re-hashed. */
+  manifest_attested?: boolean;
   model_integrity?: string;
   model_sha256?: string | null;
   runtime_revision?: string | null;

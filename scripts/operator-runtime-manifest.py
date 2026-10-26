@@ -410,7 +410,7 @@ def main():
         handle.write(raw)
     Path(temporary).chmod(0o444)
     os.replace(temporary, target)
-    print(json.dumps({"integrity": "verified_at_startup", "manifest_sha256": hashlib.sha256(raw).hexdigest(),
+    print(json.dumps({"integrity": "manifest_attested", "manifest_sha256": hashlib.sha256(raw).hexdigest(),
                       "model": MODEL, "profile": value["profile"]}))
 
 
