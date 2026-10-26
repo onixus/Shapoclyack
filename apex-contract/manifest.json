@@ -79,8 +79,7 @@
     {
       "path": "scanner/pipeline/pulse_probe.py",
       "contains": [
-        "pulse/raw.json",
-        "REPORT_SCHEMAS = (\"pulse.scan.v2\", \"pulse.scan.v3\")"
+        "pulse/raw.json"
       ]
     }
   ],
