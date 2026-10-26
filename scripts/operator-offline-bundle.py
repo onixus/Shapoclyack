@@ -25,6 +25,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 import uuid
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -835,6 +836,26 @@ def deployment(root, manifest, *, port=8085, subnet="172.29.189.0/24"):
     return project, private / "compose.json", credentials
 
 
+def check_offline_profile(app_env, subnet):
+    """Refuse to start when the written configuration could reach beyond the isolated network.
+
+    The compose network is internal, but a hosted provider (or an inference URL
+    outside it) would still be configured; the offline profile must fail closed
+    at start instead of relying on the network alone to make it fail later.
+    """
+    values = dict(line.split("=", 1) for line in Path(app_env).read_text().splitlines() if "=" in line)
+    if values.get("OCTO_OPERATOR_PROVIDER") != "local" or values.get("OCTO_OPERATOR_ALLOW_EXTERNAL") != "false":
+        raise BundleError("bundle_offline_profile_external_provider")
+    network = ipaddress.ip_network(checked_subnet(subnet))
+    for key in ("OCTO_OPERATOR_BASE_URL", "OCTO_OPERATOR_EMBEDDINGS_BASE_URL"):
+        try:
+            host = ipaddress.ip_address(urlsplit(values.get(key, "")).hostname or "")
+        except ValueError:
+            raise BundleError("bundle_offline_profile_inference_outside_network") from None
+        if host not in network:
+            raise BundleError("bundle_offline_profile_inference_outside_network")
+
+
 def native_models():
     """Use the same checksum-bound, network-free volume stager as Mac startup."""
     spec = importlib.util.spec_from_file_location("operator_native_models", Path(__file__).with_name("operator-runtime-manifest.py"))
@@ -890,6 +911,7 @@ def import_bundle(bundle, trusted, destination, *, load=True, start=False, port=
             if not load:
                 raise BundleError("bundle_start_requires_image_load")
             project, compose, credentials = deployment(destination, manifest, port=port, subnet=subnet)
+            check_offline_profile(destination / ".offline/app.env", subnet)
             stage_deployment_models(destination, manifest, compose)
             run(["docker", "compose", "-p", project, "-f", str(compose), "up", "-d", "--pull", "never"], timeout=600)
             attest_deployment(destination, manifest, project, compose)

@@ -564,3 +564,10 @@ verification, import and fresh startup instructions](local-operator-bundle.md#co
 The package includes source, compiled UI, model and embedding weights, pinned
 cached images, licenses and image SBOM; transfer the trusted manifest digest
 independently. Feed freshness and measured runtime acceptance remain separate.
+
+The offline operator package is not a multi-tenant deployment: it runs the API
+with `OCTO_ENV=prod` and generated secrets for a single local administrator, but
+it is a single-host compose stack with a loopback console. Do not load real
+tenant data into it beyond what that one administrator may see; its isolation is
+the internal Docker network, and Kubernetes deployment is unsupported
+([profile and egress](local-operator-bundle.md#deployment-profile-and-egress)).

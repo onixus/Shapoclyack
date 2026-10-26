@@ -693,6 +693,38 @@ def test_failed_import_does_not_remove_a_destination_it_did_not_create(module, b
     assert (destination / "precious").exists()
 
 
+def test_generated_offline_profile_passes_the_start_check(module, bundle, tmp_path):
+    root = tmp_path / "installation"
+    root.mkdir()
+    module.deployment(root, bundle[1])
+    module.check_offline_profile(root / ".offline/app.env", "172.29.189.0/24")
+
+
+@pytest.mark.parametrize("key,value,code", [
+    ("OCTO_OPERATOR_PROVIDER", "openrouter", "bundle_offline_profile_external_provider"),
+    ("OCTO_OPERATOR_ALLOW_EXTERNAL", "true", "bundle_offline_profile_external_provider"),
+    ("OCTO_OPERATOR_BASE_URL", "http://10.9.9.9:8082/v1", "bundle_offline_profile_inference_outside_network"),
+    ("OCTO_OPERATOR_BASE_URL", "http://inference.example:8082/v1", "bundle_offline_profile_inference_outside_network"),
+    ("OCTO_OPERATOR_EMBEDDINGS_BASE_URL", "https://api.example.com/v1", "bundle_offline_profile_inference_outside_network"),
+])
+def test_start_refuses_a_hosted_provider_or_inference_outside_the_isolated_network(module, bundle, tmp_path, monkeypatch, key, value, code):
+    real_deployment = module.deployment
+    calls = []
+
+    def tampered(root, manifest, **kwargs):
+        result = real_deployment(root, manifest, **kwargs)
+        env = root / ".offline/app.env"
+        env.write_text("".join(f"{k}={value if k == key else v}\n" for k, v in _env_file(env).items()))
+        return result
+    monkeypatch.setattr(module, "deployment", tampered)
+    monkeypatch.setattr(module, "image_info", lambda image: {"Id": image})
+    monkeypatch.setattr(module, "run", lambda command, **_: calls.append(command) or b"")
+    monkeypatch.setattr(module, "stage_deployment_models", lambda *a, **k: pytest.fail("staged before the profile check"))
+    with pytest.raises(module.BundleError, match=code):
+        module.import_bundle(bundle[0], bundle[2], tmp_path / "installation", load=True, start=True)
+    assert not any("up" in command for command in calls)
+
+
 def test_console_stand_uses_production_mode_and_private_data_dirs(tmp_path, monkeypatch):
     from api import settings as api_settings
 
