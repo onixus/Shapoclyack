@@ -363,6 +363,8 @@ def test_generated_startup_is_isolated_offline_nonroot_and_has_no_downloads(modu
         assert "ports" not in service and "build" not in service
         assert "--offline" in service["command"] and "--no-agent" in service["command"]
         assert service["pull_policy"] == "never"
+        assert service["volumes"] == ["model_weights:/models:ro"]
+    assert compose["volumes"]["model_weights"] == {"name": project + "-weights", "external": True}
     assert compose["services"]["gateway"]["ports"] == ["127.0.0.1:8085:8080"]
     assert compose["services"]["gateway"]["environment"] == {"OCTO_OPERATOR_CONSOLE_PORT": "8085"}
     assert all(service["image"].startswith("sha256:") for service in compose["services"].values())
@@ -396,8 +398,8 @@ def running_deployment(module, bundle, tmp_path, monkeypatch):
             "HostConfig": {"ReadonlyRootfs": True, "PortBindings": {}, "CapDrop": ["ALL"], "Privileged": False,
                 "Sysctls": {"net.ipv6.conf.all.disable_ipv6": "1", "net.ipv6.conf.default.disable_ipv6": "1"}},
             "NetworkSettings": {"Networks": {"owned-network": {}}},
-            "Mounts": [{"Type": "bind", "Source": str(root / "payloads" / filename),
-                "Destination": "/models/" + filename, "RW": False}]}
+            "Mounts": [{"Type": "volume", "Name": project + "-weights", "Driver": "local",
+                "Source": "/var/lib/docker/volumes/" + project + "-weights/_data", "Destination": "/models", "RW": False}]}
     network = {"Internal": True, "Labels": {"com.docker.compose.project": project}}
 
     def run(args, **kwargs):
@@ -410,6 +412,16 @@ def running_deployment(module, bundle, tmp_path, monkeypatch):
         pytest.fail("Unexpected operation during startup attestation: " + str(args))
 
     monkeypatch.setattr(module, "run", run)
+    from types import SimpleNamespace
+
+    def verify_volume(volume, expected_sha256, *, helper_image):
+        assert volume == project + "-weights"
+        assert expected_sha256 == module.native_model_pins(manifest)
+        assert helper_image == manifest["image_ids"]["application"]
+        return {"storage": "docker_local_volume", "volume": {"name": volume, "driver": "local"},
+                "readback_verified": True, "artifacts": {name: {"sha256": digest} for name, digest in expected_sha256.items()}}
+
+    monkeypatch.setattr(module, "native_models", lambda: SimpleNamespace(verify_volume=verify_volume))
     monkeypatch.setattr(module, "image_info", lambda _: image)
     return root, manifest, project, path, containers, network, image
 
@@ -421,6 +433,8 @@ def test_runtime_attestation_binds_actual_containers_and_imported_immutable_payl
     assert record["model_sha256"] == next(a["sha256"] for a in manifest["artifacts"] if a["role"] == "model")
     assert record["runtime_revision"] == manifest["runtime_revision"]
     assert record["application_source_revision"] == manifest["source_revision"]
+    assert record["model_storage"]["readback_verified"] is True
+    assert record["model_storage"]["volume"]["name"] == project + "-weights"
     assert (root / ".offline/verification.json").stat().st_mode & 0o777 == 0o444
     assert "OCTO_OPERATOR_RUNTIME_MANIFEST_SHA256=" + hashlib.sha256(raw).hexdigest() in (root / ".offline/app.env").read_text()
     compose = json.loads(path.read_text())
@@ -429,9 +443,43 @@ def test_runtime_attestation_binds_actual_containers_and_imported_immutable_payl
     assert not any("operator-runtime.json" in v for v in compose["services"]["migrate"]["volumes"])
 
 
+def test_native_volume_readback_failure_prevents_attestation(module, running_deployment, monkeypatch):
+    from types import SimpleNamespace
+
+    root, manifest, project, path, *_ = running_deployment
+
+    def rejected(*args, **kwargs):
+        raise ValueError("Volume model checksum mismatch")
+
+    monkeypatch.setattr(module, "native_models", lambda: SimpleNamespace(verify_volume=rejected))
+    with pytest.raises(module.BundleError, match="native_model_integrity"):
+        module.attest_deployment(root, manifest, project, path)
+    assert not (root / ".offline/verification.json").exists()
+
+
+def test_offline_stage_binds_private_payload_hashes_and_owned_volume(module, running_deployment, monkeypatch):
+    from types import SimpleNamespace
+
+    root, manifest, project, path, *_ = running_deployment
+    observed = {}
+
+    def stage(files, pins, **kwargs):
+        observed.update(files=files, pins=pins, **kwargs)
+        return {"readback_verified": True}
+
+    monkeypatch.setattr(module, "native_models", lambda: SimpleNamespace(stage_models=stage))
+    assert module.stage_deployment_models(root, manifest, path)["readback_verified"]
+    assert observed["files"] == {name: root / "payloads" / name for name in ("model.gguf", "embedding.gguf")}
+    assert observed["pins"] == module.native_model_pins(manifest)
+    assert observed["volume"] == project + "-weights"
+    assert observed["helper_image"] == manifest["image_ids"]["application"]
+    assert observed["receipt_path"] == root / ".offline/model-volume.json"
+
+
 @pytest.mark.parametrize("mutation", ["image", "revision", "stopped", "unhealthy", "root", "writable_root",
     "ports", "arguments", "entrypoint", "privileged", "capabilities", "external_network", "foreign_network",
-    "extra_network", "writable_mount", "foreign_mount", "extra_mount", "ipv6_enabled", "ipv6_policy_missing", "mutable_payload"])
+    "extra_network", "writable_mount", "foreign_mount", "extra_mount", "bind_mount", "nonlocal_volume",
+    "ipv6_enabled", "ipv6_policy_missing", "mutable_payload"])
 def test_uninspected_or_mismatched_runtime_never_gets_integrity_record(module, running_deployment, mutation):
     root, manifest, project, path, containers, network, image = running_deployment
     value = containers["a" * 64]
@@ -466,9 +514,13 @@ def test_uninspected_or_mismatched_runtime_never_gets_integrity_record(module, r
     elif mutation == "writable_mount":
         value["Mounts"][0]["RW"] = True
     elif mutation == "foreign_mount":
-        value["Mounts"][0]["Source"] = "/unverified/model.gguf"
+        value["Mounts"][0]["Name"] = "unverified-weight-volume"
     elif mutation == "extra_mount":
         value["Mounts"].append({"Destination": "/models/other.gguf"})
+    elif mutation == "bind_mount":
+        value["Mounts"][0]["Type"] = "bind"
+    elif mutation == "nonlocal_volume":
+        value["Mounts"][0]["Driver"] = "network-filesystem"
     elif mutation == "ipv6_enabled":
         value["HostConfig"]["Sysctls"]["net.ipv6.conf.all.disable_ipv6"] = "0"
     elif mutation == "ipv6_policy_missing":

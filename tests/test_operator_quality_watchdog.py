@@ -22,7 +22,8 @@ def journal(case="case-1", at=BASE):
 
 def state(running=True):
     return {"Id": CID, "Name": "/" + NAME, "Config": {"Labels": {watchdog.LABEL: NONCE}},
-            "State": {"Running": running, "ExitCode": 137 if not running else 0, "OOMKilled": False}}
+            "State": {"Running": running, "Status": "running" if running else "exited",
+                      "StartedAt": BASE.isoformat(), "ExitCode": 137 if not running else 0, "OOMKilled": False}}
 
 
 def test_case_clock_cannot_reset_deadline_or_retry_completed_case():
@@ -111,6 +112,15 @@ def test_existing_cidfile_and_identity_overrides_cannot_be_adopted(tmp_path):
         watchdog.launch(args)
 
 
+@pytest.mark.parametrize("runtime", [["--restart=always", "image"], ["--restart", "on-failure:3", "image"], ["--restart=no", "image"]])
+def test_runner_restart_policy_cannot_replay_an_attempt(tmp_path, runtime):
+    args = SimpleNamespace(cidfile=tmp_path / "runner.cid", receipt=tmp_path / "receipt.json",
+                           runtime_arguments=runtime, run_directory=tmp_path)
+    with pytest.raises(ValueError, match="restart policy"):
+        watchdog.launch(args)
+    assert not args.cidfile.exists() and not args.receipt.exists()
+
+
 def test_fsync_receipt_preserves_failure_and_refuses_evidence_overwrite(tmp_path):
     receipt = watchdog.Receipt(tmp_path / "receipt.json")
     receipt.record("watchdog_failure", reason="case_deadline_exceeded")
@@ -147,7 +157,8 @@ def test_new_runner_is_created_then_identity_verified_before_start(tmp_path, mon
         return state(False)["State"]
     monkeypatch.setattr(watchdog, "docker", command)
     monkeypatch.setattr(watchdog, "owned_state", verified)
-    monkeypatch.setattr(watchdog, "monitor", lambda *a, **kw: {"status": "passed", "reason": None})
+    monkeypatch.setattr(watchdog, "monitor", lambda *a, **kw: {
+        "status": "passed", "reason": None, "container_state": state(False)["State"]})
     assert watchdog.launch(args) == 0
     assert [row[0] for row in calls] == ["create", "verified", "start"]
     assert calls[-1] == ["start", CID]
@@ -283,7 +294,7 @@ def test_export_never_copies_running_or_foreign_results(tmp_path):
 
 def test_native_export_failure_cannot_turn_successful_exit_into_pass(tmp_path, monkeypatch):
     args = SimpleNamespace(cidfile=tmp_path / "native.cid", receipt=tmp_path / "watchdog.json",
-        runtime_arguments=["image", "--require-native-filesystem"], run_directory=tmp_path / "results",
+        runtime_arguments=["image", "--require-native-filesystem", "--require-launch-permit"], run_directory=tmp_path / "results",
         container_run_directory="/artifacts/results")
     def command(argv):
         if argv[0] == "create":
@@ -292,9 +303,10 @@ def test_native_export_failure_cannot_turn_successful_exit_into_pass(tmp_path, m
     monkeypatch.setattr(watchdog, "docker", command)
     monkeypatch.setattr(watchdog, "owned_state", lambda *_: state(False)["State"])
     monkeypatch.setattr(watchdog, "require_native_output_mount", lambda *_: {"Type": "volume", "RW": True})
+    monkeypatch.setattr(watchdog, "publish_launch_permit", lambda *a, **kw: {})
     def monitor(*a, **kw):
         assert kw["poll_seconds"] == 2 and callable(kw["journal_reader"])
-        return {"status": "passed", "reason": None}
+        return {"status": "passed", "reason": None, "container_state": state(False)["State"]}
     monkeypatch.setattr(watchdog, "monitor", monitor)
     def failed_export(*_):
         raise OSError("Host export unavailable")
@@ -321,3 +333,159 @@ def test_two_second_native_poll_keeps_old_boundary_failure(tmp_path):
         monotonic=lambda: current[0], utc_now=lambda: BASE + timedelta(seconds=current[0]),
         sleep=lambda seconds: current.__setitem__(0, min(119, current[0] + seconds)))
     assert result["status"] == "failed" and result["reason"] == "case_completion_control_gap"
+
+
+def test_created_and_never_started_exit_are_not_terminal_after_start_timeout():
+    assert not watchdog.confirmed_terminal({"Status": "created", "Running": False})
+    assert not watchdog.confirmed_terminal({"Status": "exited", "Running": False, "StartedAt": "0001-01-01T00:00:00Z"})
+    assert watchdog.confirmed_terminal(state(False)["State"])
+
+
+def test_reaper_retains_failure_through_unavailable_daemon_created_and_late_start(tmp_path):
+    inspect_calls = [0]
+    signals = []
+    sleeps = []
+    killed = [False]
+    def command(argv):
+        if argv[0] == "inspect":
+            inspect_calls[0] += 1
+            if inspect_calls[0] <= 2:
+                raise watchdog.subprocess.TimeoutExpired(argv, 5)
+            value = state(not killed[0])
+            if inspect_calls[0] == 3:
+                value["State"] = {"Status": "created", "Running": False, "StartedAt": "0001-01-01T00:00:00Z"}
+            return json.dumps([value])
+        assert argv == ["kill", "--signal", "SIGKILL", CID]
+        signals.append(argv)
+        killed[0] = True
+        return CID
+    receipt = watchdog.Receipt(tmp_path / "receipt.json")
+    result = watchdog.supervise_terminal(CID, NAME, NONCE, receipt, reason="launch_failed",
+        command=command, sleep=lambda seconds: sleeps.append(seconds))
+    assert watchdog.confirmed_terminal(result)
+    assert len(signals) == 1 and len(sleeps) == 4
+    pending = json.loads(receipt.path.read_text())
+    assert pending["status"] == "failed" and pending["terminal_supervision_pending"]
+    assert any(event["kind"] == "terminal_state_confirmed" for event in receipt.events)
+    assert inspect_calls[0] == 6  # includes the ownership recheck before signal
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_timedout_start_and_cleanup_inspect_cannot_exit_before_late_runner_is_stopped(tmp_path, monkeypatch, native):
+    args = SimpleNamespace(cidfile=tmp_path / "runner.cid", receipt=tmp_path / "watchdog.json",
+        runtime_arguments=["image", "--require-native-filesystem", "--require-launch-permit"] if native else ["image"],
+        run_directory=tmp_path / "results", container_run_directory="/artifacts/results" if native else None)
+    calls = []
+    inspections = [0]
+    killed = [False]
+    def command(argv):
+        calls.append(argv)
+        if argv[0] == "create":
+            args.cidfile.write_text(CID)
+        elif argv[0] == "start":
+            raise watchdog.subprocess.TimeoutExpired(argv, 5)
+        elif argv[0] == "kill":
+            assert argv == ["kill", "--signal", "SIGKILL", CID]
+            killed[0] = True
+        return CID
+    def owned(*_):
+        inspections[0] += 1
+        if inspections[0] == 2:
+            raise watchdog.subprocess.TimeoutExpired(["inspect", CID], 5)
+        if inspections[0] in {1, 3}:
+            return {"Status": "created", "Running": False, "StartedAt": "0001-01-01T00:00:00Z"}
+        return state(not killed[0])["State"]
+    original = watchdog.supervise_terminal
+    monkeypatch.setattr(watchdog, "docker", command)
+    monkeypatch.setattr(watchdog, "owned_state", owned)
+    monkeypatch.setattr(watchdog, "require_native_output_mount", lambda *_: {"Type": "volume", "RW": True})
+    monkeypatch.setattr(watchdog, "publish_launch_permit", lambda *a, **kw: pytest.fail("Failed start issued launch permit"))
+    monkeypatch.setattr(watchdog, "export_native_results", lambda *_: {"native_evidence_retained": True})
+    monkeypatch.setattr(watchdog, "supervise_terminal", lambda *a, **kw: original(*a, **kw, sleep=lambda _: None))
+    assert watchdog.launch(args) == 1
+    result = json.loads(args.receipt.read_text())
+    assert result["status"] == "failed" and result["reason"] == "launch_failed"
+    assert result["terminal_supervision_pending"] is False
+    assert watchdog.confirmed_terminal(result["container_state"])
+    assert len([call for call in calls if call[0] == "start"]) == 1  # no retry
+    assert len([call for call in calls if call[0] == "kill"]) == 1
+    assert any(event["kind"] == "terminal_state_pending" and event["state"]["Status"] == "created"
+               for event in result["events"])
+
+
+def test_reaper_only_exact_confirmed_missing_cid_resolves_pending_start(tmp_path):
+    calls = [0]
+    def command(argv):
+        calls[0] += 1
+        if calls[0] == 1:
+            raise watchdog.subprocess.CalledProcessError(1, argv, stderr="Docker daemon unavailable")
+        raise watchdog.subprocess.CalledProcessError(1, argv, stderr="Error: No such object: " + CID)
+    result = watchdog.supervise_terminal(CID, NAME, NONCE, watchdog.Receipt(tmp_path / "receipt.json"),
+        reason="launch_failed", command=command, sleep=lambda _: None)
+    assert result["Status"] == "removed" and calls[0] == 2
+
+
+def test_controller_sigterm_requests_cleanup_without_unwinding_supervision(monkeypatch):
+    monkeypatch.setattr(watchdog, "CANCEL_SIGNAL", None)
+    watchdog.request_controller_stop(watchdog.signal.SIGTERM)
+    assert watchdog.CANCEL_SIGNAL == watchdog.signal.SIGTERM
+
+
+def test_receipt_fsync_failures_do_not_abandon_late_start_cleanup(tmp_path, monkeypatch):
+    receipt = watchdog.Receipt(tmp_path / "receipt.json")
+    real_record, real_finish = receipt.record, receipt.finish
+    writes = [0]
+    def record(*a, **kw):
+        writes[0] += 1
+        if writes[0] <= 2:
+            raise OSError("ENOSPC")
+        return real_record(*a, **kw)
+    def finish(**kw):
+        if writes[0] < 4:
+            raise OSError("EIO")
+        return real_finish(**kw)
+    monkeypatch.setattr(receipt, "record", record)
+    monkeypatch.setattr(receipt, "finish", finish)
+    inspections = [0]
+    killed = [False]
+    def command(argv):
+        if argv[0] == "inspect":
+            inspections[0] += 1
+            value = state(not killed[0])
+            if inspections[0] == 1:
+                value["State"] = {"Status": "created", "Running": False}
+            return json.dumps([value])
+        assert argv == ["kill", "--signal", "SIGKILL", CID]
+        killed[0] = True
+        return CID
+    terminal = watchdog.supervise_terminal(CID, NAME, NONCE, receipt, reason="launch_failed",
+        command=command, sleep=lambda _: None)
+    assert watchdog.confirmed_terminal(terminal) and killed[0]
+    assert receipt.persistence_failures >= 3
+    assert any(event["kind"] == "terminal_state_confirmed" for event in receipt.events)
+
+
+def test_launch_permit_is_written_only_to_verified_running_owned_cid(tmp_path):
+    calls = []
+    def command(argv):
+        calls.append(argv)
+        return json.dumps([state()]) if argv[0] == "inspect" else "launch-permit-fsynced"
+    value = watchdog.publish_launch_permit(CID, NAME, NONCE, "/artifacts/results", (datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+        watchdog.Receipt(tmp_path / "receipt.json"), command)
+    assert value["container_id"] == CID and value["nonce"] == NONCE
+    assert (datetime.fromisoformat(value["expires_at"]) - datetime.fromisoformat(value["requested_at"])).total_seconds() == 60
+    assert calls[0] == ["inspect", CID] and calls[1][:4] == ["exec", CID, "python", "-c"]
+    assert calls[1][-3] == "/artifacts" and json.loads(calls[1][-2]) == value
+
+
+def test_launch_permit_is_never_written_for_created_state(tmp_path):
+    calls = []
+    def command(argv):
+        calls.append(argv)
+        value = state()
+        value["State"] = {"Status": "created", "Running": False}
+        return json.dumps([value])
+    with pytest.raises(ValueError, match="verified owned Running"):
+        watchdog.publish_launch_permit(CID, NAME, NONCE, "/artifacts/results", BASE.isoformat(),
+            watchdog.Receipt(tmp_path / "receipt.json"), command)
+    assert calls == [["inspect", CID]]

@@ -131,11 +131,16 @@ network to avoid gateway cancellation/queueing effects. Frozen code and dataset
 mounts stay read-only; the evaluator receives only its own artifact directory.
 
 On Docker Desktop for Mac that artifact directory must be a fresh native Docker
-volume, with `--require-native-filesystem`. Before inference the evaluator
+volume, with `--require-native-filesystem --require-launch-permit`. Before inference the evaluator
 requires ext4 and tests file fsync, atomic rename, directory fsync, readback and
 durable deletion; an `EBADF` or other unsupported operation is a hard harness
 failure. `run.json` records journal format `operator-executions-v2` and the
-storage-preflight result. Host watchdog native mode reads the bounded journal
+storage-preflight result. The watchdog grants a nonce/CID-bound, fsynced native
+launch permit only after successful start acknowledgement and verified Running
+state. The evaluator rejects missing/foreign/expired permits before provider
+dispatch and retains its authorization proof with exported results. A failed
+start cannot grant model authority; an uncertain permit delivery remains a
+failed supervised cleanup, not an acceptance pass. Host watchdog native mode reads the bounded journal
 through the verified CID and exports terminal evidence into a new host
 directory; an export failure cannot pass. See
 [the native-volume watchdog protocol](operator-quality-watchdog.md). Native

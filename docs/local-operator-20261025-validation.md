@@ -1,5 +1,10 @@
 # Operator delivery and Mac workstation evidence — 2026-10-25
 
+This is a historical implementation-wave snapshot. For current measured gates,
+including later retrieval/recovery results and failed runtime attempts, see
+[acceptance status](local-operator-acceptance-status.md). ADR 0005 subsequently
+made Mac the primary profile; NVIDIA acceptance is separate in #609.
+
 This wave extends epic #583. It does not close the epic's frozen quality,
 full semantic retrieval, NVIDIA hardware or full deployment acceptance gates.
 The owner requested a separate Mac container during implementation, so the
@@ -92,13 +97,13 @@ to private host bind directories. No pre-existing service, image or volume was
 pruned. The stand uses exact already-present local image IDs and read-only
 source/UI mounts; it is a development deployment, not a published release image.
 
-## Still required before epic closure
+## Historical gate list at the end of this wave
 
-Full project CI on the final commit, pinned CPU embeddings and semantic recall,
+At that point, full project CI on the final commit, pinned CPU embeddings and semantic recall,
 independently labelled domain/model evaluation, full operational/vendor plans,
 8K-token context load tests, 30 scenarios/60-minute soak, complete offline bundle
 and network evidence, deployment backup/restore/upgrade/rollback drills, and
-the original physical NVIDIA acceptance remain separate gates. The current
-API status conservatively reports `not_checked` because the API itself has not
-implemented a measured readiness/fingerprint probe. A working standalone
-inference endpoint does not silently change that contract.
+the original physical NVIDIA acceptance remained separate gates. This wave's
+API reported `not_checked` before the later readiness/fingerprint probe was
+implemented. These historical limits do not override ADR 0005 or substitute
+for the current acceptance evidence linked above.

@@ -4,6 +4,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OPERATOR_MODELS_DIR="${OPERATOR_MODELS_DIR:-${ROOT_DIR}/.operator-models}"
 export OPERATOR_MODELS_DIR
+OPERATOR_MODEL_STORAGE="${OPERATOR_MODEL_STORAGE:-native}"
+export OPERATOR_MODEL_STORAGE
+case "$OPERATOR_MODEL_STORAGE" in native|bind) ;; *) echo 'Model storage must be native or bind' >&2; exit 2 ;; esac
+COMPOSE=(docker compose -p shapo-operator -f "$ROOT_DIR/compose.operator-mac.yml")
+if [ "$OPERATOR_MODEL_STORAGE" = native ]; then
+  COMPOSE+=(-f "$ROOT_DIR/compose.operator-mac.native.yml")
+fi
 MODEL_FILE="${OPERATOR_MODELS_DIR}/Qwen3.5-9B-Q4_K_M.gguf"
 MODEL_SHA256=03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8
 MODEL_REVISION=3885219b6810b007914f3a7950a8d1b469d598a5
@@ -44,19 +51,33 @@ case "${1:-up}" in
     docker pull "$RUNTIME_IMAGE"
     ;;
   verify) verify_model ;;
+  stage)
+    python3 "$ROOT_DIR/scripts/operator-runtime-manifest.py" stage-volume
+    ;;
   up)
-    verify_model
+    if [ "$OPERATOR_MODEL_STORAGE" = native ]; then
+      stage_result="$(python3 "$ROOT_DIR/scripts/operator-runtime-manifest.py" stage-volume)"
+      OPERATOR_MODELS_VOLUME="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["volume_name"])' <<< "$stage_result")"
+      export OPERATOR_MODELS_VOLUME
+    else
+      verify_model
+      echo 'Host bind storage is a diagnostic profile; native-volume acceptance is not implied.' >&2
+    fi
     docker image inspect "$RUNTIME_IMAGE" >/dev/null
     if ! docker network inspect shapo-operator-offline >/dev/null 2>&1; then
       docker network create --internal --subnet 172.30.83.0/24 shapo-operator-offline >/dev/null
     fi
     network_config="$(docker network inspect shapo-operator-offline --format '{{.Internal}} {{(index .IPAM.Config 0).Subnet}}')"
     test "$network_config" = 'true 172.30.83.0/24' || { echo 'Unexpected inference network; refusing launch' >&2; exit 1; }
-    docker compose -p shapo-operator -f "$ROOT_DIR/compose.operator-mac.yml" up -d --pull never --wait --wait-timeout 180
+    "${COMPOSE[@]}" up -d --pull never --wait --wait-timeout 180
     python3 "$ROOT_DIR/scripts/operator-runtime-manifest.py"
     ;;
   down|ps|logs)
-    docker compose -p shapo-operator -f "$ROOT_DIR/compose.operator-mac.yml" "$1"
+    if [ "$OPERATOR_MODEL_STORAGE" = native ] && [ -z "${OPERATOR_MODELS_VOLUME:-}" ]; then
+      OPERATOR_MODELS_VOLUME="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["volume"]["name"])' "$ROOT_DIR/.operator-local/runtime/model-storage.json")"
+      export OPERATOR_MODELS_VOLUME
+    fi
+    "${COMPOSE[@]}" "$1"
     ;;
-  *) echo 'Usage: bash scripts/operator-mac.sh [download|verify|up|down|ps|logs]' >&2; exit 2 ;;
+  *) echo 'Usage: bash scripts/operator-mac.sh [download|verify|stage|up|down|ps|logs]' >&2; exit 2 ;;
 esac

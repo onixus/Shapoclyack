@@ -97,6 +97,24 @@ IPv6; startup/installation attestation verifies this policy instead of ignoring
 unclassified neighbor or multicast traffic. These corrections require fresh
 sealed-source measurement and do not convert previous failures into passes.
 
+A native journal smoke test subsequently passed real ext4 synchronization,
+live watchdog journal observation and terminal export in 6.51 seconds without
+calling a model. The next pilot still failed: Docker completed its runner start
+after the start RPC deadline and the controller lost supervision. The owner
+stopped that runner and preserved its uncertain inflight journal. Server logs
+show approximately 32 seconds of actual request processing before cancellation;
+they do not establish a 120-second model timeout or an accuracy result.
+
+The follow-up controller keeps failed pending starts under supervision until
+the owned immutable container is confirmed terminal. A launch permit is issued
+only after an acknowledged, ownership-checked start; a late start after a
+failed acknowledgment receives no permit to invoke inference. GGUF storage is
+also being tested in checksum-bound local Docker volumes rather than Mac host
+binds. Both source and independently read-back destination hashes are required,
+and actual read-only mounts are inspected. This is an I/O profile correction,
+not evidence that host caching caused the previous failures or that the new
+profile has passed performance acceptance.
+
 ## Evidence locations and remaining gates
 
 The private local evidence root is `.operator-local/evaluation/`, including

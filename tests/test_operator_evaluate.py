@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -17,6 +18,67 @@ evaluation = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(evaluation)
 DATASET = evaluation.load_dataset()
 CASES = DATASET["cases"]
+
+
+def launch_permit(nonce="c" * 32, cid="a" * 64, now=None):
+    now = now or datetime.now(UTC)
+    return {"schema_version": 1, "nonce": nonce, "container_id": cid,
+            "requested_at": (now - timedelta(seconds=1)).isoformat(), "issued_at": now.isoformat(),
+            "expires_at": (now + timedelta(seconds=59)).isoformat()}
+
+
+@pytest.mark.parametrize("mutation", ["missing_after_late_start", "foreign_nonce", "foreign_cid", "expired", "excessive_ttl"])
+def test_unauthorized_launch_never_reaches_provider(tmp_path, monkeypatch, mutation):
+    nonce = "c" * 32
+    monkeypatch.setenv(evaluation.LAUNCH_NONCE_ENV, nonce)
+    monkeypatch.setattr(evaluation.socket, "gethostname", lambda: "a" * 12)
+    monkeypatch.setattr(evaluation, "evaluate_one", lambda *_: pytest.fail("Unauthorized launch reached provider"))
+    permit = launch_permit()
+    if mutation == "missing_after_late_start":
+        clock = iter([0, 61])
+        monkeypatch.setattr(evaluation, "monotonic", lambda: next(clock))
+    else:
+        if mutation == "foreign_nonce":
+            permit["nonce"] = "d" * 32
+        elif mutation == "foreign_cid":
+            permit["container_id"] = "b" * 64
+        elif mutation == "expired":
+            permit = launch_permit(now=datetime.now(UTC) - timedelta(seconds=120))
+        else:
+            permit["expires_at"] = (datetime.now(UTC) + timedelta(seconds=3600)).isoformat()
+        (tmp_path / ("launch-permit-" + nonce + ".json")).write_text(json.dumps(permit))
+    args = SimpleNamespace(provenance_json=None, soak_seconds=0, limit=None, case_id=None,
+        manifest=None, development=True, output=str(tmp_path / "results"), resume=False,
+        require_native_filesystem=False, require_launch_permit=True)
+    with pytest.raises(ValueError, match="launch_permit"):
+        asyncio.run(evaluation.run(args))
+    assert not (tmp_path / "results/inflight.json").exists()
+    assert not (tmp_path / "results/records.jsonl").exists()
+
+
+def test_valid_launch_permit_is_cid_bound_and_durably_copied_for_export(tmp_path, monkeypatch):
+    nonce = "c" * 32
+    monkeypatch.setenv(evaluation.LAUNCH_NONCE_ENV, nonce)
+    monkeypatch.setattr(evaluation.socket, "gethostname", lambda: "a" * 12)
+    permit = launch_permit()
+    (tmp_path / ("launch-permit-" + nonce + ".json")).write_text(json.dumps(permit))
+    output = tmp_path / "results"
+    output.mkdir()
+    proof = asyncio.run(evaluation.authorize_launch(output, required=True))
+    assert proof["container_id"] == "a" * 64 and proof["nonce"] == nonce
+    copied = output / ("launch-authorization-" + nonce + ".json")
+    assert json.loads(copied.read_text()) == permit
+    assert proof["permit_sha256"] == evaluation.file_digest(copied)
+
+
+def test_permit_is_rechecked_at_first_provider_dispatch_after_preparation_delay(monkeypatch):
+    monkeypatch.setenv(evaluation.LAUNCH_NONCE_ENV, "c" * 32)
+    monkeypatch.setattr(evaluation.socket, "gethostname", lambda: "a" * 12)
+    monkeypatch.setattr(evaluation, "InferenceProvider", lambda *a, **kw: pytest.fail("Expired authority reached provider"))
+    expired = launch_permit(now=datetime.now(UTC) - timedelta(seconds=120))
+    record = asyncio.run(evaluation.evaluate_one(CASES[0], None, expired))
+    assert record["launch_authorization_rejected"] and record["model_invoked"] is False and record["valid"] is False
+    assert record["request_wire"] is None
 
 
 def test_durability_preflight_exercises_rename_readback_and_directory_fsync(tmp_path):

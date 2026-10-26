@@ -45,6 +45,31 @@ def test_verified_runtime_binds_actual_model_files(runtime):
     assert manifest.build(root)["profile"] == "mac-arm64-cpu"
 
 
+@pytest.mark.parametrize("wrong", [None, "volume", "writable", "shadow", "threads"])
+def test_native_runtime_binds_fresh_volume_proof_to_actual_readonly_mount(runtime, monkeypatch, wrong):
+    root, containers = runtime
+    proof = {"storage": "docker_local_volume", "readback_verified": True, "volume": {"name": "owned"}}
+    monkeypatch.setattr(manifest, "verify_volume", lambda volume, *a, **k: proof if volume == "owned" else pytest.fail("wrong requested volume"))
+    for value in containers.values():
+        value["Mounts"] = [{"Type": "volume", "Name": "owned", "Destination": "/models", "RW": False}]
+    containers["inference"]["Config"]["Cmd"] += ["--threads", "4"]
+    if wrong == "volume":
+        containers["inference"]["Mounts"][0]["Name"] = "foreign"
+    elif wrong == "writable":
+        containers["inference"]["Mounts"][0]["RW"] = True
+    elif wrong == "shadow":
+        containers["inference"]["Mounts"].append({"Type": "bind", "Source": str(root), "Destination": "/models/model.gguf", "RW": False})
+    elif wrong == "threads":
+        containers["inference"]["Config"]["Cmd"][-1] = "8"
+    if wrong:
+        with pytest.raises(ValueError):
+            manifest.build(root, storage="native", volume="owned")
+    else:
+        value = manifest.build(root, storage="native", volume="owned")
+        assert value["model_storage"] == proof
+        assert value["containers"]["inference"]["model_mount"]["Name"] == "owned"
+
+
 @pytest.mark.parametrize("role", ["inference", "embeddings"])
 def test_runtime_requires_ipv4_only_namespace(runtime, role):
     root, containers = runtime

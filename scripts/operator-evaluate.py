@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import platform
 import random
+import socket
 import subprocess
 import sys
 import tempfile
@@ -55,6 +56,7 @@ SOURCE_PATHS = (
 )
 MODEL_SHA256 = "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
 RUNTIME_OVERRIDE = None
+LAUNCH_NONCE_ENV = "OPERATOR_QUALITY_LAUNCH_NONCE"
 DEVELOPMENT_EXPOSED_CASE_IDS = (
     "analysis-ru-cve-critical-https", "analysis-en-cwe-tls", "analysis-ru-unknown-empty",
     "analysis-en-exposed-mysql", "planning-ru-compare", "planning-en-foreign-object",
@@ -135,6 +137,68 @@ def durable_storage_preflight(directory, *, require_native=False):
         renamed.unlink(missing_ok=True)
     return {"version": "file-rename-directory-fsync-v1", "passed": True,
             "filesystem_type": filesystem, "native_ext4_required": require_native}
+
+
+def validate_launch_permit(value, nonce, hostname, now):
+    fields = {"schema_version", "nonce", "container_id", "requested_at", "issued_at", "expires_at"}
+    if (not isinstance(value, dict) or set(value) != fields or type(value["schema_version"]) is not int
+            or value["schema_version"] != 1 or value["nonce"] != nonce
+            or not isinstance(nonce, str) or len(nonce) != 32 or any(c not in "0123456789abcdef" for c in nonce)):
+        raise ValueError("invalid_launch_permit")
+    cid = value["container_id"]
+    if (not isinstance(cid, str) or len(cid) != 64 or any(c not in "0123456789abcdef" for c in cid)
+            or hostname != cid[:12]):
+        raise ValueError("foreign_launch_permit_container")
+    stamps = []
+    for name in ("requested_at", "issued_at", "expires_at"):
+        raw = value[name]
+        if not isinstance(raw, str) or len(raw) > 64:
+            raise ValueError("invalid_launch_permit_timestamp")
+        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            raise ValueError("invalid_launch_permit_timestamp")
+        stamps.append(stamp.astimezone(UTC))
+    requested, issued, expires = stamps
+    if not (0 < (expires - requested).total_seconds() <= 60 and requested <= issued <= now <= expires):
+        raise ValueError("expired_or_future_launch_permit")
+    return value
+
+
+async def authorize_launch(output, *, required):
+    """A late start with no successful host ACK receives no provider authority."""
+    if not required:
+        return None
+    nonce = os.environ.get(LAUNCH_NONCE_ENV)
+    if not isinstance(nonce, str) or len(nonce) != 32 or any(c not in "0123456789abcdef" for c in nonce):
+        raise ValueError("missing_launch_nonce")
+    output = Path(output)
+    permit = output.parent / ("launch-permit-" + nonce + ".json")
+    began = monotonic()
+    while True:
+        try:
+            descriptor = os.open(permit, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except FileNotFoundError:
+            if monotonic() - began >= 60:
+                raise ValueError("missing_launch_permit") from None
+            await asyncio.sleep(0.1)
+            continue
+        with os.fdopen(descriptor, "rb") as handle:
+            raw = handle.read(4097)
+        if len(raw) > 4096:
+            raise ValueError("oversized_launch_permit")
+        value = validate_launch_permit(json.loads(raw), nonce, socket.gethostname(), datetime.now(UTC))
+        # Retain authorization with the exported result, including across resume.
+        descriptor, temporary = tempfile.mkstemp(prefix=".authorization-", dir=output)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, output / ("launch-authorization-" + nonce + ".json"))
+            _sync_directory(output)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+        return {**value, "permit_sha256": digest(raw), "protocol": "native-nonce-cid-expiry-v1"}
 
 
 def begin_execution(output, case, *, phase, ordinal=None, soak_iteration=None):
@@ -379,7 +443,7 @@ def domain_remediation(case):
             snapshot_id=row.snapshot_id, architecture="x86_64", language=case["language"], now=now)
 
 
-async def evaluate_one(case, config):
+async def evaluate_one(case, config, launch_authorization=None):
     record = {"case_id": case["case_id"], "kind": case["kind"], "language": case["language"],
               "started_at": datetime.now(UTC).isoformat(), "valid": False, "model_invoked": False}
     started = monotonic()
@@ -392,6 +456,14 @@ async def evaluate_one(case, config):
             request = planner.PlanRequest.model_validate(case["planner_request"])
             messages, schema = planner.build_prompt(request), planner.output_schema(request)
         record["request_sha256"] = digest(canonical({"messages": messages, "schema": schema}).encode())
+        if launch_authorization:
+            try:
+                permit = {key: launch_authorization[key] for key in
+                          ("schema_version", "nonce", "container_id", "requested_at", "issued_at", "expires_at")}
+                validate_launch_permit(permit, os.environ.get(LAUNCH_NONCE_ENV), socket.gethostname(), datetime.now(UTC))
+            except ValueError:
+                record["launch_authorization_rejected"] = True
+                raise
         record["model_invoked"] = True
         output = await InferenceProvider(config, transport=trace).complete(messages, response_schema=schema)
         record["model_content"] = output.content
@@ -679,6 +751,7 @@ async def run(args):
     for created in reversed(missing_directories):
         _sync_directory(created.parent)
     storage = durable_storage_preflight(output, require_native=args.require_native_filesystem)
+    launch_authorization = await authorize_launch(output, required=getattr(args, "require_launch_permit", False))
     stage = "development" if args.development else "final"
     if args.manifest:
         (output / "manifest.json").write_bytes(Path(args.manifest).read_bytes())
@@ -702,6 +775,7 @@ async def run(args):
                "model_bytes_reverified": bool(args.manifest),
                "result_journal_format": "operator-executions-v2",
                "storage_durability_preflight": storage,
+               "launch_authorization_protocol": "native-nonce-cid-expiry-v1" if launch_authorization else "not_required",
                "runtime_provenance_mode": "externally_sealed_controller" if args.provenance_json else "live_docker_inspection"}
     if args.resume:
         previous = json.loads((output / "run.json").read_text())
@@ -722,17 +796,19 @@ async def run(args):
     if len(completed) != len(records):
         raise ValueError("Duplicate completed records; refusing biased resume")
     interrupted = False
+    provider_authorized = False
     for number, case in enumerate(selected, 1):
         if case["case_id"] in completed:
             continue  # Failed cases count too; final resume never retries them.
         identity = begin_execution(output, case, phase="initial", ordinal=number)
-        record = await evaluate_one(case, config)
+        record = await evaluate_one(case, config, launch_authorization if not provider_authorized else None)
+        provider_authorized = provider_authorized or record.get("model_invoked", False)
         record.update(identity)
         records.append(record)
         complete_execution(output, record, phase="initial")
         write_json(output / "report.json", summarize(dataset, records, stage=stage))
         print(f"{number}/{len(selected)} {case['case_id']} {'PASS' if score_case(case, record) else 'FAIL'} {record['elapsed_seconds']:.2f}s", flush=True)
-        if record.get("interrupted"):
+        if record.get("interrupted") or record.get("launch_authorization_rejected"):
             interrupted = True
             break
     soak_records = soak_history(output) if args.resume else []
@@ -744,20 +820,22 @@ async def run(args):
         case = selected[soak_iteration % len(selected)]
         soak_iteration += 1
         identity = begin_execution(output, case, phase="soak", soak_iteration=soak_iteration)
-        record = await evaluate_one(case, config)
+        record = await evaluate_one(case, config, launch_authorization if not provider_authorized else None)
+        provider_authorized = provider_authorized or record.get("model_invoked", False)
         record.update(identity)
         soak_count += 1
         soak_errors += not record["valid"]
         consecutive_errors = 0 if record["valid"] else consecutive_errors + 1
         complete_execution(output, record, phase="soak")
         print(f"soak {soak_count} {case['case_id']} {'VALID' if record['valid'] else 'FAIL'} elapsed={monotonic() - run_started:.1f}s", flush=True)
-        if record.get("interrupted") or consecutive_errors >= 3:
+        if record.get("interrupted") or record.get("launch_authorization_rejected") or consecutive_errors >= 3:
             break  # preserve failure rather than hammer an unavailable runtime
     stop_sampling.set()
     if sampler is not None:
         await sampler
     report = summarize(dataset, records, stage=stage)
     report["storage_durability_preflight"] = storage
+    report["launch_authorization"] = launch_authorization
     report["raw_records_sha256"] = file_digest(output / "records.jsonl")
     report["source_unchanged_after_run"] = (not args.manifest or manifest["source_sha256"] == source_provenance())
     if not report["source_unchanged_after_run"]:
@@ -802,6 +880,8 @@ def main():
     run_parser.add_argument("--external-resource-sampling", action="store_true")
     run_parser.add_argument("--require-native-filesystem", action="store_true",
                             help="Require Linux ext4 results storage in addition to durable journal preflight")
+    run_parser.add_argument("--require-launch-permit", action="store_true",
+                            help="Do not call the provider without a fresh host-issued native-volume launch permit")
     run_parser.add_argument("--kind", choices=("analysis", "remediation", "planning", "degraded", "security"), action="append")
     run_parser.add_argument("--base-url", default="http://127.0.0.1:8082/v1")
     args = parser.parse_args()

@@ -31,7 +31,7 @@ Use these additional controller/evaluator arguments:
 --mount type=volume,src=NEW_OWNED_LOCAL_VOLUME,dst=/artifacts,volume-nocopy
 
 # Evaluator arguments, after the image and script:
---output /artifacts/results --require-native-filesystem
+--output /artifacts/results --require-native-filesystem --require-launch-permit
 ```
 
 `exported-results` must not exist at launch. Native mode verifies a writable
@@ -41,6 +41,27 @@ at two-second intervals, reading at most 8192 bytes of `inflight.json` through
 five-second timeout. Case age is checked before and after polling; a changed or
 missing journal cannot erase the previous deadline. There is no host bind
 mirror whose weaker durability could authorize a retry.
+
+Native production evaluators also require a launch permit. The controller
+injects its fresh nonce and writes a permit only **after start returned success
+and the same owned CID is verified Running**. The native permit is file-fsynced,
+atomically renamed and directory-fsynced. It binds that nonce, the full immutable
+CID and UTC requested/issued/expiry timestamps; expiry is at most 60 seconds
+from the original start request. The evaluator checks the nonce, its default
+Docker hostname/CID prefix, timestamp order and expiry, then fsyncs an
+authorization copy with the results. It rechecks expiry immediately before its
+first provider dispatch. Missing, foreign, expired or malformed authority
+cannot reach the provider. This is a one-time launch gate, not permission to
+retry cases or a change to the 120/150-second case deadlines.
+
+A failed start RPC never issues a permit, so a later start remains unable to
+call the model. A permit-write RPC can be uncertain *after delivery*: distributed
+delivery cannot atomically revoke authority already received by the runner.
+That failure stays failed and under active terminal supervision; a bounded
+inference window may exist before owned cleanup completes. Do not claim zero
+late effects for every possible control-plane failure. No permit write or start
+is retried. Caller-supplied `--restart` policies are forbidden; the fresh runner
+uses Docker's default no-restart policy.
 
 After confirmed terminal state, `docker cp` exports the directory into a new
 temporary host directory. The controller rejects symlinks/special entries,
@@ -108,9 +129,10 @@ deadline remains failed as `case_completion_control_gap`. A missing journal or
 exit code zero is not a durable timed completion receipt. This conservative
 uncertain outcome prevents a blocked poll from silently erasing an overrun.
 
-The receipt's JSONL journal fsyncs each control event. Final JSON is written
-through an fsynced temporary file and directory rename; existing receipts are
-never overwritten. Raw evaluator inflight/record files are read-only to this
+The receipt's JSONL journal fsyncs each control event. Final/checkpoint JSON is
+written through an fsynced temporary file and directory rename. Prior attempts'
+receipts are never reused; the same controller updates its failed/pending
+checkpoint until terminal proof. Raw evaluator inflight/record files are read-only to this
 controller. If SIGKILL prevents the evaluator from writing a final receipt,
 retain the unresolved inflight case as failed/unknown; existing recovery does
 not retry it. An uncertain soak execution goes only to `soak-records.jsonl` as
@@ -124,3 +146,32 @@ Creation and start are separate Docker calls. If creation times out before a
 valid cidfile is returned, the controller never starts an untracked workload.
 Preserve the generated name/nonce receipt and inspect any leftover created
 container manually when Docker responds; a missing ID never authorizes a kill.
+
+A timed-out **start** is different: Docker may execute that one queued request
+after both the start RPC and cleanup inspection have timed out. A real native
+pilot exposed this race on 2026-10-26. The previous controller returned failed
+while its known runner started later; that attempt is retained as failed and
+was stopped separately. It must not be treated as an unattended successful run.
+
+After any issued start, the controller now remains responsible for its verified
+CID until terminal state is confirmed. `created`, paused, unknown and an exit
+with zero/absent `StartedAt` are not terminal proof. Sticky failed supervision
+continues with two-second polling and five-second RPC bounds, rechecks all
+ownership fields before SIGKILL, and never retries start. Only a completed start
+followed by `exited`, `dead`, or an explicit missing response for that exact CID
+resolves the pending-start risk. The controller fsyncs failed/pending checkpoint
+receipts while Docker is unavailable; it does not impose a total give-up time
+that could abandon a later start. Export occurs only after terminal proof.
+If checkpoint I/O/fsync itself fails, the controller remains failed and continues
+owned cleanup, reports bounded failure metadata to stderr, and retries evidence
+persistence on subsequent cycles. It does not call that missing checkpoint
+durable; persistence failures remain explicit in the final receipt when storage
+recovers. A logging failure must not unwind the reaper before terminal proof.
+
+SIGINT/SIGTERM of the host controller requests owned-runner cleanup instead of
+unwinding supervision. If Docker remains unavailable the failed controller may
+therefore remain alive until manual recovery permits inspection and stopping.
+Do not SIGKILL it while a known runner is unresolved. Host failure or SIGKILL
+cannot be made safe by Python signal handlers: preserve the CID/name/nonce
+receipt and verify/stop that specific runner after recovery before any new run.
+This control limitation never authorizes a model request retry or a PASS.

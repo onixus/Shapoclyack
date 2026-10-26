@@ -30,7 +30,9 @@ and [runtime source](https://github.com/ggml-org/llama.cpp/tree/8e5a58df87ab59df
 ```sh
 # Connected staging only: downloads about 6.32 GB plus the runtime image.
 bash scripts/operator-mac.sh download
-# Offline startup verifies weights again and refuses image auto-pull.
+# Stage sealed GGUF bytes into a Docker-local volume without starting models.
+bash scripts/operator-mac.sh stage
+# Offline startup freshly verifies the native volume and refuses image auto-pull.
 bash scripts/operator-mac.sh up
 bash scripts/operator-mac.sh ps
 curl --fail http://127.0.0.1:8082/health
@@ -39,6 +41,41 @@ curl --fail http://127.0.0.1:8082/v1/models
 
 `OPERATOR_MODELS_DIR` can point to a prepared directory instead. `up` does not
 download weights or an image; damaged or missing files fail before startup.
+The default `OPERATOR_MODEL_STORAGE=native` uses
+`compose.operator-mac.native.yml` (Docker Compose >=2.24.4). Both model processes
+mount the same Docker **local** volume at `/models:ro`; their model paths,
+quantizations, 8192-token context and four inference threads stay unchanged.
+GGUF source bytes are streamed through Docker stdin in 1-MiB chunks, with a
+source SHA-256 and an independent read-only destination readback. No GGUF host
+file is mounted through VirtioFS in this profile. This is a storage hypothesis
+under evaluation, not evidence that latency or model quality passed.
+
+`OPERATOR_MODELS_VOLUME` may explicitly select an existing product-owned local
+volume. Reuse freshly checks both host source hashes and destination hashes;
+it never overwrites existing GGUF bytes. Driver options, foreign ownership,
+writable attachments (including stopped containers), symlinks, extra/partial
+files or a checksum mismatch refuse startup. Two canonical destination files,
+`model.gguf` and `embedding.gguf`, are sealed mode `0444` under a `0555`
+directory. A network-none, capability-free helper performs staging/readback;
+no Docker socket or source host directory is mounted into it. Helpers are
+removed before the final read-only readback and atomic fsynced receipt is
+published at `.operator-local/runtime/model-storage.json`.
+The copy helper has a 512-MiB ceiling and flushes/fsyncs in 8-MiB batches,
+dropping clean Linux page-cache ranges after each batch. Readback uses a
+128-MiB helper. Fixed helper stderr/exit/OOM state is captured before owned
+cleanup on failure; no receipt is published. These staging budgets and the
+readback helper's measured process RSS are not model inference memory peaks.
+
+`operator-runtime-manifest.py` then verifies the actual container mount type,
+volume identity, read-only flag and `/models` destination against a fresh
+readback. A volume name or old receipt alone provides no integrity claim.
+Docker administrators can still mutate volumes; this is not protection from a
+concurrent privileged Docker operator. Failed/new or reused volumes are never
+automatically deleted, and `down` preserves the external weight volume.
+Explicit `OPERATOR_MODEL_STORAGE=bind` retains the host-bind diagnostic profile;
+its results do not establish native-volume acceptance. No global Docker or
+host settings are changed.
+
 Only localhost ports 8082 (language) and 8084 (embeddings) are published through
 fixed-target gateways. The services have a dedicated Docker
 internal network, read-only root/weights, unprivileged UID, no capabilities,

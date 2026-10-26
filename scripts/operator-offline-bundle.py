@@ -10,6 +10,7 @@ import argparse
 import codecs
 from datetime import UTC, datetime
 import hashlib
+import importlib.util
 import ipaddress
 import json
 import os
@@ -724,6 +725,7 @@ def deployment(root, manifest, *, port=8085, subnet="172.29.189.0/24"):
     private_write(private / "postgres.env", "POSTGRES_USER=operator_offline\nPOSTGRES_DB=operator_offline\nPOSTGRES_PASSWORD=" + password + "\n")
     private_write(private / "credentials.json", json.dumps(credentials))
     images = manifest["image_ids"]
+    project = "shapo-offline-" + secrets.token_hex(6)
     control = {"image": images["application"], "pull_policy": "never", "working_dir": "/app", "user": "1000:1000",
         "read_only": True, "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"], "pids_limit": 256,
         "mem_limit": "768m", "cpus": 1, "env_file": [str(private / "app.env")],
@@ -739,7 +741,7 @@ def deployment(root, manifest, *, port=8085, subnet="172.29.189.0/24"):
         "mem_limit": "7g", "memswap_limit": "7g", "cpus": 4, "networks": {"isolated": {"ipv4_address": address(2)}},
         "tmpfs": ["/tmp:rw,noexec,nosuid,size=64m,mode=1777"],
         "environment": {"HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1", "DO_NOT_TRACK": "1"},
-        "volumes": [f"{root}/payloads/model.gguf:/models/model.gguf:ro"],
+        "volumes": ["model_weights:/models:ro"],
         "command": ["--model", "/models/model.gguf", "--alias", manifest["model"], "--host", "0.0.0.0", "--port", "8082",
             "--ctx-size", "8192", "--parallel", "1", "--threads", "4", "--batch-size", "512", "--ubatch-size", "128",
             "--n-gpu-layers", "0", "--n-predict", "1024", "--temp", "0", "--seed", "42", "--reasoning", "off",
@@ -748,7 +750,7 @@ def deployment(root, manifest, *, port=8085, subnet="172.29.189.0/24"):
             "interval": "10s", "timeout": "5s", "start_period": "90s", "retries": 12}}
     embedding = {**model, "mem_limit": "1536m", "memswap_limit": "1536m", "cpus": 2,
         "networks": {"isolated": {"ipv4_address": address(5)}},
-        "volumes": [f"{root}/payloads/embedding.gguf:/models/embedding.gguf:ro"],
+        "volumes": ["model_weights:/models:ro"],
         "command": ["--model", "/models/embedding.gguf", "--alias", "Qwen3-Embedding-0.6B", "--host", "0.0.0.0",
             "--port", "8084", "--embedding", "--pooling", "last", "--ctx-size", "2048", "--batch-size", "2048",
             "--ubatch-size", "2048", "--threads", "2", "--n-gpu-layers", "0", "--parallel", "1", "--offline",
@@ -778,11 +780,37 @@ def deployment(root, manifest, *, port=8085, subnet="172.29.189.0/24"):
             "volumes": [f"{root}/source/scripts/operator-console-proxy.py:/operator-proxy.py:ro"],
             "networks": ["isolated", "ingress"], "healthcheck": {"disable": True},
             "depends_on": {"api": {"condition": "service_healthy"}}}},
-        "networks": {"isolated": {"internal": True, "ipam": {"config": [{"subnet": str(network)}]}}, "ingress": {}}}
-    project = "shapo-offline-" + secrets.token_hex(6)
+        "networks": {"isolated": {"internal": True, "ipam": {"config": [{"subnet": str(network)}]}}, "ingress": {}},
+        "volumes": {"model_weights": {"name": project + "-weights", "external": True}}}
     private_write(private / "compose.json", json.dumps(compose, sort_keys=True, indent=2))
     private_write(private / "deployment.json", json.dumps({"project": project, "port": port}))
     return project, private / "compose.json", credentials
+
+
+def native_models():
+    """Use the same checksum-bound, network-free volume stager as Mac startup."""
+    spec = importlib.util.spec_from_file_location("operator_native_models", Path(__file__).with_name("operator-runtime-manifest.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def native_model_pins(manifest):
+    return {CORE[role]: next(item["sha256"] for item in manifest["artifacts"] if item["role"] == role)
+            for role in ("model", "embedding")}
+
+
+def stage_deployment_models(root, manifest, compose_file):
+    root = Path(root)
+    compose = json.loads(Path(compose_file).read_text())
+    volume = compose["volumes"]["model_weights"]["name"]
+    pins = native_model_pins(manifest)
+    try:
+        return native_models().stage_models({name: regular(root / "payloads", name) for name in pins}, pins,
+            helper_image=manifest["image_ids"]["application"], volume=volume,
+            receipt_path=root / ".offline/model-volume.json")
+    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+        raise BundleError("bundle_native_model_stage_failed") from exc
 
 
 def import_bundle(bundle, trusted, destination, *, load=True, start=False, port=8085, subnet="172.29.189.0/24"):
@@ -813,6 +841,7 @@ def import_bundle(bundle, trusted, destination, *, load=True, start=False, port=
             if not load:
                 raise BundleError("bundle_start_requires_image_load")
             project, compose, credentials = deployment(destination, manifest, port=port, subnet=subnet)
+            stage_deployment_models(destination, manifest, compose)
             run(["docker", "compose", "-p", project, "-f", str(compose), "up", "-d", "--pull", "never"], timeout=600)
             attest_deployment(destination, manifest, project, compose)
             run(["docker", "compose", "-p", project, "-f", str(compose), "up", "-d", "--no-deps",
@@ -863,8 +892,13 @@ def attest_deployment(root, manifest, project, compose_file):
     if image["Config"].get("Labels", {}).get("org.opencontainers.image.revision") != manifest["runtime_revision"]:
         raise BundleError("bundle_runtime_revision_mismatch")
     containers = {}
-    for role, artifact_role, mount_path in (("inference", "model", "/models/model.gguf"),
-                                           ("embeddings", "embedding", "/models/embedding.gguf")):
+    weight_volume = compose["volumes"]["model_weights"]["name"]
+    try:
+        volume_proof = native_models().verify_volume(weight_volume, native_model_pins(manifest),
+            helper_image=manifest["image_ids"]["application"])
+    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+        raise BundleError("bundle_native_model_integrity_unavailable") from exc
+    for role, artifact_role in (("inference", "model"), ("embeddings", "embedding")):
         container_id = run(["docker", "compose", "-p", project, "-f", str(compose_file), "ps", "-q", role], timeout=30).decode().strip()
         if not re.fullmatch(r"[a-f0-9]{12,64}", container_id):
             raise BundleError("bundle_runtime_container_missing")
@@ -891,8 +925,8 @@ def attest_deployment(root, manifest, project, compose_file):
         if payload.stat().st_size != artifact["size"] or payload.stat().st_mode & 0o222:
             raise BundleError("bundle_runtime_payload_not_immutable")
         mounts = [item for item in value["Mounts"] if item["Destination"] == "/models" or item["Destination"].startswith("/models/")]
-        if (len(mounts) != 1 or mounts[0]["Type"] != "bind" or mounts[0]["Destination"] != mount_path
-                or mounts[0]["RW"] or Path(mounts[0]["Source"]).resolve() != payload.resolve()):
+        if (len(mounts) != 1 or mounts[0]["Type"] != "volume" or mounts[0]["Destination"] != "/models"
+                or mounts[0].get("Name") != weight_volume or mounts[0].get("Driver") != "local" or mounts[0]["RW"]):
             raise BundleError("bundle_runtime_model_mount_mismatch")
         containers[role] = {"image_id": runtime_id, "arguments": config["Cmd"], "container_id": container_id}
     hashes = {item["role"]: item["sha256"] for item in manifest["artifacts"]}
@@ -901,7 +935,8 @@ def attest_deployment(root, manifest, project, compose_file):
         "model_sha256": hashes["model"], "runtime_image": manifest["runtime_reference"],
         "runtime_revision": manifest["runtime_revision"], "context_tokens": 8192, "parallel": 1,
         "embedding_sha256": hashes["embedding"], "embedding_revision": manifest["embedding_revision"],
-        "embedding_dimensions": 1024, "verified_at": datetime.now(UTC).isoformat(), "containers": containers}
+        "embedding_dimensions": 1024, "verified_at": datetime.now(UTC).isoformat(), "containers": containers,
+        "model_storage": volume_proof}
     private = root / ".offline"
     target = private / "verification.json"
     raw = (json.dumps(value, sort_keys=True, indent=2) + "\n").encode()

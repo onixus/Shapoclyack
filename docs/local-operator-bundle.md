@@ -82,16 +82,25 @@ Models have no published ports or external network. The fresh instance enables
 operator reads and embeddings; scan start remains disabled. Startup checks
 authenticated operator status and UI delivery. After both model containers
 start, the importer inspects their exact image IDs/revision, complete command
-lines, nonroot identity, read-only filesystem and model binds, absence of
+lines, nonroot identity, read-only filesystem and model volume, absence of
 published ports, and ownership of their single internal network. It binds this
 record to the already hashed immutable imported model payloads and mounts the
 atomic integrity record read-only into recreated API/worker containers.
+Before startup, both GGUF payloads are streamed into a new project-owned local
+Docker volume, with source and destination SHA-256 checks. A second read-only
+helper rehashes the destination files and verifies their sealed modes and local
+volume identity. Models mount that volume read-only at `/models`; startup
+attestation checks both actual mounts and repeats the destination verification.
+The helper uses no network, Docker socket or host model bind. This moves model
+I/O off the Mac shared filesystem without changing weights, context or sampling;
+it is not by itself proof of performance. IPv6 is disabled in both model
+namespaces and the importer verifies those sysctls.
 The startup check requires `runtime_status=ready` and `analysis_available=true`,
 including live model and embedding health. It does not rehash models during
 inference. Model quality, actual traffic
 capture and restore correctness require recorded acceptance drills.
 
-Stop only that imported project, retaining its database and artifacts:
+Stop only that imported project, retaining its database, model volume and artifacts:
 
 ```sh
 python scripts/operator-offline-bundle.py stop .operator-local/restored-workstation \
@@ -161,13 +170,17 @@ port 8082 (configurable unprivileged port), one inference slot, 8192 context,
 1024 output tokens, all available GPU layers, offline mode and disabled Web UI.
 It does not enable tools, remote MCP servers or model auto-download.
 Set `OCTO_OPERATOR_BASE_URL=http://127.0.0.1:8082/v1` for the API/worker on
-the same network namespace. No hosted fallback is introduced.
+the same network namespace. No hosted fallback is introduced. This executable
+launcher is distinct from the primary Mac container profile; physical NVIDIA
+acceptance is tracked in #609.
 
 Flags follow the [upstream llama-server interface](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
 The pinned runtime must support these flags; its actual model/template
 compatibility must be recorded in the acceptance report. Asking for all GPU
 layers is not proof they fit. The launcher does not execute CPU embeddings;
-semantic retrieval remains a separate unaccepted component.
+the Mac profile measures semantic retrieval with a separate CPU embedding
+container. That evidence does not establish this executable launcher's GPU
+acceptance.
 
 The deployment must enforce an OS/container egress deny policy around runtime
 and index, while allowing only the authenticated local worker to reach
