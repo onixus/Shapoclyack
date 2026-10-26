@@ -53,6 +53,8 @@ SOURCE_PATHS = (
     "api/services/advisories/coverage.py", "api/services/advisories/rpm.py", "api/services/advisories/msrc.py",
     "scripts/operator-evaluate.py", "scripts/operator-capacity.py", "scripts/operator-acceptance-drill.py",
     "scripts/operator-observe.py", "scripts/operator-quality-watchdog.py", "compose.operator-mac.yml",
+    "compose.operator-mac.native.yml", "scripts/operator-runtime-manifest.py", "scripts/operator-mac.sh",
+    "scripts/operator-offline-bundle.py",
 )
 MODEL_SHA256 = "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
 RUNTIME_OVERRIDE = None

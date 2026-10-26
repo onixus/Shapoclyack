@@ -1017,3 +1017,75 @@ def test_a_dataset_at_the_floor_is_reported_usable(tmp_path: Path) -> None:
     assert record["usable"] is True
     assert record["error"] is None
     assert enrichment_manifest.inspect_json_dataset(path, 101)["usable"] is False
+
+
+class _Flaky:
+    """An opener failing ``failures`` times with ``error`` before serving ``body``."""
+
+    def __init__(self, error: Exception, failures: int, body: bytes = b'{"ok": true}') -> None:
+        self.error, self.failures, self.body, self.calls = error, failures, body, 0
+
+    def __call__(self, request, timeout):  # noqa: ARG002 - signature parity with urlopen
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise self.error
+        return _FakeResponse(self.body)
+
+
+@pytest.fixture
+def no_backoff(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(fetch.time, "sleep", sleeps.append)
+    return sleeps
+
+
+def test_fetch_retries_a_read_timeout_then_succeeds(no_backoff) -> None:
+    opener = _Flaky(TimeoutError("The read operation timed out"), failures=2)
+    assert fetch.fetch_json("https://example.test/f.json", opener=opener) == {"ok": True}
+    assert opener.calls == 3
+    assert no_backoff == [fetch.RETRY_BACKOFF_SECONDS, 2 * fetch.RETRY_BACKOFF_SECONDS]
+
+
+def test_fetch_gives_up_after_the_attempts_and_raises_the_last_error(no_backoff) -> None:
+    opener = _Flaky(TimeoutError("The read operation timed out"), failures=99)
+    with pytest.raises(TimeoutError):
+        fetch.fetch_json("https://example.test/f.json", opener=opener, attempts=2)
+    assert opener.calls == 2
+
+
+def test_fetch_retries_server_errors_but_not_client_errors(no_backoff) -> None:
+    import urllib.error
+
+    def http_error(code: int) -> urllib.error.HTTPError:
+        return urllib.error.HTTPError("https://example.test/f.json", code, "x", {}, None)
+
+    flaky = _Flaky(http_error(503), failures=1)
+    assert fetch.fetch_json("https://example.test/f.json", opener=flaky) == {"ok": True}
+    assert flaky.calls == 2
+
+    missing = _Flaky(http_error(404), failures=99)
+    with pytest.raises(urllib.error.HTTPError):
+        fetch.fetch_json("https://example.test/f.json", opener=missing)
+    assert missing.calls == 1
+
+
+def test_fetch_does_not_retry_oversize_or_an_exceeded_deadline(no_backoff) -> None:
+    big = _Flaky(OSError("unused"), failures=0, body=b"x" * 4096)
+    with pytest.raises(fetch.FetchTooLargeError):
+        fetch.fetch_json("https://example.test/f.json", opener=big, max_bytes=1024)
+    assert big.calls == 1
+
+    late = _Flaky(fetch.FetchDeadlineError("late"), failures=99)
+    with pytest.raises(fetch.FetchDeadlineError):
+        fetch.fetch_json("https://example.test/f.json", opener=late)
+    assert late.calls == 1
+    assert no_backoff == []
+
+
+def test_passlib_bcrypt_version_probe_is_not_logged_as_a_warning() -> None:
+    import logging
+
+    import api.auth  # noqa: F401 - the import is what configures the logger
+    import api.services.tenants  # noqa: F401
+
+    assert logging.getLogger("passlib.handlers.bcrypt").level == logging.ERROR

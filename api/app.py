@@ -35,6 +35,8 @@ from api.routes import audit as audit_routes
 from api.routes import rbac as rbac_routes
 from api.routes import assets as assets_routes
 from api.routes import asset_groups as asset_groups_routes
+from api.routes import problems as problems_routes
+from api.routes import remediation_campaigns as campaigns_routes
 from api.routes import auth as auth_routes
 from api.routes import endpoint_inventory as endpoint_inventory_routes
 from api.routes import jobs as jobs_routes
@@ -635,6 +637,8 @@ def create_app() -> FastAPI:
     include_api_router(scim_tokens_routes.router)
     app.include_router(scim_routes.router, prefix="/scim/v2")
     include_api_router(vulnerabilities_routes.router)
+    include_api_router(problems_routes.router)
+    include_api_router(campaigns_routes.router)
     include_api_router(retro_match_routes.router)
     include_api_router(compliance_routes.router)
     include_api_router(adoption_routes.router)

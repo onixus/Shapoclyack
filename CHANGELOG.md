@@ -4,7 +4,37 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Aggregated **problems** and **remediation campaigns**
+  ([#579](https://github.com/onixus/Shapoclyack/issues/579)). `GET /api/problems`
+  groups tracked findings by a typed key (normalised CVE, detector template,
+  script; unknown identities are never merged) with server-side filters,
+  sorting and whole-selection aggregates, and `GET /api/problems/instances`
+  drills down with an explanation of drift; `GET /api/vulnerabilities` takes
+  `problem_key`. `/api/remediation-campaigns` freezes a previewed set of
+  findings into a campaign with an owner, a target date and an action
+  description, explicit audited add/exclude, separate progress categories
+  (never summed into "fixed"), a defined completion/recurrence policy and a
+  verification run through the existing per-finding verify. Migration `0101`
+  is expand-only. A ticket sync no longer moves a finding out of `VERIFYING`
+  while its verification is in flight. The console gains a **Problems /
+  Instances** switch on `/vulnerabilities` that keeps the filters, a drill-down
+  that explains a changed count, campaign creation with a composition preview,
+  and `/campaigns`. See
+  [docs/remediation-campaigns.md](docs/remediation-campaigns.md).
+
 ### Changed
+
+- The Pulse boundary in `apex-contract/manifest.json` follows Pulse's report
+  bump (GenDec#52/#53): `pulse-engine-v1` / `apex.pulse.scan_report.v1`
+  becomes `pulse-engine-v3` / `apex.pulse.scan_report.v3`, payload schema
+  `https://pulse.dev/schemas/v3/scan-report.json`. The adapter reads both
+  `pulse.scan.v2` (the pinned v1.4.0 binary) and `pulse.scan.v3`
+  (`REPORT_SCHEMAS` in `scanner/pipeline/pulse_probe.py`, recorded per run in
+  `pulse/raw.json`); any other `meta.schema` is parsed but logged. L2 discovery
+  takes alive hosts, MACs and NetBIOS/mDNS/LLMNR names from a v3 report's
+  `hosts[]`; a v2 report gives the same result as before.
 
 - Image builds fetch enrichment data (NVD/CVSS4, EPSS, KEV, GeoIP, vendor
   advisories) once per build instead of once per image and architecture: the

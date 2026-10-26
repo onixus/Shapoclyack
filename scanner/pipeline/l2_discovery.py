@@ -59,6 +59,10 @@ MDNS_PARSE_LIMIT = 1024
 _NETBIOS_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-]{0,14}")
 _HOST_RUN_RE = re.compile(r"[A-Za-z0-9_.-]+")
 _HOST_LABEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*")
+_MAC_RE = re.compile(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}")
+#: ``hosts[].hostnames[].source`` (pulse.scan.v3) -> evidence script id; the
+#: first two are the ids the banner parsers below already use.
+_NAME_SOURCES = {"netbios": "pulse:netbios-ns", "mdns": "pulse:mdns", "llmnr": "pulse:llmnr"}
 
 
 def _host_count(network: ipaddress.IPv4Network) -> int:
@@ -349,19 +353,78 @@ def mdns_names(banner: str) -> list[str]:
     return merge_name_lists(names)
 
 
+def _pulse_hosts(payload: Any, scope: list[str]) -> list[dict[str, Any]]:
+    """In-scope IPv4 ``hosts[]`` entries (pulse.scan.v3, GenDec#35); none before v3.
+
+    ``method: local`` is the sensor's own address: the ARP sweep never
+    reported it, so it does not become an alive host here either.
+    """
+    raw = payload.get("hosts") if isinstance(payload, dict) else None
+    entries: list[dict[str, Any]] = []
+    for entry in raw if isinstance(raw, list) else []:
+        if not isinstance(entry, dict) or entry.get("method") == "local":
+            continue
+        ip = str(entry.get("ip") or "")
+        try:
+            ipaddress.IPv4Address(ip)
+        except ValueError:
+            continue
+        if host_in_batch_scope(ip, scope):
+            entries.append(entry)
+    return entries
+
+
+def _reported_names(entry: dict[str, Any]) -> dict[str, list[str]]:
+    """Names Pulse resolved itself for one ``hosts[]`` entry, by evidence script id.
+
+    The same shape checks as the banner parsers apply: a NetBIOS name has to
+    look like one, an mDNS/LLMNR name like a host name.
+    """
+    found: dict[str, list[str]] = {}
+    pairs: list[tuple[str, Any]] = []
+    for item in entry.get("hostnames") or []:
+        if isinstance(item, dict):
+            pairs.append((str(item.get("source") or ""), item.get("name")))
+    netbios = entry.get("netbios")
+    if isinstance(netbios, dict):
+        pairs.append(("netbios", netbios.get("name")))
+    for source, name in pairs:
+        script_id = _NAME_SOURCES.get(source)
+        if script_id is None or not isinstance(name, str):
+            continue
+        name = name.strip()
+        valid = _NETBIOS_NAME_RE.fullmatch(name) if source == "netbios" else valid_hostname(name)
+        if valid:
+            found[script_id] = merge_name_lists(found.get(script_id, []), [name])
+    return found
+
+
 def parse_pulse_l2(
     payload: Any, scope: list[str], macs: dict[str, str] | None = None
 ) -> tuple[list[dict[str, Any]], dict[str, list[str]], list[dict[str, Any]]]:
     """Alive hosts (with MAC), names by host and name evidence from Pulse JSON.
 
     Everything is constrained to ``scope``: a row for an address outside the
-    selected networks is dropped before it can seed discovery.
+    selected networks is dropped before it can seed discovery. A v3 report's
+    ``hosts[]`` adds its addresses, its MAC (preferred over ``macs``, which is
+    read from the kernel afterwards) and the names Pulse parsed itself; the
+    banner rows are still read, since v2 reports carry nothing else.
     """
     rows = _pulse_rows(payload, scope)
-    alive = sorted({str(row["ip"]) for row in rows}, key=ipaddress.IPv4Address)
-    hosts = [{"host": ip, "mac": (macs or {}).get(ip), "vendor": None} for ip in alive]
+    reported = _pulse_hosts(payload, scope)
+    reported_macs = {
+        str(entry["ip"]): str(entry["mac"]).upper()
+        for entry in reported
+        if isinstance(entry.get("mac"), str) and _MAC_RE.fullmatch(entry["mac"])
+    }
+    alive = sorted(
+        {str(row["ip"]) for row in rows} | {str(entry["ip"]) for entry in reported}, key=ipaddress.IPv4Address
+    )
+    hosts = [
+        {"host": ip, "mac": reported_macs.get(ip) or (macs or {}).get(ip), "vendor": None} for ip in alive
+    ]
     mapping: dict[str, list[str]] = {}
-    evidence: list[dict[str, Any]] = []
+    evidence: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
         banner = row.get("banner")
         port = row.get("port")
@@ -376,8 +439,20 @@ def parse_pulse_l2(
         ip = str(row["ip"])
         if names:
             mapping[ip] = merge_name_lists(mapping.get(ip, []), names)
-        evidence.append({"host": ip, "script_id": script_id, "names": names, "output": banner[:4096]})
-    return hosts, mapping, evidence
+        evidence[(ip, script_id)] = {"host": ip, "script_id": script_id, "names": names, "output": banner[:4096]}
+    for entry in reported:
+        ip = str(entry["ip"])
+        for script_id, names in _reported_names(entry).items():
+            mapping[ip] = merge_name_lists(mapping.get(ip, []), names)
+            item = evidence.get((ip, script_id))
+            if item is None:
+                output = json.dumps(
+                    {"hostnames": entry.get("hostnames") or [], "netbios": entry.get("netbios")}, sort_keys=True
+                )
+                evidence[(ip, script_id)] = {"host": ip, "script_id": script_id, "names": names, "output": output[:4096]}
+            else:
+                item["names"] = merge_name_lists(item["names"], names)
+    return hosts, mapping, list(evidence.values())
 
 
 def merge_l2_names(hostnames: dict[str, dict[str, Any]], l2_names: dict[str, list[str]]) -> dict:

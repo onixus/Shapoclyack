@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from pathlib import Path
@@ -222,6 +223,18 @@ SAMPLE_V110 = {
 }
 
 
+def test_v3_distro_fields_from_pulse_win_over_the_banner_read():
+    payload = copy.deepcopy(SAMPLE_V110)
+    payload["meta"]["schema"] = "pulse.scan.v3"
+    payload["open"][0].update(
+        product="OpenSSH", service="ssh", port=22, version="8.9p1",
+        banner="SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.1", distro="Ubuntu", distro_revision="3ubuntu0.13",
+    )  # fmt: skip
+    services, _, _ = parse_pulse_json(payload)
+    ssh = next(svc for svc in services if svc.port == 22)
+    assert (ssh.version, ssh.distro, ssh.distro_revision) == ("8.9p1", "ubuntu", "3ubuntu0.13")
+
+
 def test_v110_json_parses_and_keeps_tls_findings(tmp_path: Path):
     """v1.1.0 extra keys (state, product/version, jarm) must not break the
     adapter. tls-class findings stay extra vulnerabilities because
@@ -423,6 +436,18 @@ def _run_probe(tmp_path, monkeypatch, outputs, open_ports=("10.0.0.1:22/tcp",), 
 
     pp.run_pulse_probe(list(open_ports), output_dir=tmp_path, **kwargs)
     return calls, sleeps
+
+
+@pytest.mark.parametrize(
+    ("schema", "warned"), [("pulse.scan.v2", False), ("pulse.scan.v3", False), ("pulse.scan.v4", True)]
+)
+def test_report_schema_is_recorded_and_an_unknown_one_logged(tmp_path, monkeypatch, caplog, schema, warned):
+    stdout = json.dumps({"meta": {"schema": schema}, "open": [{"ip": "10.0.0.1", "port": 22, "service": "ssh"}]})
+    with caplog.at_level(logging.WARNING):
+        _run_probe(tmp_path, monkeypatch, [stdout])
+    raw = json.loads((tmp_path / "pulse" / "raw.json").read_text(encoding="utf-8"))
+    assert raw["adapter"]["report_schemas"] == [schema]
+    assert ("is not one of pulse.scan.v2, pulse.scan.v3" in caplog.text) is warned
 
 
 def test_all_closed_chunk_is_reprobed_after_a_settle_pause(tmp_path, monkeypatch):

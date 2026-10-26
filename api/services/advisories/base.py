@@ -27,10 +27,16 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
+import weakref
+import zlib
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
+from itertools import islice
 from pathlib import Path
-from typing import Any, Iterable, Protocol, runtime_checkable
+from typing import Any, Iterator, Protocol, runtime_checkable
 
 LOG = logging.getLogger("shapoclyack.advisories")
 
@@ -107,15 +113,14 @@ class AdvisoryProvider(Protocol):
         answer only when :meth:`available` is True."""
 
 
-def _coerce_record(
-    raw: Any, *, provider: str, feed_date: str | None
-) -> AdvisoryRecord | None:
-    """One dataset entry → an :class:`AdvisoryRecord`, or ``None`` if unusable.
+# advisory_id, cve_ids, fixed_version, severity, state, url — what a record has
+# beyond the (release, source_package) it is filed under and the two
+# dataset-wide constants (provider, feed_date).
+_Row = tuple[str, tuple[str, ...], "str | None", str, str, "str | None"]
 
-    Dropped rather than raised: a single malformed entry in a third-party feed
-    must not take the whole dataset — and therefore every match on the
-    installation — offline.
-    """
+
+def _coerce_entry(raw: Any) -> tuple[str, str, _Row] | None:
+    """One dataset entry → ``(release, source_package, row)``, or ``None``."""
     if not isinstance(raw, dict):
         return None
     release = str(raw.get("release") or "").strip().lower()
@@ -143,18 +148,172 @@ def _coerce_record(
         state = STATE_OPEN
     if state != STATE_RESOLVED:
         fixed_version = None
+    row: _Row = (
+        str(raw.get("advisory_id") or cves[0]).strip(),
+        cves,
+        fixed_version,
+        str(raw.get("severity") or "unknown").strip().lower() or "unknown",
+        state,
+        str(raw["url"]).strip() if raw.get("url") else None,
+    )
+    return release, source_package, row
+
+
+def _coerce_record(
+    raw: Any, *, provider: str, feed_date: str | None
+) -> AdvisoryRecord | None:
+    """One dataset entry → an :class:`AdvisoryRecord`, or ``None`` if unusable.
+
+    Not on the production path any more (the loader packs rows via
+    :func:`_coerce_entry`); kept as the reference the loader tests compare with.
+
+    Dropped rather than raised: a single malformed entry in a third-party feed
+    must not take the whole dataset — and therefore every match on the
+    installation — offline.
+    """
+    coerced = _coerce_entry(raw)
+    if coerced is None:
+        return None
+    release, source_package, row = coerced
+    return _record_from_row(release, source_package, row, provider, feed_date)
+
+
+def _record_from_row(
+    release: str,
+    source_package: str,
+    row: _Row,
+    provider: str,
+    feed_date: str | None,
+) -> AdvisoryRecord:
+    advisory_id, cves, fixed_version, severity, state, url = row
     return AdvisoryRecord(
-        advisory_id=str(raw.get("advisory_id") or cves[0]).strip(),
+        advisory_id=advisory_id,
         cve_ids=cves,
         release=release,
         source_package=source_package,
         fixed_version=fixed_version,
-        severity=str(raw.get("severity") or "unknown").strip().lower() or "unknown",
+        severity=severity,
         state=state,
-        url=str(raw["url"]).strip() if raw.get("url") else None,
+        url=url,
         provider=provider,
         feed_date=feed_date,
     )
+
+
+class _PackedStore:
+    """Statements of a loaded feed, held compressed and decoded on demand.
+
+    A vendor feed is millions of statements; one ``AdvisoryRecord`` object per
+    statement cost several gigabytes of heap and OOM-killed the API pod. What
+    the matcher asks for is always one ``(release, source_package)`` bucket, so
+    each bucket is kept as one zlib blob of JSON rows and turned back into
+    records only when asked for (the few hundred most recent buckets are
+    cached). ``provider`` and ``feed_date`` are constant for the whole dataset
+    and live here, not in every row.
+    """
+
+    def __init__(
+        self,
+        blobs: dict[tuple[str, str], bytes],
+        count: int,
+        provider: str,
+        feed_date: str | None,
+    ) -> None:
+        self.blobs = blobs
+        self.count = count
+        self.provider = provider
+        self.feed_date = feed_date
+        # The cache must not keep ``self`` alive (a bound method would make a
+        # reference cycle, and a replaced dataset would linger until a gc pass).
+        store = weakref.ref(self)
+        self.bucket = lru_cache(maxsize=512)(lambda key: store()._decode(key))
+
+    def _decode(self, key: tuple[str, str]) -> tuple[AdvisoryRecord, ...]:
+        release, source_package = key
+        return tuple(
+            _record_from_row(
+                release, source_package, _row_from_json(line),
+                self.provider, self.feed_date,
+            )
+            for line in zlib.decompress(self.blobs[key]).splitlines()
+        )
+
+
+def _row_from_json(line: bytes) -> _Row:
+    advisory_id, cves, fixed_version, severity, state, url = json.loads(line)
+    return advisory_id, tuple(cves), fixed_version, severity, state, url
+
+
+class _PackedIndex(Mapping):
+    """``(release, source_package) -> tuple[AdvisoryRecord, ...]`` over a store."""
+
+    def __init__(self, store: _PackedStore) -> None:
+        self._store = store
+
+    def __getitem__(self, key: tuple[str, str]) -> tuple[AdvisoryRecord, ...]:
+        if key not in self._store.blobs:
+            raise KeyError(key)
+        return self._store.bucket(key)
+
+    def __iter__(self) -> Iterator[tuple[str, str]]:
+        return iter(self._store.blobs)
+
+    def __len__(self) -> int:
+        return len(self._store.blobs)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._store.blobs
+
+
+class _PackedRecords(Sequence):
+    """The flat record list, for callers that still want one. Iterating it
+    decodes bucket by bucket, past the bucket cache so a full pass does not
+    evict what the matcher keeps asking for; ``len``/``bool`` are free."""
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def __init__(self, store: _PackedStore) -> None:
+        self._store = store
+
+    def __len__(self) -> int:
+        return self._store.count
+
+    def __iter__(self) -> Iterator[AdvisoryRecord]:
+        for key in self._store.blobs:
+            yield from self._store._decode(key)
+
+    def __reversed__(self) -> Iterator[AdvisoryRecord]:
+        for key in reversed(self._store.blobs):
+            yield from reversed(self._store._decode(key))
+
+    def __eq__(self, other: object) -> bool:
+        """Compares as the tuple it replaced did."""
+        if isinstance(other, _PackedRecords) and other._store is self._store:
+            return True
+        if not isinstance(other, Sequence) or isinstance(other, (str, bytes)):
+            return NotImplemented
+        return len(self) == len(other) and all(a == b for a, b in zip(self, other))
+
+    def __getitem__(self, index):  # type: ignore[override]
+        """Walks buckets from the nearer end instead of decoding the whole feed."""
+        size = len(self)
+        if isinstance(index, slice):
+            start, stop, step = index.indices(size)
+            if step > 0:
+                return tuple(islice(self, start, stop, step))
+            # Position i is position size - 1 - i of the reversed walk.
+            return tuple(
+                islice(reversed(self), size - 1 - start, size - 1 - stop, -step)
+            )
+        if not isinstance(index, int):
+            raise TypeError("record indices must be integers or slices")
+        if index < 0:
+            index += size
+        if not 0 <= index < size:
+            raise IndexError("record index out of range")
+        if index < size // 2:
+            return next(islice(self, index, None))
+        return next(islice(reversed(self), size - 1 - index, None))
 
 
 @dataclass
@@ -164,8 +323,8 @@ class AdvisoryDataset:
     source: str | None = None
     updated: str | None = None
     origin_url: str | None = None
-    records: tuple[AdvisoryRecord, ...] = ()
-    index: dict[tuple[str, str], tuple[AdvisoryRecord, ...]] | None = None
+    records: Sequence[AdvisoryRecord] = ()
+    index: Mapping[tuple[str, str], tuple[AdvisoryRecord, ...]] | None = None
     present: bool = False
     error: str | None = None
     #: Release codenames with any record, computed once at load: the retro
@@ -195,9 +354,229 @@ def load_dataset(path: Path, *, provider: str) -> AdvisoryDataset:
         return AdvisoryDataset(present=True, error="invalid advisory document")
 
 
+_CHUNK_CHARS = 1 << 20
+_JSON = json.JSONDecoder()
+_WHITESPACE = re.compile(r"[ \t\n\r]*")
+#: How close to the end of the window a parse error must be to count as input
+#: cut off by the window rather than as a broken document. Covers a partial
+#: ``\uXXXX`` escape, the longest construct that fails short of the end.
+_TAIL = 8
+
+
+class _ParserLimit(Exception):
+    """``raw_decode`` refused a value over Python's integer-string ceiling."""
+
+
+class _JsonReader:
+    """Incremental ``raw_decode`` over a text stream.
+
+    ``json.loads`` on a 400 MB feed holds the file text *and* every parsed
+    dict at once. This keeps only a window of about one chunk, so the parsed
+    form of an entry lives just until it is packed.
+    """
+
+    def __init__(self, stream: Any) -> None:
+        self.stream = stream
+        self.buf = ""
+        self.pos = 0
+        self.eof = False
+        self.grow = _CHUNK_CHARS
+        # What has been dropped from the front of the window, so an error can
+        # be reported at the file offset ``json.loads`` would give.
+        self.consumed = 0
+        self.lines = 0
+        self.line_start = 0
+
+    def fill(self) -> bool:
+        if self.eof:
+            return False
+        chunk = self.stream.read(self.grow)
+        if not chunk:
+            self.eof = True
+            return False
+        dropped = self.buf[: self.pos]
+        if dropped:
+            self.lines += dropped.count("\n")
+            newline = dropped.rfind("\n")
+            if newline >= 0:
+                self.line_start = self.consumed + newline + 1
+            self.consumed += len(dropped)
+        self.buf = self.buf[self.pos:] + chunk
+        self.pos = 0
+        # A genuinely broken document keeps failing at the same place; double
+        # the read so that costs O(log n) retries, not O(n / chunk).
+        self.grow = max(_CHUNK_CHARS, len(self.buf))
+        return True
+
+    def peek(self) -> str:
+        """Next non-whitespace character, or ``""`` at end of input."""
+        while True:
+            self.pos = pos = _WHITESPACE.match(self.buf, self.pos).end()
+            if pos < len(self.buf):
+                return self.buf[pos]
+            if not self.fill():
+                return ""
+
+    def value(self) -> Any:
+        self.peek()  # raw_decode, unlike loads, does not skip leading whitespace
+        while True:
+            try:
+                obj, end = _JSON.raw_decode(self.buf, self.pos)
+            except json.JSONDecodeError as exc:
+                # Input cut off by the window fails at its end, or as a string
+                # that runs into it. Anything else is broken where it stands:
+                # reading on would only pull the rest of the file into memory.
+                cut = exc.pos >= len(self.buf) - _TAIL or exc.msg.startswith(
+                    "Unterminated string"
+                )
+                if cut and self.fill():
+                    continue
+                # fill() has not moved the window: the position is still in it.
+                raise self.error(exc.msg, exc.pos) from None
+            except ValueError as exc:
+                if isinstance(exc, UnicodeError):
+                    raise
+                raise _ParserLimit(str(exc)) from None
+            # A number may continue in the next chunk, and a prefix of one
+            # ("1." or "1e+") decodes as a shorter number.
+            if len(self.buf) - end < 3 and self.fill():
+                continue
+            self.pos = end
+            self.grow = _CHUNK_CHARS
+            return obj
+
+    def error(self, message: str, at: int) -> json.JSONDecodeError:
+        """A ``JSONDecodeError`` at window offset ``at``, numbered as in the file."""
+        newline = self.buf.rfind("\n", 0, at)
+        lineno = 1 + self.lines + self.buf.count("\n", 0, at)
+        colno = at - newline if newline >= 0 else self.consumed + at - self.line_start + 1
+        exc = json.JSONDecodeError(message, "", 0)
+        exc.pos, exc.lineno, exc.colno = self.consumed + at, lineno, colno
+        exc.args = (f"{message}: line {lineno} column {colno} (char {exc.pos})",)
+        return exc
+
+    def fail(self, message: str) -> json.JSONDecodeError:
+        return self.error(message, self.pos)
+
+
+def _stream_document(stream: Any) -> Iterator[tuple]:
+    """Walk a top-level JSON object, yielding ``entries`` one element at a time.
+
+    Events: ``("meta", key, value)``; ``("entries_list",)`` when an ``entries``
+    array starts, then ``("entry", item)`` per element; ``("entries_value",
+    value)`` when ``entries`` is not an array; ``("not_object",)`` when the
+    document is valid JSON but not an object. Anything malformed raises
+    ``json.JSONDecodeError``, exactly as ``json.loads`` would have.
+    """
+    reader = _JsonReader(stream)
+    first = reader.peek()
+    if first != "{":
+        if first == "﻿":
+            raise reader.fail("Unexpected UTF-8 BOM (decode using utf-8-sig)")
+        if not first:
+            raise reader.fail("Expecting value")
+        reader.value()
+        if reader.peek():
+            raise reader.fail("Extra data")
+        yield ("not_object",)
+        return
+    reader.pos += 1
+    if reader.peek() == "}":
+        reader.pos += 1
+    else:
+        while True:
+            if reader.peek() != '"':
+                raise reader.fail("Expecting property name enclosed in double quotes")
+            key = reader.value()
+            if reader.peek() != ":":
+                raise reader.fail("Expecting ':' delimiter")
+            reader.pos += 1
+            if key == "entries" and reader.peek() == "[":
+                reader.pos += 1
+                yield ("entries_list",)
+                if reader.peek() == "]":
+                    reader.pos += 1
+                else:
+                    while True:
+                        yield ("entry", reader.value())
+                        nxt = reader.peek()
+                        if nxt not in ("]", ","):
+                            raise reader.fail("Expecting ',' delimiter")
+                        reader.pos += 1
+                        if nxt == "]":
+                            break
+            elif key == "entries":
+                yield ("entries_value", reader.value())
+            else:
+                yield ("meta", key, reader.value())
+            nxt = reader.peek()
+            if nxt not in ("}", ","):
+                raise reader.fail("Expecting ',' delimiter")
+            reader.pos += 1
+            if nxt == "}":
+                break
+    if reader.peek():
+        raise reader.fail("Extra data")
+
+
+def _tail(row: _Row) -> str:
+    """A statement's digest line after its ``release|source_package|`` prefix."""
+    advisory_id, cves, fixed_version, _severity, state, _url = row
+    return f"{','.join(cves)}|{state}|{fixed_version or ''}|{advisory_id}"
+
+
 def _load_dataset(path: Path, *, provider: str) -> AdvisoryDataset:
+    meta: dict[str, Any] = {}
+    # Per bucket, one line of JSON per statement. Appended to a bytearray, not
+    # kept as objects: a tuple, a list and four strings per statement is what
+    # made the old loader cost gigabytes.
+    buckets: dict[tuple[str, str], bytearray] = {}
+    # Per bucket, the digest tail of each statement, newline-separated, so the
+    # digest needs no second parse of the rows. ``None`` once a tail holds a
+    # newline itself; the digest then rebuilds the tails from the rows.
+    tails: dict[tuple[str, str], bytearray] | None = {}
+    state: str | None = None  # None | "list" | "empty" | "bad"
+    count = 0
+    dropped = 0
+    intern: dict[str, str] = {}
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        with path.open("r", encoding="utf-8") as stream:
+            for event in _stream_document(stream):
+                kind = event[0]
+                if kind == "meta":
+                    meta[event[1]] = event[2]
+                elif kind == "not_object":
+                    return AdvisoryDataset(present=True, error="not an object")
+                elif kind in ("entries_list", "entries_value"):
+                    # A repeated key replaces the earlier value, as in json.loads.
+                    buckets.clear()
+                    tails = {}
+                    count = dropped = 0
+                    if kind == "entries_list":
+                        state = "list"
+                    else:
+                        state = "empty" if not event[1] else "bad"
+                else:
+                    coerced = _coerce_entry(event[1])
+                    if coerced is None:
+                        dropped += 1
+                        continue
+                    release, source_package, row = coerced
+                    key = (
+                        intern.setdefault(release, release),
+                        intern.setdefault(source_package, source_package),
+                    )
+                    line = json.dumps(row, separators=(",", ":")).encode("ascii")
+                    buckets.setdefault(key, bytearray()).extend(line + b"\n")
+                    if tails is not None:
+                        tail = _tail(row)
+                        if "\n" in tail:
+                            tails = None
+                        else:
+                            tails.setdefault(key, bytearray()).extend(
+                                tail.encode("utf-8") + b"\n"
+                            )
+                    count += 1
     except FileNotFoundError:
         return AdvisoryDataset(error="missing")
     except OSError as exc:
@@ -206,57 +585,68 @@ def _load_dataset(path: Path, *, provider: str) -> AdvisoryDataset:
     except json.JSONDecodeError as exc:
         LOG.warning("advisories: %s is not valid JSON: %s", path, exc)
         return AdvisoryDataset(present=True, error=f"invalid JSON: {exc}")
-    except ValueError:
-        # json.loads may raise a plain ValueError for Python's integer-string
+    except _ParserLimit:
+        # json may raise a plain ValueError for Python's integer-string
         # conversion ceiling. Limit this handler to parsing, not normalization.
         LOG.warning("advisories: JSON value exceeds parser limits in %s", path)
         return AdvisoryDataset(present=True, error="invalid JSON value")
 
-    if not isinstance(payload, dict):
-        return AdvisoryDataset(present=True, error="not an object")
-    updated = str(payload.get("updated") or "") or None
-    entries: Iterable[Any] = payload.get("entries") or ()
-    if not isinstance(entries, (list, tuple)):
+    if state == "bad":
         return AdvisoryDataset(present=True, error="entries is not a list")
-
-    records: list[AdvisoryRecord] = []
-    dropped = 0
-    for raw in entries:
-        record = _coerce_record(raw, provider=provider, feed_date=updated)
-        if record is None:
-            dropped += 1
-            continue
-        records.append(record)
+    updated = str(meta.get("updated") or "") or None
     if dropped:
         LOG.warning("advisories: dropped %d unusable entries from %s", dropped, path)
-
-    index: dict[tuple[str, str], list[AdvisoryRecord]] = {}
-    for record in records:
-        index.setdefault((record.release, record.source_package), []).append(record)
 
     # What the dataset says, independent of when it was fetched and of entry
     # order: the retro matcher re-matches the estate when this moves, and a
     # daily refresh that re-stamped ``updated`` over the same statements must
-    # not be a reason to (api/services/retro_match_worker.py).
-    digest = hashlib.sha256(
-        "\n".join(
-            sorted(
-                f"{r.release}|{r.source_package}|{','.join(r.cve_ids)}|{r.state}|"
-                f"{r.fixed_version or ''}|{r.advisory_id}"
-                for r in records
-            )
-        ).encode("utf-8")
-    ).hexdigest()[:16]
+    # not be a reason to (api/services/retro_match_worker.py). The value is the
+    # sha256 of the sorted statement lines joined by newlines. Lines of one
+    # bucket share their ``release|package|`` prefix, so sorting buckets by that
+    # prefix and each bucket's lines among themselves is the global sort — unless
+    # one prefix is a prefix of another, which only a ``|`` in a package name
+    # can cause; that case sorts every line, as before. Lines are sorted as
+    # UTF-8 bytes, which orders them exactly as the code points they encode.
+    ordered = sorted((f"{key[0]}|{key[1]}|", key) for key in buckets)
+    flat_sort = any(
+        later.startswith(earlier)
+        for (earlier, _), (later, _) in zip(ordered, ordered[1:])
+    )
+    digest = hashlib.sha256()
+    all_lines: list[bytes] = []
+    wrote = False
+    blobs: dict[tuple[str, str], bytes] = {}
+    for prefix, key in ordered:
+        raw = buckets.pop(key)
+        if tails is not None:
+            lines = tails.pop(key).split(b"\n")
+            lines.pop()  # after the last newline
+        else:
+            lines = [
+                _tail(_row_from_json(item)).encode("utf-8")
+                for item in raw.splitlines()
+            ]
+        head = prefix.encode("utf-8")
+        if flat_sort:
+            all_lines.extend(head + tail for tail in lines)
+        else:
+            lines.sort()
+            digest.update((b"\n" if wrote else b"") + head + (b"\n" + head).join(lines))
+            wrote = True
+        blobs[key] = zlib.compress(bytes(raw), 6)
+    if flat_sort:
+        digest.update(b"\n".join(sorted(all_lines)))
 
+    store = _PackedStore(blobs, count, provider, updated)
     return AdvisoryDataset(
-        source=str(payload.get("source") or "") or None,
+        source=str(meta.get("source") or "") or None,
         updated=updated,
-        origin_url=str(payload.get("origin_url") or "") or None,
-        records=tuple(records),
-        index={key: tuple(value) for key, value in index.items()},
+        origin_url=str(meta.get("origin_url") or "") or None,
+        records=_PackedRecords(store),
+        index=_PackedIndex(store),
         present=True,
-        releases=tuple(sorted({record.release for record in records})),
-        digest=digest,
+        releases=tuple(sorted({key[0] for key in blobs})),
+        digest=digest.hexdigest()[:16],
     )
 
 

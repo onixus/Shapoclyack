@@ -572,6 +572,14 @@ def list_vulnerabilities(
         bool,
         Query(description="Open or any-state findings currently on CISA KEV"),
     ] = False,
+    problem_key: Annotated[
+        str | None,
+        Query(
+            max_length=400,
+            description="Drill-down from an aggregated problem (#579): cve:CVE-…, "
+            "tpl:<detector>:<template>, script:<id> or unknown:<vuln_id>. 422 when malformed.",
+        ),
+    ] = None,
 ) -> Page[VulnerabilityInfo]:
     try:
         items, total = vulns_service.list_vulnerabilities(
@@ -591,6 +599,7 @@ def list_vulnerabilities(
             exception_state=exception_state,
             stale_days=stale_days,
             in_kev=True if in_kev else None,
+            problem_key=problem_key,
             offset=page.offset,
             limit=page.limit,
             q=page.q,

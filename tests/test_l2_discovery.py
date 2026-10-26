@@ -177,6 +177,53 @@ def test_pulse_rows_outside_the_selected_networks_are_dropped():
     assert "192.0.2.77" not in names
 
 
+def _v3(payload: dict[str, Any], hosts: list[dict[str, Any]]) -> dict[str, Any]:
+    """The recorded v2 run re-labelled as pulse.scan.v3 with a ``hosts[]`` block (GenDec#35)."""
+    payload["meta"] = {**payload["meta"], "schema": "pulse.scan.v3", "mode": "scan"}
+    payload["hosts"] = hosts
+    payload["discovery"] = {"candidates": 256, "live": len(hosts), "method_used": "arp+names"}
+    return payload
+
+
+def _v3_host(ip: str, **fields: Any) -> dict[str, Any]:
+    return {"host": ip, "ip": ip, "mac": None, "method": "arp", "interface": "eth0", "hostnames": [],
+            "netbios": None, **fields}  # fmt: skip
+
+
+def test_v3_hosts_add_addresses_macs_and_names_pulse_resolved():
+    payload = _v3(
+        json.loads(NAMES_JSON),
+        [
+            _v3_host("10.0.0.10", mac="02:42:0a:00:00:0a",
+                     netbios={"name": "L2NBHOST", "workgroup": "L2WG", "mac": None, "names": []}),
+            _v3_host("10.0.0.11", hostnames=[{"name": "avahi-box.local", "source": "mdns"},
+                                             {"name": "not a name", "source": "llmnr"}]),
+            _v3_host("10.0.0.20", method="neighbour", mac="02:42:0a:00:00:14",
+                     hostnames=[{"name": "PRINTER", "source": "llmnr"}]),
+            _v3_host("10.0.0.2", method="local", mac="02:42:0a:00:00:02"),
+            _v3_host("192.0.2.9", mac="02:42:c0:00:02:09", hostnames=[{"name": "out", "source": "mdns"}]),
+        ],
+    )  # fmt: skip
+    hosts, names, evidence = parse_pulse_l2(payload, SCOPE, {"10.0.0.10": "AA:AA:AA:AA:AA:AA"})
+    by_host = {row["host"]: row["mac"] for row in hosts}
+    # Pulse's own MAC wins over the kernel read; the sensor's own address and
+    # an out-of-scope one never become hosts.
+    assert by_host == {"10.0.0.1": None, "10.0.0.10": "02:42:0A:00:00:0A", "10.0.0.11": None,
+                       "10.0.0.12": None, "10.0.0.20": "02:42:0A:00:00:14"}  # fmt: skip
+    assert names == {"10.0.0.10": ["l2nbhost"], "10.0.0.11": ["avahi-box.local"], "10.0.0.20": ["printer"]}
+    keyed = {(item["host"], item["script_id"]): item for item in evidence}
+    # The banner evidence stays, with Pulse's parsed name merged in.
+    assert "L2NBHOST" in keyed[("10.0.0.10", "pulse:netbios-ns")]["output"]
+    assert keyed[("10.0.0.11", "pulse:mdns")]["names"] == ["avahi-box.local"]
+    assert keyed[("10.0.0.20", "pulse:llmnr")]["names"] == ["printer"]
+    assert not any(host == "192.0.2.9" for host, _ in keyed)
+
+
+def test_v2_report_without_hosts_parses_as_before():
+    v2 = parse_pulse_l2(json.loads(NAMES_JSON), SCOPE)
+    assert v2 == parse_pulse_l2(_v3(json.loads(NAMES_JSON), []), SCOPE)
+
+
 def test_run_drops_a_pulse_row_for_an_address_outside_scope(tmp_path: Path, monkeypatch):
     _pulse(monkeypatch, ARP_ONLY_JSON.replace("10.0.0.12", "192.0.2.12"))
     result = run_l2_discovery(SCOPE, _cfg(), tmp_path)
