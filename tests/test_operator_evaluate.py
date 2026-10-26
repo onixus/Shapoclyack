@@ -173,8 +173,10 @@ def test_perfect_supplied_records_only_verify_scorer_not_model_quality():
     assert report["category_macro_f1"]["value"] == 1.0
     assert report["citation_precision"]["value"] == 1.0
     assert report["tool_accuracy"]["total"] == 70
-    assert report["subgroups"]["development_exposed"]["total"] == 11
-    assert report["subgroups"]["untouched_by_development_pilot"]["total"] == 179
+    assert report["subgroups"]["development_exposed"]["total"] == 190
+    assert report["subgroups"]["untouched_by_development_pilot"]["total"] == 0
+    assert report["subgroups"]["untouched_by_development_pilot"]["value"] is None
+    assert report["development_exposure"]["historical_pre_attempt_split"] == {"exposed": 11, "untouched": 179}
     assert report["fixed_claim_support"]["total"] > 0
     assert not report["release_acceptance_claimed"]
 
@@ -189,6 +191,77 @@ def test_missing_and_transport_failed_cases_remain_in_denominators():
     assert report["not_run_count"] == 1 and report["executed_case_failures"] == 1
     assert not report["quality_gate_passed"]
     assert report["latency_seconds"]["max"] == 120.0
+
+
+def test_fast_503s_cannot_pass_latency_gates_by_diluting_the_percentile():
+    records = [record_from_gold(case) for case in CASES]
+    for i in range(20, len(records)):
+        records[i] = {"case_id": CASES[i]["case_id"], "valid": False, "model_invoked": True,
+                      "response_status": 503, "error_code": "operator_upstream_rejected", "elapsed_seconds": .005}
+    report = evaluation.summarize(DATASET, records, stage="final")
+    assert report["latency_seconds"]["count"] == 190
+    assert report["latency_seconds"]["p95"] == 1.0  # Preserve all-attempt timing, including fast failures.
+    assert report["latency_seconds"]["valid_response_count"] == 20
+    assert report["latency_seconds"]["required_response_count"] == 190
+    assert report["latency_seconds"]["valid_response_p95"] == 1.0
+    assert not report["latency_seconds"]["valid_response_coverage_complete"]
+    assert not report["gates"]["first_response_latency"]
+    assert not report["gates"]["task_component_latency"]
+    assert not report["quality_gate_passed"]
+
+
+@pytest.mark.parametrize("duration", [None, float("nan"), float("inf"), -1, True])
+def test_invalid_valid_response_duration_cannot_complete_latency_coverage(duration):
+    records = [record_from_gold(case) for case in CASES]
+    records[0]["elapsed_seconds"] = duration
+    report = evaluation.summarize(DATASET, records, stage="final")
+    assert report["latency_seconds"]["valid_response_count"] == 189
+    assert not report["gates"]["first_response_latency"]
+    assert not report["gates"]["task_component_latency"]
+
+
+def test_unreviewed_corpus_cannot_inherit_a_hidden_or_exposed_claim():
+    changed = copy.deepcopy(DATASET)
+    changed["cases"][0]["case_id"] = "new-independent-case"
+    with pytest.raises(ValueError, match="exposure-policy review"):
+        evaluation.exposure_provenance(changed)
+
+
+@pytest.mark.parametrize("case_id,source_id,field,wrong", [
+    ("analysis-ru-cve-low-http", "a-ru-04-secondary", "category", "vulnerability"),
+    ("analysis-ru-cve-info-dns", "a-ru-05", "category", "exposure"),
+    ("analysis-ru-cve-unknown-redis", "a-ru-06", "category", "unknown"),
+    ("analysis-ru-cve-missing-severity", "a-ru-07", "proposed_priority", "high"),
+    ("analysis-ru-cve-no-service", "a-ru-10", "category", "exposure"),
+    ("analysis-ru-cve-ftp-low", "a-ru-13", "category", "exposure"),
+    ("analysis-ru-cve-snmp-unknown", "a-ru-15", "category", "unknown"),
+    ("analysis-ru-cwe-credentials", "a-ru-17", "category", "vulnerability"),
+    ("analysis-ru-cwe-authentication", "a-ru-18", "category", "vulnerability"),
+])
+def test_actual_failed_run_label_errors_stay_wrong_without_auto_repair(case_id, source_id, field, wrong):
+    case = next(c for c in CASES if c["case_id"] == case_id)
+    record = record_from_gold(case)
+    raw = json.loads(record["model_content"])
+    selected = next(item for item in raw["recommendations"] if item["source_id"] == source_id)
+    assert selected[field] != wrong
+    selected[field] = wrong
+    record["model_content"] = json.dumps(raw)
+    record["result"] = analysis.validate_output(record["model_content"], case["language"], case["retrieval"])
+    assert next(item for item in record["result"]["recommendations"] if item["source_id"] == source_id)[field] == wrong
+    assert not evaluation.score_case(case, record)
+    variants = analysis.output_schema(case["retrieval"], language=case["language"])["properties"]["recommendations"]["items"]["anyOf"]
+    for variant in variants:
+        assert "const" not in variant["properties"][field]
+        assert wrong in variant["properties"][field]["enum"]
+
+
+def test_valid_but_wrong_labels_do_not_turn_latency_into_a_stricter_accuracy_threshold():
+    records = [record_from_gold(case) for case in CASES]
+    records[0]["result"]["recommendations"][0]["category"] = "unknown"
+    report = evaluation.summarize(DATASET, records, stage="final")
+    assert not evaluation.score_case(CASES[0], records[0])
+    assert report["gates"]["first_response_latency"]
+    assert report["gates"]["task_component_latency"]
 
 
 def test_abstain_everything_cannot_pass_accuracy_or_citation_gate():

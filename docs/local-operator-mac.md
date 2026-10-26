@@ -94,6 +94,21 @@ to existing containers. This ceiling is not a measured model peak or promise
 of latency. A failure must be reported, without changing quantization/context
 or silently switching to hosted inference.
 
+Inference explicitly sets `--cache-ram 0`; startup attestation requires exactly
+this value, including for the offline package. The pinned runtime otherwise
+defaults to an 8192-MiB RAM prompt-cache budget (with a decision-model exception).
+The 2026-10-26 attempt under a 16-GiB Docker VM hit the model's 7-GiB memory
+cgroup and restarted. Disabling that cache is a single-variable diagnostic
+change; its contribution to anonymous-memory growth and the revised profile's
+quality, latency and hour-long stability remain unverified. Context, weights,
+parallelism, threads and the container memory ceiling remain unchanged.
+The observer now retains selected `memory.stat` bytes (including anonymous,
+file and slab memory), `memory.current`, peak and events in each sample.
+PID1 start ticks bracket each read to reject mixed restart epochs; counter
+files are sequential rather than an atomic snapshot. Reads have a five-second
+timeout and failures stay visible. Earlier samples are not replaced by the
+new process's counters after a restart.
+
 On this Docker Desktop version, internal-only networks do not publish host
 ports. A credential-free fixed-target gateway therefore publishes localhost
 8082 while the model stays on its internal network. The gateway uses an exact

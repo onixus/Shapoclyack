@@ -179,8 +179,47 @@ def test_real_process_signal_sets_flag_and_restores_handlers():
     assert signal.getsignal(signal.SIGTERM) == previous
 
 
+def cgroup_sample(start=100, end=None):
+    values = [f"1 (llama server) S {'0 ' * 18}{start}\n", "7510000000\n", "7516192768\n",
+        "low 0\nhigh 0\nmax 4\noom 1\noom_kill 1\n", "anon 7000000000\nfile 100\nslab 200\npgscan 999\n",
+        f"1 (llama server) S {'0 ' * 18}{start if end is None else end}\n"]
+    names = ["/proc/1/stat", "/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory.peak",
+             "/sys/fs/cgroup/memory.events", "/sys/fs/cgroup/memory.stat", "/proc/1/stat"]
+    return "".join(f"\n__file__{name}\n{value}" for name, value in zip(names, values))
+
+
+def test_cgroup_sample_retains_pre_restart_oom_and_selected_memory_only():
+    first = observe.parse_cgroup_sample(cgroup_sample())
+    second = observe.parse_cgroup_sample(cgroup_sample(start=200).replace("oom_kill 1", "oom_kill 0"))
+    assert first["pid1_start_ticks"] != second["pid1_start_ticks"]
+    assert first["memory_events"]["oom_kill"] == 1 and second["memory_events"]["oom_kill"] == 0
+    assert first["memory_current_bytes"] == 7510000000
+    assert first["memory_peak_bytes"] == 7516192768
+    assert first["memory_stat_bytes"] == {"anon": 7000000000, "file": 100, "slab": 200}
+
+
+@pytest.mark.parametrize("mode", ["restart", "missing", "negative", "duplicate", "oversized", "bad_stat", "truncated"])
+def test_cgroup_sample_rejects_mixed_epochs_and_invalid_counters(mode):
+    raw = cgroup_sample(end=200 if mode == "restart" else None)
+    if mode == "missing":
+        raw = raw.replace("slab 200\n", "")
+    elif mode == "negative":
+        raw = raw.replace("file 100", "file -1")
+    elif mode == "duplicate":
+        raw = raw.replace("slab 200", "slab 200\nslab 201")
+    elif mode == "oversized":
+        raw += "x" * 16385
+    elif mode == "bad_stat":
+        raw = raw.replace("1 (llama server) S", "bad")
+    elif mode == "truncated":
+        raw = raw[:raw.rindex("\n__file__")]
+    with pytest.raises((ValueError, IndexError)):
+        observe.parse_cgroup_sample(raw)
+
+
 @pytest.mark.parametrize("capture_fails", [False, True])
-def test_parent_signal_stops_only_owned_helper_and_retains_endstate(tmp_path, monkeypatch, capture_fails):
+@pytest.mark.parametrize("cgroup_fails", [False, True])
+def test_parent_signal_stops_only_owned_helper_and_retains_endstate(tmp_path, monkeypatch, capture_fails, cgroup_fails):
     stop = observe.StopRequest()
     calls = []
     value = {"Image": "sha256:" + "b" * 64, "RestartCount": 0,
@@ -208,6 +247,11 @@ def test_parent_signal_stops_only_owned_helper_and_retains_endstate(tmp_path, mo
         if argv[1] == "logs":
             return json.dumps({"packets": 3, "kernel_packets": 4, "kernel_drops": 1, "stopped_early": True})
         if argv[1] == "exec":
+            if "sh" in argv:
+                assert timeout == 5
+                if cgroup_fails:
+                    raise observe.subprocess.TimeoutExpired(argv, timeout)
+                return cgroup_sample()
             return "512\noom 0\noom_kill 0\n"
         raise AssertionError(argv)
     monkeypatch.setattr(observe, "command", command)
@@ -219,6 +263,11 @@ def test_parent_signal_stops_only_owned_helper_and_retains_endstate(tmp_path, mo
     assert report["duration_seconds"] < report["planned_seconds"]
     metadata = report["containers"]["observed-runtime"]
     assert metadata["ended_status"] == "running" and metadata["cgroup_memory_events"]["oom_kill"] == 0
+    if cgroup_fails:
+        assert report["samples"][0]["cgroup_memory"] == {}
+        assert any(row["type"] == "cgroup_sample_unavailable" for row in report["sampling_errors"])
+    else:
+        assert report["samples"][0]["cgroup_memory"]["observed-runtime"]["memory_events"]["oom_kill"] == 1
     if capture_fails:
         assert any(row["type"] == "network_capture_unavailable" for row in report["sampling_errors"])
         assert "network_observation" not in metadata

@@ -365,6 +365,10 @@ def test_generated_startup_is_isolated_offline_nonroot_and_has_no_downloads(modu
         assert service["pull_policy"] == "never"
         assert service["volumes"] == ["model_weights:/models:ro"]
     assert compose["volumes"]["model_weights"] == {"name": project + "-weights", "external": True}
+    inference = compose["services"]["inference"]
+    assert inference["command"].count("--cache-ram") == 1
+    assert inference["command"][inference["command"].index("--cache-ram") + 1] == "0"
+    assert inference["mem_limit"] == inference["memswap_limit"] == "7g"
     assert compose["services"]["gateway"]["ports"] == ["127.0.0.1:8085:8080"]
     assert compose["services"]["gateway"]["environment"] == {"OCTO_OPERATOR_CONSOLE_PORT": "8085"}
     assert all(service["image"].startswith("sha256:") for service in compose["services"].values())
@@ -453,6 +457,28 @@ def test_native_volume_readback_failure_prevents_attestation(module, running_dep
 
     monkeypatch.setattr(module, "native_models", lambda: SimpleNamespace(verify_volume=rejected))
     with pytest.raises(module.BundleError, match="native_model_integrity"):
+        module.attest_deployment(root, manifest, project, path)
+    assert not (root / ".offline/verification.json").exists()
+
+
+@pytest.mark.parametrize("mode", ["missing", "enabled", "duplicate", "truncated"])
+def test_cache_budget_cannot_be_relaxed_even_in_matching_generated_compose(module, running_deployment, mode):
+    root, manifest, project, path, containers, *_ = running_deployment
+    arguments = containers["a" * 64]["Config"]["Cmd"]
+    index = arguments.index("--cache-ram")
+    if mode == "missing":
+        del arguments[index:index + 2]
+    elif mode == "enabled":
+        arguments[index + 1] = "8192"
+    elif mode == "duplicate":
+        arguments += ["--cache-ram", "0"]
+    else:
+        del arguments[index:index + 2]
+        arguments.append("--cache-ram")
+    compose = json.loads(path.read_text())
+    compose["services"]["inference"]["command"] = arguments
+    path.write_text(json.dumps(compose))
+    with pytest.raises(module.BundleError, match="cache_budget_mismatch"):
         module.attest_deployment(root, manifest, project, path)
     assert not (root / ".offline/verification.json").exists()
 

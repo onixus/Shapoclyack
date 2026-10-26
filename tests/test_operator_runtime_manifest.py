@@ -4,10 +4,21 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+import yaml
 
 spec = importlib.util.spec_from_file_location("operator_runtime_manifest", Path(__file__).parents[1] / "scripts/operator-runtime-manifest.py")
 manifest = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(manifest)
+
+
+def test_mac_compose_disables_ram_cache_without_changing_inference_budget():
+    compose = yaml.safe_load((Path(__file__).parents[1] / "compose.operator-mac.yml").read_text())
+    inference = compose["services"]["inference"]
+    arguments = inference["command"]
+    for flag, expected in {"--cache-ram": "0", "--ctx-size": "8192", "--parallel": "1", "--threads": "4"}.items():
+        assert arguments.count(flag) == 1
+        assert arguments[arguments.index(flag) + 1] == expected
+    assert inference["mem_limit"] == inference["memswap_limit"] == "7g"
 
 
 @pytest.fixture
@@ -24,7 +35,7 @@ def runtime(tmp_path, monkeypatch):
         args = ["--model", target, "--alias", manifest.MODEL if role == "inference" else "Qwen3-Embedding-0.6B",
                 "--n-gpu-layers", "0", "--parallel", "1", "--offline", "--no-agent"]
         if role == "inference":
-            args += ["--ctx-size", "8192", "--temp", "0", "--seed", "42", "--reasoning", "off", "--n-predict", "1024"]
+            args += ["--ctx-size", "8192", "--cache-ram", "0", "--temp", "0", "--seed", "42", "--reasoning", "off", "--n-predict", "1024"]
         containers[role] = {"Config": {"Image": manifest.RUNTIME, "User": "65532:65532", "Cmd": args},
             "State": {"Status": "running"}, "HostConfig": {"ReadonlyRootfs": True, "PortBindings": {},
                 "Sysctls": {"net.ipv6.conf.all.disable_ipv6": "1", "net.ipv6.conf.default.disable_ipv6": "1"}},
@@ -43,6 +54,24 @@ def runtime(tmp_path, monkeypatch):
 def test_verified_runtime_binds_actual_model_files(runtime):
     root, _ = runtime
     assert manifest.build(root)["profile"] == "mac-arm64-cpu"
+
+
+@pytest.mark.parametrize("mode", ["missing", "enabled", "duplicate", "truncated"])
+def test_inference_requires_explicit_disabled_ram_cache(runtime, mode):
+    root, containers = runtime
+    arguments = containers["inference"]["Config"]["Cmd"]
+    index = arguments.index("--cache-ram")
+    if mode == "missing":
+        del arguments[index:index + 2]
+    elif mode == "enabled":
+        arguments[index + 1] = "8192"
+    elif mode == "duplicate":
+        arguments += ["--cache-ram", "0"]
+    else:
+        del arguments[index:index + 2]
+        arguments.append("--cache-ram")
+    with pytest.raises(ValueError, match="Runtime argument mismatch"):
+        manifest.build(root)
 
 
 @pytest.mark.parametrize("wrong", [None, "volume", "writable", "shadow", "threads"])

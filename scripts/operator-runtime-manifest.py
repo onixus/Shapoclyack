@@ -348,7 +348,7 @@ def build(model_dir, *, storage="bind", volume=None, helper_image=HELPER_IMAGE):
             valid_mount = valid_mount and model_mounts[0].get("Type") == "bind" and model_mounts[0].get("Destination") == mounted_path and Path(model_mounts[0]["Source"]).resolve() == (model_dir / artifact).resolve()
         if not valid_mount:
             raise ValueError("Runtime model mount does not match verified artifact")
-        permitted_flags = {"--model", "--alias", "--host", "--port", "--ctx-size", "--parallel",
+        permitted_flags = {"--model", "--alias", "--host", "--port", "--ctx-size", "--parallel", "--cache-ram",
             "--threads", "--batch-size", "--ubatch-size", "--n-gpu-layers", "--n-predict", "--temp",
             "--seed", "--reasoning", "--offline", "--no-webui", "--no-agent", "--no-ui-mcp-proxy", "--embedding", "--pooling"}
         if any(item.startswith("-") and item not in permitted_flags for item in arguments):
@@ -357,11 +357,11 @@ def build(model_dir, *, storage="bind", volume=None, helper_image=HELPER_IMAGE):
                     "--alias": MODEL if role == "inference" else "Qwen3-Embedding-0.6B"}
         if role == "inference":
             required.update({"--ctx-size": "8192", "--temp": "0", "--seed": "42",
-                             "--reasoning": "off", "--n-predict": "1024"})
+                             "--reasoning": "off", "--n-predict": "1024", "--cache-ram": "0"})
             if storage == "native":
                 required["--threads"] = "4"
         for flag, expected in required.items():
-            if arguments.count(flag) != 1 or arguments[arguments.index(flag) + 1] != expected:
+            if arguments.count(flag) != 1 or arguments[arguments.index(flag) + 1:arguments.index(flag) + 2] != [expected]:
                 raise ValueError("Runtime argument mismatch")
         if "--offline" not in arguments or "--no-agent" not in arguments:
             raise ValueError("Runtime offline/tool boundary missing")

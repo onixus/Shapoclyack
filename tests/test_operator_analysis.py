@@ -56,6 +56,27 @@ def test_prompt_excludes_free_text_and_personal_identifiers():
         assert secret not in messages[1]["content"]
 
 
+def test_prompt_states_ordered_independent_decisions_and_preserves_per_source_inputs():
+    retrieval = copy.deepcopy(CASES[0]["retrieval"])
+    first = retrieval["items"][0]
+    first["context"] = {"cve": "CVE-2026-99999", "severity": "unknown", "port": 443}
+    second = copy.deepcopy(first)
+    second["source_id"] = second["citation"]["source_id"] = "independent-source"
+    second["context"] = {"cwe": "CWE-287", "severity": "high", "service": "http"}
+    retrieval["items"].append(second)
+    messages = build_prompt("en", retrieval)
+    system = messages[0]["content"]
+    assert system.index("1. context has a valid cve") < system.index("2. Otherwise context has a valid cwe")
+    assert system.index("2. Otherwise context has a valid cwe") < system.index("3. Otherwise context has a known service")
+    assert "Severity NEVER changes category" in system
+    assert "CVE, CWE, service and port NEVER raise priority" in system
+    assert "Never copy a CVE, CWE, category or severity from another source" in system
+    supplied = json.loads(messages[1]["content"])["sources"]
+    assert supplied[0]["context"] == first["context"]
+    assert supplied[1]["context"] == second["context"]
+    assert "cve" not in supplied[1]["context"]
+
+
 @pytest.mark.parametrize("raw", [
     '{"language":"en","language":"ru"}', '{"x":NaN}', '[]', 'null',
     '```json\n{}\n```', '{', 'x' * 32769, '{"summary":"CVE-2099-1111"}',

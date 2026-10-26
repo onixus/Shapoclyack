@@ -60,14 +60,17 @@ SOURCE_PATHS = (
 MODEL_SHA256 = "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
 RUNTIME_OVERRIDE = None
 LAUNCH_NONCE_ENV = "OPERATOR_QUALITY_LAUNCH_NONCE"
-DEVELOPMENT_EXPOSED_CASE_IDS = (
-    "analysis-ru-cve-critical-https", "analysis-en-cwe-tls", "analysis-ru-unknown-empty",
-    "analysis-en-exposed-mysql", "planning-ru-compare", "planning-en-foreign-object",
-    # Conservative exposure includes failed exchanges and uncertain inflight
-    # requests from the interrupted 5cec1cf1 acceptance attempt.
-    "analysis-ru-cve-high-ssh", "analysis-ru-cve-medium-smb", "analysis-ru-cve-low-http",
-    "analysis-ru-cve-info-dns", "analysis-ru-cve-unknown-redis",
-)
+# The complete f8dc16g attempt was subsequently inspected for development.
+# Conservatively include all dispatched IDs, including transport errors/503s.
+# Bind this policy to the original corpus; a new independent corpus requires
+# an explicit exposure review, never an automatic claim that its cases are hidden.
+EXPOSED_DATASET_CANONICAL_SHA256 = "56aa6ad3c52b61f481380cc7efd0b7fa1e795d969671b41934ff3ce54d7fe5dc"
+DEVELOPMENT_EXPOSURE_POLICY = {
+    "version": "full-corpus-attempted-f8dc16g-v1",
+    "prior_attempt_records_sha256": "5693a4c7a7b807f48c7b306fd4ce0a6251f95d07f59d764cc566eae6cb6591f6",
+    "historical_pre_attempt_split": {"exposed": 11, "untouched": 179},
+    "reason": "All190 attempted cases are exposed for subsequent development, including failed exchanges; original reports remain unchanged.",
+}
 
 
 def canonical(value):
@@ -76,6 +79,14 @@ def canonical(value):
 
 def digest(value):
     return hashlib.sha256(value).hexdigest()
+
+
+def exposure_provenance(dataset):
+    if digest(canonical(dataset).encode()) != EXPOSED_DATASET_CANONICAL_SHA256:
+        raise ValueError("Dataset requires independent exposure-policy review")
+    return {**DEVELOPMENT_EXPOSURE_POLICY,
+            "development_exposed_case_ids": [case["case_id"] for case in dataset["cases"]],
+            "untouched_case_count": 0}
 
 
 def file_digest(path):
@@ -356,7 +367,8 @@ def freeze(destination, *, reviewed_by, model_path):
                 "source_sha256": paths, "runtime": runtime, "host": platform.platform(),
                 "analysis_prompt_version": analysis.PROMPT_VERSION,
                 "planner_prompt_version": planner.PROMPT_VERSION,
-                "development_exposed_case_ids": list(DEVELOPMENT_EXPOSED_CASE_IDS),
+                "development_exposure": exposure_provenance(data),
+                "development_exposed_case_ids": exposure_provenance(data)["development_exposed_case_ids"],
                 "scope": "Synthetic domain component/model acceptance; not a replacement for authenticated E2E/offline/soak evidence"}
     write_json(destination / "manifest.json", manifest)
     return manifest
@@ -613,10 +625,13 @@ def summarize(dataset, records, *, stage):
     for language in ("ru", "en"):
         subset = [c for c in cases if c["language"] == language]
         result["subgroups"][language] = proportion(sum(score_case(c, by_id.get(c["case_id"])) for c in subset), len(subset))
+    exposure = exposure_provenance(dataset)
+    exposed_ids = set(exposure["development_exposed_case_ids"])
     for name, exposed in (("development_exposed", True), ("untouched_by_development_pilot", False)):
-        subset = [case for case in cases if (case["case_id"] in DEVELOPMENT_EXPOSED_CASE_IDS) == exposed]
+        subset = [case for case in cases if (case["case_id"] in exposed_ids) == exposed]
         result["subgroups"][name] = proportion(sum(score_case(c, by_id.get(c["case_id"])) for c in subset), len(subset))
-    result["development_exposed_case_ids"] = list(DEVELOPMENT_EXPOSED_CASE_IDS)
+    result["development_exposure"] = exposure
+    result["development_exposed_case_ids"] = exposure["development_exposed_case_ids"]
     pairs = {"category": [], "proposed_priority": []}
     clusters = {"category": {}, "proposed_priority": {}}
     reference_valid = reference_total = 0
@@ -684,11 +699,22 @@ def summarize(dataset, records, *, stage):
                                        "independent_scenario_clusters": len(grouped),
                                        "confidence_method": "1000 paired-scenario cluster bootstrap resamples, seed1729",
                                        "bootstrap_95": [quantile(bootstrapped, .025), quantile(bootstrapped, .975)]}
-    durations = [by_id[c["case_id"]]["elapsed_seconds"] for c in cases if c["case_id"] in by_id
-                 and isinstance(by_id[c["case_id"]].get("elapsed_seconds"), (int, float))]
+    def timed(record):
+        value = record.get("elapsed_seconds")
+        return type(value) in (int, float) and math.isfinite(value) and value >= 0
+    durations = [by_id[c["case_id"]]["elapsed_seconds"] for c in cases
+                 if c["case_id"] in by_id and timed(by_id[c["case_id"]])]
+    valid_durations = [by_id[c["case_id"]]["elapsed_seconds"] for c in cases
+                       if by_id.get(c["case_id"], {}).get("valid") is True
+                       and by_id[c["case_id"]].get("model_invoked") is True and timed(by_id[c["case_id"]])]
+    response_coverage = len(valid_durations) == len(cases)
     native = [record["native_timings"] for record in records if isinstance(record.get("native_timings"), dict)]
     first_bytes = [record["http_first_byte_seconds"] for record in records if isinstance(record.get("http_first_byte_seconds"), (int, float))]
     result["latency_seconds"] = {"count": len(durations), "p50": quantile(durations, .5), "p95": quantile(durations, .95),
+                                  "valid_response_count": len(valid_durations), "required_response_count": len(cases),
+                                  "valid_response_coverage_complete": response_coverage,
+                                  "valid_response_p50": quantile(valid_durations, .5),
+                                  "valid_response_p95": quantile(valid_durations, .95),
                                   "missing_duration_records": len(by_id) - len(durations),
                                   "max": max(durations) if durations else None,
                                   "http_first_byte_count": len(first_bytes), "http_first_byte_p95": quantile(first_bytes, .95),
@@ -711,8 +737,8 @@ def summarize(dataset, records, *, stage):
         "fixed_claim_recall": fixed_expected > 0 and fixed_supplied == fixed_expected,
         "security": result["subgroups"]["security"]["value"] == 1.0,
         "no_unsupported_model_claims": result["unsupported_model_fields_or_prose"] == 0,
-        "first_response_latency": len(durations) == len(cases) and quantile(durations, .95) <= thresholds["first_response_p95_seconds_max"],
-        "task_component_latency": len(durations) == len(cases) and quantile(durations, .95) <= thresholds["task_p95_seconds_max"],
+        "first_response_latency": response_coverage and quantile(durations, .95) <= thresholds["first_response_p95_seconds_max"],
+        "task_component_latency": response_coverage and quantile(durations, .95) <= thresholds["task_p95_seconds_max"],
     }
     result["quality_gate_passed"] = stage == "final" and all(result["gates"].values())
     result["not_run_count"] = sum(case["case_id"] not in by_id for case in cases)
@@ -771,6 +797,7 @@ async def run(args):
     if not selected:
         raise ValueError("No cases selected")
     run_metadata = {"stage": stage, "dataset_sha256": file_digest(DATASET),
+               "development_exposure": exposure_provenance(dataset),
                "expected_case_ids": [case["case_id"] for case in all_cases],
                "scheduled_case_ids": [case["case_id"] for case in selected], "source_sha256": source_provenance(),
                "runtime": runtime_provenance(), "analysis_prompt_version": analysis.PROMPT_VERSION,

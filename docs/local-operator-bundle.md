@@ -139,6 +139,7 @@ must ensure the runtime cannot load unlisted libraries or configuration.
 | model_revision / runtime_revision / embedding_revision | Immutable 40-character upstream commit IDs |
 | embedding_model | Qwen3-Embedding-0.6B |
 | context_tokens / parallel | 8192 / 1 |
+| Mac inference RAM prompt cache | disabled (`--cache-ram 0`), required by startup attestation |
 | artifacts | Each contains path, role, exact positive byte size, lowercase SHA-256 |
 
 Paths must be relative, with no dot segments, symlinks, empty segments, shell

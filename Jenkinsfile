@@ -546,7 +546,11 @@ pipeline {
             }
             sh """
               docker run --rm --entrypoint python ${IMAGE_TAG} -c 'import importlib.util; assert importlib.util.find_spec("pip") is None; assert importlib.util.find_spec("ensurepip") is None'
+              # pytest and native probe fixtures write /tmp as the production
+              # scanner user. Keep those small files off the Docker image layer:
+              # a full backing disk caused all seven fixtures to fail at mkdir.
               docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN \
+                --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m,mode=1777 \
                 -v "\$WORKSPACE/tests/test_naabu_live.py":/app/test_naabu_live.py:ro \
                 -v "\$WORKSPACE/tests/test_pd_flags_live.py":/app/test_pd_flags_live.py:ro \
                 -v "\$WORKSPACE/.ci-smoke-pytest":/opt/ci-pytest:ro \

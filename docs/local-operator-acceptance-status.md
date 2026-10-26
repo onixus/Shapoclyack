@@ -1,4 +1,4 @@
-# Mac acceptance evidence — 2026-10-25
+# Mac acceptance evidence — 2026-10-26
 
 The implementation and acceptance harnesses are delivered in PR #607. **The
 Mac runtime and the complete epic are not accepted.** This record distinguishes
@@ -55,8 +55,9 @@ environment and another measured run; successful short health requests do not
 prove inference performance.
 
 Development exposure is tracked conservatively, including failed/uncertain
-requests. The next protocol records 11 exposed and 179 untouched cases while
-retaining the overall 190-case gate. Failed cases are never replaced through
+requests. The historical protocol recorded 11 exposed and 179 untouched cases;
+the subsequent full attempt sent all 190. Future tuning must therefore treat
+the original corpus as 190 exposed and zero untouched cases. Failed cases are never replaced through
 resume. Interrupted soak executions have their own durable journal and failed
 soak records. The independent [host watchdog](operator-quality-watchdog.md)
 enforces wall-clock failure receipts even when guest cleanup stalls.
@@ -114,6 +115,48 @@ binds. Both source and independently read-back destination hashes are required,
 and actual read-only mounts are inspected. This is an I/O profile correction,
 not evidence that host caching caused the previous failures or that the new
 profile has passed performance acceptance.
+
+### Native storage and 16-GiB VM measurement
+
+With builds and queue empty, a second authorized maintenance operation changed
+only Docker Desktop's configured VM memory from 12 to 16 GiB. Container state,
+images, volumes and settings backup were preserved; Jenkins, the console and
+the dev node recovered. The engine reported 16,747,139,072 available bytes.
+Both pinned GGUF files were independently verified in a read-only native local
+volume. These changes resolved the observed short control-plane stalls; they
+did not establish sustained inference acceptance.
+
+On source `f8dc88886a5acccb6e6abccc8ebb52b04bc67802`, the six-case pilot
+passed with p95 complete-response time 20.4 seconds. Real retrieval with both
+model containers resident passed 180/180 queries, including 120 semantic and
+60 exact queries. The controlled-provider recovery drill passed 8/8 phases.
+Frontend checks passed 751 tests and exported 42 routes. These are component
+results, not a full-epic acceptance.
+
+The subsequent full attempt failed. All 190 cases were submitted: the first
+20 returned schema-valid responses, including nine genuine classification
+errors (eight category and one priority). The remaining requests encountered
+a transport failure and upstream rejection as the model restarted. Citations
+were correct for the 25 returned references; that does not erase wrong labels
+or missing useful responses. Three failed soak requests stopped additional
+load; no one-hour pass was obtained. Fast HTTP errors must not count as a
+successful useful-response latency gate.
+
+The Docker VM kernel log at 13:26:53 UTC identifies `CONSTRAINT_MEMCG` for the
+exact inference container: memory reached its 7-GiB cgroup limit, the kernel
+killed `llama-server`, and exit 137 caused an automatic restart. Post-restart
+`OOMKilled=false` and reset counters do not negate this historical evidence.
+This proves a container-limit OOM, not a global 16-GiB VM OOM. The pinned
+server's default RAM prompt-cache budget is 8192 MiB; the next diagnostic
+profile explicitly disables that cache while retaining the same weights,
+context, CPU allocation and 7-GiB limit. Cache causality and sustained fit
+require a fresh measured run.
+
+The failed attempt and observer are retained under
+`.operator-local/evaluation/native-f8dc8888-16g-20261026-001/final/`.
+The original corpus, gold and thresholds remain unchanged. Future reports must
+describe its development exposure honestly; independent generalization needs
+separately authored and reviewed evidence.
 
 ## Evidence locations and remaining gates
 

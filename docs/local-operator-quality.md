@@ -33,9 +33,20 @@ certification**. Synthetic CVE identifiers do not assert real vulnerabilities.
 Six named cases were selected for development pilots before prompt freeze.
 The interrupted acceptance attempt at `5cec1cf1` conservatively exposes five
 additional IDs, including connection failures and an uncertain inflight request.
-The report identifies these 11 exposed cases and the other 179 cases separately.
-All 190 still count once in the unchanged final gates. The corpus is not
-described as an entirely hidden holdout set.
+That historical pre-run split was 11 exposed and 179 untouched cases. The
+complete failed `f8dc8888` / native-volume / 16-GiB attempt then dispatched all
+190 cases; its answers and failures have now been inspected for development.
+Subsequent runs therefore report **190 exposed and zero untouched**, including
+transport failures and HTTP 503 responses conservatively. Original manifests,
+reports, records and the historical split remain unchanged. The exposure policy
+is bound to the original corpus and failed-attempt record digest; another corpus
+requires an explicit exposure-policy review.
+
+All 190 still count once in the unchanged final gates. This is an exposed
+regression corpus; passing it would not demonstrate hidden-set generalization.
+A separately authored and independently reviewed frozen corpus would provide
+additional independent evidence, but is not a replacement or a new mandatory
+gate for the original 190-case acceptance protocol.
 
 The frozen classification rubric describes observed records: critical/high
 severity proposes high priority, medium proposes medium, low/info proposes low,
@@ -45,6 +56,13 @@ numeric port selects exposure; otherwise unknown. It does not recalculate
 official risk or establish exploitation. Missing/stale/unknown retrieval or no
 non-stale observations requires abstention; usable partial/truncated
 observations remain classifiable with incomplete/quality-unverified status.
+Prompt `finding-analysis-labels-v6` separates the ordered per-source category
+table from the severity-only priority table. One source cannot inherit another
+source's identifiers or category. Generation keeps all category/priority labels
+free; the server does not replace incorrect labels with rubric answers. The nine
+semantic errors from the failed run are replayed as scoring regressions, not
+silently repaired. These tests do not prove that the revised prompt improves
+actual model quality; that needs another measured run.
 
 Remediation cases call the actual planner, then the native local remediation
 renderer/comparator over a synthetic accepted inventory and a local vendor
@@ -153,6 +171,15 @@ TTFT/tokens-per-second behavior. Queueing, 60-minute load, install/upgrade/
 rollback, network isolation and real inventory/scan lifecycle acceptance also
 require their own exact-build reports. A passing model quality gate alone
 never sets `release_acceptance_claimed`.
+
+Latency acceptance additionally requires finite nonnegative durations and valid
+model responses for every planned case. Fast transport failures or HTTP 503s
+cannot supply that coverage. Reports retain all-attempt p50/p95, including
+failures, and separately publish valid-response counts and p50/p95. A wrong
+classification in an otherwise valid response remains an accuracy error; this
+coverage check does not turn the frozen accuracy thresholds into a requirement
+for 100% correct labels. The numeric 30-second and 120-second thresholds are
+unchanged.
 
 ## Results
 

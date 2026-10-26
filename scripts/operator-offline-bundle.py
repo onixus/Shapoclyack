@@ -743,7 +743,7 @@ def deployment(root, manifest, *, port=8085, subnet="172.29.189.0/24"):
         "environment": {"HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1", "DO_NOT_TRACK": "1"},
         "volumes": ["model_weights:/models:ro"],
         "command": ["--model", "/models/model.gguf", "--alias", manifest["model"], "--host", "0.0.0.0", "--port", "8082",
-            "--ctx-size", "8192", "--parallel", "1", "--threads", "4", "--batch-size", "512", "--ubatch-size", "128",
+            "--ctx-size", "8192", "--cache-ram", "0", "--parallel", "1", "--threads", "4", "--batch-size", "512", "--ubatch-size", "128",
             "--n-gpu-layers", "0", "--n-predict", "1024", "--temp", "0", "--seed", "42", "--reasoning", "off",
             "--offline", "--no-webui", "--no-agent", "--no-ui-mcp-proxy"],
         "healthcheck": {"test": ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8082/health"],
@@ -904,6 +904,10 @@ def attest_deployment(root, manifest, project, compose_file):
             raise BundleError("bundle_runtime_container_missing")
         value = json.loads(run(["docker", "container", "inspect", container_id], timeout=30))[0]
         config, host = value["Config"], value["HostConfig"]
+        arguments = config["Cmd"]
+        if role == "inference" and (arguments.count("--cache-ram") != 1
+                or arguments[arguments.index("--cache-ram") + 1:arguments.index("--cache-ram") + 2] != ["0"]):
+            raise BundleError("bundle_runtime_cache_budget_mismatch")
         if (value["Image"] != runtime_id or config["Image"] != runtime_id
                 or value["State"]["Status"] != "running" or value["State"].get("Health", {}).get("Status") != "healthy"
                 or not host["ReadonlyRootfs"] or config["User"] != "65532:65532"

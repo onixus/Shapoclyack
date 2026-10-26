@@ -206,6 +206,63 @@ def command(arguments, timeout=15):
     return subprocess.check_output(arguments, timeout=timeout, text=True)
 
 
+CGROUP_SAMPLE_COMMAND = (
+    "set -e; for f in /proc/1/stat /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.peak "
+    "/sys/fs/cgroup/memory.events /sys/fs/cgroup/memory.stat /proc/1/stat; "
+    "do printf '\\n__file__%s\\n' \"$f\"; cat \"$f\"; done"
+)
+CGROUP_STAT_FIELDS = {"anon", "file", "slab", "slab_reclaimable", "slab_unreclaimable",
+                      "kernel", "kernel_stack", "pagetables", "sock", "shmem"}
+
+
+def parse_cgroup_sample(raw):
+    """Bounded kernel counters only; process identity separates restarted epochs.
+
+    Counter files are sequential, not an atomic snapshot. A different PID1 start
+    time during the read rejects the sample rather than mixing two instances.
+    """
+    if len(raw) > 16384:
+        raise ValueError("Oversized cgroup sample")
+    chunks = raw.split("\n__file__")[1:]
+    expected = ["/proc/1/stat", "/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory.peak",
+                "/sys/fs/cgroup/memory.events", "/sys/fs/cgroup/memory.stat", "/proc/1/stat"]
+    sections = [chunk.split("\n", 1) for chunk in chunks]
+    if len(sections) != len(expected) or any(len(item) != 2 or item[0] != name for item, name in zip(sections, expected)):
+        raise ValueError("Invalid cgroup sample sections")
+
+    def number(value):
+        if not value.strip().isascii() or not value.strip().isdecimal():
+            raise ValueError("Invalid cgroup counter")
+        return int(value.strip())
+
+    def start_time(value):
+        # comm may contain whitespace or parentheses; fields after its final
+        # closing parenthesis begin with field3; starttime is field22.
+        return number(value.rsplit(") ", 1)[1].split()[19])
+
+    before, after = start_time(sections[0][1]), start_time(sections[5][1])
+    if before != after:
+        raise ValueError("Runtime restarted during cgroup sample")
+
+    def counters(value):
+        result = {}
+        for line in value.splitlines():
+            key, count = line.split()
+            if key in result:
+                raise ValueError("Duplicate cgroup counter")
+            result[key] = number(count)
+        return result
+
+    events, stats = counters(sections[3][1]), counters(sections[4][1])
+    if not {"max", "oom", "oom_kill"}.issubset(events) or not {"anon", "file", "slab"}.issubset(stats):
+        raise ValueError("Missing cgroup counters")
+    return {"pid1_start_ticks": before, "memory_current_bytes": number(sections[1][1]),
+        "memory_peak_bytes": number(sections[2][1]),
+        "memory_events": {key: value for key, value in events.items()
+                          if key in {"low", "high", "max", "oom", "oom_kill", "oom_group_kill"}},
+        "memory_stat_bytes": {key: value for key, value in stats.items() if key in CGROUP_STAT_FIELDS}}
+
+
 def observe(args, stop=None):
     stop = stop or StopRequest()
     if not args.image.startswith("sha256:") or len(args.image) != 71:
@@ -259,6 +316,14 @@ def observe(args, stop=None):
                 sample["host_swap"] = command(["sysctl", "vm.swapusage"], timeout=3).strip()
             except (subprocess.SubprocessError, ValueError) as exc:
                 errors.append({"at": sample["at"], "type": type(exc).__name__})
+            sample["cgroup_memory"] = {}
+            for name in names:
+                try:
+                    raw = command(["docker", "exec", name, "sh", "-c", CGROUP_SAMPLE_COMMAND], timeout=5)
+                    sample["cgroup_memory"][name] = parse_cgroup_sample(raw)
+                except (subprocess.SubprocessError, ValueError, IndexError) as exc:
+                    errors.append({"at": sample["at"], "container": name,
+                        "type": "cgroup_sample_unavailable", "exception": type(exc).__name__})
             samples.append(sample)
             stop.event.wait(max(0, min(5 - (time.monotonic() - cycle_started), deadline - time.monotonic())))
         # Helpers are our UUID-named metadata collectors only. SIGTERM lets

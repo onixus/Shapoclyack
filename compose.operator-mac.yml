@@ -50,6 +50,8 @@ services:
       - "8082"
       - --ctx-size
       - "8192"
+      - --cache-ram
+      - "0"
       - --parallel
       - "1"
       - --threads
