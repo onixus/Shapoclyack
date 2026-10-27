@@ -4,9 +4,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import Literal
+from typing import Callable, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 from sqlalchemy import select
 from starlette.concurrency import run_in_threadpool
 
@@ -19,7 +19,7 @@ from api.services.local_operator.providers import OperatorProviderError
 ToolName = Literal["summarize_run", "analyze_run", "compare_runs", "find_remediation",
                    "prepare_scan", "cancel_scan", "verify_finding", "abstain"]
 PROMPT_VERSION = "operator-contextfree-intent-v4"
-TOOL_VERSION = "typed-intent-resolver-v2"
+TOOL_VERSION = "typed-intent-resolver-v3"
 
 
 class PlannerContext(BaseModel):
@@ -68,6 +68,10 @@ class IntentChoice(BaseModel):
 
 
 _IDENTITY = TypeAdapter(actions.Id)
+
+
+class WitnessUnresolved(ValueError):
+    """A parsed witness cannot establish any requested resource; not a schema error."""
 
 
 def available_tools(request: PlanRequest) -> dict[str, dict]:
@@ -136,14 +140,17 @@ def resolve_intent(choice: IntentChoice, request: PlanRequest) -> tuple[str, dic
     mentions, previous_end = [], -1
     for span in sorted(choice.mentions, key=lambda value: value.start):
         if not span.start < span.end <= len(request.request) or span.start < previous_end:
-            raise ValueError("Invalid literal span")
+            raise WitnessUnresolved("Invalid literal span")
         literal = request.request[span.start:span.end]
-        _IDENTITY.validate_python(literal, strict=True)
+        try:
+            _IDENTITY.validate_python(literal, strict=True)
+        except ValidationError:
+            raise WitnessUnresolved("Noncanonical identity witness") from None
         for position in (span.start - 1, span.end):
             if 0 <= position < len(request.request):
                 adjacent = request.request[position]
                 if adjacent.isalnum() or adjacent in "_.:-":
-                    raise ValueError("Partial identifier span")
+                    raise WitnessUnresolved("Partial identifier span")
         mentions.append(literal)
         previous_end = span.end
     if choice.intent == "abstain":
@@ -151,7 +158,7 @@ def resolve_intent(choice: IntentChoice, request: PlanRequest) -> tuple[str, dic
     if choice.selector not in {"explicit", "contextual"} or choice.subject_kind in {"unspecified", "ambiguous"}:
         return "abstain", {}
     if bool(mentions) != (choice.selector == "explicit"):
-        raise ValueError("Selector and literal spans disagree")
+        raise WitnessUnresolved("Selector and literal spans disagree")
     expected = {"summarize_run": "run", "analyze_run": "run", "compare_runs": "run",
                 "prepare_scan": "scan_scope", "cancel_scan": "job", "verify_finding": "finding"}
     if choice.intent == "find_remediation":
@@ -173,20 +180,35 @@ def resolve_intent(choice: IntentChoice, request: PlanRequest) -> tuple[str, dic
     return choice.intent, arguments
 
 
-def validate_output(raw: str, request: PlanRequest) -> dict:
+def _validated_output(raw: str, request: PlanRequest, *,
+                      on_schema_validated: Callable[[], None] | None = None) -> tuple[dict, str]:
     if not isinstance(raw, str) or len(raw.encode()) > 4096:
         raise gateway.GatewayError("operator_invalid_model_output")
     try:
         choice = IntentChoice.model_validate(gateway._json(raw.encode()))
-        tool, arguments = resolve_intent(choice, request)
     except (ValueError, TypeError, RecursionError):
         raise gateway.GatewayError("operator_invalid_model_output") from None
+    if on_schema_validated is not None:
+        on_schema_validated()  # phase fact survives any subsequent resolver failure
+    # Only enumerated resource-witness failures are ordinary unsupported plans.
+    # JSON/schema, authority, provider, persistence and programming failures must
+    # never be hidden by a broad conversion to an apparent safe success.
+    try:
+        tool, arguments = resolve_intent(choice, request)
+        resolution = "unsupported" if tool == "abstain" else "resolved"
+    except WitnessUnresolved:
+        tool, arguments, resolution = "abstain", {}, "witness_unresolved"
     effect = tool in {"prepare_scan", "cancel_scan", "verify_finding"}
-    return {"schema_version": "1", "tool": tool, "arguments": arguments,
+    result = {"schema_version": "1", "tool": tool, "arguments": arguments,
             "requires_confirmation": effect, "effect_executed": False,
             "status": "unsupported" if tool == "abstain" else "proposal",
             "quality_status": "quality_unverified", "language": request.language,
             "reason": "human_review_required" if tool != "abstain" else "unsupported_or_missing_context"}
+    return result, resolution
+
+
+def validate_output(raw: str, request: PlanRequest) -> dict:
+    return _validated_output(raw, request)[0]
 
 
 def _authorize_sources(settings, task, request):
@@ -235,9 +257,9 @@ async def execute(settings, task):
         output = await gateway.InferenceProvider(config).complete(prompt, response_schema=schema)
     except OperatorProviderError as exc:
         raise gateway.GatewayError(exc.args[0]) from None
-    result = validate_output(output.content, request)
+    result, resolution = _validated_output(output.content, request)
     if await run_in_threadpool(_authorize_sources, settings, task, request) != refs:
         raise gateway.GatewayError("operator_source_changed")
     return {"schema_version": "1", "plan": result, "quality_status": "quality_unverified",
             "audit": {**attempt, "output_hash": hashlib.sha256(output.content.encode()).hexdigest(),
-                      "inference_performed": True}}
+                      "inference_performed": True, "resource_resolution": resolution}}

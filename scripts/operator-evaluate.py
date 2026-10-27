@@ -556,7 +556,11 @@ async def evaluate_one(case, config, launch_authorization=None):
         if "retrieval" in case:
             record["result"] = analysis.validate_output(output.content, case["language"], binding)
         else:
-            record["result"] = planner.validate_output(output.content, request)
+            record["planner_schema_valid"] = False
+            def schema_validated():
+                record["planner_schema_valid"] = True
+            record["result"], record["resource_resolution"] = planner._validated_output(
+                output.content, request, on_schema_validated=schema_validated)
             if case["kind"] == "remediation" and record["result"]["tool"] == "find_remediation":
                 record["domain_result"] = domain_remediation(case)
         record["valid"] = True
@@ -697,6 +701,13 @@ def summarize(dataset, records, *, stage, reviewed_policy=None):
     result = {"stage": stage, "expected_cases": len(cases), "completed_records": len(by_id),
               "failures_count_in_denominators": True, "metric_scope": "synthetic domain component/model benchmark",
               "true_ttft_measured": False, "subgroups": {}, "failures": []}
+    parsed = [by_id[case["case_id"]] for case in cases if "retrieval" not in case and case["case_id"] in by_id]
+    result["planner_resource_resolution"] = {
+        "records": len(parsed), "schema_valid": sum(r.get("planner_schema_valid") is True for r in parsed),
+        "schema_invalid": sum(r.get("planner_schema_valid") is False for r in parsed),
+        "schema_not_recorded": sum("planner_schema_valid" not in r for r in parsed),
+        "resolution_counts": dict(Counter(r.get("resource_resolution", "not_recorded") for r in parsed)),
+        "scope": "Informational parser/domain diagnostics; a schema-valid unsupported plan is not necessarily gold-correct."}
     for key, subset in [("all", cases)] + [(kind, [c for c in cases if c["kind"] == kind]) for kind in dataset["required_counts"]]:
         result["subgroups"][key] = proportion(sum(score_case(c, by_id.get(c["case_id"])) for c in subset), len(subset))
     for language in ("ru", "en"):
@@ -833,7 +844,8 @@ def summarize(dataset, records, *, stage, reviewed_policy=None):
         "task_component_latency": response_coverage and quantile(durations, .95) <= thresholds["task_p95_seconds_max"],
     }
     # The frozen thresholds carry no minimum for these: they are reported, never gated.
-    result["informational_metrics"] = ["proposed_priority_macro_f1", "abstention_accuracy", "subgroups.degraded"]
+    result["informational_metrics"] = ["proposed_priority_macro_f1", "abstention_accuracy", "subgroups.degraded",
+                                       "planner_resource_resolution"]
     # Deprecated alias: the threshold key still says "first_response", but the
     # measured value is the time to the complete answer (no streaming TTFT).
     result["gates"]["first_response_latency"] = result["gates"]["full_response_latency"]

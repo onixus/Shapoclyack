@@ -71,13 +71,12 @@ def test_literal_identity_is_exact_in_both_languages(language, prefix, intent, k
 
 
 @pytest.mark.parametrize("mentions", [
-    [{"start": -1, "end": 10}], [{"start": 5, "end": 5}], [{"start": 8, "end": 3}],
+    [{"start": -1, "end": 10}],
     [{"start": 0, "end": 1001}], [{"start": True, "end": 8}], [{"start": 0.0, "end": 8}],
     [{"start": "0", "end": 8}], [{"start": 0, "end": False}],
-    [{"start": 0, "end": 3}, {"start": 2, "end": 4}],
     [{"start": 0, "end": 3, "value": "injected"}],
 ])
-def test_malformed_span_cannot_become_a_reference(mentions):
+def test_closed_schema_span_violation_remains_invalid_output(mentions):
     request = planner.PlanRequest(request="job-larch", context=CONTEXT)
     with pytest.raises(GatewayError, match="operator_invalid_model_output"):
         planner.validate_output(intent_wire("cancel_scan", selector="explicit", mentions=mentions), request)
@@ -90,15 +89,17 @@ def test_malformed_span_cannot_become_a_reference(mentions):
 ])
 def test_partial_identifier_and_noncanonical_identity_fail_closed(text, literal):
     request = planner.PlanRequest(request=text, context=CONTEXT)
-    with pytest.raises(GatewayError):
-        planner.validate_output(intent_wire("cancel_scan", selector="explicit", mentions=spans(text, [literal])), request)
+    result, status = planner._validated_output(intent_wire("cancel_scan", selector="explicit", mentions=spans(text, [literal])), request)
+    assert status == "witness_unresolved"
+    assert result["tool"] == "abstain" and result["arguments"] == {}
 
 
 @pytest.mark.parametrize("selector,mentions", [("explicit", []), ("contextual", [{"start": 0, "end": 9}])])
 def test_selector_does_not_hide_or_invent_literal_evidence(selector, mentions):
     request = planner.PlanRequest(request="job-larch", context=CONTEXT)
-    with pytest.raises(GatewayError):
-        planner.validate_output(intent_wire("cancel_scan", selector=selector, mentions=mentions), request)
+    result, status = planner._validated_output(intent_wire("cancel_scan", selector=selector, mentions=mentions), request)
+    assert status == "witness_unresolved"
+    assert result["tool"] == "abstain" and result["arguments"] == {}
 
 
 def test_comparison_preserves_roles_and_rejects_duplicate_or_incomplete_pair():
@@ -141,3 +142,87 @@ def test_explicit_scan_literal_never_overrides_template():
     request = planner.PlanRequest(request="'203.0.113.8'", context=CONTEXT)
     result = planner.validate_output(intent_wire("prepare_scan", selector="explicit", mentions=spans(request.request, ["203.0.113.8"])), request)
     assert result["tool"] == "abstain"
+
+
+OPERATIONS = [(intent, next(iter(kinds))) for intent, kinds in KINDS.items() if intent != "find_remediation"] + [
+    ("find_remediation", "device"), ("find_remediation", "finding")]
+
+
+@pytest.mark.parametrize("intent,kind", OPERATIONS)
+@pytest.mark.parametrize("failure", ["reversed", "empty", "outside_request", "overlap", "noncanonical",
+                                     "partial", "mixed_valid_invalid", "explicit_without_mentions", "contextual_with_mentions"])
+def test_every_operation_rejects_whole_unresolved_witness_without_effect(intent, kind, failure):
+    text = "'run-alder' 'не-ид' 'prefixjob-larch'"
+    mention_list = {
+        "reversed": [{"start": 4, "end": 3}], "empty": [{"start": 4, "end": 4}],
+        "outside_request": [{"start": 1, "end": 999}],
+        "overlap": [{"start": 1, "end": 10}, {"start": 2, "end": 10}],
+        "noncanonical": spans(text, ["не-ид"]), "partial": spans(text, ["job-larch"]),
+        "mixed_valid_invalid": spans(text, ["run-alder", "не-ид"]),
+        "explicit_without_mentions": [], "contextual_with_mentions": spans(text, ["run-alder"]),
+    }[failure]
+    selector = "contextual" if failure == "contextual_with_mentions" else "explicit"
+    request = planner.PlanRequest(request=text, context=CONTEXT)
+    result, status = planner._validated_output(intent_wire(intent, kind, selector=selector, mentions=mention_list), request)
+    assert status == "witness_unresolved"
+    assert result["tool"] == "abstain"
+    assert result["arguments"] == {}
+    assert result["status"] == "unsupported"
+    assert result["effect_executed"] is False
+    assert result["requires_confirmation"] is False
+
+
+@pytest.mark.parametrize("intent,kind", OPERATIONS)
+@pytest.mark.parametrize("bad_start", [True, 1.0, "1", -1])
+def test_all_operations_preserve_strict_schema_failure(intent, kind, bad_start):
+    request = planner.PlanRequest(request="job-larch", context=CONTEXT)
+    with pytest.raises(GatewayError, match="operator_invalid_model_output"):
+        planner.validate_output(intent_wire(intent, kind, selector="explicit", mentions=[{"start": bad_start, "end": 9}]), request)
+
+
+@pytest.mark.parametrize("error", [ValueError("unexpected program state"), TypeError("unexpected program state"),
+                                  RuntimeError("unexpected program state")])
+def test_unexpected_resolver_errors_are_not_softened_to_unsupported(monkeypatch, error):
+    def fail(*_):
+        raise error
+    monkeypatch.setattr(planner, "resolve_intent", fail)
+    with pytest.raises(type(error), match="unexpected program state"):
+        planner.validate_output(intent_wire("cancel_scan"), planner.PlanRequest(request="Review object.", context=CONTEXT))
+
+
+@pytest.mark.parametrize("failure", [None, "preauth", "postauth", "store", "provider"])
+def test_witness_refusal_does_not_hide_authority_provider_or_store_failures(tmp_path, monkeypatch, failure):
+    import asyncio
+    from types import SimpleNamespace
+    from api.services.local_operator.providers import Completion, OperatorProviderError
+    from tests.conftest import make_settings
+
+    counts = {"auth": 0, "provider": 0}
+    def authorize(*_):
+        counts["auth"] += 1
+        if failure == "preauth" or (failure == "postauth" and counts["auth"] == 2):
+            raise GatewayError("operator_access_revoked")
+        return []
+    async def complete(*_, **__):
+        counts["provider"] += 1
+        if failure == "provider":
+            raise OperatorProviderError("operator_provider_timeout")
+        return Completion(intent_wire("verify_finding", selector="explicit", mentions=[{"start": 1, "end": 999}]), "local", "unit")
+    monkeypatch.setattr(planner, "_authorize_sources", authorize)
+    monkeypatch.setattr(planner.store, "record_inference_attempt", lambda *_: failure != "store")
+    monkeypatch.setattr(planner.gateway, "InferenceProvider", lambda *_: SimpleNamespace(complete=complete))
+    settings = make_settings(tmp_path, operator_enabled=True)
+    task = {"payload": {"request": planner.PlanRequest(request="Review selected finding.", context=CONTEXT).model_dump()}}
+    if failure:
+        expected = {"preauth": "operator_access_revoked", "postauth": "operator_access_revoked",
+                    "store": "operator_interrupted", "provider": "operator_provider_timeout"}[failure]
+        with pytest.raises(GatewayError, match=expected):
+            asyncio.run(planner.execute(settings, task))
+        assert counts["provider"] == (0 if failure in {"preauth", "store"} else 1)
+    else:
+        result = asyncio.run(planner.execute(settings, task))
+        assert result["audit"]["resource_resolution"] == "witness_unresolved"
+        assert result["plan"]["tool"] == "abstain" and result["plan"]["arguments"] == {}
+        assert result["plan"]["requires_confirmation"] is False
+        assert result["plan"]["effect_executed"] is False
+        assert counts == {"auth": 2, "provider": 1}

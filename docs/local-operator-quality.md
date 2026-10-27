@@ -389,3 +389,22 @@ The exposed original190 remains unchanged. A new prompt/schema changes actual
 model input projections, so a blind candidate requires a fresh pre-output
 projection/collision review, exact policy digest adoption and source freeze;
 an older policy digest must never silently authorize the new wire.
+
+`typed-intent-resolver-v3` keeps the exact v4 model prompt and closed input schema.
+A schema-valid but unresolvable literal witness is an ordinary unsupported plan:
+all arguments are discarded, no effect executes and no confirmation is offered.
+This applies uniformly to every operation, including mixed valid/invalid spans,
+partial or noncanonical identifiers, overlaps, request-relative range errors and
+contradictory selectors. It never clamps, searches, normalizes or repairs spans,
+retains a partial argument, or changes an explicit request to contextual.
+Malformed JSON, closed-schema/type violations and independent authority,
+provider, persistence or programming failures remain failures.
+
+The server audit records a bounded resource-resolution status. Component records
+and the informational `planner_resource_resolution` summary distinguish schema
+failure from an unsupported domain refusal. These diagnostics are not new gates
+or waivers. Schema validity is recorded immediately after strict parsing, so an
+unexpected later resolver failure stays a failed record with schema-valid=true.
+A valid unsupported plan is still a wrong answer for positive gold;
+safe abstention and correct interpretation are different measurements. Existing
+failed attempts remain unchanged and are never rescored with this resolver.

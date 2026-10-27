@@ -146,7 +146,9 @@ def record_from_gold(case):
         record["result"] = analysis.validate_output(record["model_content"], case["language"], analysis.bind(case["retrieval"]))
     else:
         record["model_content"] = intent_wire(case["gold"]["tool"])
-        record["result"] = planner.validate_output(record["model_content"], planner.PlanRequest.model_validate(case["planner_request"]))
+        record["result"], record["resource_resolution"] = planner._validated_output(
+            record["model_content"], planner.PlanRequest.model_validate(case["planner_request"]))
+        record["planner_schema_valid"] = True
         if case["kind"] == "remediation":
             record["domain_result"] = evaluation.domain_remediation(case)
     return record
@@ -168,6 +170,74 @@ def test_contextfree_literal_spans_cannot_smuggle_identity_fields():
     assert evaluation.unsupported_model_fields({"kind": "planning"}, {"model_content": json.dumps(raw)}) == 1
     with pytest.raises(evaluation.planner.gateway.GatewayError):
         planner.validate_output(json.dumps(raw), planner.PlanRequest(request="job-larch", context={"job_id": "job-larch"}))
+
+
+def test_witness_refusal_is_valid_but_positive_gold_stays_a_false_abstention():
+    case = next(c for c in CASES if c["kind"] == "planning" and c["gold"]["tool"] == "find_remediation")
+    request = planner.PlanRequest(request="Review selected object.", context={"device_id": "asset-cedar"})
+    raw = intent_wire("find_remediation", selector="explicit", mentions=[{"start": 1, "end": 999}])
+    result, status = planner._validated_output(raw, request)
+    record = {"case_id": case["case_id"], "valid": True, "model_invoked": True, "elapsed_seconds": 1,
+              "model_content": raw, "result": result, "planner_schema_valid": True, "resource_resolution": status}
+    assert not evaluation.score_case(case, record)  # original positive gold remains unchanged
+    assert evaluation.score_case({"kind": "planning", "gold": {"tool": "abstain"}}, record)
+    report = evaluation.summarize(DATASET, [record], stage="development")
+    diagnostic = report["planner_resource_resolution"]
+    assert diagnostic["schema_valid"] == 1 and diagnostic["schema_invalid"] == 0
+    assert diagnostic["resolution_counts"] == {"witness_unresolved": 1}
+    assert report["subgroups"]["planning"]["correct"] == 0
+    assert "planner_resource_resolution" in report["informational_metrics"]
+    assert "planner_resource_resolution" not in report["gates"]
+
+
+@pytest.mark.parametrize("schema_error", [False, True])
+def test_actual_component_record_separates_schema_error_from_witness_refusal(monkeypatch, schema_error):
+    from api.services.local_operator.providers import Completion
+    from api.services.local_operator.config import OperatorConfig
+    raw = json.loads(intent_wire("find_remediation", selector="explicit", mentions=[{"start": 1, "end": 999}]))
+    if schema_error:
+        raw["arguments"] = {}
+    class ControlledProvider:
+        def __init__(self, *_, **__):
+            pass
+        async def complete(self, *_, **__):
+            return Completion(json.dumps(raw), "local", "controlled-unit")
+    monkeypatch.setattr(evaluation, "InferenceProvider", ControlledProvider)
+    case = {"case_id": "unit-resource-witness", "kind": "planning", "language": "en",
+            "planner_request": {"request": "Review selected object.", "context": {"device_id": "asset-cedar"}}}
+    record = asyncio.run(evaluation.evaluate_one(case, OperatorConfig(enabled=True)))
+    assert record["planner_schema_valid"] is (not schema_error)
+    assert record["valid"] is (not schema_error)
+    if schema_error:
+        assert record["error_code"] == "operator_invalid_model_output"
+        assert "resource_resolution" not in record
+    else:
+        assert record["resource_resolution"] == "witness_unresolved"
+        assert record["result"]["tool"] == "abstain" and record["result"]["arguments"] == {}
+
+
+@pytest.mark.parametrize("error_type", [ValueError, TypeError, RuntimeError])
+def test_schema_valid_fact_survives_unexpected_resolver_failure(monkeypatch, error_type):
+    from api.services.local_operator.providers import Completion
+    from api.services.local_operator.config import OperatorConfig
+    class ControlledProvider:
+        def __init__(self, *_, **__):
+            pass
+        async def complete(self, *_, **__):
+            return Completion(intent_wire("find_remediation"), "local", "controlled-unit")
+    def fail(*_):
+        raise error_type("unexpected resolver failure")
+    monkeypatch.setattr(evaluation, "InferenceProvider", ControlledProvider)
+    monkeypatch.setattr(planner, "resolve_intent", fail)
+    case = {"case_id": "unit-resolver-failure", "kind": "planning", "language": "en",
+            "planner_request": {"request": "Review selected object.", "context": {"device_id": "asset-cedar"}}}
+    record = asyncio.run(evaluation.evaluate_one(case, OperatorConfig(enabled=True)))
+    assert record["planner_schema_valid"] is True
+    assert record["valid"] is False
+    assert record["error_type"] == error_type.__name__
+    assert record["error_code"] == "evaluation_failed"
+    assert "resource_resolution" not in record
+    assert "result" not in record
 
 
 def test_frozen_scenario_composition_and_labels_independent_of_model_outputs():
@@ -275,7 +345,8 @@ def test_priority_abstention_and_degraded_are_reported_but_informational():
             record["model_content"] = json.dumps(raw)
     report = evaluation.summarize(DATASET, records, stage="final")
     assert report["proposed_priority_macro_f1"]["value"] < 1
-    assert report["informational_metrics"] == ["proposed_priority_macro_f1", "abstention_accuracy", "subgroups.degraded"]
+    assert report["informational_metrics"] == ["proposed_priority_macro_f1", "abstention_accuracy", "subgroups.degraded",
+                                               "planner_resource_resolution"]
     assert not set(report["informational_metrics"]) & set(report["gates"])
 
 
