@@ -36,7 +36,7 @@ from api.services import advisories  # noqa: E402
 from api.services.advisories import msrc, rpm  # noqa: E402
 from api.services.advisories.base import AdvisoryDataset, AdvisoryRecord  # noqa: E402
 from api.services.advisories.coverage import AdvisorySnapshot  # noqa: E402
-from api.services.local_operator import analysis, planner, remediation  # noqa: E402
+from api.services.local_operator import analysis, planner, remediation, evaluation_policy  # noqa: E402
 from api.services.local_operator.config import OperatorConfig  # noqa: E402
 from api.services.local_operator.providers import InferenceProvider  # noqa: E402
 
@@ -47,7 +47,7 @@ SOURCE_PATHS = (
     "api/services/local_operator/providers.py", "api/services/local_operator/config.py",
     "api/services/local_operator/contracts.py", "api/services/local_operator/remediation.py",
     "api/services/local_operator/gateway.py", "api/services/local_operator/actions.py", "api/schemas.py",
-    "api/services/local_operator/analyzer_gateway.py",
+    "api/services/local_operator/analyzer_gateway.py", "api/services/local_operator/evaluation_policy.py",
     "api/services/local_operator/data/apache24-traceenable-v1.json",
     "api/services/local_operator/data/package-upgrade-runbook-v1.json",
     "api/services/patch_gap.py", "api/services/software_cve_match.py", "api/services/package_identity.py",
@@ -83,7 +83,9 @@ def digest(value):
     return hashlib.sha256(value).hexdigest()
 
 
-def exposure_provenance(dataset):
+def exposure_provenance(dataset, reviewed_policy=None):
+    if reviewed_policy is not None:
+        return reviewed_policy.exposure(dataset)
     if digest(canonical(dataset).encode()) != EXPOSED_DATASET_CANONICAL_SHA256:
         raise ValueError("Dataset requires independent exposure-policy review")
     return {**DEVELOPMENT_EXPOSURE_POLICY,
@@ -101,6 +103,25 @@ def file_digest(path):
 
 def write_json(path, value):
     Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+
+
+def copy_reviewed_input(source, destination, expected_sha256):
+    """Persist exactly reviewed bytes; input replacement never silently rebinds."""
+    raw, _ = evaluation_policy.read_json(source)
+    if digest(raw) != expected_sha256:
+        raise ValueError("Reviewed input changed before persistence")
+    destination = Path(destination)
+    descriptor, name = tempfile.mkstemp(prefix=".reviewed-", dir=destination.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+        _sync_directory(destination.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _sync_directory(directory):
@@ -325,6 +346,46 @@ def load_dataset(path=DATASET):
     return data
 
 
+def model_input_projection(case):
+    """Same messages/schema digest as an actual provider request; no gold sent."""
+    if "retrieval" in case:
+        binding = analysis.bind(case["retrieval"])
+        messages = analysis.build_prompt(case["language"], binding)
+        schema = analysis.output_schema(binding, language=case["language"])
+    else:
+        request = planner.PlanRequest.model_validate(case["planner_request"])
+        messages, schema = planner.build_prompt(request), planner.output_schema(request)
+    return digest(canonical({"messages": messages, "schema": schema}).encode())
+
+
+def selected_dataset(dataset_path=None, policy_path=None, policy_sha256=None, prior_inputs=None):
+    path = Path(dataset_path) if dataset_path is not None else DATASET
+    raw, data = evaluation_policy.read_json(path)
+    if digest(canonical(data).encode()) == EXPOSED_DATASET_CANONICAL_SHA256:
+        if any(value is not None for value in (policy_path, policy_sha256, prior_inputs)):
+            raise ValueError("Original exposed corpus cannot receive a new exposure policy")
+        return path, load_dataset(path), None
+    if not all(value is not None for value in (policy_path, policy_sha256, prior_inputs)):
+        raise ValueError("New dataset requires exact independently reviewed exposure policy")
+    baseline = load_dataset(DATASET)
+    # The original protocol is immutable even when a different corpus is chosen.
+    if digest(canonical(baseline).encode()) != EXPOSED_DATASET_CANONICAL_SHA256:
+        raise ValueError("Original evaluation protocol changed")
+    data, reviewed = evaluation_policy.approve(path, policy_path, policy_sha256, prior_inputs,
+                                             baseline, model_input_projection)
+    return path, data, reviewed
+
+
+def reviewed_binding(reviewed):
+    if reviewed is None:
+        return None
+    return {"role": evaluation_policy.ROLE, "dataset_sha256": reviewed.dataset_sha256,
+            "dataset_canonical_sha256": reviewed.dataset_canonical_sha256,
+            "exposure_policy_sha256": reviewed.policy_sha256,
+            "prior_inputs_sha256": reviewed.prior_inputs_sha256,
+            "protocol_sha256": json.loads(reviewed.material_json)["protocol_sha256"]}
+
+
 def runtime_provenance():
     if RUNTIME_OVERRIDE is not None:
         return RUNTIME_OVERRIDE["runtime"]
@@ -338,8 +399,8 @@ def source_provenance():
     return {path: file_digest(ROOT / path) for path in SOURCE_PATHS}
 
 
-def freeze(destination, *, reviewed_by, model_path):
-    data = load_dataset()
+def freeze(destination, *, reviewed_by, model_path, dataset_path=None, policy_path=None, policy_sha256=None, prior_inputs=None):
+    dataset_path, data, reviewed = selected_dataset(dataset_path, policy_path, policy_sha256, prior_inputs)
     if not reviewed_by.strip():
         raise ValueError("A named independent reviewer is required")
     if data["authoring"]["review_status"] != "reviewed":
@@ -360,17 +421,23 @@ def freeze(destination, *, reviewed_by, model_path):
         target = destination / "sources" / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes((ROOT / name).read_bytes())
-    (destination / "dataset.json").write_bytes(DATASET.read_bytes())
+    (destination / "dataset.json").write_bytes(dataset_path.read_bytes())
+    if reviewed is not None:
+        copy_reviewed_input(dataset_path, destination / "dataset.json", reviewed.dataset_sha256)
+        copy_reviewed_input(policy_path, destination / "exposure-policy.json", reviewed.policy_sha256)
+        copy_reviewed_input(prior_inputs, destination / "prior-inputs.json", reviewed.prior_inputs_sha256)
+        write_json(destination / "protocol.json", evaluation_policy.protocol(load_dataset(DATASET)))
     manifest = {"manifest_version": "1", "frozen_at": datetime.now(UTC).isoformat(),
-                "reviewed_by": reviewed_by, "dataset_sha256": file_digest(DATASET),
+                "reviewed_by": reviewed_by, "dataset_sha256": file_digest(dataset_path),
+                "reviewed_dataset_binding": reviewed_binding(reviewed),
                 "thresholds": data["thresholds"], "counts": dict(Counter(c["kind"] for c in data["cases"])),
                 "model_sha256": model_hash, "model_revision": "3885219b6810b007914f3a7950a8d1b469d598a5",
                 "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                 "source_sha256": paths, "runtime": runtime, "host": platform.platform(),
                 "analysis_prompt_version": analysis.PROMPT_VERSION,
                 "planner_prompt_version": planner.PROMPT_VERSION,
-                "development_exposure": exposure_provenance(data),
-                "development_exposed_case_ids": exposure_provenance(data)["development_exposed_case_ids"],
+                "development_exposure": exposure_provenance(data, reviewed) if reviewed else exposure_provenance(data),
+                "development_exposed_case_ids": (exposure_provenance(data, reviewed) if reviewed else exposure_provenance(data))["development_exposed_case_ids"],
                 "scope": "Synthetic domain component/model acceptance; not a replacement for authenticated E2E/offline/soak evidence"}
     write_json(destination / "manifest.json", manifest)
     return manifest
@@ -617,7 +684,7 @@ def unsupported_model_fields(case, record):
     return count
 
 
-def summarize(dataset, records, *, stage):
+def summarize(dataset, records, *, stage, reviewed_policy=None):
     by_id = {record["case_id"]: record for record in records}
     cases = dataset["cases"]
     result = {"stage": stage, "expected_cases": len(cases), "completed_records": len(by_id),
@@ -628,7 +695,7 @@ def summarize(dataset, records, *, stage):
     for language in ("ru", "en"):
         subset = [c for c in cases if c["language"] == language]
         result["subgroups"][language] = proportion(sum(score_case(c, by_id.get(c["case_id"])) for c in subset), len(subset))
-    exposure = exposure_provenance(dataset)
+    exposure = exposure_provenance(dataset, reviewed_policy) if reviewed_policy else exposure_provenance(dataset)
     exposed_ids = set(exposure["development_exposed_case_ids"])
     for name, exposed in (("development_exposed", True), ("untouched_by_development_pilot", False)):
         subset = [case for case in cases if (case["case_id"] in exposed_ids) == exposed]
@@ -780,7 +847,11 @@ async def run(args):
     global RUNTIME_OVERRIDE
     if args.provenance_json:
         RUNTIME_OVERRIDE = json.loads(Path(args.provenance_json).read_text())
-    dataset = load_dataset()
+    dataset_path, dataset, reviewed = selected_dataset(
+        getattr(args, "dataset", None), getattr(args, "exposure_policy", None),
+        getattr(args, "exposure_policy_sha256", None), getattr(args, "prior_inputs", None))
+    if reviewed is not None and (args.development or args.limit or args.kind or args.case_id or not getattr(args, "exposure_ledger", None) or not args.require_native_filesystem):
+        raise ValueError("Reviewed holdout requires complete final one-shot run and persistent exposure ledger")
     all_cases = dataset["cases"]
     if args.soak_seconds < 0 or (args.limit is not None and args.limit <= 0):
         raise ValueError("Invalid load duration or case limit")
@@ -788,8 +859,10 @@ async def run(args):
         raise ValueError("Unknown requested case ID")
     if args.manifest:
         manifest = json.loads(Path(args.manifest).read_text())
-        if manifest["dataset_sha256"] != file_digest(DATASET) or manifest["source_sha256"] != source_provenance():
+        if manifest["dataset_sha256"] != file_digest(dataset_path) or manifest["source_sha256"] != source_provenance():
             raise ValueError("Frozen dataset or source files changed; make a new freeze and run")
+        if manifest.get("reviewed_dataset_binding") != reviewed_binding(reviewed):
+            raise ValueError("Frozen exposure policy differs from selected dataset")
         if manifest["thresholds"] != dataset["thresholds"]:
             raise ValueError("Manifest thresholds differ from the frozen gold dataset")
         if manifest["runtime"] != runtime_provenance():
@@ -812,6 +885,10 @@ async def run(args):
     stage = "development" if args.development else "final"
     if args.manifest:
         (output / "manifest.json").write_bytes(Path(args.manifest).read_bytes())
+    if reviewed is not None:
+        copy_reviewed_input(dataset_path, output / "dataset.json", reviewed.dataset_sha256)
+        copy_reviewed_input(args.exposure_policy, output / "exposure-policy.json", reviewed.policy_sha256)
+        copy_reviewed_input(args.prior_inputs, output / "prior-inputs.json", reviewed.prior_inputs_sha256)
     selected = [case for case in all_cases if (not args.kind or case["kind"] in args.kind)
                 and (not args.case_id or case["case_id"] in args.case_id)]
     if args.limit:
@@ -824,8 +901,9 @@ async def run(args):
         raise ValueError("Final runs cannot omit case IDs")
     if not selected:
         raise ValueError("No cases selected")
-    run_metadata = {"stage": stage, "dataset_sha256": file_digest(DATASET),
-               "development_exposure": exposure_provenance(dataset),
+    run_metadata = {"stage": stage, "dataset_sha256": file_digest(dataset_path),
+               "reviewed_dataset_binding": reviewed_binding(reviewed),
+               "development_exposure": exposure_provenance(dataset, reviewed) if reviewed else exposure_provenance(dataset),
                "expected_case_ids": [case["case_id"] for case in all_cases],
                "scheduled_case_ids": [case["case_id"] for case in selected], "source_sha256": source_provenance(),
                "runtime": runtime_provenance(), "analysis_prompt_version": analysis.PROMPT_VERSION,
@@ -853,6 +931,10 @@ async def run(args):
     completed = {record["case_id"] for record in records}
     if len(completed) != len(records):
         raise ValueError("Duplicate completed records; refusing biased resume")
+    if reviewed is not None:
+        ledger = Path(args.exposure_ledger)
+        durable_storage_preflight(ledger, require_native=args.require_native_filesystem)
+        evaluation_policy.claim_attempt(reviewed, ledger, output, run_metadata, resume=args.resume)
     interrupted = False
     provider_authorized = False
     for number, case in enumerate(selected, 1):
@@ -864,7 +946,7 @@ async def run(args):
         record.update(identity)
         records.append(record)
         complete_execution(output, record, phase="initial")
-        write_json(output / "report.json", summarize(dataset, records, stage=stage))
+        write_json(output / "report.json", summarize(dataset, records, stage=stage, reviewed_policy=reviewed))
         print(f"{number}/{len(selected)} {case['case_id']} {'PASS' if score_case(case, record) else 'FAIL'} {record['elapsed_seconds']:.2f}s", flush=True)
         if record.get("interrupted") or record.get("launch_authorization_rejected"):
             interrupted = True
@@ -891,12 +973,16 @@ async def run(args):
     stop_sampling.set()
     if sampler is not None:
         await sampler
-    report = summarize(dataset, records, stage=stage)
+    report = summarize(dataset, records, stage=stage, reviewed_policy=reviewed)
     report["storage_durability_preflight"] = storage
     report["launch_authorization"] = launch_authorization
     report["raw_records_sha256"] = file_digest(output / "records.jsonl")
     report["source_unchanged_after_run"] = (not args.manifest or manifest["source_sha256"] == source_provenance())
-    if not report["source_unchanged_after_run"]:
+    report["dataset_unchanged_after_run"] = file_digest(dataset_path) == run_metadata["dataset_sha256"]
+    report["reviewed_inputs_unchanged_after_run"] = (reviewed is None or (
+        file_digest(Path(args.exposure_policy)) == reviewed.policy_sha256 and
+        file_digest(Path(args.prior_inputs)) == reviewed.prior_inputs_sha256))
+    if not (report["source_unchanged_after_run"] and report["dataset_unchanged_after_run"] and report["reviewed_inputs_unchanged_after_run"]):
         report["quality_gate_passed"] = False
         report["quality_gate_status"] = "failed"
     report["load"] = {"requested_seconds": args.soak_seconds or None,
@@ -946,9 +1032,17 @@ def main():
                             help="Do not call the provider without a fresh host-issued native-volume launch permit")
     run_parser.add_argument("--kind", choices=("analysis", "remediation", "planning", "degraded", "security"), action="append")
     run_parser.add_argument("--base-url", default="http://127.0.0.1:8082/v1")
+    for command in (freeze_parser, run_parser):
+        command.add_argument("--dataset", type=Path, help="Default: immutable original exposed regression corpus")
+        command.add_argument("--exposure-policy", type=Path)
+        command.add_argument("--exposure-policy-sha256", help="Independently trusted reviewed policy digest")
+        command.add_argument("--prior-inputs", type=Path, help="Reviewed inventory of prior local request hashes")
+    run_parser.add_argument("--exposure-ledger", type=Path, help="Persistent native ledger shared by ALL holdout attempts")
     args = parser.parse_args()
     if args.command == "freeze":
-        result = freeze(args.output, reviewed_by=args.reviewed_by, model_path=args.model_path)
+        result = freeze(args.output, reviewed_by=args.reviewed_by, model_path=args.model_path,
+                        dataset_path=args.dataset, policy_path=args.exposure_policy,
+                        policy_sha256=args.exposure_policy_sha256, prior_inputs=args.prior_inputs)
         print(json.dumps({"manifest": str(Path(args.output) / "manifest.json"), "dataset_sha256": result["dataset_sha256"]}))
         return 0
     return asyncio.run(run(args))

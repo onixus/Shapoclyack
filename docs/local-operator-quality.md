@@ -269,3 +269,84 @@ stalled. They are failed/interrupted **development** runs, never final passes.
 `development-infra-observations.json` records the associated infrastructure
 observations, including the absence of a cgroup OOM event in the inspected
 snapshot; it does not replace final resource/soak acceptance.
+
+### Independently authored holdout protocol
+
+The default 190-case corpus remains an exposed regression corpus. Its bytes,
+labels, rubric, thresholds and exposed-only status are unchanged. Passing it
+cannot establish performance on unseen inputs.
+
+A separately authored synthetic holdout may be selected using `--dataset` on
+both `freeze` and `run`. This requires all of `--exposure-policy`, an independently
+communicated `--exposure-policy-sha256`, and `--prior-inputs`. There is no waiver
+flag. The policy binds exact dataset bytes and canonical content, original
+protocol, every scenario and every actual model messages/schema projection.
+The full original counts (60 analysis, 40 remediation, 30 planning, 20 degraded,
+40 security), equal RU/EN split within each kind and original thresholds apply.
+Each scenario family contains one equivalent RU/EN pair. Every model-visible
+input must differ from the original corpus, other holdout cases and the reviewed
+inventory of prior locally dispatched request hashes. Changing source IDs,
+hashes, gold or editorial labels cannot establish novelty. No collision
+exceptions or mixed exposed/unseen corpus are accepted.
+
+Before any model output, a blind author and a different named reviewer must
+record independent gold and scenario-novelty review. The dataset has
+`dataset_role: independent_synthetic_holdout_v1` and authoring metadata with
+`review_status: reviewed`, `independent_review.reviewer` matching the policy and
+`human_domain_expert_reviewed: false`. The reviewer uses
+`evaluation_policy.review_material(dataset, baseline, model_input_projection)`
+to compute the binding fields, then signs off the exact policy digest through a
+separate trusted channel. That function computes bindings; it does not perform
+review or certify author identity. The prior-input inventory binds a reviewed
+list of SHA256 request projections and SHA256 attempt receipts. The trusted
+reviewer must establish the inventory is complete from retained raw attempts;
+a hash list alone cannot independently prove its own completeness.
+
+Policy schema version 1 requires: role, dataset_sha256,
+dataset_canonical_sha256, protocol_sha256, case_set_sha256,
+case_projection_sha256 (case ID to request digest), unseen_case_ids,
+development_exposed_case_ids (empty), prior_inputs_sha256; author with name,
+completed_at and blind_to_prior_outputs=true; review with name, reviewed_at,
+before_model_outputs=true, gold_reviewed=true, scenario_novelty_reviewed=true;
+and claims synthetic_only=true, human_domain_expert_reviewed=false,
+external_certification=false, pretraining_contamination_unknown=true.
+Timestamps require timezones and author completion precedes review. The prior
+inventory schema version 1 has canonicalization
+`sha256-canonical-messages-schema-v1`, reviewer, reviewed_at,
+model_input_sha256 and attempt_evidence_sha256. Both digest lists are nonempty,
+unique and reviewed before the policy. Duplicate JSON keys, ambiguous numeric
+constants and symlink/nonregular input files are rejected.
+
+Run the full holdout directly, without a pilot, subset or development dispatch:
+
+```sh
+python scripts/operator-evaluate.py freeze --output "$FREEZE" \
+  --model-path "$PINNED_MODEL" --reviewed-by "$REVIEWER" \
+  --dataset "$HOLDOUT" --exposure-policy "$POLICY" \
+  --exposure-policy-sha256 "$TRUSTED_POLICY_SHA256" --prior-inputs "$PRIOR_INPUTS"
+python scripts/operator-evaluate.py run --output "$RESULTS" \
+  --manifest "$FREEZE/manifest.json" --soak-seconds 3600 \
+  --dataset "$HOLDOUT" --exposure-policy "$POLICY" \
+  --exposure-policy-sha256 "$TRUSTED_POLICY_SHA256" --prior-inputs "$PRIOR_INPUTS" \
+  --exposure-ledger "$PERSISTENT_NATIVE_LEDGER" --require-native-filesystem
+```
+
+The trusted controller must mount the same persistent native exposure-ledger
+volume across **all** attempts, bind its identity in provenance, retain it, and
+use the normal launch-permit/resource/network observation controls. These sample
+commands do not replace those runtime controls. The ledger reserves every input
+before inference and fsyncs its claim. Crashes retain exposure. A new output,
+changed source/policy or reused input cannot start a fresh retry. `--resume`
+requires the original output, identical metadata and original claim; failed or
+uncertain initial executions retain their failed records and are never retried.
+A privileged operator can replace a ledger or lie in an attestation; this is
+reviewed local provenance, not anti-administrator enforcement.
+
+The first execution of each case supplies the quality denominator. Later soak
+executions have their own journal and measure stability, without adding new
+unseen cases or replacing failures. Publication includes raw first-shot failures,
+scenario/request collision review, policy and prior-input digests, durable
+claims and separate quality/load gates. This is synthetic engineering
+acceptance, not external domain certification, and it cannot establish absence
+of pretraining contamination. A failed holdout becomes exposed regression data;
+revising its gold, selecting only successes or rerunning it cannot make it unseen.
