@@ -6,6 +6,7 @@ proof against a privileged operator changing the ledger. No model is called.
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
@@ -217,6 +218,27 @@ def approve(dataset_path, policy_path, trusted_policy_sha256, prior_inputs_path,
         raise ValueError("Holdout model input already dispatched")
     return data, ReviewedHoldout(digest(dataset_raw), material["dataset_canonical_sha256"], digest(policy_raw),
                                  digest(prior_raw), canonical(material), canonical(policy))
+
+
+@contextmanager
+def execution_lock(output):
+    """Exclude live resumptions before reading or recovering their shared journal.
+
+    Keep the inode after release: unlinking a locked file could admit a second
+    independent lock. Kernel ownership ends on close or process death; durable
+    corpus exposure remains separately recorded by claim_attempt.
+    """
+    import fcntl
+
+    descriptor = os.open(Path(output) / ".execution.lock",
+                         os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("Regular execution lock required")
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    finally:
+        os.close(descriptor)
 
 
 def claim_attempt(approved, ledger, output, run_metadata, *, resume):

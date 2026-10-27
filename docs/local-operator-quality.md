@@ -339,6 +339,12 @@ before inference and fsyncs its claim. Crashes retain exposure. A new output,
 changed source/policy or reused input cannot start a fresh retry. `--resume`
 requires the original output, identical metadata and original claim; failed or
 uncertain initial executions retain their failed records and are never retried.
+A nonblocking native output execution lock is acquired before shared metadata or
+journal recovery and held through all model calls and terminal report writes.
+Concurrent resumptions cannot both dispatch or recover the same journal. The
+lock inode is retained; closing the descriptor or process death releases kernel
+ownership, while the separate durable corpus claim survives. A live-owner lock
+failure is not permission to remove the lock file or retry in a new output.
 A privileged operator can replace a ledger or lie in an attestation; this is
 reviewed local provenance, not anti-administrator enforcement.
 

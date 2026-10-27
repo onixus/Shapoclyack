@@ -280,3 +280,125 @@ def test_lock_contention_is_bounded_and_claim_is_not_written(tmp_path):
         with pytest.raises(BlockingIOError):
             policy.claim_attempt(reviewed, ledger, tmp_path / 'out', {}, resume=False)
     assert not list(ledger.glob('claim-*.json'))
+
+
+@pytest.mark.parametrize('first_process_dies', [False, True])
+def test_live_execution_excludes_second_process_before_dispatch_and_releases(tmp_path, first_process_dies):
+    import select
+    import subprocess
+    import sys
+
+    output = tmp_path / 'output'
+    output.mkdir()
+    marker = output / 'second-dispatch'
+    source = str(Path(__file__).parents[1])
+    first_code = ("import sys;sys.path.insert(0,sys.argv[1]);"
+        "from api.services.local_operator import evaluation_policy as p;"
+        "lock=p.execution_lock(sys.argv[2]);lock.__enter__();"
+        "print('LOCKED',flush=True);sys.stdin.readline();lock.__exit__(None,None,None)")
+    first = subprocess.Popen([sys.executable, '-c', first_code, source, str(output)],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert select.select([first.stdout], [], [], 5)[0], 'Owner failed to acquire lock'
+        assert first.stdout.readline().strip() == 'LOCKED'
+        second_code = ("import sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);"
+            "from api.services.local_operator import evaluation_policy as p;"
+            "lock=p.execution_lock(sys.argv[2]);lock.__enter__();"
+            "Path(sys.argv[3]).write_text('fake dispatch');lock.__exit__(None,None,None)")
+        second = subprocess.run([sys.executable, '-c', second_code, source, str(output), str(marker)],
+                                capture_output=True, text=True, timeout=5)
+        assert second.returncode != 0
+        assert 'BlockingIOError' in second.stderr
+        assert not marker.exists()  # competing executor never dispatches
+        if first_process_dies:
+            first.kill()
+        else:
+            first.stdin.write('\n')
+            first.stdin.flush()
+        first.wait(timeout=5)
+        with policy.execution_lock(output):
+            assert (output / '.execution.lock').is_file()  # inode survives normal/crash release
+    finally:
+        if first.poll() is None:
+            first.kill()
+        first.communicate(timeout=5)
+
+
+def test_reviewed_resume_wrapper_locks_before_shared_journal_entry(tmp_path, monkeypatch, evaluation):
+    import asyncio
+    from types import SimpleNamespace
+
+    parts = documents(tmp_path)
+    data, reviewed = approve(parts)
+    output = tmp_path / 'output'
+    output.mkdir()
+    journal = output / 'run.json'
+    journal.write_text('sentinel: neither competing runner may repair this')
+    manifest = {'dataset_sha256': policy.digest(parts[4].read_bytes()), 'source_sha256': {},
+        'reviewed_dataset_binding': evaluation.reviewed_binding(reviewed),
+        'thresholds': data['thresholds'], 'runtime': {}}
+    manifest_path = tmp_path / 'manifest.json'
+    save(manifest_path, manifest)
+    monkeypatch.setattr(evaluation, 'selected_dataset', lambda *a: (parts[4], data, reviewed))
+    monkeypatch.setattr(evaluation, 'source_provenance', lambda: {})
+    monkeypatch.setattr(evaluation, 'runtime_provenance', lambda: {})
+    args = SimpleNamespace(provenance_json=None, development=False, limit=None, kind=None, case_id=None,
+        exposure_ledger=str(tmp_path / 'ledger'), require_native_filesystem=True, soak_seconds=3600,
+        manifest=manifest_path, output=output, resume=True)
+    entries = []
+
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def locked_body(*arguments):
+            entries.append(arguments[4])
+            entered.set()
+            await release.wait()
+            raise RuntimeError('controlled interruption before real provider/journal access')
+
+        monkeypatch.setattr(evaluation, '_run_locked', locked_body)
+        owner = asyncio.create_task(evaluation.run(args))
+        await asyncio.wait_for(entered.wait(), 2)
+        try:
+            with pytest.raises(BlockingIOError):
+                await evaluation.run(args)
+            assert entries == [output]
+            assert journal.read_text().startswith('sentinel:')
+        finally:
+            release.set()
+            with pytest.raises(RuntimeError, match='controlled interruption'):
+                await owner
+        with policy.execution_lock(output):
+            pass  # finally releases the lock even on an async exception
+
+    asyncio.run(scenario())
+
+
+def test_reviewed_final_without_manifest_rejects_before_output_claim_or_dispatch(tmp_path, monkeypatch, evaluation):
+    import asyncio
+    from types import SimpleNamespace
+
+    parts = documents(tmp_path)
+    data, reviewed = approve(parts)
+    monkeypatch.setattr(evaluation, 'selected_dataset', lambda *a: (parts[4], data, reviewed))
+    monkeypatch.setattr(evaluation, '_run_locked', lambda *a: pytest.fail('Manifestless execution'))
+    args = SimpleNamespace(provenance_json=None, development=False, limit=None, kind=None, case_id=None,
+        exposure_ledger=str(tmp_path / 'ledger'), require_native_filesystem=True, soak_seconds=3600,
+        manifest=None, output=tmp_path / 'output', resume=False)
+    with pytest.raises(ValueError, match='Final runs require independently reviewed frozen provenance'):
+        asyncio.run(evaluation.run(args))
+    assert not args.output.exists()
+
+
+@pytest.mark.parametrize('kind', ['symlink', 'fifo'])
+def test_execution_lock_rejects_nonregular_or_symlink_without_blocking(tmp_path, kind):
+    lock = tmp_path / '.execution.lock'
+    if kind == 'symlink':
+        target = tmp_path / 'target'
+        target.write_text('unchanged')
+        lock.symlink_to(target)
+    else:
+        os.mkfifo(lock)
+    with pytest.raises((OSError, ValueError)):
+        with policy.execution_lock(tmp_path):
+            pytest.fail('Invalid execution lock admitted')

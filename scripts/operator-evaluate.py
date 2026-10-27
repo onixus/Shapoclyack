@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections import Counter
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime
 import hashlib
@@ -857,6 +858,7 @@ async def run(args):
         raise ValueError("Invalid load duration or case limit")
     if args.case_id and set(args.case_id) - {case["case_id"] for case in all_cases}:
         raise ValueError("Unknown requested case ID")
+    manifest = None
     if args.manifest:
         manifest = json.loads(Path(args.manifest).read_text())
         if manifest["dataset_sha256"] != file_digest(dataset_path) or manifest["source_sha256"] != source_provenance():
@@ -880,6 +882,14 @@ async def run(args):
     # later journal entries inside the output directory itself.
     for created in reversed(missing_directories):
         _sync_directory(created.parent)
+    lock = evaluation_policy.execution_lock(output) if reviewed is not None else nullcontext()
+    with lock:
+        return await _run_locked(args, dataset_path, dataset, reviewed, output, manifest)
+
+
+async def _run_locked(args, dataset_path, dataset, reviewed, output, manifest):
+    """Hold the reviewed attempt's execution lock through final report persistence."""
+    all_cases = dataset["cases"]
     storage = durable_storage_preflight(output, require_native=args.require_native_filesystem)
     launch_authorization = await authorize_launch(output, required=getattr(args, "require_launch_permit", False))
     stage = "development" if args.development else "final"
