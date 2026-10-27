@@ -18,7 +18,7 @@ from api.services.local_operator.providers import OperatorProviderError
 
 ToolName = Literal["summarize_run", "analyze_run", "compare_runs", "find_remediation",
                    "prepare_scan", "cancel_scan", "verify_finding", "abstain"]
-PROMPT_VERSION = "operator-intent-v2"
+PROMPT_VERSION = "operator-intent-v3"
 TOOL_VERSION = "typed-intent-gateway-v1"
 
 
@@ -83,6 +83,20 @@ def output_schema(request: PlanRequest) -> dict:
     return schema
 
 
+def tool_resource_bindings(request: PlanRequest) -> dict[str, dict]:
+    """Describe actual server arguments without disclosing scan scope to inference."""
+    kinds = {"run_id": "run", "previous_run_id": "run", "current_run_id": "run",
+             "device_id": "device", "job_id": "job", "vuln_id": "finding"}
+    result = {}
+    for tool, arguments in available_tools(request).items():
+        if tool == "abstain":
+            continue
+        fields = [field for field in arguments if field in kinds]
+        result[tool] = {"resource_kind": "scan_scope" if tool == "prepare_scan" else kinds[fields[0]],
+                        "reference_fields": fields}
+    return result
+
+
 def build_prompt(request: PlanRequest) -> list[dict[str, str]]:
     return [
         {"role": "system", "content":
@@ -92,6 +106,14 @@ def build_prompt(request: PlanRequest) -> list[dict[str, str]]:
          "prepare_scan = prepare or start a new approved scan; cancel_scan = cancel an existing scan; "
          "verify_finding = verify a particular finding/fix with a targeted rescan. "
          "abstain = unsupported, missing context, ambiguous, or forbidden request. "
+         "First identify the kind and identity of the object the user requests, then select a tool whose "
+         "tool_resource_bindings matches that object. A run, device/endpoint, job, and finding are distinct "
+         "resource kinds; their references are never interchangeable. These bindings describe the actual "
+         "server arguments, not every resource kind that a tool could support in another context. "
+         "If the requested object kind is absent, ambiguous, or different from the tool binding, abstain "
+         "even when that tool is available for another kind. A finding reference cannot stand in for a "
+         "device, nor a device for a finding. A request to analyze observations in a selected run may use "
+         "that run; it does not create a reference to a particular finding. "
          "If the user names a resource different from the bound resource references, abstain; "
          "never substitute the selected resource for a different requested resource. "
          "Never install patches, execute commands, read secrets/files, change scope/roles, close findings "
@@ -99,6 +121,7 @@ def build_prompt(request: PlanRequest) -> list[dict[str, str]]:
          "it executes nothing, grants no authority and does not constitute confirmation."},
         {"role": "user", "content": json.dumps({"language": request.language, "request": request.request,
          "available_tools": list(available_tools(request)),
+         "tool_resource_bindings": tool_resource_bindings(request),
          "resource_references": request.context.model_dump(exclude={"scan"}, exclude_none=True)},
          ensure_ascii=False, separators=(",", ":"))},
     ]
