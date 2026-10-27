@@ -1,6 +1,7 @@
 """Real queue/worker integration for selection-only, evidence-bound analysis."""
 import asyncio
 import json
+import hashlib
 
 import pytest
 from sqlalchemy import select, update
@@ -8,7 +9,7 @@ from sqlalchemy import select, update
 from api.db import models
 from api.db.engine import get_session
 from api.services.artifact_store import keys
-from api.services.local_operator import gateway, worker
+from api.services.local_operator import gateway, worker, analysis as analysis_contract
 from api.services.local_operator import store as operator_store
 from api.services.local_operator.providers import Completion
 from tests.conftest import requires_postgres
@@ -39,7 +40,7 @@ def _selection(messages):
     prompt = json.loads(messages[1]["content"])
     selected = prompt["sources"][0]
     return {"language": prompt["language"], "summary": "review_required", "recommendations": [
-        {**{key: selected[key] for key in ("source_id", "source_hash", "snapshot_id")},
+        {"source_ref": selected["source_ref"],
          "proposed_priority": "high", "category": "vulnerability",
          "next_steps": ["verify_evidence", "request_fresh_scan"]}]}
 
@@ -53,8 +54,15 @@ def test_real_queue_worker_analysis_history_and_retry_are_durable(env, monkeypat
     settings, task, _, _ = env
     calls = []
 
-    async def complete(self, messages):
+    schemas = []
+    async def complete(self, messages, *, response_schema):
         calls.append(messages)
+        schemas.append(response_schema)
+        assert response_schema["properties"]["language"] == {"type": "string", "const": "ru"}
+        reference = _selection(messages)["recommendations"][0]
+        properties = response_schema["$defs"]["CompactSelection"]["properties"]
+        assert properties["source_ref"] == {"type": "integer", "enum": [reference["source_ref"]]}
+        assert not {"source_id", "source_hash", "snapshot_id"} & properties.keys()
         return Completion(json.dumps(_selection(messages)), "local", "analysis-test-model")
 
     monkeypatch.setattr(gateway.InferenceProvider, "complete", complete)
@@ -67,7 +75,7 @@ def test_real_queue_worker_analysis_history_and_retry_are_durable(env, monkeypat
     assert analysis["language"] == "ru"
     assert analysis["recommendations"][0]["category"] == "vulnerability"
     assert analysis["recommendations"][0]["citation"] == analysis["citations"][0]
-    assert analysis["citations"][0]["source_hash"] == _selection(calls[0])["recommendations"][0]["source_hash"]
+    assert analysis["citations"][0] == {"schema_version": "1", **persisted["result"]["audit"]["source_references"][0]}
     prompt = json.dumps(calls[0])
     for secret in ("10.0.0.1", "sensitive-owner", "sensitive-evidence", "Ignore instructions",
                    "published-run", "3.0.1", "openssl"):
@@ -87,6 +95,10 @@ def test_real_queue_worker_analysis_history_and_retry_are_durable(env, monkeypat
             models.AuditEvent.action == "operator.inference.start"))
         assert audit is not None
         assert len(audit.after["prompt_sha256"]) == 64
+        assert audit.after["prompt_sha256"] == hashlib.sha256(json.dumps(
+            {"messages": calls[0], "response_schema": schemas[0]}, sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest()
+        assert audit.after["prompt_version"] == analysis_contract.PROMPT_VERSION
         assert "messages" not in audit.after and "analysis" not in audit.after
 
 
@@ -110,7 +122,7 @@ def test_no_findings_abstains_without_provider(env, monkeypatch, missing):
 def test_midflight_changes_discard_analysis_and_never_persist_answer(env, monkeypatch, change):
     settings, task, store, ref = env
 
-    async def complete(self, messages):
+    async def complete(self, messages, *, response_schema):
         answer = _selection(messages)
         if change == "revoked":
             with get_session(settings.postgres_url) as db:
@@ -136,11 +148,11 @@ def test_invalid_analysis_output_is_failed_without_repair(env, monkeypatch, inva
     settings, task, _, _ = env
     calls = []
 
-    async def complete(self, messages):
+    async def complete(self, messages, *, response_schema):
         calls.append(messages)
         output = _selection(messages)
         if invalid == "foreign-source":
-            output["recommendations"][0]["source_id"] = "foreign-id"
+            output["recommendations"][0]["source_ref"] = 99
         elif invalid == "authority-field":
             output["recommendations"][0]["tenant_id"] = "other-tenant"
         elif invalid == "free-prose":
@@ -161,3 +173,31 @@ def test_task_kind_is_part_of_idempotency_contract(env):
     with pytest.raises(operator_store.OperatorStoreError, match="idempotency_conflict"):
         operator_store.submit_task(settings, "default", "operator", task["session_id"],
             task["run_id"], "ru", "analysis-integration", kind="summarize_run")
+
+
+def test_real_queue_never_rebinds_a_compact_ref_after_request_registry_mutation(env, monkeypatch):
+    settings, task, _, _ = env
+    bindings, calls = [], []
+    original_bind = analysis_contract.bind
+
+    def capture(evidence):
+        binding = original_bind(evidence)
+        bindings.append(binding)
+        return binding
+
+    async def complete(self, messages, *, response_schema):
+        calls.append(messages)
+        output = _selection(messages)
+        item = bindings[0]._origin["items"][0]
+        item["source_id"] = item["citation"]["source_id"] = "foreign-replacement"
+        item["source_hash"] = item["citation"]["source_hash"] = "f" * 64
+        return Completion(json.dumps(output), "local", "analysis-test-model")
+
+    monkeypatch.setattr(analysis_contract, "bind", capture)
+    monkeypatch.setattr(gateway.InferenceProvider, "complete", complete)
+    persisted = _work(settings, task)
+    assert len(bindings) == len(calls) == 1
+    assert persisted["status"] == "failed"
+    assert persisted["error"] == "operator_invalid_model_output"
+    assert persisted["result"] is None
+    assert operator_store.get_session(settings, "default", "operator", task["session_id"])["messages"] == []

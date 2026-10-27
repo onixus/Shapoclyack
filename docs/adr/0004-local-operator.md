@@ -7,6 +7,10 @@
 | Date | 2026-10-21 |
 | Specification | [Local Operator architecture and contracts](../local-operator.md) |
 
+Hardware acceptance is superseded by [ADR 0005](0005-local-operator-mac-acceptance.md)
+under the owner's explicit decision of 2026-10-25. The other boundaries below
+remain in force; NVIDIA work is preserved separately in #609.
+
 ## Context
 
 Operators need evidence-grounded assistance with inventory, findings, scanning
@@ -54,6 +58,17 @@ worker, retrieval, analysis, proposals, UI and security/hardware acceptance stay
 with #586–#593. Freeze the corpus and thresholds before final evaluation:
 >=95% tool selection, F1>=0.85, citation precision>=0.98, 100% source-supported fixed-version claims, p95 first response <=30 seconds and typical completion <=120 seconds.
 The specification defines the measurement record and remaining hardware report.
+
+## Deployment profile and egress
+
+The workstation package and the console stand run the API in production mode with
+generated secrets (no `OCTO_ENV=dev`), keep state/output private to one uid, and
+refuse to start with a hosted provider or an inference URL outside the isolated
+network. Egress denial is a property of the compose `internal` network only;
+Kubernetes is explicitly unsupported until a deployment ships with an egress
+NetworkPolicy limited to the inference endpoints. Residual risk: the package is
+single-tenant by design, and the unprivileged fallback runs the control
+containers as the invoking user's uid.
 
 ## Alternatives
 

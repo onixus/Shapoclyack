@@ -18,6 +18,8 @@ coverage-*.xml
 junit-*.xml
 # scripts/ci-semgrep.sh writes its full report here for CI to archive
 semgrep.json
+.operator-models/
+.operator-local/
 sbom.spdx.json
 # MaxMind GeoLite2 databases (license-restricted; fetch via scripts/fetch-geoip-db.sh)
 *.mmdb

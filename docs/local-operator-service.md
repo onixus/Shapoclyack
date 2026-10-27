@@ -1,18 +1,20 @@
-# Durable operator service and summary pilot
+# Durable operator service and grounded count summaries
 
 Delivery for [#586](https://github.com/onixus/Shapoclyack/issues/586), extending
 [the architecture](local-operator.md) and [provider adapters](local-operator-providers.md).
-This implements the personal session/queue/worker boundary and one read-only
-summary pilot. It does not complete retrieval/analysis quality acceptance,
-confirmed scan actions, remediation, the assistant UI, or local model packaging.
+This guide covers the personal session/queue/worker boundary and read-only
+count summary. Confirmed actions, remediation, the console and local runtime
+have their own guides linked from the architecture; model-quality acceptance
+is recorded separately in [the quality evaluation](local-operator-quality.md).
 
 ## Deployment
 
-Apply migration `0097_operator_state` through the normal migration command before
-starting this version. It adds five tenant-scoped tables with PostgreSQL RLS and
+Apply the current migration head through the normal migration command before
+starting this version. `0097_operator_state` introduced five tenant-scoped tables with PostgreSQL RLS and
 grants: `operator_sessions`, `operator_messages`, `operator_tasks`,
-`operator_proposals`, and `operator_executions`. Proposals and executions are
-reserved records only; their database checks permit no effectful status.
+`operator_proposals`, and `operator_executions`. Later migrations enable the
+confirmed-action, evidence, semantic-index and planning contracts; applying
+only the original `0097` baseline is insufficient for current code.
 
 Keep the API's normal production database, authentication, encryption and network
 settings. Enable `OCTO_OPERATOR_ENABLED=true` and explicitly select a provider and
@@ -96,6 +98,12 @@ Task state is `queued`, `running`, `succeeded`, `failed`, `cancelled` or
 same idempotency key and exact session/run/language/tool return the existing task;
 changed arguments return 409. This does not create a scan or install a patch.
 
+The single running slot is shared fairly: `claim_next` picks the queued task of
+the tenant that was served least recently (a tenant never served goes first),
+oldest task first within that tenant, instead of a global FIFO by creation time.
+Viewer-triggered semantic searches additionally spend a per-tenant budget of 30
+per minute per API replica (`429 operator_semantic_rate_limited`).
+
 A PostgreSQL advisory leader lock (registered ID 9) selects the worker; a
 transactional queue lock (ID 10), one global running lease, and ownership checks
 fence state changes. Provider calls execute outside database transactions. The
@@ -118,13 +126,20 @@ An old worker cannot overwrite a recovered task. Advisory locks do not fence a
 remote inference server: configure runtime parallelism to one and verify actual
 remote cancellation behavior in the runtime acceptance gate.
 
-The pilot takes one evidence read and one inference request, below the design
-ceiling of eight steps; it cannot execute a model-generated tool loop. Generated
-JSON permits only a bounded summary string. The server adds the actor/tenant
+The count operation takes one evidence read and one inference request, below
+the design ceiling of eight steps; it cannot execute a model-generated tool
+loop. The server renders a fixed RU/EN sentence from only the present
+allowlisted integer counts; absent fields are not invented as zero. The
+provider receives an exact `summary` const schema and must return that sentence.
+Independent validation rejects any changed number, arbitrary prose, URL or
+extra field without repair or fallback, even if the provider ignores the
+generation schema. Prompt/tool version2 binds the schema into the audit hash.
+The server adds the actor/tenant
 context, exact source digest and snapshot-bound citation. Answers always remain
 `incomplete` with `quality_status=quality_unverified`: source freshness, detector
-coverage and factual/language quality have not passed #588's frozen evaluation.
-An attached citation binds the input; it does not certify every generated claim.
+coverage are not established by count totals. The attached citation binds the
+input and the disclosed sentence is constructed from it; no free-form model
+claim is accepted as part of this count summary.
 
 ## Audit, retention and deletion
 

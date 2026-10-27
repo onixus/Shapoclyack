@@ -811,6 +811,14 @@ OCTO_OIDC_USERNAME_CLAIM
 OCTO_OPERATOR_ALLOW_EXTERNAL
 OCTO_OPERATOR_API_KEY
 OCTO_OPERATOR_BASE_URL
+OCTO_OPERATOR_EMBEDDINGS_BASE_URL
+OCTO_OPERATOR_EMBEDDINGS_DIMENSIONS
+OCTO_OPERATOR_EMBEDDINGS_ENABLED
+OCTO_OPERATOR_EMBEDDINGS_MAX_RESPONSE_BYTES
+OCTO_OPERATOR_EMBEDDINGS_MODEL
+OCTO_OPERATOR_EMBEDDINGS_MODEL_SHA256
+OCTO_OPERATOR_EMBEDDINGS_REVISION
+OCTO_OPERATOR_EMBEDDINGS_TIMEOUT_SECONDS
 OCTO_OPERATOR_ENABLED
 OCTO_OPERATOR_MAX_INPUT_CHARS
 OCTO_OPERATOR_MAX_OUTPUT_TOKENS
@@ -818,6 +826,8 @@ OCTO_OPERATOR_MAX_RESPONSE_BYTES
 OCTO_OPERATOR_MODEL
 OCTO_OPERATOR_PROVIDER
 OCTO_OPERATOR_QUEUE_LIMIT
+OCTO_OPERATOR_RUNTIME_MANIFEST_PATH
+OCTO_OPERATOR_RUNTIME_MANIFEST_SHA256
 OCTO_OPERATOR_TIMEOUT_SECONDS
 OCTO_OPERATOR_WORKER_ENABLED
 OCTO_OPERATOR_WORKER_LEASE_SECONDS
@@ -1733,13 +1743,29 @@ read-only MCP transport is in [mcp.md](mcp.md). Both features default to off.
 | `OCTO_OPERATOR_MAX_RESPONSE_BYTES` | `262144` | Maximum decoded provider response, at most 1 MiB. |
 | `OCTO_OPERATOR_MAX_INPUT_CHARS` | `24000` | Input character budget; does not replace tokenizer-based context validation in the future worker. |
 | `OCTO_OPERATOR_MAX_OUTPUT_TOKENS` | `1024` | Requested generation cap, at most 8192. The final worker must reserve this inside its 8192-token total context. |
+| `OCTO_OPERATOR_EMBEDDINGS_ENABLED` | `false` | Enable the separate local CPU embedding client and semantic retrieval; exact retrieval remains available without it. |
+| `OCTO_OPERATOR_EMBEDDINGS_BASE_URL` | `http://127.0.0.1:8084/v1` | Administrator-owned private IP endpoint; never supplied by chat/model output. |
+| `OCTO_OPERATOR_EMBEDDINGS_MODEL` | `Qwen3-Embedding-0.6B` | Required local embedding alias; no hosted fallback. |
+| `OCTO_OPERATOR_EMBEDDINGS_REVISION` | *(empty)* | Immutable 40-character upstream revision; required when embeddings are enabled. |
+| `OCTO_OPERATOR_EMBEDDINGS_MODEL_SHA256` | *(empty)* | Independently verified model artifact SHA-256; required when embeddings are enabled. |
+| `OCTO_OPERATOR_EMBEDDINGS_DIMENSIONS` | `1024` | Expected vector width; mismatched model responses are refused. |
+| `OCTO_OPERATOR_EMBEDDINGS_TIMEOUT_SECONDS` | `30` | Bounded embedding request timeout. Failure remains unavailable/unknown, not a successful semantic result. |
+| `OCTO_OPERATOR_EMBEDDINGS_MAX_RESPONSE_BYTES` | `2097152` | Maximum decoded embedding response bytes. |
+| `OCTO_OPERATOR_RUNTIME_MANIFEST_PATH` | *(unset)* | Deployment-owned read-only startup integrity record; absent means runtime integrity was not checked. |
+| `OCTO_OPERATOR_RUNTIME_MANIFEST_SHA256` | *(empty)* | Independently trusted SHA-256 of that record. A mismatch or unhealthy/mismatched live model makes readiness unavailable. |
 | `OCTO_MCP_ENABLED` | `false` | Expose authenticated read-only tools at `/api/mcp`. Independent of inference enablement. |
 | `OCTO_MCP_ALLOWED_ORIGINS` | *(empty)* | Exact comma-separated browser origins permitted at the MCP endpoint. Native clients may omit Origin. |
 
-`GET /api/operator/status` requires a tenant-authenticated viewer. It reports
-configuration only, with `runtime_status=not_checked`,
-`analysis_available=false`, `task_submission_enabled` as a configuration switch, `quality_status=quality_unverified`, and `durable_sessions_available=true`. This does not prove a worker or model is reachable. It makes
-no provider request and returns no endpoint address or credential. Disabled
+`GET /api/operator/status` requires a tenant-authenticated viewer. Without a
+trusted startup record it reports `runtime_status=not_checked` and
+`analysis_available=false`. With a record, bounded private health/model probes
+check its integrity binding, live alias/context and enabled embedding health;
+invalid or unavailable runtime state remains unavailable. `analysis_available`
+requires verified runtime readiness and the separate worker flag.
+`task_submission_enabled` is a configuration switch, `quality_status` remains
+`quality_unverified`, and `durable_sessions_available=true` describes storage.
+Readiness does not establish model quality or a worker's successful execution.
+No endpoint address or credential is returned. Disabled
 returns 404; invalid enabled configuration returns 503. Startup validates an
 enabled provider configuration before accepting traffic.
 

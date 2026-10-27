@@ -13,7 +13,9 @@
 //   * образ собирается только под нативный linux/arm64, без QEMU-матрицы;
 //   * стадии 'SSH deploy (live sshd)' в ci.yml нет вовсе.
 
-def PIP_CACHE = '-v shapoclyack-pip-cache:/root/.cache/pip'
+def ABORT_SUPERSEDED_BUILDS = env.BRANCH_NAME != 'main'
+
+def PIP_CACHE ='-v shapoclyack-pip-cache:/root/.cache/pip'
 
 // Откуда Linux-узел берёт исходники: SCM-путь джобы локальный, маковский.
 def GITHUB_REPO = 'https://github.com/onixus/Shapoclyack.git'
@@ -58,7 +60,11 @@ pipeline {
 
   options {
     timestamps()
-    disableConcurrentBuilds()
+    // A newer revision supersedes this branch's older validation. Abort the
+    // obsolete run so it cannot hold the exact-head build behind its full suite.
+    // Not on main: a quick follow-up merge must not cancel the build of the
+    // commit before it, which is the record of what main actually passed.
+    disableConcurrentBuilds(abortPrevious: ABORT_SUPERSEDED_BUILDS)
     buildDiscarder(logRotator(numToKeepStr: '20'))
     // 150, а не 90: стадии на gaming-amd64 (~67 минут, pytest на VM вдвое
     // медленнее мака) идут до стадий образа на маке (~31 минута в main #75),
@@ -117,11 +123,13 @@ pipeline {
       agent { label 'gaming-amd64' }
       // timeout в options стадии действует до входа в agent, то есть и на
       // ожидание узла: если хост упал между пробой выше и этой стадией,
-      // сборка не висит в очереди до общего таймаута. 85 минут — ~67 минут
-      // работы стадии плюс запас.
+      // сборка не висит в очереди до общего таймаута. 110 минут: pytest на VM
+      // занимает 75-80 минут (в #607 билд с 76 минутами был в 9 минутах от
+      // прежних 85, а три следующих уже не уложились), плюс запас; вместе с
+      // образом на маке остаётся в общих 150.
       options {
         skipDefaultCheckout()
-        timeout(time: 85, unit: 'MINUTES')
+        timeout(time: 110, unit: 'MINUTES')
       }
       stages {
         stage('Checkout from GitHub') {
@@ -544,7 +552,11 @@ pipeline {
             }
             sh """
               docker run --rm --entrypoint python ${IMAGE_TAG} -c 'import importlib.util; assert importlib.util.find_spec("pip") is None; assert importlib.util.find_spec("ensurepip") is None'
+              # pytest and native probe fixtures write /tmp as the production
+              # scanner user. Keep those small files off the Docker image layer:
+              # a full backing disk caused all seven fixtures to fail at mkdir.
               docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN \
+                --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m,mode=1777 \
                 -v "\$WORKSPACE/tests/test_naabu_live.py":/app/test_naabu_live.py:ro \
                 -v "\$WORKSPACE/tests/test_pd_flags_live.py":/app/test_pd_flags_live.py:ro \
                 -v "\$WORKSPACE/.ci-smoke-pytest":/opt/ci-pytest:ro \

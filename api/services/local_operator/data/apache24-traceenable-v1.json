@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "source_id": "apache24-traceenable-20261025",
+  "kind": "configuration_hardening",
+  "product": "apache_httpd",
+  "version_family": "2.4",
+  "reviewed_at": "2026-10-25T00:00:00Z",
+  "vendor_url": "https://httpd.apache.org/docs/2.4/mod/core.html#traceenable",
+  "primary_source_accessed_at": "2026-10-25",
+  "license": "Apache-2.0",
+  "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+  "content_provenance": "Original bilingual paraphrase of Apache documentation; operator preconditions are Shapoclyack runbook guidance, not vendor requirements.",
+  "preconditions_origin": "shapoclyack_operator_runbook",
+  "directive": "TraceEnable off",
+  "expected_trace_status": 405,
+  "summary": {
+    "en": "Apache 2.4 supports TraceEnable in server or virtual-host configuration. Setting it to off rejects TRACE with 405. The vendor distinguishes this policy choice from a vulnerability in Apache.",
+    "ru": "Apache 2.4 поддерживает TraceEnable в конфигурации сервера или виртуального хоста. Значение off отклоняет TRACE с кодом 405. Поставщик отличает это решение политики от уязвимости Apache."
+  },
+  "operator_preconditions": [
+    "Independently confirm the running Apache 2.4 process and the owning server or virtual host; a remote banner is insufficient.",
+    "Back up the active configuration and record the previous setting before an approved change.",
+    "Validate configuration and reload through the existing administrator runbook; the operator does not execute the change.",
+    "Verify using the same approved TRACE detector with successful HTTP reachability and complete matching plugin coverage.",
+    "Rollback restores the recorded configuration through the approved change procedure; re-enabling TRACE may restore the policy deviation."
+  ]
+}

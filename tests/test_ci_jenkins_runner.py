@@ -13,6 +13,16 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+
+def test_new_branch_revision_supersedes_obsolete_validation_without_skipping_tests():
+    pipeline = (REPO_ROOT / "Jenkinsfile").read_text()
+    # A newer revision of a branch aborts the obsolete run, except on main,
+    # where a merge must not kill a long run that validates an exact head.
+    assert "disableConcurrentBuilds(abortPrevious: ABORT_SUPERSEDED_BUILDS)" in pipeline
+    assert "def ABORT_SUPERSEDED_BUILDS = env.BRANCH_NAME != 'main'" in pipeline
+    assert "for (PY in ['3.11', '3.12'])" in pipeline
+    assert "sh 'scripts/ci-jenkins-tests.sh'" in pipeline
+
 _STUB = r'''
 import json
 import os

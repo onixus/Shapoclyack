@@ -78,3 +78,20 @@ responses, deadlines and sanitized transport failures. No hosted credential is
 used. These checks do not measure runtime availability, model quality, GPU memory,
 throughput, installed artifact provenance or physical deployment behavior.
 `runtime_verified=false` in status communicates that boundary.
+
+With a runtime manifest configured (`OCTO_OPERATOR_RUNTIME_MANIFEST_PATH` and its
+pinned SHA-256) status reports `runtime_status=ready`,
+`manifest_attested=true` and `model_integrity=manifest_attested`. This attests
+that the manifest matches the pinned hash and configuration and that the live
+runtime answers health with the configured model alias and context size. It does
+not re-hash the weights: the manifest and the weights are written by the same
+launcher, so a different server that reports the same alias and `n_ctx` would
+also be reported ready. `runtime_verified` is a deprecated alias of
+`manifest_attested`, removed after one release; the former value
+`model_integrity=verified_at_startup` is replaced by `manifest_attested`.
+
+When a manifest is configured, the worker probes the runtime before every task
+and refuses it with `operator_runtime_not_ready` unless the probe is `ready`;
+there is no silent skip. `GET /api/operator/status` serves the probe from a cache
+(30 s for `ready`, 5 s otherwise, dropped when any `operator_*` setting changes)
+so viewers cannot exhaust the thread pool; the worker never uses the cache.

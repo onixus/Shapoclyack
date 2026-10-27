@@ -130,6 +130,7 @@ _CHECKED_VALUES: dict[tuple[str, str], Any] = {
     ("operator_tasks", "status"): "succeeded",
     ("operator_proposals", "status"): "reserved",
     ("operator_executions", "status"): "reserved",
+    ("operator_embedding_indexes", "scope_kind"): "run",
 }
 
 
@@ -194,6 +195,10 @@ def seed_every_table(settings: Settings, tenant_id: str) -> dict[str, int]:
                 if column.nullable and not column.primary_key:
                     continue
                 row[column.name] = _seed_value(table, column, tenant_id)
+            if table.name == "operator_embedding_indexes":
+                # A vector corpus belongs to either an accepted run snapshot or
+                # an inventory snapshot. The generic FK seed populates both.
+                row["inventory_snapshot_id"] = None
             inserted = session.execute(table.insert().values(row).returning(*keys_)).one()
             for column, value in zip(keys_, inserted):
                 known[(table.name, column.name)] = value

@@ -16,6 +16,7 @@ from api.db import tenant_scope
 from api.db.engine import get_session as get_session_db
 from api.db.models import (
     OperatorMessage,
+    OperatorProposal,
     OperatorSession,
     OperatorTask,
     SessionFamily,
@@ -69,6 +70,7 @@ def _dict(row, *, internal=False):
     result = {c.name: getattr(row, c.name) for c in row.__table__.columns}
     if not internal:
         result.pop("actor_token_version", None)
+        result.pop("payload", None)
     return {
         k: v.isoformat() + "Z" if isinstance(v, datetime) else v
         for k, v in result.items()
@@ -248,7 +250,7 @@ def get_session(settings, tenant_id, username, session_id, *, auth_session_id=No
         if row is None:
             return None
         result = _dict(row)
-        for model, key in ((OperatorMessage, "messages"), (OperatorTask, "tasks")):
+        for model, key in ((OperatorMessage, "messages"), (OperatorTask, "tasks"), (OperatorProposal, "proposals")):
             rows = list(
                 db.scalars(
                     _owned(model, tenant_id, username)
@@ -257,7 +259,11 @@ def get_session(settings, tenant_id, username, session_id, *, auth_session_id=No
                     .limit(100)
                 )
             )
-            result[key] = [_dict(item) for item in reversed(rows)]
+            if key == "proposals":
+                from api.services.local_operator.actions import _view
+                result[key] = [_view(item) for item in reversed(rows) if item.status != "reserved"]
+            else:
+                result[key] = [_dict(item) for item in reversed(rows)]
         return result
 
 
@@ -272,15 +278,28 @@ def submit_task(
     *,
     auth_session_id=None,
     kind="summarize_run",
+    payload=None,
 ):
     if (
-        kind not in {"summarize_run", "analyze_run"}
+        kind not in {"summarize_run", "analyze_run", "plan_request"}
         or language not in {"ru", "en"}
         or not run_id
         or len(run_id) > 256
         or not idempotency_key
         or len(idempotency_key) > 128
     ):
+        raise OperatorStoreError("invalid_input")
+    if kind == "plan_request":
+        from api.services.local_operator.planner import PlanRequest
+
+        try:
+            if set(payload) != {"request", "auth_session_id"} or payload["auth_session_id"] != auth_session_id or not auth_session_id:
+                raise ValueError("invalid binding")
+            payload = {"request": PlanRequest.model_validate(payload["request"]).model_dump(),
+                       "auth_session_id": auth_session_id}
+        except (ValueError, TypeError, KeyError):
+            raise OperatorStoreError("invalid_input") from None
+    elif payload is not None:
         raise OperatorStoreError("invalid_input")
     with _personal_db(settings, tenant_id, username, auth_session_id, writer=True) as db:
         conversation = db.scalar(
@@ -301,7 +320,7 @@ def submit_task(
                 run_id,
                 language,
                 kind,
-            ):
+            ) or previous.payload != payload:
                 raise OperatorStoreError("idempotency_conflict")
             return _dict(previous)
         pending = db.scalar(
@@ -323,6 +342,7 @@ def submit_task(
             session_id=session_id,
             actor_token_version=user.token_version if user else 0,
             kind=kind,
+            payload=payload,
             run_id=run_id,
             language=language,
             idempotency_key=idempotency_key,
@@ -391,7 +411,12 @@ def delete_session(settings, tenant_id, username, session_id, *, auth_session_id
         ):
             raise OperatorStoreError("active_tasks")
         _audit(db, row, "session.delete")
-        # FK CASCADE includes reserved proposals/executions and messages.
+        if db.scalar(select(OperatorProposal.proposal_id).where(
+            OperatorProposal.session_id == session_id,
+            OperatorProposal.tenant_id == tenant_id,
+            OperatorProposal.status.in_(["executing", "unknown"])).limit(1)):
+            raise OperatorStoreError("active_tasks")
+        # Preserve uncertainty evidence until explicit reconciliation.
         db.execute(
             delete(OperatorSession).where(
                 OperatorSession.session_id == session_id,
@@ -439,11 +464,22 @@ def claim_next(settings, owner, lease_seconds=180):
             .limit(1)
         ):
             return None
+        # Round-robin between tenants: the tenant served least recently goes first (one
+        # never served goes before all), then its oldest task. A tenant that fills its
+        # own queue therefore delays others by at most one inference slot.
+        served = (
+            select(OperatorTask.tenant_id.label("tenant_id"),
+                   func.max(OperatorTask.updated_at).label("last_served"))
+            .where(OperatorTask.status.in_(["running", "succeeded", "failed", "interrupted"]))
+            .group_by(OperatorTask.tenant_id)
+            .subquery()
+        )
         row = db.scalar(
             select(OperatorTask)
             .join(Tenant, Tenant.tenant_id == OperatorTask.tenant_id)
+            .outerjoin(served, served.c.tenant_id == OperatorTask.tenant_id)
             .where(OperatorTask.status == "queued", Tenant.status == "active")
-            .order_by(OperatorTask.created_at, OperatorTask.task_id)
+            .order_by(served.c.last_served.asc().nulls_first(), OperatorTask.created_at, OperatorTask.task_id)
             .with_for_update(of=OperatorTask, skip_locked=True)
             .limit(1)
         )

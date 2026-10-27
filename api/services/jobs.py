@@ -235,6 +235,7 @@ def start_scan(
     config_extra: dict[str, Any] | None = None,
     min_overlay_version: int = 1,
     verification_of: str | None = None,
+    expected_admission_sha256: str | None = None,
 ) -> JobInfo:
     return job_submission.start_scan(
         settings,
@@ -250,6 +251,7 @@ def start_scan(
         config_extra=config_extra,
         min_overlay_version=min_overlay_version,
         verification_of=verification_of,
+        expected_admission_sha256=expected_admission_sha256,
     )
 
 

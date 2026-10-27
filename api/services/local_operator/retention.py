@@ -9,14 +9,22 @@ from api.services import audit, legal_hold, retention_policy
 from api.services.local_operator import retrieval
 
 
+def _active_session_work():
+    tasks = exists(select(models.OperatorTask.task_id).where(
+        models.OperatorTask.session_id == models.OperatorSession.session_id,
+        models.OperatorTask.status.in_(["queued", "running"])))
+    effects = exists(select(models.OperatorProposal.proposal_id).where(
+        models.OperatorProposal.session_id == models.OperatorSession.session_id,
+        models.OperatorProposal.status.in_(["executing", "unknown"])))
+    return tasks | effects
+
+
 def sweep(settings, *, limit=20):
     moment = datetime.now(UTC).replace(tzinfo=None)
     with tenant_scope.system("operator history retention"):
         with get_session(settings.postgres_url) as db:
             plan = retention_policy.load_plan(settings, "runs", session=db)
-            active = exists(select(models.OperatorTask.task_id).where(
-                models.OperatorTask.session_id == models.OperatorSession.session_id,
-                models.OperatorTask.status.in_(["queued", "running"])))
+            active = _active_session_work()
             candidates = db.execute(select(models.OperatorSession.session_id, models.OperatorSession.tenant_id)
                 .join(models.Tenant, models.Tenant.tenant_id == models.OperatorSession.tenant_id)
                 .where(retention_policy.expired_clause(plan, tenant_column=models.OperatorSession.tenant_id,
@@ -36,9 +44,7 @@ def sweep(settings, *, limit=20):
                 except legal_hold.LegalHoldActive:
                     continue
                 plan = retention_policy.load_plan(settings, "runs", session=db)
-                active = exists(select(models.OperatorTask.task_id).where(
-                    models.OperatorTask.session_id == models.OperatorSession.session_id,
-                    models.OperatorTask.status.in_(["queued", "running"])))
+                active = _active_session_work()
                 deleted = db.execute(delete(models.OperatorSession).where(
                     models.OperatorSession.session_id == session_id,
                     models.OperatorSession.tenant_id == tenant_id, ~active,

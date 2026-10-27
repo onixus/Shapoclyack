@@ -24,10 +24,11 @@ from api.services.local_operator.contracts import (
     AnswerPayload, Citation, OperatorAnswer, ServerContext,
 )
 from api.services.local_operator.providers import InferenceProvider, OperatorProviderError
+from api.services.local_operator import runtime
 from api.services.local_operator import store as operator_store
 
-PROMPT_VERSION = "run-counts-v1"
-TOOL_VERSION = "published-summary-v1"
+PROMPT_VERSION = "run-counts-v2-grounded"
+TOOL_VERSION = "published-summary-v2-grounded"
 MAX_SOURCE_BYTES = 65536
 ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 COUNT_FIELDS = ("alive_hosts", "open_host_port_pairs", "potential_vulnerabilities",
@@ -43,6 +44,44 @@ class GatewayError(RuntimeError):
 class SummaryText(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     summary: str = Field(min_length=1, max_length=4000)
+
+
+COUNT_LABELS = {
+    "en": {"alive_hosts": "alive hosts", "open_host_port_pairs": "open host/port pairs",
+           "potential_vulnerabilities": "potential finding observations",
+           "unconfirmed_findings": "unconfirmed findings",
+           "vulnerable_hosts": "hosts with vulnerability observations"},
+    "ru": {"alive_hosts": "доступные узлы", "open_host_port_pairs": "открытые пары узел/порт",
+           "potential_vulnerabilities": "потенциальные находки",
+           "unconfirmed_findings": "неподтверждённые находки",
+           "vulnerable_hosts": "узлы с наблюдениями уязвимостей"},
+}
+
+
+def render_count_summary(counts, language):
+    """Server-owned wording reports only present, bounded integer observations."""
+    if (language not in COUNT_LABELS or not isinstance(counts, dict) or not counts
+            or set(counts) - set(COUNT_FIELDS)
+            or any(type(value) is not int or not 0 <= value <= 2**63 - 1 for value in counts.values())):
+        raise ValueError("operator_invalid_summary_counts")
+    prefix = "Сохранённые наблюдения: " if language == "ru" else "Stored observations: "
+    return prefix + "; ".join(f"{COUNT_LABELS[language][key]}={counts[key]}" for key in COUNT_FIELDS if key in counts) + "."
+
+
+def count_summary_schema(expected):
+    schema = SummaryText.model_json_schema()
+    schema["properties"]["summary"] = {"type": "string", "const": expected}
+    return schema
+
+
+def validate_count_summary(raw, expected):
+    """Reject unsupported prose or numbers even if a provider ignores schema."""
+    if not isinstance(raw, str):
+        raise ValueError("operator_invalid_model_output")
+    result = SummaryText.model_validate(_json(raw.encode()))
+    if result.summary != expected:
+        raise ValueError("operator_invalid_model_output")
+    return result
 
 
 def authorize_actor(settings, task) -> TenantPrincipal:
@@ -145,6 +184,15 @@ def read_evidence(settings, principal, run_id):
 async def execute_task(settings, task):
     if not settings.operator_enabled or not settings.operator_worker_enabled:
         raise GatewayError("operator_disabled")
+    if runtime.manifest_configured(settings):
+        # A configured manifest makes readiness mandatory: never infer on a runtime
+        # that is unreachable or does not match the pinned alias/context.
+        state = await run_in_threadpool(runtime.probe, settings)
+        if state["runtime_status"] != "ready":
+            raise GatewayError("operator_runtime_not_ready")
+    if task.get("kind") == "plan_request":
+        from .planner import execute
+        return await execute(settings, task)
     if task.get("kind") == "analyze_run" and task.get("language") in {"ru", "en"}:
         from .analyzer_gateway import execute
         return await execute(settings, task)
@@ -152,27 +200,31 @@ async def execute_task(settings, task):
         raise GatewayError("operator_unsupported_task")
     principal = await run_in_threadpool(authorize_actor, settings, task)
     counts, citation = await run_in_threadpool(read_evidence, settings, principal, task["run_id"])
+    expected = render_count_summary(counts, task["language"])
+    response_schema = count_summary_schema(expected)
     prompt = [
-        {"role": "system", "content": "Return only JSON with one string field summary. Summarize only "
-         "the supplied integer scan counts in the requested language. Counts are stored observations, "
+        {"role": "system", "content": "Return compact JSON with one string field summary. Copy the supplied "
+         "expected_summary exactly; it is server-rendered from the supplied integer scan counts. "
+         "Do not change words or numbers, add prose or add fields. Counts are stored observations, "
          "not proof of exploitation, safety, remediation, ownership, severity or current coverage. "
          "Do not add CVEs, commands, versions, URLs, tools or facts absent from these counts."},
-        {"role": "user", "content": json.dumps({"language": task["language"], "counts": counts}, sort_keys=True)},
+        {"role": "user", "content": json.dumps({"language": task["language"], "counts": counts,
+            "expected_summary": expected}, sort_keys=True)},
     ]
+    prompt_hash = hashlib.sha256(json.dumps({"messages": prompt, "response_schema": response_schema},
+                                            sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     await run_in_threadpool(authorize_actor, settings, task)
     try:
         config = OperatorConfig.from_settings(settings)
         attempt = {"provider": config.provider, "model": config.model,
                    "prompt_version": PROMPT_VERSION, "tool_version": TOOL_VERSION,
-                   "prompt_hash": hashlib.sha256(json.dumps(prompt, sort_keys=True).encode()).hexdigest(),
+                   "prompt_hash": prompt_hash,
                    "source_references": [citation.model_dump(mode="json")]}
         if not await run_in_threadpool(
                 operator_store.record_inference_attempt, settings, task, attempt):
             raise GatewayError("operator_interrupted")
-        output = await InferenceProvider(config).complete(prompt)
-        summary = SummaryText.model_validate(_json(output.content.encode()))
-        if config.api_key:
-            summary.summary = summary.summary.replace(config.api_key, "[redacted]")
+        output = await InferenceProvider(config).complete(prompt, response_schema=response_schema)
+        summary = validate_count_summary(output.content, expected)
     except OperatorProviderError as exc:
         raise GatewayError(exc.args[0]) from None
     except (ValueError, ValidationError, TypeError, RecursionError):
@@ -190,6 +242,6 @@ async def execute_task(settings, task):
             "quality_status": "quality_unverified", "audit": {
                 "provider": output.provider, "model": output.model, "prompt_version": PROMPT_VERSION,
                 "tool_version": TOOL_VERSION,
-                "prompt_hash": hashlib.sha256(json.dumps(prompt, sort_keys=True).encode()).hexdigest(),
+                "prompt_hash": prompt_hash,
                 "output_hash": hashlib.sha256(output.content.encode()).hexdigest(),
                 "source_references": [citation.model_dump(mode="json")]}}

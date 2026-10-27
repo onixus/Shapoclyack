@@ -1,0 +1,23 @@
+# Docker Compose >=2.24.4: replace, never merge, the diagnostic host-file binds.
+# scripts/operator-mac.sh stages and verifies exact GGUF bytes before startup.
+services:
+  inference:
+    volumes: !override
+      - type: volume
+        source: operator_models
+        target: /models
+        read_only: true
+        volume:
+          nocopy: true
+  embeddings:
+    volumes: !override
+      - type: volume
+        source: operator_models
+        target: /models
+        read_only: true
+        volume:
+          nocopy: true
+volumes:
+  operator_models:
+    external: true
+    name: ${OPERATOR_MODELS_VOLUME:?Stage and verify the native model volume first}

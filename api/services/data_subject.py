@@ -108,9 +108,11 @@ SUBJECT_COLUMNS: dict[tuple[str, str], tuple[str, str]] = {
     ("operator_tasks", "username"): (DELETED, "personal AI operator tasks"),
     ("operator_tasks", "actor_token_version"): (DELETED, "account authorization generation captured for queued work"),
     ("operator_tasks", "result"): (DELETED, "personal AI operator results and citations"),
-    ("operator_proposals", "username"): (DELETED, "personal reserved AI proposals"),
-    ("operator_proposals", "payload"): (DELETED, "personal reserved AI proposal content"),
-    ("operator_executions", "username"): (DELETED, "personal reserved AI execution records"),
+    ("operator_tasks", "payload"): (DELETED, "personal operator requests and private console-session binding"),
+    ("operator_proposals", "username"): (DELETED, "personal AI action proposals"),
+    ("operator_proposals", "payload"): (DELETED, "personal AI proposal arguments and confirmation binding"),
+    ("operator_executions", "username"): (DELETED, "personal AI execution records"),
+    ("operator_executions", "payload"): (DELETED, "personal AI action outcomes and reconciliation evidence"),
     ("session_families", "username"): (DELETED, "sign-in sessions and refresh tokens"),
     ("auth_events", "username"): (
         RETAINED,
@@ -225,6 +227,8 @@ SUBJECT_COLUMNS: dict[tuple[str, str], tuple[str, str]] = {
 #: Columns that look like they name an account and do not, so the check in the
 #: test can tell a decision from an omission.
 NOT_SUBJECT_COLUMNS: dict[tuple[str, str], str] = {
+    ("operator_evidence_embeddings", "vector"): "derived minimized tenant evidence vectors; no console identity or raw source text",
+    ("operator_evidence_embeddings", "content"): "allowlisted normalized evidence identifiers for local retrieval; excludes console identity and raw source prose",
     ("operator_evidence_documents", "content"): "derived allowlisted tenant scan facts; no console identity, conversation or raw source text",
     ("service_tokens", "allowed_cidrs"): "integration source network policy; no console account",
     ("agent_deployments", "username"): "the SSH account on the target host",

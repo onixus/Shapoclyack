@@ -1,0 +1,102 @@
+# Local development console for the optional operator. No cloud, scanner or
+# production data. Pinned LOCAL image IDs must already exist on this Mac.
+x-control: &control
+  image: sha256:d0c3811794d5e8ba0ab27e32705c34410ca7e6208c6a34d32a57a9ef6af387bf
+  pull_policy: never
+  working_dir: /app
+  # The owner of .operator-local/state, exported by scripts/operator-console.py.
+  user: "${OPERATOR_STATE_UID:-1000}:${OPERATOR_STATE_GID:-1000}"
+  read_only: true
+  dns: [127.0.0.1]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 256
+  mem_limit: 1g
+  cpus: 1
+  env_file: [.operator-local/console.env]
+  environment:
+    PYTHONDONTWRITEBYTECODE: "1"
+  tmpfs: ["/tmp:rw,noexec,nosuid,size=128m,mode=1777"]
+  volumes:
+    - ./api:/app/api:ro
+    - ./agent:/app/agent:ro
+    - ./scanner/config:/app/scanner/config:ro
+    - ./scanner/pipeline:/app/scanner/pipeline:ro
+    - ./web-next/out:/app/web/dist:ro
+    - ./.operator-local/state:/app/scanner/state
+    - ./.operator-local/output:/app/scanner/output
+    - ./.operator-local/runtime:/run/operator:ro
+  networks: [console]
+services:
+  postgres:
+    image: sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    pull_policy: never
+    env_file: [.operator-local/postgres.env]
+    volumes: [./.operator-local/postgres-data:/var/lib/postgresql/data]
+    networks: [console]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U operator_console -d operator_console"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 1
+  migrate:
+    <<: *control
+    command: [python, -m, api.db.migrate]
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck: {disable: true}
+  api:
+    <<: *control
+    networks:
+      console: {}
+      inference:
+        ipv4_address: 172.30.83.7
+    command: [python, -m, api]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=4)"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    restart: unless-stopped
+  worker:
+    <<: *control
+    command: [python, -m, api.services.local_operator.worker]
+    networks:
+      console: {}
+      inference:
+        ipv4_address: 172.30.83.3
+    healthcheck: {disable: true}
+    depends_on:
+      api: {condition: service_healthy}
+    restart: unless-stopped
+  ingress:
+    image: sha256:d0c3811794d5e8ba0ab27e32705c34410ca7e6208c6a34d32a57a9ef6af387bf
+    pull_policy: never
+    user: "1000:1000"
+    command: [python, /operator-proxy.py]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.5
+    ports: ["127.0.0.1:8083:8080"]
+    volumes: [./scripts/operator-console-proxy.py:/operator-proxy.py:ro]
+    networks: [console, ingress]
+    healthcheck: {disable: true}
+    depends_on:
+      api: {condition: service_healthy}
+    restart: unless-stopped
+networks:
+  console:
+    internal: true
+  ingress: {}
+  inference:
+    external: true
+    name: shapo-operator-offline

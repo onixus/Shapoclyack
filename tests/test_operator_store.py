@@ -266,6 +266,31 @@ def test_pg_concurrent_idempotency_admission_and_global_claim(env):
     assert len({row["task_id"] for row in replayed}) == 1
 
 
+def test_claims_are_round_robin_between_tenants_not_global_fifo(env):
+    settings, tenant, username, transaction = env
+    flooder = store.create_session(settings, tenant, username)["session_id"]
+    queued = [store.submit_task(settings, tenant, username, flooder, f"run-{i}", "ru", f"flood-{i}")
+              for i in range(4)]
+    second_tenant = "operator-second-" + uuid4().hex
+    with transaction(settings.postgres_url) as db:
+        db.add(Tenant(tenant_id=second_tenant, name=second_tenant, created_at=datetime.now(UTC)))
+    try:
+        sid = store.create_session(settings, second_tenant, username)["session_id"]
+        victim = store.submit_task(settings, second_tenant, username, sid, "run-v", "en", "victim")
+        order = []
+        for index in range(5):
+            claimed = store.claim_next(settings, f"owner-{index}")
+            assert claimed is not None
+            order.append(claimed["task_id"])
+            assert store.finish_task(settings, claimed["task_id"], claimed["lease_owner"], result={})
+        # The other tenant gets the second slot, not the fifth; each tenant stays FIFO.
+        assert order == [queued[0]["task_id"], victim["task_id"], queued[1]["task_id"],
+                         queued[2]["task_id"], queued[3]["task_id"]]
+    finally:
+        with transaction(settings.postgres_url) as db:
+            db.execute(delete(Tenant).where(Tenant.tenant_id == second_tenant))
+
+
 def test_pg_one_running_slot_across_distinct_tenants(env):
     settings, tenant, username, transaction = env
     if settings.postgres_url == "sqlite":

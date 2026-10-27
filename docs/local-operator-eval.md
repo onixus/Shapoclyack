@@ -11,6 +11,14 @@ version, risk and other extra fields are rejected. These are proposals for
 human review, never writes to finding priority, risk, ownership or configuration.
 No comparison or remediation claims are supported.
 
+The analyzer requests strict `json_schema` generation from its configured
+provider. The execution schema binds the requested language and each permitted
+source ID/hash/snapshot tuple as server-owned constants; stale sources cannot
+be selected. The schema is bounded and included with the messages in the audit
+prompt digest (prompt/tool version 2). Response validation still runs afterward.
+Unsupported provider schema mode fails without repair or fallback. This affects
+format and reference consistency, not classification quality.
+
 The caller must authorize retrieval and revalidate every selected source after
 inference. This validator does not establish tenant authorization. Every
 selection must match the exact registered ID, hash and snapshot. Duplicate

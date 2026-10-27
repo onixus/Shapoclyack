@@ -52,6 +52,26 @@ def _search(env, role="viewer", **params):
     })
 
 
+def test_summary_citation_opens_exact_current_publication(env):
+    from api.auth import TenantPrincipal
+    from api.services.local_operator.gateway import read_evidence
+
+    client, settings, headers, artifacts, ref = env
+    principal = TenantPrincipal(username="viewer", tenant_id="default", role="viewer", rank=1,
+                                tenant_requested=True, is_platform_admin=False)
+    _, citation = read_evidence(settings, principal, "evidence-run")
+    params = {"tenant_id": "default", "snapshot_id": citation.snapshot_id,
+              "source_hash": citation.source_hash}
+    url = BASE + "/runs/evidence-run/summary"
+    response = client.get(url, headers=headers["viewer"], params=params)
+    assert response.status_code == 200, response.text
+    assert response.json()["context"]["counts"]["alive_hosts"] == 3
+    assert "secret-banner" not in response.text and "private.invalid" not in response.text
+    assert client.get(url, headers=headers["viewer"], params={**params, "source_hash": "0" * 64}).status_code == 409
+    artifacts.put_bytes(keys.run_artifact(ref, "summary.json"), b'{"alive_hosts": 4}')
+    assert client.get(url, headers=headers["viewer"], params=params).status_code == 409
+
+
 def test_tenant_index_shared_by_console_roles_with_bound_citation(env):
     _refresh(env)
     client, _, headers, _, _ = env

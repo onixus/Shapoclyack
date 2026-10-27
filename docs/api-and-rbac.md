@@ -2311,6 +2311,24 @@ Sending happens when a scan finishes, in the process that finished it, and is
 for the migration off the installation-wide `OCTO_SLACK_WEBHOOK` /
 `OCTO_SMTP_*` / `OCTO_DEFECTDOJO_*` variables.
 
+## Local scan operator (`/api/operator/*`)
+
+The optional operator (`OCTO_OPERATOR_ENABLED`) requires a console session (never
+a service token) and an explicit non-blank `tenant_id` on every call. Role
+dependencies are declared on the routes; the services re-check the current grant.
+
+| Route | Role | Notes |
+|---|---|---|
+| `GET /api/operator/status`, `GET /sessions`, `GET /sessions/{id}`, `GET /tasks/{id}` | `viewer` | `status` reads a cached runtime probe (30 s ready / 5 s otherwise) |
+| `GET /api/operator/evidence/search`, `GET /evidence/devices/{id}/search` | `viewer` | With embeddings on, each call spends the tenant's semantic budget (30 per minute per API replica); over budget answers `429 operator_semantic_rate_limited` with `Retry-After` |
+| `POST /sessions`, `DELETE /sessions/{id}`, `POST /sessions/{id}/tasks`, `POST /tasks/{id}/cancel`, `POST /sessions/{id}/proposals`, `GET /proposals/{id}`, `POST /proposals/{id}/confirm` | `operator` | Confirmed actions also need the permission of the underlying action (for example `scan.cancel`) |
+| `POST /api/operator/proposals/{id}/close` | `admin` (tenant) | Closes an `unknown` (or stale `executing`) action with `{"resolution":"no_effect"\|"effect_confirmed"}`; audited as `operator.action.close`; `403` below `admin`, `409` for a settled proposal. See [local-operator-actions.md](local-operator-actions.md#recovery-and-deletion) |
+| `POST /api/operator/remediation/findings/{vuln_id}/applicability-review` | `admin` (tenant) | The dependency is on the route (`403 Admin role required` for `viewer` and `operator` before any service code runs); the service re-checks the current grant |
+
+The inference worker serves queued tasks round-robin between tenants (the tenant
+served least recently first, FIFO within a tenant), so one tenant filling its
+`OCTO_OPERATOR_QUEUE_LIMIT` delays another by at most one inference slot.
+
 ## Operational endpoints
 
 Outside `/api`, unauthenticated by default and deliberately outside the

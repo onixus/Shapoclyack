@@ -93,12 +93,32 @@ def operator_writer(context: Reader) -> OperatorContext:
 Writer = Annotated[OperatorContext, Depends(operator_writer)]
 
 
+def operator_admin(context: Reader) -> OperatorContext:
+    if not context.principal.at_least(Role.admin):
+        raise HTTPException(status_code=403, detail="Admin role required")
+    return context
+
+
+Admin = Annotated[OperatorContext, Depends(operator_admin)]
+
+
 class OperatorStatus(BaseModel):
     enabled: bool
     provider: str
     model: str
     external_inference: bool
-    runtime_status: Literal["not_checked"] = "not_checked"
+    runtime_status: Literal["not_checked", "ready", "unavailable"] = "not_checked"
+    # Deprecated alias of ``manifest_attested``; removed after one release.
+    runtime_verified: bool = False
+    manifest_attested: bool = False
+    model_integrity: Literal["not_checked", "manifest_attested"] = "not_checked"
+    model_sha256: str | None = None
+    runtime_revision: str | None = None
+    runtime_image: str | None = None
+    context_tokens: int | None = None
+    parallel: int | None = None
+    verified_at: str | None = None
+    profile: str | None = None
     analysis_available: bool = False
     analysis_task_supported: bool = True
     task_submission_enabled: bool = False
@@ -165,12 +185,16 @@ def operator_status(principal: Principal, settings: OperatorSettings) -> Operato
         raise HTTPException(
             status_code=503, detail="Operator configuration is invalid"
         ) from None
+    from api.services.local_operator.runtime import probe_cached
+    runtime = probe_cached(settings)
     return OperatorStatus(
         enabled=True,
         provider=config.provider,
         model=config.model,
         external_inference=config.provider != "local",
         task_submission_enabled=getattr(settings, "operator_worker_enabled", False),
+        analysis_available=runtime["runtime_status"] == "ready" and settings.operator_worker_enabled,
+        **runtime,
     )
 
 

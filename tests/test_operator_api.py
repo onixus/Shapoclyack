@@ -290,3 +290,75 @@ def test_authenticated_read_cannot_inherit_recreated_accounts_history(env, monke
     assert captured["sid"]
     assert response.status_code == 403, response.text
     assert captured["replacement_session"] not in response.text
+
+
+def test_status_probe_is_cached_so_viewers_cannot_exhaust_the_thread_pool(env, monkeypatch):
+    from api.services.local_operator import runtime
+
+    client, settings, admin, operator = env
+    viewer = auth_headers(client, "viewer")
+    calls = []
+    clock = [1000.0]
+
+    def counted(_settings):
+        calls.append(1)
+        return {"runtime_status": "ready", "runtime_verified": True, "manifest_attested": True,
+                "model_integrity": "manifest_attested"}
+
+    monkeypatch.setattr(runtime, "probe", counted)
+    monkeypatch.setattr(runtime, "monotonic", lambda: clock[0])
+    runtime.reset_cache()
+    for _ in range(25):
+        response = client.get("/api/operator/status?tenant_id=default", headers=viewer)
+        assert response.status_code == 200, response.text
+        assert response.json()["manifest_attested"] is True
+        assert response.json()["runtime_verified"] is True  # deprecated alias
+    assert len(calls) == 1
+    clock[0] += runtime.STATUS_TTL_SECONDS - 1
+    client.get("/api/operator/status?tenant_id=default", headers=viewer)
+    assert len(calls) == 1
+    clock[0] += 2
+    client.get("/api/operator/status?tenant_id=default", headers=viewer)
+    assert len(calls) == 2
+    runtime.reset_cache()
+    client.get("/api/operator/status?tenant_id=default", headers=viewer)
+    assert len(calls) == 3
+    runtime.reset_cache()
+
+
+def test_status_cache_is_dropped_when_operator_configuration_changes(monkeypatch):
+    from types import SimpleNamespace
+    from api.services.local_operator import runtime
+
+    calls = []
+    monkeypatch.setattr(runtime, "probe", lambda s: calls.append(s.operator_model) or {"runtime_status": "ready"})
+    runtime.reset_cache()
+    first = SimpleNamespace(operator_model="a", operator_runtime_manifest_sha256="1" * 64, unrelated=1)
+    runtime.probe_cached(first)
+    runtime.probe_cached(first)
+    first.unrelated = 2
+    runtime.probe_cached(first)
+    assert calls == ["a"]
+    first.operator_model = "b"
+    runtime.probe_cached(first)
+    assert calls == ["a", "b"]
+    runtime.reset_cache()
+
+
+def test_failed_probe_is_cached_only_briefly(monkeypatch):
+    from types import SimpleNamespace
+    from api.services.local_operator import runtime
+
+    clock = [0.0]
+    calls = []
+    monkeypatch.setattr(runtime, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(runtime, "probe", lambda s: calls.append(1) or {"runtime_status": "unavailable"})
+    runtime.reset_cache()
+    settings = SimpleNamespace(operator_model="x")
+    runtime.probe_cached(settings)
+    runtime.probe_cached(settings)
+    assert len(calls) == 1
+    clock[0] += runtime.FAILURE_TTL_SECONDS + 0.1
+    runtime.probe_cached(settings)
+    assert len(calls) == 2
+    runtime.reset_cache()

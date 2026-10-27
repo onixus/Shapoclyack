@@ -1,6 +1,7 @@
 import {
   Archive,
   BookText,
+  Bot,
   Building2,
   CircleGauge,
   ClipboardCheck,
@@ -183,6 +184,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         hintKey: "nav.hint.jobs",
       },
       { href: "/runs", labelKey: "nav.runs", icon: FileText, hintKey: "nav.hint.runs" },
+      { href: "/operator", labelKey: "nav.operator", icon: Bot, hintKey: "nav.hint.operator" },
       {
         href: "/schedules",
         labelKey: "nav.schedules",

@@ -11,6 +11,55 @@ import httpx
 
 from .config import OperatorConfig
 
+MAX_SCHEMA_BYTES = 65536
+MAX_SCHEMA_NODES = 16384
+
+
+def _response_format(schema: dict) -> dict:
+    """Copy a bounded service-owned schema before entering the transport.
+
+    The schema constrains generation; the caller must still validate every
+    response. In particular, this never turns model-selected references into
+    authorized evidence. External schema references are not a network tool.
+    """
+    if not isinstance(schema, dict) or schema.get("type") != "object":
+        raise OperatorProviderError("invalid_operator_response_schema")
+    pending = [(schema, 0)]
+    nodes = 0
+    text_size = 0
+    while pending:
+        value, depth = pending.pop()
+        nodes += 1
+        if depth > 32 or nodes > MAX_SCHEMA_NODES:
+            raise OperatorProviderError("operator_response_schema_too_large")
+        if isinstance(value, dict):
+            if any(not isinstance(key, str) for key in value):
+                raise OperatorProviderError("invalid_operator_response_schema")
+            text_size += sum(len(key) for key in value)
+            if "$ref" in value and (not isinstance(value["$ref"], str) or not value["$ref"].startswith("#")):
+                raise OperatorProviderError("invalid_operator_response_schema")
+            if len(value) > MAX_SCHEMA_NODES - nodes:
+                raise OperatorProviderError("operator_response_schema_too_large")
+            pending.extend((item, depth + 1) for item in value.values())
+        elif isinstance(value, (list, tuple)):
+            if len(value) > MAX_SCHEMA_NODES - nodes:
+                raise OperatorProviderError("operator_response_schema_too_large")
+            pending.extend((item, depth + 1) for item in value)
+        elif isinstance(value, str):
+            text_size += len(value)
+        if text_size > MAX_SCHEMA_BYTES:
+            raise OperatorProviderError("operator_response_schema_too_large")
+    try:
+        encoded = json.dumps(schema, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+        if len(encoded) > MAX_SCHEMA_BYTES:
+            raise OperatorProviderError("operator_response_schema_too_large")
+        copied = json.loads(encoded)
+    except (ValueError, TypeError, RecursionError, UnicodeError):
+        raise OperatorProviderError("invalid_operator_response_schema") from None
+    return {"type": "json_schema", "json_schema": {
+        "name": "operator_response", "strict": True, "schema": copied,
+    }}
+
 
 class OperatorProviderError(RuntimeError):
     """Only stable error codes escape the transport boundary."""
@@ -28,7 +77,7 @@ class InferenceProvider:
         self.config = config
         self._transport = transport
 
-    async def complete(self, messages: Sequence[dict[str, str]]) -> Completion:
+    async def complete(self, messages: Sequence[dict[str, str]], *, response_schema: dict | None = None) -> Completion:
         config = self.config
         if not config.enabled:
             raise OperatorProviderError("operator_disabled")
@@ -47,6 +96,8 @@ class InferenceProvider:
         if config.api_key:
             headers["Authorization"] = "Bearer " + config.api_key
         payload = {"model": config.model, "messages": cleaned, "max_tokens": config.max_output_tokens, "stream": False}
+        if response_schema is not None:
+            payload["response_format"] = _response_format(response_schema)
         try:
             # The outer deadline bounds the complete exchange, including slow-drip bodies.
             async with asyncio.timeout(config.timeout_seconds):

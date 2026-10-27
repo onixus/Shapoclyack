@@ -1,0 +1,4 @@
+# Local AI weights and credentials are supplied as explicit runtime mounts.
+# Never send either directory to a Docker build context or release image.
+.operator-models
+.operator-local

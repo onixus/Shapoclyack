@@ -788,7 +788,7 @@ def test_the_database_source_forwards_oldest_first_and_keeps_its_place(sqlite_se
     assert len(sock.written) == 2
 
 
-def test_a_row_committed_out_of_id_order_is_not_skipped_forever(sqlite_settings):
+def test_a_row_committed_out_of_id_order_is_not_skipped_forever(sqlite_settings, monkeypatch):
     """The failure a cursor on ``id`` alone has, and this one must not.
 
     Two concurrent requests can take their ids in one order and commit in the
@@ -815,6 +815,9 @@ def test_a_row_committed_out_of_id_order_is_not_skipped_forever(sqlite_settings)
     source = forwarder.DatabaseSource(config=config, client=client)
 
     now = datetime.now(UTC).replace(tzinfo=None)
+    # Scheduling/commit stalls must not age the younger row across the lag
+    # boundary. This test controls ordering, not wall-clock throughput.
+    monkeypatch.setattr(forwarder, "_naive_now", lambda: now)
     with get_session(sqlite_settings.postgres_url) as session:
         # id 1 is the *younger* row: recorded 5s ago, so inside the lag window.
         session.add(_audit_row("late-committer", now - timedelta(seconds=5)))

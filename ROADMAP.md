@@ -804,14 +804,24 @@ and [ADR 0004](docs/adr/0004-local-operator.md). Optional inference-provider and
 MCP read adapters ([#597](https://github.com/onixus/Shapoclyack/issues/597),
 [#596](https://github.com/onixus/Shapoclyack/issues/596)) are implemented in this
 change. A durable worker, exact/full-text retrieval and selection-only analysis
-are implemented as bounded pilots; local runtime, semantic retrieval, measured
-model quality, confirmed scan/remediation execution, console and final acceptance
-(#585–#593) remain open. The default
+are implemented as bounded pilots. Confirmed scan/cancel/verification proposals,
+vendor-backed remediation cards, published-run comparison and the optional
+`/operator` console are now implemented. A separate
+[Mac CPU inference container](docs/local-operator-mac.md) and
+[offline integrity verifier](docs/local-operator-bundle.md) retain the pinned
+9B Q4_K_M model and 8192 context. Hybrid exact/full-text/semantic retrieval and
+bounded natural-language intent selection are implemented. Measured domain quality,
+offline cold start and deployment acceptance (#585–#593) remain open
+until their evidence gates pass. The default
 is local offline operation with the optional inference adapter disabled;
 OpenRouter and an explicitly configured OmniRouter-compatible endpoint require
-hosted-provider opt-in. Qwen3.5-9B Q4_K_M / 8 GiB CUDA / 8192 context is a candidate
-baseline, **hardware-unverified**. Adapter and contract tests do not establish
-model quality, live provider access or deployed assistant acceptance.
+hosted-provider opt-in. [ADR 0005](docs/adr/0005-local-operator-mac-acceptance.md)
+records the owner's primary Mac ARM64 CPU container profile; physical NVIDIA
+8 GiB acceptance is separate [#609](https://github.com/onixus/Shapoclyack/issues/609).
+Adapter and contract tests do not establish
+model quality, live provider access or deployed assistant acceptance. The quality
+gate reports `exposed_only` (not passed) while every case was seen in development,
+and Kubernetes deployment of the operator is unsupported.
 
 ### Not doing, and why
 

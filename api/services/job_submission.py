@@ -224,6 +224,7 @@ def start_scan(
     config_extra: dict[str, Any] | None = None,
     min_overlay_version: int = 1,
     verification_of: str | None = None,
+    expected_admission_sha256: str | None = None,
 ) -> JobInfo:
     """Admit, persist and dispatch one new scan job.
 
@@ -299,6 +300,9 @@ def start_scan(
         quota_exempt=quota_exempt,
         widen_with_promoted=widen_with_promoted,
     )
+    if expected_admission_sha256 is not None and scan_admission.admission_digest(
+            admission, execution=execution) != expected_admission_sha256:
+        raise ValueError("Confirmed scan admission changed; prepare a new proposal")
     tenant_id = admission.tenant_id
     scope = admission.scope
     promoted_admitted = list(admission.promoted_admitted)

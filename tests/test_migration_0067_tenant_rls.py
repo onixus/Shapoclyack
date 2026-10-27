@@ -60,6 +60,9 @@ ADDED_LATER = {
     # Published evidence index arrives in 0098, also with its own policies.
     "operator_evidence_snapshots",
     "operator_evidence_documents",
+    # CPU semantic indexes arrive in 0102 with their own tenant policies.
+    "operator_embedding_indexes",
+    "operator_evidence_embeddings",
 }
 
 

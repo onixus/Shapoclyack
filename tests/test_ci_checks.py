@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -16,6 +17,22 @@ SCRIPTS = REPO_ROOT / "scripts"
 JENKINSFILE = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
 CI_WORKFLOW = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 PR_GATE_WORKFLOW = (REPO_ROOT / ".github/workflows/pr-gate.yml").read_text(encoding="utf-8")
+
+
+def test_production_probe_smoke_has_bounded_nonroot_writable_temporary_storage():
+    invocation = JENKINSFILE.index("python -m pytest -p no:cacheprovider test_naabu_live.py")
+    command_start = JENKINSFILE.rfind("docker run ", 0, invocation)
+    command = JENKINSFILE[command_start:invocation].split(" -c '", 1)[0]
+    argv = shlex.split(command.replace("\\\n", " "))
+    mounts = [argv[index + 1] for index, value in enumerate(argv) if value == "--tmpfs"]
+    temporary = next((value.split(":", 1)[1] for value in mounts if value.startswith("/tmp:")), None)
+    assert temporary is not None, "pytest fixtures must not depend on Docker writable-layer free space"
+    options = dict(item.split("=", 1) if "=" in item else (item, True) for item in temporary.split(","))
+    assert options.get("rw") and {"nosuid", "nodev", "noexec"} <= options.keys()
+    assert options.get("mode") == "1777", "the image's scanner user must be able to create pytest directories"
+    size = re.fullmatch(r"([1-9][0-9]*)m", str(options.get("size")))
+    assert size and int(size[1]) <= 256, "temporary files must have an explicit small memory bound"
+    assert not {"--user", "-u"} & set(argv), "smoke must retain the production image user"
 
 
 # --- shared CI scripts -----------------------------------------------------
