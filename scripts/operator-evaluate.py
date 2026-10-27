@@ -673,7 +673,8 @@ def unsupported_model_fields(case, record):
         return 0
     if not isinstance(raw, dict):
         return 0
-    allowed = {"language", "summary", "recommendations"} if "retrieval" in case else {"tool"}
+    allowed = ({"language", "summary", "recommendations"} if "retrieval" in case
+               else set(planner.IntentChoice.model_fields))
     count = len(set(raw) - allowed)
     if "retrieval" in case:
         if "summary" in raw and (not isinstance(raw["summary"], str) or raw["summary"] not in {"review_required", "insufficient_evidence"}):
@@ -682,6 +683,11 @@ def unsupported_model_fields(case, record):
         for item in items if isinstance(items, list) else []:
             if isinstance(item, dict):
                 count += len(set(item) - {"source_ref", "category", "proposed_priority", "next_steps"})
+    else:
+        mentions = raw.get("mentions", [])
+        for item in mentions if isinstance(mentions, list) else []:
+            if isinstance(item, dict):
+                count += len(set(item) - set(planner.Mention.model_fields))
     return count
 
 

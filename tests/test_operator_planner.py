@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from api.services.local_operator import planner, providers, store, worker
 from tests.conftest import auth_headers, configured_client, make_settings, requires_postgres
+from tests.operator_planner_wire import intent_wire
 
 
 @pytest.mark.parametrize("tool,context", [
@@ -19,11 +20,12 @@ from tests.conftest import auth_headers, configured_client, make_settings, requi
 ])
 def test_model_selects_only_tool_server_owns_arguments(tool, context):
     request = planner.PlanRequest(request="requested operation", context=context)
-    result = planner.validate_output(json.dumps({"tool": tool}), request)
+    kind = "finding" if tool == "find_remediation" and "vuln_id" in context else None
+    result = planner.validate_output(intent_wire(tool, kind), request)
     assert result["arguments"] == planner.available_tools(request)[tool]
     assert result["effect_executed"] is False
     assert result["requires_confirmation"] == (tool in {"prepare_scan", "cancel_scan", "verify_finding"})
-    assert tool in planner.output_schema(request)["properties"]["tool"]["enum"]
+    assert tool in planner.output_schema(request)["properties"]["intent"]["enum"]
 
 
 @pytest.mark.parametrize("raw", ['{"tool":"shell"}', '{"tool":"cancel_scan"}',
@@ -37,8 +39,8 @@ def test_closed_output_cannot_invent_tools_or_context(raw):
 
 def test_empty_context_requires_abstention_and_never_leaks_scan_arguments():
     request = planner.PlanRequest(request="help", context={})
-    assert planner.output_schema(request)["properties"]["tool"]["enum"] == ["abstain"]
-    assert planner.validate_output('{"tool":"abstain"}', request)["status"] == "unsupported"
+    assert planner.validate_output(intent_wire("analyze_run"), request)["tool"] == "abstain"
+    assert planner.validate_output(intent_wire("abstain"), request)["status"] == "unsupported"
     request = planner.PlanRequest(request="scan", context={"scan": {"ranges": "192.0.2.77", "ports": "443"}})
     assert "192.0.2.77" not in json.dumps(planner.build_prompt(request))
 
@@ -81,8 +83,8 @@ def test_durable_planner_worker_history_cancel_and_ownership(tmp_path, monkeypat
     calls = []
     async def complete(self, messages, *, response_schema=None):
         calls.append((messages, response_schema))
-        assert response_schema["properties"]["tool"]["enum"] == ["abstain"]
-        return providers.Completion('{"tool":"abstain"}', "local", "test")
+        assert "abstain" in response_schema["properties"]["intent"]["enum"]
+        return providers.Completion(intent_wire("abstain"), "local", "test")
     monkeypatch.setattr(planner.gateway.InferenceProvider, "complete", complete)
     path = f"/api/operator/sessions/{session}/plan?tenant_id=default"
     body = {"request": "Install packages automatically", "language": "en", "context": {}}

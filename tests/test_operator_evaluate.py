@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from api.services.local_operator import analysis, planner
+from tests.operator_planner_wire import intent_wire
 
 PATH = Path(__file__).parents[1] / "scripts/operator-evaluate.py"
 SPEC = importlib.util.spec_from_file_location("operator_evaluate", PATH)
@@ -144,11 +145,29 @@ def record_from_gold(case):
         record["model_content"] = json.dumps(raw)
         record["result"] = analysis.validate_output(record["model_content"], case["language"], analysis.bind(case["retrieval"]))
     else:
-        record["model_content"] = json.dumps({"tool": case["gold"]["tool"]})
+        record["model_content"] = intent_wire(case["gold"]["tool"])
         record["result"] = planner.validate_output(record["model_content"], planner.PlanRequest.model_validate(case["planner_request"]))
         if case["kind"] == "remediation":
             record["domain_result"] = evaluation.domain_remediation(case)
     return record
+
+
+def test_contextfree_intent_wire_is_closed_in_unsupported_claim_accounting():
+    case = {"kind": "planning"}
+    raw = json.loads(intent_wire("cancel_scan"))
+    assert evaluation.unsupported_model_fields(case, {"model_content": json.dumps(raw)}) == 0
+    raw["arguments"] = {"job_id": "model-owned"}
+    assert evaluation.unsupported_model_fields(case, {"model_content": json.dumps(raw)}) == 1
+    with pytest.raises(evaluation.planner.gateway.GatewayError):
+        planner.validate_output(json.dumps(raw), planner.PlanRequest(request="Cancel selected job.", context={"job_id": "server-owned"}))
+
+
+def test_contextfree_literal_spans_cannot_smuggle_identity_fields():
+    raw = json.loads(intent_wire("cancel_scan", selector="explicit", mentions=[
+        {"start": 0, "end": 9, "job_id": "model-owned"}]))
+    assert evaluation.unsupported_model_fields({"kind": "planning"}, {"model_content": json.dumps(raw)}) == 1
+    with pytest.raises(evaluation.planner.gateway.GatewayError):
+        planner.validate_output(json.dumps(raw), planner.PlanRequest(request="job-larch", context={"job_id": "job-larch"}))
 
 
 def test_frozen_scenario_composition_and_labels_independent_of_model_outputs():

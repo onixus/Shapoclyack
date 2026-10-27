@@ -356,3 +356,36 @@ claims and separate quality/load gates. This is synthetic engineering
 acceptance, not external domain certification, and it cannot establish absence
 of pretraining contamination. A failed holdout becomes exposed regression data;
 revising its gold, selecting only successes or rerunning it cannot make it unseen.
+
+### Context-free planner intent and typed resolution
+
+`operator-contextfree-intent-v4` uses one inference to parse requested semantics,
+not to select from the currently bound resources. The model sees only the
+credential-minimized request and language, a closed operation/subject contract,
+and literal identifier spans. Changing selected run/device/job/finding IDs or
+scan scope cannot change this prompt or schema. The parser supplies an intent,
+subject kind, contextual/explicit selector and zero-based Unicode character spans
+for identifiers explicitly present in the minimized request; it supplies no
+action arguments.
+
+The server resolves those assertions against existing typed context. Missing or
+wrong kinds and unmatched explicit identities produce an unsupported plan.
+Remediation for a device and remediation for a finding are separate variants;
+neither falls back to the other. Literal spans must be complete canonical IDs,
+within the request and non-overlapping. Comparisons require the exact two bound
+run IDs; server current/previous roles remain fixed. Explicit scan-scope literals
+cannot override the selected scan template. Malformed spans or extra model
+arguments fail validation. Public request/result fields, current source/session
+authorization, proposal-only behavior and separate action confirmation remain.
+
+This proves consistency with the **parsed assertion**, not perfect understanding
+of arbitrary Russian or English. A model can still misclassify a subject, omit
+an explicitly named identifier or miscount character offsets. The server cannot
+detect every such semantic omission without an independent authoritative typed
+subject selected by the human. No lexical failure-case rules, second inference,
+gold changes or automatic semantic repair are used. Unit fixtures prove resolver
+and privacy properties only; real model regression must establish quality.
+The exposed original190 remains unchanged. A new prompt/schema changes actual
+model input projections, so a blind candidate requires a fresh pre-output
+projection/collision review, exact policy digest adoption and source freeze;
+an older policy digest must never silently authorize the new wire.
