@@ -108,13 +108,13 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
   const overrideCount = paths.filter(isOverridden).length;
 
   return (
-    <Card className="rounded-xl border border-border bg-card p-6 shadow-lg backdrop-blur">
+    <Card className="rounded-xl border border-border bg-card p-6">
       <div className="flex items-center justify-between">
         <Title className="text-sm font-bold uppercase tracking-wider text-foreground">{t("ui.scannerConfigurationTuner")}</Title>
         {overrideCount > 0 ? (
-          <Badge variant="secondary" className="bg-amber-500/20 text-amber-600 dark:text-amber-300 border-amber-500/30 font-mono text-[11px]">{overrideCount} overridden</Badge>
+          <Badge variant="secondary" className="bg-amber-500/20 text-amber-600 dark:text-amber-300 border-amber-500/30 font-mono text-xs">{overrideCount} overridden</Badge>
         ) : (
-          <Badge variant="outline" className="border-border text-muted-foreground font-mono text-[11px]">defaults</Badge>
+          <Badge variant="outline" className="border-border text-muted-foreground font-mono text-xs">defaults</Badge>
         )}
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
@@ -237,7 +237,7 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
 
       {canEdit ? (
         <div className="mt-6 flex gap-2 pt-4 border-t border-border">
-          <Button onClick={save} disabled={update.isPending} className="bg-sky-600 hover:bg-sky-500 text-foreground font-semibold text-xs">
+          <Button onClick={save} disabled={update.isPending} className="font-semibold text-xs">
             {update.isPending ? "Saving…" : "Save Overrides"}
           </Button>
           <Button variant="outline" onClick={resetToDefaults} disabled={update.isPending || overrideCount === 0} className="border-border bg-muted text-foreground hover:bg-muted text-xs">

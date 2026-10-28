@@ -43,7 +43,7 @@ export function FindingsList({
         const isExpanded = Boolean(expanded[sev]);
         const visible = isExpanded ? items : items.slice(0, FINDINGS_GROUP_PREVIEW);
         return (
-          <section key={sev} className="overflow-hidden rounded-xl border border-border bg-card shadow-lg backdrop-blur">
+          <section key={sev} className="overflow-hidden rounded-xl border border-border bg-card">
             <div className="flex items-center justify-between border-b border-border px-4 py-3 bg-muted">
               <div className="flex items-center gap-2">
                 <StatusBadge value={sev} map={SEVERITY_STATUS} />
@@ -69,19 +69,19 @@ export function FindingsList({
                         ) : null}
                         {item.requires_confirmation ? (
                           <span
-                            className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-600 dark:text-amber-300"
+                            className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-overline font-semibold uppercase text-amber-600 dark:text-amber-300"
                             title="The scanner could not confirm this finding — treat it as triage signal, not a confirmed vulnerability."
                           >
                             unconfirmed
                           </span>
                         ) : null}
                         {item.in_kev ? (
-                          <span className="rounded border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-rose-600 dark:text-rose-300">
+                          <span className="rounded border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 text-overline font-semibold uppercase text-rose-600 dark:text-rose-300">
                             KEV
                           </span>
                         ) : null}
                       </p>
-                      <p className="font-mono text-[11px] text-muted-foreground mt-0.5">
+                      <p className="font-mono text-xs text-muted-foreground mt-0.5">
                         {item.host || "unknown host"}
                         {formatLocation(item) ? ` · ${formatLocation(item)}` : ""}
                       </p>
@@ -91,13 +91,13 @@ export function FindingsList({
                       {item.remediation ? <p className="mt-1 text-foreground">Remediation: {item.remediation}</p> : null}
                       {item.finding_evidence ? <FindingEvidencePanel evidence={item.finding_evidence} /> : null}
                       {item.risk_explanation ? (
-                        <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                           {item.risk_explanation}
                         </p>
                       ) : null}
                     </div>
                     <div className="text-right">
-                      <span className="font-mono text-[11px] font-semibold text-foreground">
+                      <span className="font-mono text-xs font-semibold text-foreground">
                         {item.cvss4 != null
                           ? `CVSS4 ${item.cvss4}`
                           : item.cvss != null
@@ -105,7 +105,7 @@ export function FindingsList({
                             : sev.toUpperCase()}
                       </span>
                       {item.contextual_score != null ? (
-                        <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">
+                        <p className="mt-0.5 font-mono text-xs text-muted-foreground">
                           risk {item.contextual_score.toFixed(1)}
                           {item.cisa_decision ? ` · ${item.cisa_decision}` : ""}
                         </p>

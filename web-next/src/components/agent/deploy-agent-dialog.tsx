@@ -197,7 +197,7 @@ export function DeployAgentDialog() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button className="gap-2 bg-gradient-to-r from-sky-500 to-indigo-600 font-semibold text-foreground shadow-md shadow-sky-950/20 hover:from-sky-400 hover:to-indigo-500">
+        <Button className="gap-2 font-semibold">
           <Server className="h-4 w-4" />
           Deploy Sensor
         </Button>
@@ -463,16 +463,16 @@ export function DeployAgentDialog() {
                         {deployStatus?.status === "installing" || deployStatus?.status === "connecting" || deployStatus?.status === "verifying" ? (
                           <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-500" />
                         ) : deployStatus?.status === "completed" ? (
-                          <span className="rounded bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                          <span className="rounded bg-emerald-500/20 px-2 py-0.5 text-xs font-bold text-emerald-600 dark:text-emerald-400">
                             SUCCESS
                           </span>
                         ) : deployStatus?.status === "failed" ? (
-                          <span className="rounded bg-rose-500/20 px-2 py-0.5 text-[10px] font-bold text-rose-600 dark:text-rose-400">
+                          <span className="rounded bg-rose-500/20 px-2 py-0.5 text-xs font-bold text-rose-600 dark:text-rose-400">
                             FAILED
                           </span>
                         ) : null}
                       </div>
-                      <p className="text-[11px] text-muted-foreground mt-0.5">Target: {host}:{port}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">Target: {host}:{port}</p>
                     </div>
 
                     <Button
@@ -489,7 +489,7 @@ export function DeployAgentDialog() {
                   {/* Progress Bar */}
                   <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
                     <div
-                      className="h-full bg-gradient-to-r from-sky-500 to-emerald-500 transition-all duration-300"
+                      className="h-full bg-primary transition-all duration-300"
                       style={{ width: `${deployStatus?.progress_percent ?? 10}%` }}
                     />
                   </div>
@@ -537,7 +537,7 @@ export function DeployAgentDialog() {
                     size="sm"
                     variant="outline"
                     onClick={() => handleCopy(snippets?.systemd_oneliner || "", "systemd")}
-                    className="h-7 border-border bg-muted text-xs text-foreground hover:bg-slate-700"
+                    className="h-7 border-border bg-muted text-xs text-foreground hover:bg-accent"
                   >
                     {copiedKey === "systemd" ? (
                       <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
@@ -571,7 +571,7 @@ export function DeployAgentDialog() {
                       size="sm"
                       variant="outline"
                       onClick={() => handleCopy(snippets?.docker_run || "", "docker")}
-                      className="h-7 border-border bg-muted text-xs text-foreground hover:bg-slate-700"
+                      className="h-7 border-border bg-muted text-xs text-foreground hover:bg-accent"
                     >
                       {copiedKey === "docker" ? <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
                       {copiedKey === "docker" ? "Copied!" : "Copy"}
@@ -589,7 +589,7 @@ export function DeployAgentDialog() {
                       size="sm"
                       variant="outline"
                       onClick={() => handleCopy(snippets?.docker_compose || "", "compose")}
-                      className="h-7 border-border bg-muted text-xs text-foreground hover:bg-slate-700"
+                      className="h-7 border-border bg-muted text-xs text-foreground hover:bg-accent"
                     >
                       {copiedKey === "compose" ? <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
                       {copiedKey === "compose" ? "Copied!" : "Copy"}
@@ -619,7 +619,7 @@ export function DeployAgentDialog() {
                     size="sm"
                     variant="outline"
                     onClick={() => handleCopy(snippets?.kubernetes_yaml || "", "k8s")}
-                    className="h-7 border-border bg-muted text-xs text-foreground hover:bg-slate-700"
+                    className="h-7 border-border bg-muted text-xs text-foreground hover:bg-accent"
                   >
                     {copiedKey === "k8s" ? <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
                     {copiedKey === "k8s" ? "Copied!" : "Copy"}
@@ -638,7 +638,7 @@ export function DeployAgentDialog() {
                     size="sm"
                     variant="outline"
                     onClick={() => handleCopy(snippets?.kubernetes_secret_command || "", "k8s-secret")}
-                    className="h-7 border-border bg-muted text-xs text-foreground hover:bg-slate-700"
+                    className="h-7 border-border bg-muted text-xs text-foreground hover:bg-accent"
                   >
                     {copiedKey === "k8s-secret" ? <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
                     {copiedKey === "k8s-secret" ? "Copied!" : "Copy"}

@@ -384,12 +384,12 @@ function UsersTab({ t, signedInAs }: { t: Translate; signedInAs: string }) {
           <div className="flex items-center gap-2">
             <span className="font-mono font-semibold text-foreground">{row.original.username}</span>
             {row.original.username === signedInAs ? (
-              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              <span className="text-overline uppercase text-muted-foreground">
                 {t("users.you")}
               </span>
             ) : null}
             {row.original.sso_linked ? (
-              <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
+              <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-xs font-semibold text-muted-foreground">
                 {t("users.ssoLinked")}
               </span>
             ) : null}
@@ -431,7 +431,7 @@ function UsersTab({ t, signedInAs }: { t: Translate; signedInAs: string }) {
             <div className="flex items-center gap-2">
               <span className="text-sm text-foreground">{row.original.email}</span>
               {row.original.email_verified ? (
-                <span className="text-[10px] uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                <span className="text-overline uppercase text-emerald-600 dark:text-emerald-400">
                   {t("users.emailVerified")}
                 </span>
               ) : null}
@@ -452,7 +452,7 @@ function UsersTab({ t, signedInAs }: { t: Translate; signedInAs: string }) {
               {(row.original.tenants ?? []).map((tenant) => (
                 <span
                   key={tenant}
-                  className="rounded-full border border-border bg-muted px-2 py-0.5 font-mono text-[10px] text-foreground"
+                  className="rounded-full border border-border bg-muted px-2 py-0.5 font-mono text-xs text-foreground"
                 >
                   {tenant}
                 </span>
@@ -470,7 +470,7 @@ function UsersTab({ t, signedInAs }: { t: Translate; signedInAs: string }) {
           <div className="flex items-center gap-2">
             <StatusBadge value={accountStatus(row.original)} map={ACCOUNT_STATUS} />
             {row.original.has_password ? null : (
-              <span className="text-[10px] uppercase tracking-wider text-amber-600 dark:text-amber-400">
+              <span className="text-overline uppercase text-amber-600 dark:text-amber-400">
                 {t("users.noPassword")}
               </span>
             )}
@@ -813,7 +813,7 @@ function ProvisioningKeysTab({ t, tenantId }: { t: Translate; tenantId: string }
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
-            <thead className="text-xs uppercase text-muted-foreground">
+            <thead className="bg-muted text-xs text-muted-foreground font-medium">
               <tr>
                 <th className="py-2 pr-4">{t("users.keys.label")}</th>
                 <th className="py-2 pr-4">{t("users.keys.created")}</th>
@@ -828,7 +828,7 @@ function ProvisioningKeysTab({ t, tenantId }: { t: Translate; tenantId: string }
                 <tr key={key.key_id} className="border-t border-border/60">
                   <td className="py-2 pr-4">
                     <span className="font-medium">{key.label || "—"}</span>
-                    <span className="ml-2 font-mono text-[10px] text-muted-foreground">
+                    <span className="ml-2 font-mono text-xs text-muted-foreground">
                       {key.key_id}
                     </span>
                   </td>
@@ -840,7 +840,7 @@ function ProvisioningKeysTab({ t, tenantId }: { t: Translate; tenantId: string }
                         executor stops taking scans (#338). */}
                     {key.expires_at ? formatMoment(key.expires_at) : t("users.keys.neverExpires")}
                     {key.expires_soon ? (
-                      <span className="ml-2 text-[10px] font-semibold uppercase text-amber-600 dark:text-amber-300">
+                      <span className="ml-2 text-overline font-semibold uppercase text-amber-600 dark:text-amber-300">
                         {t("users.keys.expiresSoon")}
                       </span>
                     ) : null}

@@ -212,7 +212,7 @@ export function CommandPalette({
             aria-activedescendant={entries.length > 0 ? `palette-option-${active}` : undefined}
             className="h-12 w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
           />
-          <kbd className="hidden rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline">
+          <kbd className="hidden rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground sm:inline">
             esc
           </kbd>
         </div>
@@ -234,7 +234,7 @@ export function CommandPalette({
               <li key={key} role="group" aria-labelledby={`palette-group-${key}`} className="mb-1">
                 <p
                   id={`palette-group-${key}`}
-                  className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-[0.14em] text-muted-foreground"
+                  className="px-3 pb-1 pt-2 text-overline font-bold uppercase text-muted-foreground"
                 >
                   {label}
                 </p>
@@ -268,12 +268,12 @@ export function CommandPalette({
                         <span className="min-w-0 flex-1">
                           <span className="block truncate font-medium">{entry.label}</span>
                           {entry.hint ? (
-                            <span className="block truncate text-[11px] text-muted-foreground">
+                            <span className="block truncate text-xs text-muted-foreground">
                               {entry.hint}
                             </span>
                           ) : null}
                         </span>
-                        <span className="hidden font-mono text-[10px] text-muted-foreground sm:inline">
+                        <span className="hidden font-mono text-xs text-muted-foreground sm:inline">
                           {entry.href.split("?")[0]}
                         </span>
                       </li>

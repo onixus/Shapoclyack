@@ -33,7 +33,7 @@ export function SurfaceBadge({
       variant={SCAN_SURFACE_STATUS[key].variant ?? "default"}
       title={t(`surface.hint.${key}`)}
       className={cn(
-        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] shadow-sm",
+        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs shadow-sm",
         SCAN_SURFACE_STATUS[key].className,
         className,
       )}

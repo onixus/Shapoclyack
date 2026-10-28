@@ -92,7 +92,7 @@ export default function GeoPage() {
       ) : null}
 
       {!runId && !isLoading ? (
-        <div className="rounded-xl border border-border bg-card p-8 text-center backdrop-blur">
+        <div className="rounded-xl border border-border bg-card p-8 text-center">
           <p className="text-sm font-semibold text-foreground">{t("page.geo.noRuns")}</p>
           <p className="mt-1 text-xs text-muted-foreground">
             {t("page.geo.noRunsBody")}
@@ -111,18 +111,15 @@ export default function GeoPage() {
               label={t("page.geo.locatedHosts")}
               value={geo.locatedHostCount}
               hint={t("page.geo.ofAlive", { count: geo.hostCount })}
-              decorationColor="emerald"
             />
             <KpiCard
               label={t("page.geo.hostsWithFindings")}
               value={geo.vulnerableHostCount}
-              decorationColor="rose"
             />
             <KpiCard
               label={t("page.geo.unlocated")}
               value={geo.unlocated.length}
               hint={t("page.geo.noPosition")}
-              decorationColor="slate"
             />
           </div>
 
@@ -193,7 +190,7 @@ export default function GeoPage() {
                             />
                             <span className="truncate text-foreground">{location.label}</span>
                             {location.precision === "country" ? (
-                              <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">
+                              <span className="shrink-0 text-overline uppercase text-muted-foreground">
                                 country
                               </span>
                             ) : null}
@@ -233,7 +230,7 @@ export default function GeoPage() {
                       </span>
                       <Badge
                         variant="outline"
-                        className="shrink-0 border-border text-[10px] text-foreground"
+                        className="shrink-0 border-border text-xs text-foreground"
                       >
                         {t.label(STATE_LABEL[host.state])}
                         {host.findingCount > 0 ? ` · ${host.findingCount}` : ""}
@@ -262,7 +259,7 @@ export default function GeoPage() {
                 {geo.unlocated.map((host) => (
                   <li
                     key={host.host}
-                    className="rounded border border-border bg-muted px-2 py-1 font-mono text-[11px] text-foreground"
+                    className="rounded border border-border bg-muted px-2 py-1 font-mono text-xs text-foreground"
                   >
                     {host.host}
                     {host.findingCount > 0 ? (

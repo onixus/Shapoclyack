@@ -103,14 +103,14 @@ export function Sidebar() {
 
   return (
     <>
-      <div className="flex items-center justify-between border-b border-border bg-card px-4 py-3 backdrop-blur lg:hidden">
+      <div className="flex items-center justify-between border-b border-border bg-sunken px-4 py-3 lg:hidden">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-sky-500/20 bg-sky-500/10 text-sky-500 shadow-sm">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-primary/30 bg-accent-subtle text-primary">
             <ShieldAlert className="h-4 w-4" />
           </div>
           <div>
             <p className="text-sm font-bold tracking-wide text-foreground">SHAPOCLYACK</p>
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-sky-600 dark:text-sky-400">
+            <p className="text-overline uppercase text-primary">
               {t("brand.webUi")}
             </p>
           </div>
@@ -120,7 +120,7 @@ export function Sidebar() {
           type="button"
           variant="ghost"
           size="icon"
-          className="text-muted-foreground hover:bg-muted hover:text-foreground"
+          className="text-muted-foreground hover:bg-accent hover:text-foreground"
           aria-label={open ? t("sidebar.closeNav") : t("sidebar.openNav")}
           aria-expanded={open}
           aria-controls="primary-sidebar"
@@ -136,21 +136,21 @@ export function Sidebar() {
       <aside id="primary-sidebar"
         ref={drawerRef}
         className={cn(
-          "lg:visible fixed inset-y-0 left-0 z-40 w-64 border-r border-border bg-card text-card-foreground backdrop-blur transition-[transform,visibility] lg:static lg:translate-x-0",
+          "lg:visible fixed inset-y-0 left-0 z-40 w-64 border-r border-border bg-sunken text-card-foreground transition-[transform,visibility] lg:static lg:translate-x-0",
           open ? "visible translate-x-0" : "invisible -translate-x-full",
         )}
       >
         <div className="flex h-full flex-col">
           <div className="border-b border-border/80 px-5 py-4">
             <Link href="/" onClick={close} className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-sky-500/30 bg-gradient-to-br from-sky-500/20 to-indigo-500/20 text-sky-500 shadow-md">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-primary/30 bg-accent-subtle text-primary">
                 <ShieldAlert className="h-5 w-5" />
               </div>
               <div>
                 <p className="text-base font-extrabold tracking-wider text-foreground">
                   SHAPOCLYACK
                 </p>
-                <p className="text-[11px] font-medium tracking-tight text-muted-foreground">
+                <p className="text-xs font-medium tracking-tight text-muted-foreground">
                   {t("brand.tagline")}
                 </p>
               </div>
@@ -162,7 +162,7 @@ export function Sidebar() {
               <Link
                 href="/scans/external?launch=1"
                 onClick={close}
-                className="flex items-center justify-center gap-1.5 rounded-lg border border-sky-500/30 bg-sky-500/10 px-2 py-2 text-[11px] font-bold text-sky-700 transition-colors hover:bg-sky-500/20 dark:text-sky-300"
+                className="flex items-center justify-center gap-1.5 rounded-lg border border-control px-2 py-2 text-xs font-semibold text-foreground transition-colors hover:bg-accent"
               >
                 <Globe2 className="h-3.5 w-3.5" />
                 {t("sidebar.launchExternal")}
@@ -170,7 +170,7 @@ export function Sidebar() {
               <Link
                 href="/scans/internal?launch=1"
                 onClick={close}
-                className="flex items-center justify-center gap-1.5 rounded-lg border border-violet-500/30 bg-violet-500/10 px-2 py-2 text-[11px] font-bold text-violet-700 transition-colors hover:bg-violet-500/20 dark:text-violet-300"
+                className="flex items-center justify-center gap-1.5 rounded-lg border border-control px-2 py-2 text-xs font-semibold text-foreground transition-colors hover:bg-accent"
               >
                 <Layers className="h-3.5 w-3.5" />
                 {t("sidebar.launchInternal")}
@@ -198,7 +198,7 @@ export function Sidebar() {
                     aria-expanded={!isCollapsed}
                     onClick={() => toggleGroup(group.id)}
                     className={cn(
-                      "flex w-full items-center justify-between rounded-md px-2 py-1 text-[10px] font-bold uppercase tracking-[0.14em] transition-colors",
+                      "flex w-full items-center justify-between rounded-md px-2 py-1 text-overline font-bold uppercase transition-colors",
                       holdsActive
                         ? "text-foreground"
                         : "text-muted-foreground hover:text-foreground",
@@ -224,14 +224,14 @@ export function Sidebar() {
                           onClick={close}
                           aria-current={isActive ? "page" : undefined}
                           className={cn(
-                            "group relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-all duration-150",
+                            "group relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-body-sm font-medium transition-all duration-150",
                             isActive
-                              ? "border border-primary/20 bg-primary/10 font-semibold text-primary shadow-sm"
-                              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                              ? "bg-accent-subtle font-semibold text-primary"
+                              : "text-muted-foreground hover:bg-accent hover:text-foreground",
                           )}
                         >
                           {isActive ? (
-                            <span className="absolute bottom-1.5 left-0 top-1.5 w-1 rounded-r-full bg-primary shadow-[0_0_8px_rgba(56,189,248,0.8)]" />
+                            <span className="absolute bottom-1.5 left-0 top-1.5 w-1 rounded-r-full bg-primary" />
                           ) : null}
                           <Icon
                             className={cn(
@@ -263,7 +263,7 @@ export function Sidebar() {
                   : t("sidebar.modeLocal")}
               </span>
               <span
-                className="font-mono text-[10px] font-semibold text-muted-foreground"
+                className="font-mono text-xs font-semibold text-muted-foreground"
                 title={t("sidebar.apiVersion")}
               >
                 {system?.app_version ? `v${system.app_version}` : "—"}
@@ -277,7 +277,7 @@ export function Sidebar() {
         <button
           type="button"
           aria-label={t("sidebar.closeOverlay")}
-          className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm lg:hidden"
+          className="fixed inset-0 z-30 bg-black/60 lg:hidden"
           onClick={dismiss}
         />
       ) : null}

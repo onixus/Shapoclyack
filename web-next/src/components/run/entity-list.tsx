@@ -28,7 +28,7 @@ export function EntityList({
     return <p className="text-xs text-muted-foreground py-6 text-center">{emptyMessage}</p>;
   }
   return (
-    <div className="max-h-[28rem] overflow-auto rounded-xl border border-border bg-card shadow-lg backdrop-blur">
+    <div className="max-h-[28rem] overflow-auto rounded-xl border border-border bg-card">
       <ul className="divide-y divide-border">
         {items.map((item) => {
           const value = item.value ?? item.key;
@@ -44,10 +44,10 @@ export function EntityList({
               >
                 <span>
                   <strong className="font-mono text-xs font-bold text-foreground">{item.title}</strong>
-                  <span className="mt-0.5 block text-muted-foreground text-[11px]">{item.subtitle}</span>
+                  <span className="mt-0.5 block text-muted-foreground text-xs">{item.subtitle}</span>
                 </span>
                 {item.meta != null ? (
-                  <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{item.meta}</span>
+                  <span className="shrink-0 font-mono text-xs text-muted-foreground">{item.meta}</span>
                 ) : null}
               </button>
             </li>

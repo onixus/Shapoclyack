@@ -150,7 +150,7 @@ export function CreateCampaignDialog({
                 {!data.total ? (
                   <p role="alert">{t("campaign.dialog.empty")}</p>
                 ) : (
-                  <ul className="max-h-40 space-y-0.5 overflow-y-auto font-mono text-[11px]">
+                  <ul className="max-h-40 space-y-0.5 overflow-y-auto font-mono text-xs">
                     {data.problems.map((problem) => (
                       <li key={problem.problem_key}>
                         {problem.problem_key} — {problem.instances} / {problem.assets}

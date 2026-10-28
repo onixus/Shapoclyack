@@ -42,9 +42,9 @@ export function SsoSignInButton({ status: given }: { status?: SsoStatus | null }
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-3 text-xs uppercase tracking-wider text-muted-foreground">
-        <span className="h-px flex-1 bg-slate-700" />
+        <span className="h-px flex-1 bg-border" />
         {t("login.or")}
-        <span className="h-px flex-1 bg-slate-700" />
+        <span className="h-px flex-1 bg-border" />
       </div>
       <Button
         type="button"

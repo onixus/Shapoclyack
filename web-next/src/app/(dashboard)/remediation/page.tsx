@@ -284,7 +284,7 @@ export default function RemediationPage() {
       {/* Header & Global Stats */}
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border/80 pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-sky-500/20 to-indigo-500/20 text-sky-500 border border-sky-500/30 shadow-sm">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-primary/30 bg-accent-subtle text-primary">
             <Kanban className="h-5 w-5" />
           </div>
           <div>
@@ -323,12 +323,12 @@ export default function RemediationPage() {
 
       {/* KPI / Risk Strip */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <div className="flex items-center gap-3 rounded-xl border border-border bg-card p-3 shadow-sm">
+        <div className="flex items-center gap-3 rounded-xl border border-border bg-card p-3">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-500/10 text-sky-500 font-bold text-xs">
             {totalFindings}
           </div>
           <div>
-            <p className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">{t("ui.totalTracked")}</p>
+            <p className="text-overline uppercase text-muted-foreground font-semibold">{t("ui.totalTracked")}</p>
             <p className="text-sm font-bold text-foreground">{rawItems.length} items</p>
           </div>
         </div>
@@ -338,7 +338,7 @@ export default function RemediationPage() {
             {criticalCount}
           </div>
           <div>
-            <p className="text-[11px] uppercase tracking-wider text-rose-700 dark:text-rose-300 font-semibold">{t("ui.criticalRisk")}</p>
+            <p className="text-overline uppercase text-rose-700 dark:text-rose-300 font-semibold">{t("ui.criticalRisk")}</p>
             <p className="text-sm font-bold text-rose-900 dark:text-rose-200">{criticalCount} critical</p>
           </div>
         </div>
@@ -348,7 +348,7 @@ export default function RemediationPage() {
             {highCount}
           </div>
           <div>
-            <p className="text-[11px] uppercase tracking-wider text-orange-700 dark:text-orange-300 font-semibold">{t("ui.highRisk")}</p>
+            <p className="text-overline uppercase text-orange-700 dark:text-orange-300 font-semibold">{t("ui.highRisk")}</p>
             <p className="text-sm font-bold text-orange-900 dark:text-orange-200">{highCount} high</p>
           </div>
         </div>
@@ -358,7 +358,7 @@ export default function RemediationPage() {
             {breachedCount}
           </div>
           <div>
-            <p className="text-[11px] uppercase tracking-wider text-rose-700 dark:text-rose-300 font-semibold">SLA Breached</p>
+            <p className="text-overline uppercase text-rose-700 dark:text-rose-300 font-semibold">SLA Breached</p>
             <p className="text-sm font-bold text-rose-900 dark:text-rose-200">{breachedCount} overdue</p>
           </div>
         </div>
@@ -368,7 +368,7 @@ export default function RemediationPage() {
             {dueSoonCount}
           </div>
           <div>
-            <p className="text-[11px] uppercase tracking-wider text-amber-700 dark:text-amber-300 font-semibold">SLA Due Soon</p>
+            <p className="text-overline uppercase text-amber-700 dark:text-amber-300 font-semibold">SLA Due Soon</p>
             <p className="text-sm font-bold text-amber-900 dark:text-amber-200">{dueSoonCount} approaching</p>
           </div>
         </div>
@@ -378,7 +378,7 @@ export default function RemediationPage() {
             <ShieldCheck className="h-4 w-4" />
           </div>
           <div>
-            <p className="text-[11px] uppercase tracking-wider text-emerald-700 dark:text-emerald-300 font-semibold">
+            <p className="text-overline uppercase text-emerald-700 dark:text-emerald-300 font-semibold">
               {t("vuln.verificationRate")}
             </p>
             <p className="text-sm font-bold text-emerald-900 dark:text-emerald-200">
@@ -390,7 +390,7 @@ export default function RemediationPage() {
       </div>
 
       {/* Kanban Filter Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-3 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-3">
         <div className="flex flex-1 flex-wrap items-center gap-2.5">
           {/* Search Box */}
           <div className="relative min-w-[220px] max-w-xs flex-1">
@@ -612,7 +612,7 @@ function KanbanColumn({
       }}
     >
       {/* Column Sticky Header */}
-      <div className="flex items-center justify-between border-b border-border/70 px-4 py-3 bg-card/70 backdrop-blur-sm rounded-t-xl">
+      <div className="flex items-center justify-between border-b border-border/70 px-4 py-3 bg-muted rounded-t-xl">
         <div className="flex items-center gap-2">
           <div className={cn("flex h-6 w-6 items-center justify-center rounded-md", meta.badgeBg, meta.badgeText)}>
             <Icon className="h-3.5 w-3.5" />
@@ -636,7 +636,7 @@ function KanbanColumn({
           )}>
             <Icon className="h-6 w-6 opacity-40 mb-1" />
             <p className="text-xs font-semibold">{isDropTarget ? "Drop to transition" : "No findings"}</p>
-            <p className="text-[10px] text-muted-foreground mt-0.5">{meta.description}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">{meta.description}</p>
           </div>
         ) : (
           items.map((row) => (
@@ -693,7 +693,7 @@ function KanbanCard({
       }}
       onClick={onSelect}
       className={cn(
-        "group relative flex cursor-grab flex-col gap-2 rounded-xl border border-l-4 bg-card p-3.5 shadow-sm transition-all duration-150 active:cursor-grabbing hover:-translate-y-0.5 hover:shadow-md",
+        "group relative flex cursor-grab flex-col gap-2 rounded-xl border border-l-4 bg-card p-3.5 transition-all duration-150 active:cursor-grabbing hover:-translate-y-0.5 hover:shadow-md",
         sevBorderColor,
         selected
           ? "ring-2 ring-primary border-primary bg-primary/5 shadow-md"
@@ -707,7 +707,7 @@ function KanbanCard({
             {findingLabel(vuln)}
           </p>
           {vuln.title && vuln.cve && (
-            <p className="mt-0.5 text-[11px] text-muted-foreground line-clamp-1">
+            <p className="mt-0.5 text-xs text-muted-foreground line-clamp-1">
               {vuln.title}
             </p>
           )}
@@ -717,14 +717,14 @@ function KanbanCard({
           {vuln.in_kev && (
             <span
               title="Known Exploited Vulnerability (CISA KEV)"
-              className="flex items-center gap-0.5 rounded bg-rose-500/15 px-1.5 py-0.5 font-mono text-[10px] font-bold text-rose-700 dark:text-rose-400 border border-rose-500/30"
+              className="flex items-center gap-0.5 rounded bg-rose-500/15 px-1.5 py-0.5 font-mono text-xs font-bold text-rose-700 dark:text-rose-400 border border-rose-500/30"
             >
               <Flame className="h-3 w-3 text-rose-500" />
               KEV
             </span>
           )}
           {vuln.contextual_score !== null && vuln.contextual_score !== undefined && (
-            <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-bold text-foreground border border-border">
+            <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs font-bold text-foreground border border-border">
               {vuln.contextual_score.toFixed(1)}
             </span>
           )}
@@ -732,13 +732,13 @@ function KanbanCard({
       </div>
 
       {/* Asset & Port Info */}
-      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground font-mono">
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-mono">
         <Server className="h-3 w-3 shrink-0 text-muted-foreground" />
         <span className="truncate max-w-[170px]" title={vuln.asset_id}>
           {vuln.asset_id}
         </span>
         {vuln.port ? (
-          <span className="rounded bg-muted px-1 py-0.2 text-[10px] text-foreground border border-border">
+          <span className="rounded bg-muted px-1 py-0.2 text-xs text-foreground border border-border">
             :{vuln.port}
           </span>
         ) : null}
@@ -749,7 +749,7 @@ function KanbanCard({
         <StatusBadge value={normSev} map={SEVERITY_STATUS} />
         <SlaIndicator slaState={vuln.sla_state} dueAt={vuln.due_at} showDue={false} />
         {vuln.machine_verified ? (
-          <span className="flex items-center gap-0.5 rounded bg-emerald-500/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
+          <span className="flex items-center gap-0.5 rounded bg-emerald-500/15 px-1.5 py-0.5 font-mono text-xs font-semibold text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
             <ShieldCheck className="h-3 w-3 text-emerald-500" />
             {t("vuln.machineVerified")}
           </span>
@@ -757,7 +757,7 @@ function KanbanCard({
       </div>
 
       {/* Card Footer: Assignee + Ticket + Quick Move */}
-      <div className="flex items-center justify-between border-t border-border/60 pt-2 text-[11px] text-muted-foreground">
+      <div className="flex items-center justify-between border-t border-border/60 pt-2 text-xs text-muted-foreground">
         {/* Assignee */}
         <div className="flex items-center gap-1 truncate max-w-[130px]">
           <div className="flex h-4 w-4 items-center justify-center rounded-full bg-muted text-muted-foreground">
@@ -771,7 +771,7 @@ function KanbanCard({
         {/* Ticket & Menu */}
         <div className="flex items-center gap-1.5">
           {vuln.ticket_key && (
-            <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-primary border border-primary/20">
+            <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-xs font-semibold text-primary border border-primary/20">
               {vuln.ticket_key}
             </span>
           )}
@@ -859,22 +859,22 @@ function VulnerabilityDrawer({
         <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-6">
           {/* Key Attributes Grid */}
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            <div className="rounded-xl border border-border bg-card p-3 shadow-sm">
-              <p className="text-[10px] uppercase font-bold text-muted-foreground">{t("ui.contextualScore")}</p>
+            <div className="rounded-xl border border-border bg-card p-3">
+              <p className="text-overline uppercase font-bold text-muted-foreground">{t("ui.contextualScore")}</p>
               <p className="text-xl font-extrabold text-foreground mt-1">
                 {vuln.contextual_score !== null ? vuln.contextual_score.toFixed(1) : "—"}
               </p>
             </div>
 
-            <div className="rounded-xl border border-border bg-card p-3 shadow-sm">
-              <p className="text-[10px] uppercase font-bold text-muted-foreground">{t("ui.baseCvss")}</p>
+            <div className="rounded-xl border border-border bg-card p-3">
+              <p className="text-overline uppercase font-bold text-muted-foreground">{t("ui.baseCvss")}</p>
               <p className="text-xl font-extrabold text-foreground mt-1">
                 {vuln.cvss !== null ? vuln.cvss.toFixed(1) : "—"}
               </p>
             </div>
 
-            <div className="rounded-xl border border-border bg-card p-3 shadow-sm">
-              <p className="text-[10px] uppercase font-bold text-muted-foreground">SLA State</p>
+            <div className="rounded-xl border border-border bg-card p-3">
+              <p className="text-overline uppercase font-bold text-muted-foreground">SLA State</p>
               <div className="mt-1.5">
                 <SlaIndicator slaState={vuln.sla_state} dueAt={vuln.due_at} />
               </div>
@@ -909,7 +909,7 @@ function VulnerabilityDrawer({
 
           {/* Operations Panel */}
           {canOperate ? (
-            <div className="space-y-4 rounded-xl border border-border bg-card p-4 shadow-sm">
+            <div className="space-y-4 rounded-xl border border-border bg-card p-4">
               <h4 className="text-xs font-bold uppercase tracking-wider text-foreground flex items-center gap-1.5">
                 <Wrench className="h-3.5 w-3.5 text-primary" />
                 {t("prose.remediationActions")}
@@ -949,7 +949,7 @@ function VulnerabilityDrawer({
               <History className="h-3.5 w-3.5 text-sky-500" />
               Audit Trail
             </h4>
-            <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+            <div className="rounded-xl border border-border bg-card p-4">
               <VulnerabilityTimeline
                 events={eventsQuery.data?.items ?? []}
                 emptyMessage={t("empty.auditEvents")}

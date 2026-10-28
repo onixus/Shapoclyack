@@ -105,7 +105,7 @@ export default function AttackSurfacePage() {
       ) : null}
 
       {!runId && !isLoading ? (
-        <div className="rounded-xl border border-border bg-card p-8 text-center backdrop-blur">
+        <div className="rounded-xl border border-border bg-card p-8 text-center">
           <p className="text-sm font-semibold text-foreground">{t("page.geo.noRuns")}</p>
           <p className="mt-1 text-xs text-muted-foreground">{t("page.attack.empty")}</p>
         </div>

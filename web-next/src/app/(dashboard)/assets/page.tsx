@@ -100,7 +100,7 @@ function AssetsInner() {
                 <span>{heading}</span>
                 <ArrowUpRight className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100" />
               </div>
-              <span className="block font-mono text-[11px] text-muted-foreground">
+              <span className="block font-mono text-xs text-muted-foreground">
                 {secondary ?? identifierCount(t, asset.identifier_count)}
               </span>
             </Link>
@@ -137,7 +137,7 @@ function AssetsInner() {
           <span className="tabular-nums text-foreground">
             {row.original.open_findings.toLocaleString()}
             {row.original.unassigned_findings > 0 ? (
-              <span className="ml-1 text-[11px] text-amber-600 dark:text-amber-400">
+              <span className="ml-1 text-xs text-amber-600 dark:text-amber-400">
                 {" · "}
                 {t("page.assets.unassignedSuffix", { count: row.original.unassigned_findings })}
               </span>
@@ -258,7 +258,7 @@ function AssetsInner() {
         initialSorting={[{ id: "last_seen", desc: true }]}
         searchPlaceholder={t("page.assets.searchPlaceholder")}
         toolbar={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Filter className="h-4 w-4 text-muted-foreground" />
             <Select
               value={status || STATUS_FILTER_ALL}

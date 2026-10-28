@@ -21,6 +21,40 @@ const config: Config = {
         control: "hsl(var(--control))",
         warning: "hsl(var(--warning))",
         success: "hsl(var(--success))",
+        // APEX Design System names (values live in globals.css).
+        canvas: "hsl(var(--apex-canvas))",
+        sunken: "hsl(var(--apex-sunken))",
+        surface: {
+          1: "hsl(var(--apex-surface-1))",
+          2: "hsl(var(--apex-surface-2))",
+          3: "hsl(var(--apex-surface-3))",
+        },
+        "border-subtle": "hsl(var(--apex-border-subtle))",
+        "border-strong": "hsl(var(--apex-border-strong))",
+        text: {
+          primary: "hsl(var(--apex-text-primary))",
+          secondary: "hsl(var(--apex-text-secondary))",
+          muted: "hsl(var(--apex-text-muted))",
+          disabled: "hsl(var(--apex-text-disabled))",
+        },
+        danger: {
+          DEFAULT: "hsl(var(--apex-danger))",
+          subtle: "var(--apex-danger-subtle)",
+        },
+        info: {
+          DEFAULT: "hsl(var(--apex-info))",
+          subtle: "var(--apex-info-subtle)",
+        },
+        "success-subtle": "var(--apex-success-subtle)",
+        "warning-subtle": "var(--apex-warning-subtle)",
+        "accent-subtle": "var(--apex-accent-subtle)",
+        sev: {
+          critical: "hsl(var(--sev-critical))",
+          high: "hsl(var(--sev-high))",
+          medium: "hsl(var(--sev-medium))",
+          low: "hsl(var(--sev-low))",
+          info: "hsl(var(--sev-info))",
+        },
         background: "hsl(var(--background))",
         foreground: "hsl(var(--foreground))",
         primary: {
@@ -83,8 +117,8 @@ const config: Config = {
       },
       borderRadius: {
         lg: "var(--radius)",
-        md: "calc(var(--radius) - 2px)",
-        sm: "calc(var(--radius) - 4px)",
+        md: "calc(var(--radius) - 4px)",
+        sm: "calc(var(--radius) - 6px)",
         "tremor-small": "0.375rem",
         "tremor-default": "0.5rem",
         "tremor-full": "9999px",
@@ -104,6 +138,8 @@ const config: Config = {
         // APEX type scale: body-sm for field labels and dense tables.
         "body-sm": ["0.8125rem", { lineHeight: "1.125rem" }],
         h3: ["0.9375rem", { lineHeight: "1.375rem", fontWeight: "600" }],
+        caption: ["0.75rem", { lineHeight: "1rem", fontWeight: "500" }],
+        overline: ["0.6875rem", { lineHeight: "1rem", fontWeight: "600", letterSpacing: "0.08em" }],
       },
     },
   },

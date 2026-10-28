@@ -23,7 +23,7 @@ export function LegalHoldRegister() {
         <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {t("retention.register.title")}
         </p>
-        <p className="text-[11px] text-muted-foreground">{t("retention.register.hint")}</p>
+        <p className="text-xs text-muted-foreground">{t("retention.register.hint")}</p>
       </div>
       {error ? (
         <p className="text-sm text-rose-500" role="alert">
@@ -34,7 +34,7 @@ export function LegalHoldRegister() {
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
-            <thead className="text-xs uppercase text-muted-foreground">
+            <thead className="bg-muted text-xs text-muted-foreground font-medium">
               <tr>
                 <th className="py-2 pr-4">{t("retention.register.col.tenant")}</th>
                 <th className="py-2 pr-4">{t("retention.register.col.since")}</th>

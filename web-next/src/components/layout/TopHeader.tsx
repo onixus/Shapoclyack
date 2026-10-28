@@ -56,13 +56,13 @@ export function TopHeader() {
         : "bg-muted text-muted-foreground border-border font-medium";
 
   return (
-    <header className="sticky top-0 z-20 flex h-14 items-center justify-between gap-3 border-b border-border/80 bg-background/85 px-4 backdrop-blur-md md:px-6">
+    <header className="sticky top-0 z-20 flex h-14 items-center justify-between gap-3 border-b border-border bg-card px-4 md:px-6">
       <div className="flex min-w-0 items-center gap-3">
         <div className="min-w-0">
           <h2 className="truncate text-sm font-bold tracking-tight text-foreground">
             {t("header.consoleTitle")}
           </h2>
-          <p className="hidden truncate text-[11px] text-muted-foreground sm:block">
+          <p className="hidden truncate text-xs text-muted-foreground sm:block">
             {t("header.subtitle")}
           </p>
         </div>
@@ -80,7 +80,7 @@ export function TopHeader() {
         >
           <Search className="h-4 w-4" />
           <span className="hidden text-xs font-medium lg:inline">{t("header.commandPalette")}</span>
-          <kbd className="hidden rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px] lg:inline">
+          <kbd className="hidden rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-xs lg:inline">
             {t("header.commandHint")}
           </kbd>
         </Button>
@@ -108,7 +108,7 @@ export function TopHeader() {
             <DropdownMenuLabel className="flex items-center justify-between text-xs font-normal text-muted-foreground">
               <span>{t("header.signedInAs")}</span>
               <span
-                className={cn("rounded-md border px-1.5 py-0.5 text-[10px] uppercase", roleColor)}
+                className={cn("rounded-md border px-1.5 py-0.5 text-overline uppercase", roleColor)}
               >
                 {user?.role || "viewer"}
               </span>

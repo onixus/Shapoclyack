@@ -32,15 +32,15 @@ import { cn } from "@/lib/utils";
  * `GeoPrecision` in `lib/geo/aggregate.ts`.
  */
 
-/** Marker fill per state. Same palette as SEVERITY_STATUS, as solid colours —
+/** Marker fill per state. The APEX sev-* tokens, as solid colours —
  * a translucent badge class does not read as a dot against the land. */
 const STATE_FILL: Record<HostState, string> = {
-  critical: "#f43f5e",
-  high: "#fb923c",
-  medium: "#f59e0b",
-  low: "#38bdf8",
-  unknown: "#94a3b8",
-  clean: "#34d399",
+  critical: "hsl(var(--sev-critical))",
+  high: "hsl(var(--sev-high))",
+  medium: "hsl(var(--sev-medium))",
+  low: "hsl(var(--sev-low))",
+  unknown: "hsl(var(--sev-info))",
+  clean: "hsl(var(--success))",
 };
 
 const STATE_LABEL: Record<HostState, string> = {
@@ -140,9 +140,10 @@ export function GeoMap({ locations, selectedKey, onSelect }: GeoMapProps) {
                     cx={x}
                     cy={y}
                     r={radius}
-                    fill={STATE_FILL[location.state]}
+                    // style, not the fill/stroke attributes: the colours are
+                    // CSS variables, which presentation attributes do not resolve.
+                    style={{ fill: STATE_FILL[location.state], stroke: STATE_FILL[location.state] }}
                     fillOpacity={isSelected ? 0.85 : 0.55}
-                    stroke={STATE_FILL[location.state]}
                     strokeWidth={isSelected ? 2 : 1}
                     // Dashed ring = placed at a country centroid, not at
                     // coordinates of its own. The distinction is on the marker
@@ -197,7 +198,7 @@ export function GeoMap({ locations, selectedKey, onSelect }: GeoMapProps) {
           </span>
         ))}
         <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2.5 w-2.5 rounded-full border border-dashed border-slate-400" />
+          <span className="inline-block h-2.5 w-2.5 rounded-full border border-dashed border-control" />
           {t("geo.countryLevel")}
         </span>
         <span className={cn("text-muted-foreground")}>{t("geo.markerArea")}</span>

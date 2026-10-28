@@ -67,7 +67,7 @@ function DeletionProgress({ deletion }: { deletion: TenantDeletion }) {
   return (
     <table className="w-full text-left" aria-label={t("lifecycle.progress")}>
       <thead>
-        <tr className="text-[11px] uppercase tracking-wider text-muted-foreground">
+        <tr className="bg-muted text-xs text-muted-foreground font-medium">
           <th className="pb-1 pr-3 font-semibold">{t("lifecycle.col.store")}</th>
           <th className="pb-1 pr-3 font-semibold">{t("lifecycle.col.state")}</th>
           <th className="pb-1 pr-3 font-semibold">{t("lifecycle.col.attempts")}</th>
@@ -186,7 +186,7 @@ export function TenantLifecyclePanel({ tenantId }: { tenantId: string }) {
             />
             {t("lifecycle.revoke")}
           </label>
-          <p className="text-[11px] text-muted-foreground">{t("lifecycle.suspendHint")}</p>
+          <p className="text-xs text-muted-foreground">{t("lifecycle.suspendHint")}</p>
           <Button
             type="button"
             className="gap-2 bg-amber-600 text-foreground hover:bg-amber-500"
@@ -211,7 +211,7 @@ export function TenantLifecyclePanel({ tenantId }: { tenantId: string }) {
             <Play className="h-4 w-4" />
             {t("lifecycle.resume")}
           </Button>
-          <p className="text-[11px] text-muted-foreground">{t("lifecycle.resumeHint")}</p>
+          <p className="text-xs text-muted-foreground">{t("lifecycle.resumeHint")}</p>
         </div>
       ) : null}
 
@@ -226,7 +226,7 @@ export function TenantLifecyclePanel({ tenantId }: { tenantId: string }) {
             <Trash2 className="h-4 w-4" />
             {t("lifecycle.requestDeletion")}
           </Button>
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             {t("lifecycle.requestHint", { days: data.grace_days })}
           </p>
         </div>
@@ -242,7 +242,7 @@ export function TenantLifecyclePanel({ tenantId }: { tenantId: string }) {
           </p>
           <p className="text-xs text-muted-foreground">{deletion.reason}</p>
           {data.two_person ? (
-            <p className="text-[11px] text-muted-foreground">{t("lifecycle.twoPerson")}</p>
+            <p className="text-xs text-muted-foreground">{t("lifecycle.twoPerson")}</p>
           ) : null}
           <div className="flex flex-wrap gap-2">
             <Button

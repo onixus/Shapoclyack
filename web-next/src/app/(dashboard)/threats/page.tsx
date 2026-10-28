@@ -38,7 +38,7 @@ export default function ThreatsPage() {
             <p className="font-mono font-bold text-primary hover:underline">
               {findingLabel(row.original)}
             </p>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               {row.original.exploit_maturity
                 ? t.label(row.original.exploit_maturity.replaceAll("_", " "))
                 : t("page.threats.kevFallback")}
@@ -80,7 +80,7 @@ export default function ThreatsPage() {
         cell: ({ row }) => (
           <Link
             href={assetDetailHref(row.original.asset_id, row.original.tenant_id)}
-            className="font-mono text-[11px] text-foreground hover:text-primary hover:underline"
+            className="font-mono text-xs text-foreground hover:text-primary hover:underline"
           >
             {row.original.asset_id}
           </Link>

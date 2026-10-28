@@ -107,24 +107,24 @@ function RecentRuns({ surface }: { surface: OperationsSurface }) {
             <Link
               key={run.run_id}
               href={runDetailHref(run.run_id)}
-              className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-colors hover:border-primary/40"
+              className="group rounded-xl border border-border bg-card p-4 transition-colors hover:border-primary/40"
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="truncate font-mono text-xs font-semibold text-primary group-hover:underline">
                   {run.run_id}
                 </span>
                 {run.profile ? (
-                  <Badge variant="secondary" className="font-mono text-[10px]">
+                  <Badge variant="secondary" className="font-mono text-xs">
                     {run.profile}
                   </Badge>
                 ) : null}
               </div>
-              <p className="mt-1 text-[11px] text-muted-foreground">
+              <p className="mt-1 text-xs text-muted-foreground">
                 {run.started_at ? format(new Date(run.started_at), "yyyy-MM-dd HH:mm") : "—"}
               </p>
               <dl className="mt-3 grid grid-cols-3 gap-2 text-center">
                 <div>
-                  <dt className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                  <dt className="text-overline uppercase text-muted-foreground">
                     {t("col.aliveHosts")}
                   </dt>
                   <dd className="font-mono text-sm font-bold text-foreground">
@@ -132,7 +132,7 @@ function RecentRuns({ surface }: { surface: OperationsSurface }) {
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                  <dt className="text-overline uppercase text-muted-foreground">
                     {t("col.openPorts")}
                   </dt>
                   <dd className="font-mono text-sm font-bold text-foreground">
@@ -140,7 +140,7 @@ function RecentRuns({ surface }: { surface: OperationsSurface }) {
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                  <dt className="text-overline uppercase text-muted-foreground">
                     {t("col.vulns")}
                   </dt>
                   <dd
@@ -277,7 +277,7 @@ function ScanOperationsInner({ surface }: { surface: OperationsSurface }) {
       >
         <div className="flex flex-wrap items-center justify-between gap-3">
           <SurfaceTabs current={surface} />
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             {agentMode ? t("page.scans.mode.agent") : t("page.scans.mode.local")}{" "}
             {t("page.scans.scopeHint")}
           </p>

@@ -63,7 +63,7 @@ export default function ReportsPage() {
       {
         accessorKey: "profile",
         header: t("col.profile"),
-        cell: ({ getValue }) => <Badge variant="secondary" className="bg-muted text-sky-600 dark:text-sky-300 font-mono text-[11px]">{String(getValue() || "—")}</Badge>,
+        cell: ({ getValue }) => <Badge variant="secondary" className="bg-muted text-sky-600 dark:text-sky-300 font-mono text-xs">{String(getValue() || "—")}</Badge>,
       },
       {
         accessorKey: "started_at",
@@ -92,7 +92,7 @@ export default function ReportsPage() {
                 {val.toLocaleString()}
               </span>
               {unconfirmed > 0 ? (
-                <span className="font-mono text-[10px] text-amber-600 dark:text-amber-300/80" title="Unconfirmed — reachable-service exposures and unverified keyword CVE hits, included in the total">
+                <span className="font-mono text-xs text-amber-600 dark:text-amber-300/80" title="Unconfirmed — reachable-service exposures and unverified keyword CVE hits, included in the total">
                   {unconfirmed.toLocaleString()} unconf.
                 </span>
               ) : null}

@@ -106,7 +106,7 @@ export function LegalHoldPanel({
           </div>
         </div>
       ) : (
-        <p className="text-[11px] text-muted-foreground">{t("retention.hold.platformOnly")}</p>
+        <p className="text-xs text-muted-foreground">{t("retention.hold.platformOnly")}</p>
       )}
 
       <AlertDialog open={confirmRelease} onOpenChange={setConfirmRelease}>

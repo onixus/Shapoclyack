@@ -51,7 +51,7 @@ export function TenantDeletionsList() {
       <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
         {t("deletions.title")}
       </p>
-      <p className="text-[11px] text-muted-foreground">{t("deletions.hint")}</p>
+      <p className="text-xs text-muted-foreground">{t("deletions.hint")}</p>
       {error ? (
         <p className="text-sm text-rose-500" role="alert">
           {error instanceof Error ? error.message : t("deletions.loadFailed")}
@@ -61,7 +61,7 @@ export function TenantDeletionsList() {
       ) : (
         <table className="w-full text-left text-xs" aria-label={t("deletions.title")}>
           <thead>
-            <tr className="text-[11px] uppercase tracking-wider text-muted-foreground">
+            <tr className="bg-muted text-xs text-muted-foreground font-medium">
               <th className="pb-1 pr-3 font-semibold">{t("deletions.col.tenant")}</th>
               <th className="pb-1 pr-3 font-semibold">{t("deletions.col.state")}</th>
               <th className="pb-1 pr-3 font-semibold">{t("deletions.col.requested")}</th>

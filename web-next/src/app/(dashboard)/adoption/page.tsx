@@ -32,7 +32,7 @@ function NoiseTable({
   }
   return (
     <table className="w-full text-sm">
-      <thead className="text-left text-xs uppercase tracking-wider text-muted-foreground">
+      <thead className="bg-muted text-left text-xs text-muted-foreground font-medium">
         <tr>
           <th className="py-1.5 font-semibold">{t("ui.source")}</th>
           <th className="py-1.5 text-right font-semibold">{t("ui.closed")}</th>
@@ -83,7 +83,7 @@ function Analysts({ rows }: { rows: AdoptionMetrics["analysts"] }) {
   }
   return (
     <table className="w-full text-sm">
-      <thead className="text-left text-xs uppercase tracking-wider text-muted-foreground">
+      <thead className="bg-muted text-left text-xs text-muted-foreground font-medium">
         <tr>
           <th className="py-1.5 font-semibold">{t("ui.analyst")}</th>
           <th className="py-1.5 text-right font-semibold">{t("ui.closed")}</th>
@@ -157,7 +157,6 @@ export default function AdoptionPage() {
             noise: data.findings.false_positive_in_window,
           })}
                 href="/vulnerabilities"
-                decorationColor="blue"
               />
               <KpiCard
                 label={t("adoption.confirmedByScan")}
@@ -178,13 +177,11 @@ export default function AdoptionPage() {
                 label={t("adoption.closedWithinSla")}
                 value={share(data.findings.closed_within_sla_share)}
                 hint={t("hint.ofClosuresWithDeadline")}
-                decorationColor="emerald"
               />
               <KpiCard
                 label={t("adoption.medianTimeToFix")}
                 value={hours(data.findings.mttr_hours)}
                 hint={t("hint.fromSlaStart")}
-                decorationColor="orange"
               />
             </div>
           </section>
@@ -201,7 +198,6 @@ export default function AdoptionPage() {
                   hint={`Of everything closed in the window, ${share(
                     data.false_positives.share_of_closures,
                   )} was never a real finding`}
-                  decorationColor="amber"
                 />
                 <KpiCard
                   label={t("adoption.suppressions")}
@@ -223,7 +219,6 @@ export default function AdoptionPage() {
                   label={t("adoption.medianTimeToVerdict")}
                   value={hours(data.false_positives.median_hours_to_verdict)}
                   hint={t("hint.noiseQueueTime")}
-                  decorationColor="sky"
                 />
               </div>
               <div className="mt-4 grid gap-4 lg:grid-cols-2">
@@ -274,7 +269,6 @@ export default function AdoptionPage() {
                     scanHistoryReason(data.coverage.scan_history_reason) ??
                     `${data.coverage.assets_with_scan_history} active assets have been reached by a scan at some point`
                   }
-                  decorationColor={data.coverage.scanned_share === null ? "slate" : "blue"}
                 />
                 <KpiCard
                   label={`Assessed for vulnerabilities in ${data.coverage.coverage_days} days`}
@@ -283,7 +277,6 @@ export default function AdoptionPage() {
                     scanHistoryReason(data.coverage.scan_history_reason) ??
                     "A discovery sweep covers an asset for inventory and says nothing about its vulnerabilities; only a run whose manifest shows a vulnerability stage that actually ran counts here"
                   }
-                  decorationColor={data.coverage.vuln_scanned_share === null ? "slate" : "sky"}
                 />
                 <KpiCard
                   label={t("adoption.rangesReached")}
@@ -292,7 +285,6 @@ export default function AdoptionPage() {
                     scopeReason(data.coverage.scope_unbounded_reason) ??
                     `${data.coverage.scope_covered_entries} of ${data.coverage.measurable_entries} approved ranges contain an asset a scan reached in the last ${data.coverage.coverage_days} days`
                   }
-                  decorationColor={data.coverage.scope_covered_share === null ? "slate" : "emerald"}
                 />
                 <KpiCard
                   label={t("adoption.approvedEntries")}
@@ -302,7 +294,6 @@ export default function AdoptionPage() {
                       ? `, beside ${data.coverage.denied_entries} deny rows that are not counted`
                       : ""
                   }. The denominator comes from the approval, not from what was discovered — which is how a subnet nobody ever pointed the scanner at shows up`}
-                  decorationColor="slate"
                 />
               </div>
               {data.coverage.scope_uncovered_entries.length > 0 ? (
@@ -348,26 +339,22 @@ export default function AdoptionPage() {
                 value={share(data.assets.with_owner_share)}
                 hint={t("hint.unownedAssets", { unowned: data.assets.unowned, active: data.assets.active })}
                 href="/assets"
-                decorationColor={data.assets.unowned > 0 ? "amber" : "emerald"}
               />
               <KpiCard
                 label={t("adoption.assetsWithContext")}
                 value={share(data.assets.with_context_share)}
                 hint={t("hint.contextSet")}
-                decorationColor="sky"
               />
               <KpiCard
                 label={`Scanned in ${data.assets.coverage_days} days`}
                 value={share(data.assets.scanned_recently_share)}
                 hint={t("hint.coverageShare")}
-                decorationColor="blue"
               />
               <KpiCard
                 label={t("adoption.networkAndAgent")}
                 value={share(data.assets.dual_source_share)}
                 hint={t("hint.dualSource")}
                 href="/endpoints"
-                decorationColor="sky"
               />
             </div>
           </section>
@@ -433,7 +420,7 @@ export default function AdoptionPage() {
                     <li key={dataset.name} className="flex items-center justify-between">
                       <span className="font-mono text-foreground">{dataset.name}</span>
                       {!dataset.present ? (
-                        <Badge variant="outline" className="border-slate-500/30 text-muted-foreground">
+                        <Badge variant="outline" className="border-border-strong text-muted-foreground">
                           missing
                         </Badge>
                       ) : dataset.stale ? (

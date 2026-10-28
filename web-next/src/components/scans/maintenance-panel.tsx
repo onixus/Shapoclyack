@@ -86,7 +86,7 @@ export function MaintenancePanel({
       {windows.length > 0 && (
         <div className="overflow-x-auto rounded-lg border">
           <table className="w-full text-sm">
-            <thead className="bg-muted/50 text-left text-xs uppercase text-muted-foreground">
+            <thead className="bg-muted text-left text-xs text-muted-foreground font-medium">
               <tr>
                 <th className="px-3 py-2">{t("ui.window")}</th>
                 <th className="px-3 py-2">Kind</th>

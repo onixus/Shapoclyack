@@ -12,7 +12,7 @@ export function SourceCompleteness({ sources = [] }: { sources?: EndpointSourceS
   if (degraded.length === 0) return null;
   return (
     <ul
-      className="mt-1 space-y-1 text-[11px] text-amber-700 dark:text-amber-400"
+      className="mt-1 space-y-1 text-xs text-amber-700 dark:text-amber-400"
       aria-label={t("endpoint.sources.degraded")}
     >
       {degraded.map((source) => (

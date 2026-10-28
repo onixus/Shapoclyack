@@ -19,7 +19,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -30,7 +29,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { CheckboxOption, Field, FieldGrid } from "@/components/ui/field";
 import {
   Select,
   SelectContent,
@@ -180,7 +179,7 @@ export default function SchedulesPage() {
         cell: ({ row }) => (
           <div>
             <p className="font-semibold text-foreground">{row.original.name}</p>
-            <p className="font-mono text-[10px] text-muted-foreground">{row.original.schedule_id}</p>
+            <p className="font-mono text-xs text-muted-foreground">{row.original.schedule_id}</p>
           </div>
         ),
       },
@@ -318,7 +317,7 @@ export default function SchedulesPage() {
           }}
         >
           <DialogTrigger asChild>
-            <Button className="gap-2 bg-sky-600 hover:bg-sky-500 text-foreground shadow-md" onClick={openCreate}>
+            <Button className="gap-2" onClick={openCreate}>
               <Plus className="h-4 w-4" />
               Create Schedule
             </Button>
@@ -331,71 +330,60 @@ export default function SchedulesPage() {
               </DialogDescription>
             </DialogHeader>
 
-            <form onSubmit={onSubmit} className="space-y-4 py-2">
-              <div className="grid gap-2">
-                <Label htmlFor="schedule-name" className="text-xs font-semibold text-foreground">Name</Label>
-                <Input
-                  id="schedule-name"
-                  value={form.name}
-                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                  placeholder="Nightly external sweep"
-                  className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
-                />
-              </div>
-
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="grid gap-2">
-                  <Label className="text-xs font-semibold text-foreground">{t("ui.cadence")}</Label>
+            <form onSubmit={onSubmit} className="space-y-5 py-2">
+              <FieldGrid cols={2}>
+                <Field label="Name" htmlFor="schedule-name" reserveHint={false} className="sm:col-span-2">
+                  <Input
+                    id="schedule-name"
+                    value={form.name}
+                    onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                    placeholder="Nightly external sweep"
+                  />
+                </Field>
+                <Field label={t("ui.cadence")} htmlFor="schedule-cadence" reserveHint={false}>
                   <Select
                     value={form.cadenceKind}
                     onValueChange={(value) => setForm((f) => ({ ...f, cadenceKind: value as CadenceKind }))}
                   >
-                    <SelectTrigger className="bg-muted border-border text-foreground">
+                    <SelectTrigger id="schedule-cadence">
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent className="bg-card border-border text-foreground">
+                    <SelectContent>
                       <SelectItem value="cron">{t("ui.cronExpression2")}</SelectItem>
                       <SelectItem value="interval">{t("ui.fixedInterval")}</SelectItem>
                     </SelectContent>
                   </Select>
-                </div>
-
+                </Field>
                 {form.cadenceKind === "cron" ? (
-                  <div className="grid gap-2">
-                    <Label htmlFor="schedule-cron" className="text-xs font-semibold text-foreground">{t("ui.cronExpression")}</Label>
+                  <Field label={t("ui.cronExpression")} htmlFor="schedule-cron" reserveHint={false}>
                     <Input
                       id="schedule-cron"
                       value={form.cron}
                       onChange={(e) => setForm((f) => ({ ...f, cron: e.target.value }))}
                       placeholder="0 * * * *"
-                      className="bg-muted border-border font-mono text-xs text-foreground"
+                      className="font-mono"
                     />
-                  </div>
+                  </Field>
                 ) : (
-                  <div className="grid gap-2">
-                    <Label htmlFor="schedule-interval" className="text-xs font-semibold text-foreground">{t("ui.intervalSeconds")}</Label>
+                  <Field label={t("ui.intervalSeconds")} htmlFor="schedule-interval" reserveHint={false}>
                     <Input
                       id="schedule-interval"
                       type="number"
                       min={60}
                       value={form.intervalSeconds}
                       onChange={(e) => setForm((f) => ({ ...f, intervalSeconds: e.target.value }))}
-                      className="bg-muted border-border font-mono text-xs text-foreground"
+                      className="font-mono tabular-nums"
                     />
-                  </div>
+                  </Field>
                 )}
-              </div>
-
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="grid gap-2 md:col-span-2">
-                  <Label className="text-xs font-semibold text-foreground">{t("surface.filterLabel")}</Label>
+                <Field label={t("surface.filterLabel")} htmlFor="schedule-surface" reserveHint={false} className="sm:col-span-2">
                   <Select
                     value={form.surface || "__auto__"}
                     onValueChange={(value) =>
                       setForm((f) => ({ ...f, surface: value === "__auto__" ? "" : (value as ScanSurface) }))
                     }
                   >
-                    <SelectTrigger>
+                    <SelectTrigger id="schedule-surface">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -404,9 +392,8 @@ export default function SchedulesPage() {
                       <SelectItem value="internal">{t("surface.internal")} — {t("surface.hint.internal")}</SelectItem>
                     </SelectContent>
                   </Select>
-                </div>
-                <div className="grid gap-2">
-                  <Label className="text-xs font-semibold text-foreground">{t("ui.scanIntent")}</Label>
+                </Field>
+                <Field label={t("ui.scanIntent")} htmlFor="schedule-intent" reserveHint={false}>
                   <Select
                     value={form.intent || "__none__"}
                     onValueChange={(value) =>
@@ -416,10 +403,10 @@ export default function SchedulesPage() {
                       }))
                     }
                   >
-                    <SelectTrigger className="bg-muted border-border text-foreground">
+                    <SelectTrigger id="schedule-intent">
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent className="bg-card border-border text-foreground">
+                    <SelectContent>
                       <SelectItem value="inventory">inventory — ports only</SelectItem>
                       <SelectItem value="vuln">vuln — probe + high nuclei</SelectItem>
                       <SelectItem value="full">full — assessment</SelectItem>
@@ -427,100 +414,95 @@ export default function SchedulesPage() {
                       <SelectItem value="__none__">legacy — manual flags</SelectItem>
                     </SelectContent>
                   </Select>
-                </div>
-                <div className="grid gap-2">
-                  <Label className="text-xs font-semibold text-foreground">{t("ui.speedProfile")}</Label>
+                </Field>
+                <Field label={t("ui.speedProfile")} htmlFor="schedule-mode" reserveHint={false}>
                   <Select value={form.mode} onValueChange={(value) => setForm((f) => ({ ...f, mode: value as CreateScheduleBody["mode"] }))}>
-                    <SelectTrigger className="bg-muted border-border text-foreground">
+                    <SelectTrigger id="schedule-mode">
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent className="bg-card border-border text-foreground">
+                    <SelectContent>
                       <SelectItem value="safe">safe (500 pps · low load)</SelectItem>
                       <SelectItem value="balanced">balanced (2,000 pps · standard)</SelectItem>
                       <SelectItem value="fast">fast (5,000 pps · aggressive)</SelectItem>
                     </SelectContent>
                   </Select>
-                </div>
+                </Field>
+              </FieldGrid>
 
-                <div className="flex flex-wrap items-end gap-4 text-xs text-foreground md:col-span-2">
-                  <Label className="flex items-center gap-2 font-semibold cursor-pointer">
-                    <Checkbox
-                      checked={form.intent === "delta" ? true : form.delta}
-                      disabled={form.intent === "delta"}
-                      onCheckedChange={(c) => setForm((f) => ({ ...f, delta: c === true }))}
-                      className="border-border"
-                    />
-                    Delta discovery
-                  </Label>
+              <div className="space-y-2">
+                <FieldGrid cols={3} className="gap-y-2">
+                  <CheckboxOption
+                    label="Delta discovery"
+                    checked={form.intent === "delta" ? true : form.delta}
+                    disabled={form.intent === "delta"}
+                    onCheckedChange={(checked) => setForm((f) => ({ ...f, delta: checked }))}
+                  />
                   {!form.intent ? (
-                    <Label className="flex items-center gap-2 font-semibold cursor-pointer">
-                      <Checkbox checked={form.skipNse} onCheckedChange={(c) => setForm((f) => ({ ...f, skipNse: c === true }))} className="border-border" />
-                      {t("prose.portsOnlyNoServiceoscveProbe")}
-                    </Label>
+                    <CheckboxOption
+                      label={t("prose.portsOnlyNoServiceoscveProbe")}
+                      checked={form.skipNse}
+                      onCheckedChange={(checked) => setForm((f) => ({ ...f, skipNse: checked }))}
+                    />
                   ) : null}
-                  <Label className="flex items-center gap-2 font-semibold cursor-pointer">
-                    <Checkbox checked={form.notify} onCheckedChange={(c) => setForm((f) => ({ ...f, notify: c === true }))} className="border-border" />
-                    Notify
-                  </Label>
-                  {serviceBackend ? (
-                    <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 text-[11px] font-mono text-muted-foreground">
-                      Full probe uses <span className="text-sky-600 dark:text-sky-400">{serviceBackend}</span> backend
-                    </span>
-                  ) : null}
-                </div>
+                  <CheckboxOption
+                    label="Notify"
+                    checked={form.notify}
+                    onCheckedChange={(checked) => setForm((f) => ({ ...f, notify: checked }))}
+                  />
+                </FieldGrid>
+                {serviceBackend ? (
+                  <p className="text-xs text-muted-foreground">
+                    Full probe uses <code className="font-mono text-foreground">{serviceBackend}</code> backend
+                  </p>
+                ) : null}
               </div>
 
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="grid gap-2">
-                  <Label htmlFor="schedule-ranges" className="text-xs font-semibold text-foreground">{t("ui.targetCidrRangesOptional")}</Label>
+              <FieldGrid cols={2}>
+                <Field label={t("ui.targetCidrRangesOptional")} htmlFor="schedule-ranges" reserveHint={false}>
                   <Textarea
                     id="schedule-ranges"
-                    className="min-h-[72px] bg-muted border-border font-mono text-xs text-foreground placeholder:text-muted-foreground"
+                    className="min-h-[72px] font-mono text-xs"
                     value={form.ranges}
                     onChange={(e) => setForm((f) => ({ ...f, ranges: e.target.value }))}
                     placeholder={"10.0.0.0/24\n192.168.1.0/28"}
                     spellCheck={false}
                   />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="schedule-domains" className="text-xs font-semibold text-foreground">{t("ui.targetDomainsOptional")}</Label>
+                </Field>
+                <Field label={t("ui.targetDomainsOptional")} htmlFor="schedule-domains" reserveHint={false}>
                   <Textarea
                     id="schedule-domains"
-                    className="min-h-[72px] bg-muted border-border font-mono text-xs text-foreground placeholder:text-muted-foreground"
+                    className="min-h-[72px] font-mono text-xs"
                     value={form.domains}
                     onChange={(e) => setForm((f) => ({ ...f, domains: e.target.value }))}
                     placeholder={"api.example.com\nportal.internal"}
                     spellCheck={false}
                   />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="schedule-ports" className="text-xs font-semibold text-foreground">TCP Ports Override (Optional)</Label>
-                  <Textarea
+                </Field>
+                <Field label="TCP ports override" htmlFor="schedule-ports" optional={t("launcher.optional")} reserveHint={false}>
+                  <Input
                     id="schedule-ports"
-                    className="min-h-[60px] bg-muted border-border font-mono text-xs text-foreground placeholder:text-muted-foreground"
+                    className="font-mono text-xs"
                     value={form.ports}
                     onChange={(e) => setForm((f) => ({ ...f, ports: e.target.value }))}
-                    placeholder={"22,80,443"}
+                    placeholder="22,80,443"
                     spellCheck={false}
                   />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="schedule-ports-udp" className="text-xs font-semibold text-foreground">UDP Ports Override (Optional)</Label>
-                  <Textarea
+                </Field>
+                <Field label="UDP ports override" htmlFor="schedule-ports-udp" optional={t("launcher.optional")} reserveHint={false}>
+                  <Input
                     id="schedule-ports-udp"
-                    className="min-h-[60px] bg-muted border-border font-mono text-xs text-foreground placeholder:text-muted-foreground"
+                    className="font-mono text-xs"
                     value={form.portsUdp}
                     onChange={(e) => setForm((f) => ({ ...f, portsUdp: e.target.value }))}
-                    placeholder={"53,123,161"}
+                    placeholder="53,123,161"
                     spellCheck={false}
                   />
-                </div>
-              </div>
+                </Field>
+              </FieldGrid>
 
               <DialogFooter>
                 <Button
                   type="submit"
-                  className="bg-sky-600 hover:bg-sky-500 text-foreground"
                   disabled={
                     !form.name.trim() ||
                     (form.cadenceKind === "cron" ? !form.cron.trim() : !Number(form.intervalSeconds)) ||

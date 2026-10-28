@@ -191,7 +191,7 @@ export function ScanScopePanel({ tenantId }: { tenantId: string }) {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
-              <thead className="text-xs uppercase text-muted-foreground">
+              <thead className="bg-muted text-xs text-muted-foreground font-medium">
                 <tr>
                   <th className="py-2 pr-4">{t("scanScope.col.effect")}</th>
                   <th className="py-2 pr-4">{t("scanScope.col.kind")}</th>
@@ -224,7 +224,7 @@ export function ScanScopePanel({ tenantId }: { tenantId: string }) {
         <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {t("scanScope.editor")}
         </p>
-        <ul className="space-y-1 text-[11px] text-muted-foreground">
+        <ul className="space-y-1 text-xs text-muted-foreground">
           <li>{t("scanScope.ruleDeny")}</li>
           <li>{t("scanScope.ruleAllow")}</li>
           <li>{t("scanScope.ruleEmpty")}</li>
@@ -319,11 +319,11 @@ export function ScanScopePanel({ tenantId }: { tenantId: string }) {
             ))}
           </ul>
         ) : null}
-        <p className="text-[11px] text-muted-foreground">{t("scanScope.serverAuthority")}</p>
+        <p className="text-xs text-muted-foreground">{t("scanScope.serverAuthority")}</p>
 
         <Button
           type="button"
-          className="gap-2 bg-sky-600 text-foreground hover:bg-sky-500"
+          className="gap-2"
           disabled={!dirty || errors.length > 0 || replaceMutation.isPending}
           onClick={approve}
         >
@@ -336,7 +336,7 @@ export function ScanScopePanel({ tenantId }: { tenantId: string }) {
         <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {t("scanScope.promoted")}
         </p>
-        <p className="text-[11px] text-muted-foreground">{t("scanScope.promotedHint")}</p>
+        <p className="text-xs text-muted-foreground">{t("scanScope.promotedHint")}</p>
         {promotedQuery.error ? (
           <p className="text-sm text-rose-500" role="alert">
             {promotedQuery.error instanceof Error
@@ -348,7 +348,7 @@ export function ScanScopePanel({ tenantId }: { tenantId: string }) {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
-              <thead className="text-xs uppercase text-muted-foreground">
+              <thead className="bg-muted text-xs text-muted-foreground font-medium">
                 <tr>
                   <th className="py-2 pr-4">{t("scanScope.col.domain")}</th>
                   <th className="py-2 pr-4">{t("scanScope.col.promotedBy")}</th>

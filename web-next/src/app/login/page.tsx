@@ -178,7 +178,7 @@ export default function LoginPage() {
       <div className="absolute right-4 top-4 z-20">
         <AppearanceControls />
       </div>
-      <section className="relative z-10 w-full max-w-md space-y-6 rounded-xl border border-border bg-card p-8 text-foreground shadow-2xl backdrop-blur">
+      <section className="relative z-10 w-full max-w-md space-y-6 rounded-xl border border-border bg-card p-8 text-foreground">
         <div className="space-y-2">
           <p className="text-sm font-semibold uppercase tracking-[0.2em] text-sky-600 dark:text-sky-400">
             {t("login.kicker")}

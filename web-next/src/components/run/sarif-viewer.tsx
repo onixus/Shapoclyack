@@ -190,28 +190,28 @@ export function SarifViewerDialog({
           <div className="flex items-center gap-2.5 rounded-lg bg-card p-2.5 border border-border">
             <Layers className="h-4 w-4 text-muted-foreground" />
             <div>
-              <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">{t("ui.totalFindings")}</p>
+              <p className="text-overline uppercase font-bold text-muted-foreground">{t("ui.totalFindings")}</p>
               <p className="text-sm font-bold font-mono text-foreground">{counts.total.toLocaleString()}</p>
             </div>
           </div>
           <div className="flex items-center gap-2.5 rounded-lg bg-rose-50 dark:bg-rose-950/20 p-2.5 border border-rose-300 dark:border-rose-900/30">
             <AlertCircle className="h-4 w-4 text-rose-600 dark:text-rose-400" />
             <div>
-              <p className="text-[10px] uppercase font-bold text-rose-600 dark:text-rose-400 tracking-wider">{t("ui.errorsHighcrit")}</p>
+              <p className="text-overline uppercase font-bold text-rose-600 dark:text-rose-400">{t("ui.errorsHighcrit")}</p>
               <p className="text-sm font-bold font-mono text-rose-600 dark:text-rose-300">{counts.errors.toLocaleString()}</p>
             </div>
           </div>
           <div className="flex items-center gap-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/20 p-2.5 border border-amber-300 dark:border-amber-900/30">
             <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
             <div>
-              <p className="text-[10px] uppercase font-bold text-amber-600 dark:text-amber-400 tracking-wider">{t("ui.warningsMedium")}</p>
+              <p className="text-overline uppercase font-bold text-amber-600 dark:text-amber-400">{t("ui.warningsMedium")}</p>
               <p className="text-sm font-bold font-mono text-amber-600 dark:text-amber-300">{counts.warnings.toLocaleString()}</p>
             </div>
           </div>
           <div className="flex items-center gap-2.5 rounded-lg bg-sky-50 dark:bg-sky-950/20 p-2.5 border border-sky-300 dark:border-sky-900/30">
             <Info className="h-4 w-4 text-sky-600 dark:text-sky-400" />
             <div>
-              <p className="text-[10px] uppercase font-bold text-sky-600 dark:text-sky-400 tracking-wider">Notes & Rules</p>
+              <p className="text-overline uppercase font-bold text-sky-600 dark:text-sky-400">Notes & Rules</p>
               <p className="text-sm font-bold font-mono text-sky-600 dark:text-sky-300">
                 {counts.notes} notes · {counts.rules} rules
               </p>
@@ -258,7 +258,7 @@ export function SarifViewerDialog({
                       key={lvl}
                       type="button"
                       onClick={() => setLevelFilter(lvl)}
-                      className={`px-2 py-1 rounded text-[11px] font-medium transition-colors ${
+                      className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
                         levelFilter === lvl
                           ? "bg-muted text-foreground font-bold"
                           : "text-muted-foreground hover:text-foreground"
@@ -297,10 +297,10 @@ export function SarifViewerDialog({
                           variant="outline"
                           className={
                             lvl === "error"
-                              ? "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/30 font-bold font-mono text-[10px]"
+                              ? "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/30 font-bold font-mono text-xs"
                               : lvl === "warning"
-                              ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30 font-bold font-mono text-[10px]"
-                              : "bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/30 font-bold font-mono text-[10px]"
+                              ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30 font-bold font-mono text-xs"
+                              : "bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/30 font-bold font-mono text-xs"
                           }
                         >
                           {lvl.toUpperCase()}
@@ -315,12 +315,12 @@ export function SarifViewerDialog({
 
                       <div className="flex items-center gap-1.5 flex-wrap">
                         {cve && (
-                          <Badge variant="secondary" className="bg-muted text-rose-600 dark:text-rose-300 font-mono text-[10px]">
+                          <Badge variant="secondary" className="bg-muted text-rose-600 dark:text-rose-300 font-mono text-xs">
                             {cve}
                           </Badge>
                         )}
                         {cweList.slice(0, 2).map((cwe) => (
-                          <Badge key={cwe} variant="secondary" className="bg-muted text-sky-600 dark:text-sky-300 font-mono text-[10px]">
+                          <Badge key={cwe} variant="secondary" className="bg-muted text-sky-600 dark:text-sky-300 font-mono text-xs">
                             {cwe}
                           </Badge>
                         ))}
@@ -332,14 +332,14 @@ export function SarifViewerDialog({
                     </p>
 
                     {locationUri && (
-                      <div className="flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground bg-muted px-2.5 py-1 rounded-lg border border-border">
+                      <div className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground bg-muted px-2.5 py-1 rounded-lg border border-border">
                         <span className="text-muted-foreground font-semibold">Target URI:</span>
                         <span className="text-sky-600 dark:text-sky-300 truncate">{locationUri}</span>
                       </div>
                     )}
 
                     {rule?.help?.text && (
-                      <div className="text-[11px] text-muted-foreground pt-1 border-t border-border">
+                      <div className="text-xs text-muted-foreground pt-1 border-t border-border">
                         <span className="text-muted-foreground font-semibold">Remediation: </span>
                         {rule.help.text}
                       </div>
@@ -364,13 +364,13 @@ export function SarifViewerDialog({
                 >
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
-                      <Badge variant="outline" className="font-mono text-[10px] text-sky-600 dark:text-sky-400 border-sky-500/30">
+                      <Badge variant="outline" className="font-mono text-xs text-sky-600 dark:text-sky-400 border-sky-500/30">
                         RULE
                       </Badge>
                       <span className="font-mono text-xs font-bold text-foreground">{rule.id}</span>
                     </div>
                     {rule.defaultConfiguration?.level && (
-                      <span className="font-mono text-[10px] text-muted-foreground uppercase">
+                      <span className="font-mono text-overline text-muted-foreground uppercase">
                         Default Level: {rule.defaultConfiguration.level}
                       </span>
                     )}
@@ -394,7 +394,7 @@ export function SarifViewerDialog({
 
           {/* Tab 3: Raw JSON */}
           <TabsContent value="raw" className="flex-1 overflow-hidden flex flex-col">
-            <pre className="flex-1 overflow-auto p-4 rounded-xl bg-muted border border-border font-mono text-[11px] text-foreground leading-relaxed select-text">
+            <pre className="flex-1 overflow-auto p-4 rounded-xl bg-muted border border-border font-mono text-xs text-foreground leading-relaxed select-text">
               {sarifText}
             </pre>
           </TabsContent>

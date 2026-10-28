@@ -158,7 +158,7 @@ export default function DashboardPage() {
             {t("common.refresh")}
           </Button>
           <Link href="/scans">
-            <Button size="sm" className="gap-2 bg-sky-600 text-foreground hover:bg-sky-500 shadow-lg shadow-sky-950">
+            <Button size="sm" className="gap-2">
               <Play className="h-3.5 w-3.5 fill-current" />
               {t("page.risk.launch")}
             </Button>
@@ -173,12 +173,12 @@ export default function DashboardPage() {
       ) : null}
 
       {!isLoading && (summary?.total ?? 0) === 0 ? (
-        <div className="rounded-xl border border-border bg-card p-8 text-center backdrop-blur">
+        <div className="rounded-xl border border-border bg-card p-8 text-center">
           <ShieldAlert className="mx-auto h-10 w-10 text-muted-foreground" />
           <h3 className="mt-3 text-sm font-semibold text-foreground">{t("page.risk.emptyTitle")}</h3>
           <p className="mt-1 text-xs text-muted-foreground">{t("page.risk.emptyBody")}</p>
           <Link href="/scans" className="mt-4 inline-block">
-            <Button size="sm" className="bg-sky-600 hover:bg-sky-500">
+            <Button size="sm">
               {t("page.risk.emptyCta")}
             </Button>
           </Link>
@@ -249,7 +249,7 @@ export default function DashboardPage() {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-5">
-        <Card className="xl:col-span-3 rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
+        <Card className="min-w-0 xl:col-span-3 rounded-xl border border-border bg-card p-5">
           <Title className="text-sm font-bold text-foreground uppercase tracking-wider">
             {t("page.risk.byNist")}
           </Title>
@@ -282,7 +282,7 @@ export default function DashboardPage() {
           )}
         </Card>
 
-        <Card className="xl:col-span-2 rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
+        <Card className="min-w-0 xl:col-span-2 rounded-xl border border-border bg-card p-5">
           <Title className="text-sm font-bold text-foreground uppercase tracking-wider">
             {t("page.risk.bySeverity")}
           </Title>
@@ -317,7 +317,7 @@ export default function DashboardPage() {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-5">
-        <Card className="xl:col-span-3 rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
+        <Card className="min-w-0 xl:col-span-3 rounded-xl border border-border bg-card p-5">
           <div className="flex items-center justify-between">
             <Title className="text-sm font-bold text-foreground uppercase tracking-wider">
               {t("page.risk.topRisksTitle")}
@@ -331,7 +331,7 @@ export default function DashboardPage() {
           ) : (
             <div className="mt-4 overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="border-b border-border bg-muted text-muted-foreground font-bold uppercase tracking-wider">
+                <thead className="border-b border-border bg-muted text-muted-foreground font-semibold text-xs">
                   <tr>
                     <th className="py-2.5 px-2">{t("ui.finding")}</th>
                     <th className="py-2.5 px-2">{t("ui.asset")}</th>
@@ -384,7 +384,7 @@ export default function DashboardPage() {
           )}
         </Card>
 
-        <Card className="xl:col-span-2 rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
+        <Card className="min-w-0 xl:col-span-2 rounded-xl border border-border bg-card p-5">
           <div className="flex items-center justify-between">
             <Title className="text-sm font-bold text-foreground uppercase tracking-wider">
               {t("page.risk.assetPosture")}
@@ -433,7 +433,7 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      <Card className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
+      <Card className="rounded-xl border border-border bg-card p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <TrendingUp className="h-4 w-4 text-sky-600 dark:text-sky-400" />
@@ -482,7 +482,7 @@ export default function DashboardPage() {
         )}
       </Card>
 
-      <Card className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
+      <Card className="rounded-xl border border-border bg-card p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <Title className="text-sm font-bold text-foreground uppercase tracking-wider">
             {t("page.risk.scanActivity")}
