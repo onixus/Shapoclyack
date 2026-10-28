@@ -80,5 +80,9 @@ it("does not treat a heartbeat without inventory as a fresh inventory", () => {
     />,
   );
   expect(screen.getByText("Инвентарь ещё не получен")).toBeVisible();
+  expect(screen.getByText("Инвентарь ещё не получен").closest("[data-tone]")).toHaveAttribute(
+    "data-tone",
+    "muted",
+  );
   expect(screen.queryByText("Данные актуальны")).not.toBeInTheDocument();
 });

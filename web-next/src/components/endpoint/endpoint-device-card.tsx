@@ -19,6 +19,13 @@ export function EndpointDeviceCard({ device }: { device: EndpointDeviceInfo }) {
   const when = useAbsoluteTime();
   const e = (s: string) => endpointText(t.locale, s);
   const recon = ENDPOINT_RECONCILIATION_STATUS[device.reconciliation_status];
+  // A heartbeat can precede the first inventory. Unknown freshness must not
+  // inherit the green/pulsing "active" device treatment.
+  const freshnessKey = `inventory:${device.status}`;
+  const freshnessStyle =
+    device.last_inventory_at == null
+      ? { variant: "secondary" as const, tone: "muted" as const }
+      : (ASSET_STATUS[device.status] ?? { variant: "secondary" as const, tone: "muted" as const });
   return (
     <section
       className="min-w-0 space-y-4 rounded-xl border border-border bg-card p-5 text-xs"
@@ -77,17 +84,13 @@ export function EndpointDeviceCard({ device }: { device: EndpointDeviceInfo }) {
           <dt className="text-muted-foreground">{e("Inventory freshness")}</dt>
           <dd>
             <StatusBadge
-              value={device.status}
-              map={
-                t.locale === "ru"
-                  ? {
-                      [device.status]: {
-                        ...ASSET_STATUS[device.status],
-                        label: endpointFreshness(t.locale, device.status, device.last_inventory_at),
-                      },
-                    }
-                  : ASSET_STATUS
-              }
+              value={freshnessKey}
+              map={{
+                [freshnessKey]: {
+                  ...freshnessStyle,
+                  label: endpointFreshness(t.locale, device.status, device.last_inventory_at),
+                },
+              }}
             />
           </dd>
         </div>
