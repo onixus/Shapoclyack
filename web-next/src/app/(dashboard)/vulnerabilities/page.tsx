@@ -4,8 +4,9 @@ import Link from "next/link";
 import { Suspense, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { type ColumnDef } from "@tanstack/react-table";
-import { ArrowUpRight, Filter, ShieldAlert } from "lucide-react";
+import { ArrowUpRight, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Field, FieldGrid } from "@/components/ui/field";
 import {
   Select,
   SelectContent,
@@ -298,182 +299,201 @@ function VulnerabilitiesInner() {
   );
 
   const filterToolbar = (
-          <div className="flex flex-wrap items-center gap-2">
-            <Filter className="h-4 w-4 text-muted-foreground" />
-            <Select
-              value={scope}
-              onValueChange={(value) => {
-                setScope(value as "open" | "all");
-                if (value === "open") setState("");
-                pagination.reset();
-              }}
-            >
-              <SelectTrigger aria-label={t("vulns.filter.openOnly")} className="w-auto min-w-[10rem]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="bg-card border-border text-foreground">
-                <SelectItem value={OPEN_WORKING_SET}>{t("vulns.filter.openOnly")}</SelectItem>
-                <SelectItem value="all">{t("ui.allFindings")}</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select
-              value={state || ALL_STATES}
-              onValueChange={(value) => {
-                setState(value === ALL_STATES ? "" : (value as VulnLifecycleState));
-                pagination.reset();
-              }}
-            >
-              <SelectTrigger aria-label={t("select.anyState")} className="w-auto min-w-[11rem]">
-                <SelectValue placeholder={t("select.anyState")} />
-              </SelectTrigger>
-              <SelectContent className="bg-card border-border text-foreground">
-                <SelectItem value={ALL_STATES}>{t("vulns.filter.anyState")}</SelectItem>
-                {VULN_STATES.map((item) => (
-                  <SelectItem key={item} value={item}>
-                    {VULN_LIFECYCLE_STATUS[item].label}
+          <FieldGrid cols="filters" className="w-full basis-full">
+            <Field label={t("vulns.filter.scope")} htmlFor="vuln-filter-scope" reserveHint={false}>
+              <Select
+                value={scope}
+                onValueChange={(value) => {
+                  setScope(value as "open" | "all");
+                  if (value === "open") setState("");
+                  pagination.reset();
+                }}
+              >
+                <SelectTrigger id="vuln-filter-scope">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-card border-border text-foreground">
+                  <SelectItem value={OPEN_WORKING_SET}>{t("vulns.filter.openOnly")}</SelectItem>
+                  <SelectItem value="all">{t("ui.allFindings")}</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label={t("vulns.filter.state")} htmlFor="vuln-filter-state" reserveHint={false}>
+              <Select
+                value={state || ALL_STATES}
+                onValueChange={(value) => {
+                  setState(value === ALL_STATES ? "" : (value as VulnLifecycleState));
+                  pagination.reset();
+                }}
+              >
+                <SelectTrigger id="vuln-filter-state">
+                  <SelectValue placeholder={t("select.anyState")} />
+                </SelectTrigger>
+                <SelectContent className="bg-card border-border text-foreground">
+                  <SelectItem value={ALL_STATES}>{t("vulns.filter.anyState")}</SelectItem>
+                  {VULN_STATES.map((item) => (
+                    <SelectItem key={item} value={item}>
+                      {VULN_LIFECYCLE_STATUS[item].label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label={t("vuln.source")} htmlFor="vuln-filter-source" reserveHint={false}>
+              <Select
+                value={source || FILTER_ALL}
+                onValueChange={(value) => {
+                  setSource(value === FILTER_ALL ? "" : (value as VulnerabilitySource));
+                  pagination.reset();
+                }}
+              >
+                <SelectTrigger id="vuln-filter-source">
+                  <SelectValue placeholder={t("vuln.source")} />
+                </SelectTrigger>
+                <SelectContent className="bg-card border-border text-foreground">
+                  <SelectItem value={FILTER_ALL}>{t("vuln.source.any")}</SelectItem>
+                  <SelectItem value="scan">{t("vuln.source.scan")}</SelectItem>
+                  <SelectItem value="endpoint_software">
+                    {t("vuln.source.endpointSoftware")}
                   </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select
-              value={source || FILTER_ALL}
-              onValueChange={(value) => {
-                setSource(value === FILTER_ALL ? "" : (value as VulnerabilitySource));
-                pagination.reset();
-              }}
-            >
-              <SelectTrigger aria-label={t("vuln.source")} className="w-auto min-w-[11rem]">
-                <SelectValue placeholder={t("vuln.source")} />
-              </SelectTrigger>
-              <SelectContent className="bg-card border-border text-foreground">
-                <SelectItem value={FILTER_ALL}>{t("vuln.source.any")}</SelectItem>
-                <SelectItem value="scan">{t("vuln.source.scan")}</SelectItem>
-                <SelectItem value="endpoint_software">
-                  {t("vuln.source.endpointSoftware")}
-                </SelectItem>
-                <SelectItem value="retro_match">{t("vuln.source.retroMatch")}</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select
-              value={findingType || FILTER_ALL}
-              onValueChange={(value) => {
-                setFindingType(value === FILTER_ALL ? "" : (value as FindingType));
-                pagination.reset();
-              }}
-            >
-              <SelectTrigger className="w-auto min-w-[11rem]" aria-label={t("vuln.findingType")}>
-                <SelectValue placeholder={t("vuln.findingType")} />
-              </SelectTrigger>
-              <SelectContent className="bg-card border-border text-foreground">
-                <SelectItem value={FILTER_ALL}>Any finding type</SelectItem>
-                <SelectItem value="cve">CVE</SelectItem>
-                <SelectItem value="misconfiguration">Misconfiguration</SelectItem>
-                <SelectItem value="exposure">Exposure</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select
-              value={detector || FILTER_ALL}
-              onValueChange={(value) => {
-                setDetector(value === FILTER_ALL ? "" : value);
-                pagination.reset();
-              }}
-            >
-              <SelectTrigger className="w-auto min-w-[11rem]" aria-label={t("vuln.detector")}>
-                <SelectValue placeholder={t("vuln.detector")} />
-              </SelectTrigger>
-              <SelectContent className="bg-card border-border text-foreground">
-                <SelectItem value={FILTER_ALL}>Any detector</SelectItem>
-                <SelectItem value="nuclei">Nuclei</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select
-              value={exposure || FILTER_ALL}
-              onValueChange={(value) => {
-                setExposure(value === FILTER_ALL ? "" : (value as NetworkExposure));
-                pagination.reset();
-              }}
-            >
-              <SelectTrigger className="w-auto min-w-[11rem]" aria-label={t("vuln.exposure")}>
-                <SelectValue placeholder={t("vuln.exposure")} />
-              </SelectTrigger>
-              <SelectContent className="bg-card border-border text-foreground">
-                <SelectItem value={FILTER_ALL}>{t("vuln.exposure.any")}</SelectItem>
-                <SelectItem value="external">{t("vuln.exposure.external")}</SelectItem>
-                <SelectItem value="internal">{t("vuln.exposure.internal")}</SelectItem>
-                <SelectItem value="unknown">{t("vuln.exposure.unknown")}</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select
-              value={severity || FILTER_ALL}
-              onValueChange={(value) => {
-                setSeverity(value === FILTER_ALL ? "" : value);
-                pagination.reset();
-              }}
-            >
-              <SelectTrigger aria-label={t("select.severity")} className="w-auto min-w-[9rem]">
-                <SelectValue placeholder={t("select.severity")} />
-              </SelectTrigger>
-              <SelectContent className="bg-card border-border text-foreground">
-                <SelectItem value={FILTER_ALL}>{t("vulns.filter.anySeverity")}</SelectItem>
-                {SEVERITIES.map((item) => (
-                  <SelectItem key={item} value={item}>
-                    {item}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select
-              value={sla || FILTER_ALL}
-              onValueChange={(value) => {
-                setSla(value === FILTER_ALL ? "" : (value as SlaState));
-                pagination.reset();
-              }}
-            >
-              <SelectTrigger aria-label={t("select.sla")} className="w-auto min-w-[10rem]">
-                <SelectValue placeholder={t("select.sla")} />
-              </SelectTrigger>
-              <SelectContent className="bg-card border-border text-foreground">
-                <SelectItem value={FILTER_ALL}>{t("vulns.filter.anySla")}</SelectItem>
-                {SLA_STATES.map((item) => (
-                  <SelectItem key={item} value={item}>
-                    {item.replace("_", " ")}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select
-              value={unassigned ? "unassigned" : FILTER_ALL}
-              onValueChange={(value) => {
-                setUnassigned(value === "unassigned");
-                pagination.reset();
-              }}
-            >
-              <SelectTrigger aria-label={t("select.owner")} className="w-auto min-w-[10rem]">
-                <SelectValue placeholder={t("select.owner")} />
-              </SelectTrigger>
-              <SelectContent className="bg-card border-border text-foreground">
-                <SelectItem value={FILTER_ALL}>{t("vulns.filter.anyOwner")}</SelectItem>
-                <SelectItem value="unassigned">{t("common.unassigned")}</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select
-              value={staleDays || FILTER_ALL}
-              onValueChange={(value) => {
-                setStaleDays(value === FILTER_ALL ? "" : value);
-                pagination.reset();
-              }}
-            >
-              <SelectTrigger aria-label={t("select.stale")} className="w-auto min-w-[10rem]">
-                <SelectValue placeholder={t("select.stale")} />
-              </SelectTrigger>
-              <SelectContent className="bg-card border-border text-foreground">
-                <SelectItem value={FILTER_ALL}>{t("vulns.filter.anyRecency")}</SelectItem>
-                <SelectItem value="14">Stale 14+ days</SelectItem>
-                <SelectItem value="30">Stale 30+ days</SelectItem>
-                <SelectItem value="90">Stale 90+ days</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+                  <SelectItem value="retro_match">{t("vuln.source.retroMatch")}</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label={t("vuln.findingType")} htmlFor="vuln-filter-finding-type" reserveHint={false}>
+              <Select
+                value={findingType || FILTER_ALL}
+                onValueChange={(value) => {
+                  setFindingType(value === FILTER_ALL ? "" : (value as FindingType));
+                  pagination.reset();
+                }}
+              >
+                <SelectTrigger id="vuln-filter-finding-type">
+                  <SelectValue placeholder={t("vuln.findingType")} />
+                </SelectTrigger>
+                <SelectContent className="bg-card border-border text-foreground">
+                  <SelectItem value={FILTER_ALL}>{t("vulns.filter.anyFindingType")}</SelectItem>
+                  <SelectItem value="cve">CVE</SelectItem>
+                  <SelectItem value="misconfiguration">Misconfiguration</SelectItem>
+                  <SelectItem value="exposure">Exposure</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label={t("vuln.detector")} htmlFor="vuln-filter-detector" reserveHint={false}>
+              <Select
+                value={detector || FILTER_ALL}
+                onValueChange={(value) => {
+                  setDetector(value === FILTER_ALL ? "" : value);
+                  pagination.reset();
+                }}
+              >
+                <SelectTrigger id="vuln-filter-detector">
+                  <SelectValue placeholder={t("vuln.detector")} />
+                </SelectTrigger>
+                <SelectContent className="bg-card border-border text-foreground">
+                  <SelectItem value={FILTER_ALL}>{t("vulns.filter.anyDetector")}</SelectItem>
+                  <SelectItem value="nuclei">Nuclei</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label={t("vuln.exposure")} htmlFor="vuln-filter-exposure" reserveHint={false}>
+              <Select
+                value={exposure || FILTER_ALL}
+                onValueChange={(value) => {
+                  setExposure(value === FILTER_ALL ? "" : (value as NetworkExposure));
+                  pagination.reset();
+                }}
+              >
+                <SelectTrigger id="vuln-filter-exposure">
+                  <SelectValue placeholder={t("vuln.exposure")} />
+                </SelectTrigger>
+                <SelectContent className="bg-card border-border text-foreground">
+                  <SelectItem value={FILTER_ALL}>{t("vuln.exposure.any")}</SelectItem>
+                  <SelectItem value="external">{t("vuln.exposure.external")}</SelectItem>
+                  <SelectItem value="internal">{t("vuln.exposure.internal")}</SelectItem>
+                  <SelectItem value="unknown">{t("vuln.exposure.unknown")}</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label={t("select.severity")} htmlFor="vuln-filter-severity" reserveHint={false}>
+              <Select
+                value={severity || FILTER_ALL}
+                onValueChange={(value) => {
+                  setSeverity(value === FILTER_ALL ? "" : value);
+                  pagination.reset();
+                }}
+              >
+                <SelectTrigger id="vuln-filter-severity">
+                  <SelectValue placeholder={t("select.severity")} />
+                </SelectTrigger>
+                <SelectContent className="bg-card border-border text-foreground">
+                  <SelectItem value={FILTER_ALL}>{t("vulns.filter.anySeverity")}</SelectItem>
+                  {SEVERITIES.map((item) => (
+                    <SelectItem key={item} value={item}>
+                      {item}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label={t("select.sla")} htmlFor="vuln-filter-sla" reserveHint={false}>
+              <Select
+                value={sla || FILTER_ALL}
+                onValueChange={(value) => {
+                  setSla(value === FILTER_ALL ? "" : (value as SlaState));
+                  pagination.reset();
+                }}
+              >
+                <SelectTrigger id="vuln-filter-sla">
+                  <SelectValue placeholder={t("select.sla")} />
+                </SelectTrigger>
+                <SelectContent className="bg-card border-border text-foreground">
+                  <SelectItem value={FILTER_ALL}>{t("vulns.filter.anySla")}</SelectItem>
+                  {SLA_STATES.map((item) => (
+                    <SelectItem key={item} value={item}>
+                      {item.replace("_", " ")}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label={t("select.owner")} htmlFor="vuln-filter-owner" reserveHint={false}>
+              <Select
+                value={unassigned ? "unassigned" : FILTER_ALL}
+                onValueChange={(value) => {
+                  setUnassigned(value === "unassigned");
+                  pagination.reset();
+                }}
+              >
+                <SelectTrigger id="vuln-filter-owner">
+                  <SelectValue placeholder={t("select.owner")} />
+                </SelectTrigger>
+                <SelectContent className="bg-card border-border text-foreground">
+                  <SelectItem value={FILTER_ALL}>{t("vulns.filter.anyOwner")}</SelectItem>
+                  <SelectItem value="unassigned">{t("common.unassigned")}</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label={t("select.stale")} htmlFor="vuln-filter-stale" reserveHint={false}>
+              <Select
+                value={staleDays || FILTER_ALL}
+                onValueChange={(value) => {
+                  setStaleDays(value === FILTER_ALL ? "" : value);
+                  pagination.reset();
+                }}
+              >
+                <SelectTrigger id="vuln-filter-stale">
+                  <SelectValue placeholder={t("select.stale")} />
+                </SelectTrigger>
+                <SelectContent className="bg-card border-border text-foreground">
+                  <SelectItem value={FILTER_ALL}>{t("vulns.filter.anyRecency")}</SelectItem>
+                  <SelectItem value="14">{t("vulns.filter.stale14")}</SelectItem>
+                  <SelectItem value="30">{t("vulns.filter.stale30")}</SelectItem>
+                  <SelectItem value="90">{t("vulns.filter.stale90")}</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+          </FieldGrid>
   );
 
   return (

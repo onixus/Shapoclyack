@@ -18,6 +18,9 @@ const config: Config = {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",
+        control: "hsl(var(--control))",
+        warning: "hsl(var(--warning))",
+        success: "hsl(var(--success))",
         background: "hsl(var(--background))",
         foreground: "hsl(var(--foreground))",
         primary: {
@@ -98,6 +101,9 @@ const config: Config = {
         "tremor-default": ["0.875rem", { lineHeight: "1.25rem" }],
         "tremor-title": ["1.125rem", { lineHeight: "1.75rem" }],
         "tremor-metric": ["1.875rem", { lineHeight: "2.25rem" }],
+        // APEX type scale: body-sm for field labels and dense tables.
+        "body-sm": ["0.8125rem", { lineHeight: "1.125rem" }],
+        h3: ["0.9375rem", { lineHeight: "1.375rem", fontWeight: "600" }],
       },
     },
   },
