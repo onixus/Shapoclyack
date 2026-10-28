@@ -67,6 +67,7 @@ from api.db.engine import get_session
 from api.services import agent_groups as agent_groups_service
 from api.services import audit as audit_service
 from api.services import auth_audit
+from api.services import scan_surface
 from api.services import tenants as tenants_service
 from api.services.targets import split_target_lines
 from api.settings import Settings
@@ -261,7 +262,10 @@ def load_scope(settings: Settings, tenant_id: str) -> ScanScope:
     """The tenant's scope as a matchable value. Empty when nothing is approved."""
     with get_session(settings.postgres_url) as session:
         rows = _rows(session, tenant_id)
+    return _scope_from_rows(tenant_id, rows)
 
+
+def _scope_from_rows(tenant_id: str, rows: list[models.TenantScanScope]) -> ScanScope:
     allow_networks: list[_Network] = []
     deny_networks: list[_Network] = []
     allow_domains: list[str] = []
@@ -306,6 +310,108 @@ def list_entries(settings: Settings, tenant_id: str) -> list[dict[str, Any]]:
     """Every entry of one tenant's scope, allow before deny, then by value."""
     with get_session(settings.postgres_url) as session:
         return [_to_dict(row) for row in _rows(session, tenant_id)]
+
+
+def _without_denied(network: _Network, denied: Iterable[_Network]) -> list[_Network]:
+    """``network`` with every denied range carved out of it.
+
+    Two CIDR blocks are either disjoint or one contains the other, so a deny
+    that overlaps a piece either swallows it or sits inside it and splits it.
+    """
+    pieces = [network]
+    for deny in denied:
+        if deny.version != network.version:
+            continue
+        kept: list[_Network] = []
+        for piece in pieces:
+            if not piece.overlaps(deny):  # type: ignore[arg-type]
+                kept.append(piece)
+                continue
+            if not piece.subnet_of(deny):  # type: ignore[arg-type]
+                kept.extend(piece.address_exclude(deny))  # type: ignore[arg-type]
+        pieces = kept
+    return pieces
+
+
+def scannable_targets(settings: Settings, tenant_id: str) -> dict[str, Any]:
+    """What the tenant's approved scope lets it scan, as targets for a new job.
+
+    The scan launcher's "fill from scope" buttons. An operator scans inside the
+    scope without holding ``scan_scope.read``, so the scope itself — notes,
+    approvers, agent groups — stays behind that permission, and what is handed
+    out here is only what ``POST /api/jobs`` would accept from that operator:
+
+    * an allowed range minus every denied range inside it, because a target
+      that merely *overlaps* a deny is refused whole. Allowed ranges are not
+      merged with each other: a target must fit inside *one* allowed range, so
+      two adjacent /25s are two targets and never the /24 they add up to;
+    * an allowed domain unless a deny entry covers it. A denied subdomain of an
+      allowed domain does not take the parent out — the scanner drops it from
+      what the parent enumerates (#244);
+    * never a wildcard or a ``/0``. "Anything" is an approval, not a target
+      list, and the grandfathered allow-all scope of migration 0025 is made of
+      exactly those.
+
+    What is left out is listed with the reason, so the console can say why a
+    scope of five entries filled in three. A denied piece names the deny entry,
+    which an operator already learns from the 403 of a scan that overlaps it.
+    Names that resolve into a denied range are not looked up here: that check
+    runs when the scan starts (:func:`assert_scan_allowed`).
+    """
+    with get_session(settings.postgres_url) as session:
+        rows = _rows(session, tenant_id)
+    scope = _scope_from_rows(tenant_id, rows)
+
+    networks: list[_Network] = []
+    domains: list[str] = []
+    skipped: list[dict[str, str]] = []
+    for row in rows:
+        if row.effect != EFFECT_ALLOW:
+            continue
+        if row.kind == KIND_CIDR:
+            if row.value == WILDCARD:
+                skipped.append({"kind": row.kind, "value": row.value, "reason": "wildcard"})
+                continue
+            try:
+                network = _network(row.value)
+            except ValueError:
+                skipped.append({"kind": row.kind, "value": row.value, "reason": "invalid"})
+                continue
+            if network.prefixlen == 0:
+                skipped.append({"kind": row.kind, "value": row.value, "reason": "wildcard"})
+                continue
+            pieces = _without_denied(network, scope.deny_networks)
+            if not pieces:
+                skipped.append({"kind": row.kind, "value": row.value, "reason": "denied"})
+                continue
+            networks.extend(pieces)
+        else:
+            name = _normalize_domain(row.value)
+            if name == WILDCARD:
+                skipped.append({"kind": row.kind, "value": row.value, "reason": "wildcard"})
+                continue
+            if scope.rejects_domain(name):
+                skipped.append({"kind": row.kind, "value": row.value, "reason": "denied"})
+                continue
+            if name not in domains:
+                domains.append(name)
+
+    # A range inside another allowed one adds nothing to the scan; equal ones
+    # (the same block reached from two entries) are kept once.
+    distinct = sorted(set(networks), key=lambda n: (n.version, n.network_address, n.prefixlen))
+    kept = [
+        n
+        for n in distinct
+        if not any(
+            other != n and other.version == n.version and n.subnet_of(other)  # type: ignore[arg-type]
+            for other in distinct
+        )
+    ]
+    targets = [
+        {"kind": KIND_CIDR, "value": str(n), "surface": scan_surface.network_surface(n)}
+        for n in kept
+    ] + [{"kind": KIND_DOMAIN, "value": name, "surface": "external"} for name in domains]
+    return {"approved": scope.approved, "targets": targets, "skipped": skipped}
 
 
 def _entry_scope(row: models.TenantScanScope) -> ScanScope | None:

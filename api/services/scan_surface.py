@@ -64,6 +64,11 @@ def _is_internal(network: ipaddress.IPv4Network | ipaddress.IPv6Network) -> bool
     )
 
 
+def network_surface(network: ipaddress.IPv4Network | ipaddress.IPv6Network) -> Surface:
+    """The surface a scan of this one range faces — :func:`classify` for a single range."""
+    return "internal" if _is_internal(network) else "external"
+
+
 def classify(ranges_text: str | None, domains_text: str | None) -> Surface | None:
     """Derive the surface from a scan's targets, or ``None`` when it has none.
 

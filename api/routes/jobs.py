@@ -20,6 +20,7 @@ from api.schemas import (
     JobSummary,
     Page,
     RunPublicationInfo,
+    ScopeTargetsInfo,
     StartScanRequest,
 )
 from api.services import job_states
@@ -78,6 +79,23 @@ def get_job_summary(
 ) -> dict[str, Any]:
     """Queue depth by status and by surface, for a scan console's header."""
     return jobs_service.summary(settings, tenant_id=_scope(principal))
+
+
+# Declared before /{job_id} for the same reason as /summary.
+@router.get("/scope-targets", response_model=ScopeTargetsInfo)
+def get_scope_targets(
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, Any]:
+    """What the approved scope lets this tenant scan, for the launcher to fill in.
+
+    Gated like ``POST /api/jobs`` rather than on ``scan_scope.read``: the
+    ``operator`` and ``scan-operator`` who start scans do not hold that
+    permission, and this answers only "what would a scan accept", without the
+    scope's notes, approvers or agent groups. Always the caller's resolved
+    tenant — the one a scan started from these targets runs in.
+    """
+    return scan_scopes.scannable_targets(settings, principal.tenant_id)
 
 
 @router.get("/{job_id}", response_model=JobInfo)

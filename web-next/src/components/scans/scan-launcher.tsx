@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { Globe2, Layers, Play, TriangleAlert } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { Globe2, Layers, Play, ShieldCheck, TriangleAlert } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -29,8 +30,16 @@ import { useAgentGroups } from "@/hooks/use-agent-groups";
 import { useStartScan } from "@/hooks/use-jobs";
 import { useSystemStatus } from "@/hooks/use-system";
 import { useWordlists } from "@/hooks/use-wordlists";
-import { type JobInfo, type ScanIntent, type StartScanBody } from "@/lib/api";
+import {
+  fetchScopeTargets,
+  type JobInfo,
+  type ScanIntent,
+  type ScopeTargetSkipped,
+  type ScopeTargets,
+  type StartScanBody,
+} from "@/lib/api";
 import { useT } from "@/lib/i18n";
+import { queryKeys } from "@/lib/query-keys";
 import { classifyTargets, splitTargetLines, type ScanSurface } from "@/lib/scan-surface";
 import { cn } from "@/lib/utils";
 
@@ -45,6 +54,59 @@ const INTENTS_BY_SURFACE: Record<"external" | "internal" | "all", Array<ScanInte
   internal: ["inventory", "vuln", "full", "delta", ""],
   all: ["inventory", "vuln", "full", "delta", "org_profile", ""],
 };
+
+/** What a "fill from scope" button fills: both fields, or one of them. */
+export type ScopeFillSlot = "all" | "domains" | "ranges";
+
+/**
+ * Which of the approved scope's targets one fill button puts where, on a
+ * launcher of `family`. A field left `undefined` is not touched.
+ *
+ * Ranges follow the page: the server tags each with the surface a scan of it
+ * faces, and a private range typed into the external launcher is exactly the
+ * mismatch the form warns about. A name is always external evidence there
+ * (api/services/scan_surface.py), so "everything" on the internal page is its
+ * private ranges — the domains button still fills names on purpose, for an
+ * operator whose internal estate has them.
+ */
+export function scopeFill(
+  found: ScopeTargets,
+  slot: ScopeFillSlot,
+  family: "external" | "internal" | "all",
+): {
+  domains?: string[];
+  ranges?: string[];
+  /** Ranges in scope that belong on the other surface's page. */
+  otherSurface: number;
+  skipped: ScopeTargetSkipped[];
+} {
+  const wantsDomains = slot === "domains" || (slot === "all" && family !== "internal");
+  const wantsRanges = slot === "ranges" || slot === "all";
+  const cidrs = found.targets.filter((target) => target.kind === "cidr");
+  const ranges = cidrs
+    .filter((target) => family === "all" || target.surface === family)
+    .map((target) => target.value);
+  return {
+    domains: wantsDomains
+      ? found.targets.filter((target) => target.kind === "domain").map((target) => target.value)
+      : undefined,
+    ranges: wantsRanges ? ranges : undefined,
+    otherSurface: wantsRanges ? cidrs.length - ranges.length : 0,
+    skipped: found.skipped.filter((entry) =>
+      entry.kind === "domain" ? wantsDomains : wantsRanges,
+    ),
+  };
+}
+
+type FillNote =
+  | {
+      kind: "filled" | "nothing" | "notApproved";
+      domains: number;
+      ranges: number;
+      otherSurface: number;
+      skipped: ScopeTargetSkipped[];
+    }
+  | { kind: "failed"; error: string };
 
 function newIdempotencyKey(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto)
@@ -83,6 +145,9 @@ export function ScanLauncher({
   const [wordlistId, setWordlistId] = useState("");
   const [agentGroup, setAgentGroup] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [filling, setFilling] = useState<ScopeFillSlot | null>(null);
+  const [fillNote, setFillNote] = useState<FillNote | null>(null);
+  const queryClient = useQueryClient();
   // One key per *form content*: a retry of the same form after a timeout
   // replays the same request instead of queueing a second scan, while any
   // edit rotates the key — otherwise a corrected target list would silently
@@ -132,6 +197,63 @@ export function ScanLauncher({
   const noTargets = domainCount === 0 && rangeCount === 0;
   const mismatch = surface !== null && detected !== null && detected !== surface;
 
+  async function fillFromScope(slot: ScopeFillSlot) {
+    setFilling(slot);
+    try {
+      // Read at the click, never from cache: the scope is an admin's to change
+      // between two visits, and a stale fill is a scan that comes back 403.
+      const found = await queryClient.fetchQuery({
+        queryKey: queryKeys.scopeTargets,
+        queryFn: fetchScopeTargets,
+        staleTime: 0,
+      });
+      const fill = scopeFill(found, slot, family);
+      const domainTotal = fill.domains?.length ?? 0;
+      const rangeTotal = fill.ranges?.length ?? 0;
+      // Nothing to put in is not a reason to empty what the operator typed.
+      if (domainTotal + rangeTotal > 0) {
+        if (fill.domains) setDomains(fill.domains.join("\n"));
+        if (fill.ranges) setRanges(fill.ranges.join("\n"));
+      }
+      setFillNote({
+        kind: !found.approved
+          ? "notApproved"
+          : domainTotal + rangeTotal === 0
+            ? "nothing"
+            : "filled",
+        domains: domainTotal,
+        ranges: rangeTotal,
+        otherSurface: fill.otherSurface,
+        skipped: fill.skipped,
+      });
+    } catch (error) {
+      setFillNote({
+        kind: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setFilling(null);
+    }
+  }
+
+  function fillButton(slot: "domains" | "ranges") {
+    const label = slot === "domains" ? t("launcher.fillDomains") : t("launcher.fillRanges");
+    return (
+      <Button
+        type="button"
+        variant="ghost"
+        className="h-6 gap-1 px-2 text-[11px] font-semibold text-primary [&_svg]:size-3"
+        disabled={filling !== null}
+        onClick={() => void fillFromScope(slot)}
+        title={label}
+        aria-label={label}
+      >
+        <ShieldCheck />
+        {filling === slot ? t("launcher.filling") : t("launcher.fillField")}
+      </Button>
+    );
+  }
+
   function onSubmit(event: FormEvent) {
     event.preventDefault();
     setConfirmOpen(true);
@@ -174,15 +296,17 @@ export function ScanLauncher({
 
   const domainsField = (
     <div className="grid gap-2">
-      <Label
-        htmlFor="scan-domains"
-        className="flex items-center justify-between font-semibold text-foreground"
-      >
-        <span>{t("launcher.domains")}</span>
-        <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-          {t("launcher.optional")}
-        </span>
-      </Label>
+      <div className="flex items-center justify-between gap-2">
+        <Label htmlFor="scan-domains" className="font-semibold text-foreground">
+          {t("launcher.domains")}
+        </Label>
+        <div className="flex items-center gap-2">
+          {fillButton("domains")}
+          <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            {t("launcher.optional")}
+          </span>
+        </div>
+      </div>
       <Textarea
         id="scan-domains"
         className="min-h-[96px] font-mono text-xs"
@@ -201,15 +325,17 @@ export function ScanLauncher({
 
   const rangesField = (
     <div className="grid gap-2">
-      <Label
-        htmlFor="scan-ranges"
-        className="flex items-center justify-between font-semibold text-foreground"
-      >
-        <span>{t("launcher.ranges")}</span>
-        <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-          {t("launcher.optional")}
-        </span>
-      </Label>
+      <div className="flex items-center justify-between gap-2">
+        <Label htmlFor="scan-ranges" className="font-semibold text-foreground">
+          {t("launcher.ranges")}
+        </Label>
+        <div className="flex items-center gap-2">
+          {fillButton("ranges")}
+          <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            {t("launcher.optional")}
+          </span>
+        </div>
+      </div>
       <Textarea
         id="scan-ranges"
         className="min-h-[96px] font-mono text-xs"
@@ -237,7 +363,19 @@ export function ScanLauncher({
           <Icon className="h-4 w-4 text-primary" />
           {t(`launcher.title.${family}`)}
         </h3>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1.5 px-2.5 text-xs font-semibold [&_svg]:size-3.5"
+            disabled={filling !== null}
+            onClick={() => void fillFromScope("all")}
+            title={t("launcher.fillAllHint")}
+          >
+            <ShieldCheck />
+            {filling === "all" ? t("launcher.filling") : t("launcher.fillAll")}
+          </Button>
           <span>
             {detected
               ? t("launcher.detected", { surface: t(`surface.${detected}`) })
@@ -256,6 +394,52 @@ export function ScanLauncher({
           <span>
             {t("launcher.mismatch", { detected: t(`surface.${detected}`), chosen: surfaceLabel })}
           </span>
+        </div>
+      ) : null}
+
+      {fillNote ? (
+        <div
+          aria-live="polite"
+          data-testid="scope-fill-note"
+          className={cn(
+            "space-y-1 rounded-lg border px-3 py-2 text-xs",
+            fillNote.kind === "filled"
+              ? "border-border bg-muted/40 text-muted-foreground"
+              : "border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-200",
+          )}
+        >
+          {fillNote.kind === "failed" ? (
+            <p>{t("launcher.fillFailed", { error: fillNote.error })}</p>
+          ) : (
+            <>
+              <p>
+                {fillNote.kind === "filled"
+                  ? t("launcher.filled", { domains: fillNote.domains, ranges: fillNote.ranges })
+                  : fillNote.kind === "notApproved"
+                    ? t("launcher.fillNotApproved")
+                    : t("launcher.fillNothing")}
+              </p>
+              {fillNote.otherSurface > 0 && family !== "all" ? (
+                <p>
+                  {t("launcher.fillOtherSurface", {
+                    count: fillNote.otherSurface,
+                    page: t(`page.scans.${family === "external" ? "internal" : "external"}.title`),
+                  })}
+                </p>
+              ) : null}
+              {fillNote.skipped.length > 0 ? (
+                <p>
+                  {t("launcher.fillSkipped", {
+                    items: fillNote.skipped
+                      .map(
+                        (entry) => `${entry.value} (${t(`launcher.fillReason.${entry.reason}`)})`,
+                      )
+                      .join(", "),
+                  })}
+                </p>
+              ) : null}
+            </>
+          )}
         </div>
       ) : null}
 

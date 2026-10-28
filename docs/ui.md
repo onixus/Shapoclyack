@@ -306,6 +306,16 @@ renders an absent value as internal: it shows **Unclassified**.
   twice, while an edited form is a new request (the API also compares a
   digest of the body and answers 409 when a key is reused for a different
   scan);
+- **Everything in scope** in the launcher's header, and **From scope** beside
+  the domains and the ranges field, fill the targets from the tenant's
+  approved scan scope (`GET /api/jobs/scope-targets`, read at every click).
+  Ranges follow the page — the external launcher takes public ones, the
+  internal launcher private ones, `/scans` all of them — and "everything" on
+  the internal page leaves the domains field alone, since a name is external
+  evidence; its own button still fills it. A note under the header says what
+  was filled, how many ranges belong on the other page, and which entries were
+  left out and why (a wildcard or `/0`, or wholly denied). Nothing to fill
+  leaves what was typed in place;
 - when jobs are handed to sensors (`job_execution_mode = agent`), an **Agent
   group** selector beside the speed profile, listing the tenant's sensor groups
   (`GET /api/agent-groups`) with "any agent of this tenant" as the default. It

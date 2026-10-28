@@ -400,6 +400,139 @@ def test_starting_an_out_of_scope_scan_over_the_api_is_403(tmp_path, monkeypatch
     assert "outside the approved scan scope" in refused.json()["detail"]
 
 
+# --- the scope as launcher targets ------------------------------------------
+
+
+def _targets(settings, *entries: dict) -> tuple[scan_scopes.ScanScope, dict]:
+    scope = _scope(settings, *entries)
+    return scope, scan_scopes.scannable_targets(settings, "default")
+
+
+def _values(found: dict, kind: str) -> list[str]:
+    return [t["value"] for t in found["targets"] if t["kind"] == kind]
+
+
+def test_every_target_handed_out_is_one_a_scan_would_accept(settings):
+    """The whole point: filling the launcher from the scope must not 403."""
+    scope, found = _targets(
+        settings,
+        ALLOW_TEN_NET,
+        {"effect": "deny", "kind": "cidr", "value": "10.1.0.0/16"},
+        {"effect": "deny", "kind": "cidr", "value": "10.200.3.4/32"},
+        {"effect": "allow", "kind": "cidr", "value": "2001:db8::/32"},
+        {"effect": "deny", "kind": "cidr", "value": "2001:db8:5::/48"},
+        ALLOW_EXAMPLE,
+        DENY_INTERNAL_EXAMPLE,
+    )
+    ranges, domains = _values(found, "cidr"), _values(found, "domain")
+    assert ranges and domains == ["example.com"]
+    scope.check(ranges=ranges, domains=domains)
+    assert "10.0.0.0/8" not in ranges
+    assert not any(r.startswith("10.1.") for r in ranges)
+    assert "10.200.3.5/32" in ranges
+    # Carving keeps the rest of the allowed range, not just what is left
+    # after the first deny.
+    assert "10.64.0.0/10" in ranges
+
+
+def test_adjacent_allowed_ranges_are_not_merged_into_one_no_entry_contains(settings):
+    _, found = _targets(
+        settings,
+        {"effect": "allow", "kind": "cidr", "value": "10.0.0.0/25"},
+        {"effect": "allow", "kind": "cidr", "value": "10.0.0.128/25"},
+    )
+    assert _values(found, "cidr") == ["10.0.0.0/25", "10.0.0.128/25"]
+
+
+def test_a_range_inside_another_allowed_one_is_listed_once(settings):
+    _, found = _targets(
+        settings,
+        ALLOW_TEN_NET,
+        {"effect": "allow", "kind": "cidr", "value": "10.2.0.0/16"},
+    )
+    assert _values(found, "cidr") == ["10.0.0.0/8"]
+
+
+def test_an_allow_anything_scope_yields_no_targets(settings):
+    """Migration 0025's grandfathered scope is an approval, not a target list."""
+    _, found = _targets(
+        settings,
+        {"effect": "allow", "kind": "cidr", "value": "0.0.0.0/0"},
+        {"effect": "allow", "kind": "cidr", "value": "::/0"},
+        {"effect": "allow", "kind": "domain", "value": "*"},
+    )
+    assert found["approved"] is True
+    assert found["targets"] == []
+    assert sorted((s["kind"], s["value"], s["reason"]) for s in found["skipped"]) == [
+        ("cidr", "0.0.0.0/0", "wildcard"),
+        ("cidr", "::/0", "wildcard"),
+        ("domain", "*", "wildcard"),
+    ]
+
+
+def test_an_entry_a_deny_swallows_whole_is_skipped_as_denied(settings):
+    _, found = _targets(
+        settings,
+        {"effect": "allow", "kind": "cidr", "value": "10.5.0.0/16"},
+        {"effect": "deny", "kind": "cidr", "value": "10.0.0.0/8"},
+        {"effect": "allow", "kind": "domain", "value": "app.internal.example.com"},
+        DENY_INTERNAL_EXAMPLE,
+    )
+    assert found["targets"] == []
+    assert sorted((s["value"], s["reason"]) for s in found["skipped"]) == [
+        ("10.5.0.0/16", "denied"),
+        ("app.internal.example.com", "denied"),
+    ]
+
+
+def test_each_range_carries_the_surface_its_scan_would_face(settings):
+    _, found = _targets(
+        settings,
+        ALLOW_TEN_NET,
+        {"effect": "allow", "kind": "cidr", "value": "203.0.113.0/24"},
+        ALLOW_EXAMPLE,
+    )
+    assert {(t["value"], t["surface"]) for t in found["targets"]} == {
+        ("10.0.0.0/8", "internal"),
+        ("203.0.113.0/24", "external"),
+        ("example.com", "external"),
+    }
+
+
+def test_a_tenant_with_no_scope_is_told_so_rather_than_handed_nothing(settings):
+    found = scan_scopes.scannable_targets(settings, "default")
+    assert found == {"approved": False, "targets": [], "skipped": []}
+
+
+def test_an_operator_reads_scope_targets_without_reading_the_scope(tmp_path, monkeypatch):
+    """Who starts scans may fill them from the scope; the scope itself stays closed."""
+    client = configured_client(tmp_path, monkeypatch)
+    admin = auth_headers(client, "admin")
+    client.put(
+        "/api/tenants/default/scan-scope",
+        headers=admin,
+        json={"entries": [ALLOW_TEN_NET, DENY_METADATA, ALLOW_EXAMPLE]},
+    )
+    operator = auth_headers(client, "operator")
+
+    assert client.get("/api/tenants/default/scan-scope", headers=operator).status_code == 403
+    found = client.get("/api/jobs/scope-targets", headers=operator)
+    assert found.status_code == 200
+    body = found.json()
+    assert body["approved"] is True
+    assert {(t["kind"], t["value"]) for t in body["targets"]} == {
+        ("cidr", "10.0.0.0/8"),
+        ("domain", "example.com"),
+    }
+    # Nothing of the entry beyond what a scan would accept.
+    assert set(body["targets"][0]) == {"kind", "value", "surface"}
+
+    assert (
+        client.get("/api/jobs/scope-targets", headers=auth_headers(client, "viewer")).status_code
+        == 403
+    )
+
+
 # --- the scope travels with the run (#244) ----------------------------------
 
 

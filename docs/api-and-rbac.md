@@ -1592,6 +1592,21 @@ named no tenant, the caller's own tenant otherwise. Note the `queued`/`running`
 split here differs from the `octo_jobs_*` gauges in [slo.md](slo.md), which
 count `claimed` as running because they measure executor occupancy instead.
 
+`GET /api/jobs/scope-targets` (operator) is the tenant's approved scan scope
+turned into targets a scan would accept, for the launcher's "fill from scope"
+buttons: every allowed range with the denied ranges inside it carved out (a
+target that overlaps a deny is refused whole, and adjacent allowed ranges are
+not merged — a target has to fit inside *one* entry), and every allowed domain
+no deny entry covers. `targets[]` carries `kind`, `value` and the `surface` a
+scan of it faces; `skipped[]` names the allow entries that yield nothing, with
+`reason` `wildcard` (`*` or a `/0` — the grandfathered allow-all scope is
+exactly that), `denied` or `invalid`; `approved` is false for a tenant with no
+scope at all. It is gated like `POST /api/jobs` rather than on
+`scan_scope.read`, which `operator` and `scan-operator` do not hold, and
+returns nothing else of the scope — no notes, approvers or agent groups. Always
+the caller's resolved tenant. Names that resolve into a denied range are not
+looked up here; that check still runs when the scan starts.
+
 `POST /api/agent/jobs/{job_id}/results` also accepts `result_signature` (base64 ed25519 over the archive's SHA-256 and the agent, job, run, exit code and attempt) and `result_key_id` (the signing key's fingerprint) ([#366](https://github.com/onixus/Shapoclyack/issues/366)); an archive whose core artifacts fail their schema, or whose signature is wrong, is answered `422` with the reason and the job is closed `failed` with `results rejected (schema|signature): …` in `error`. `POST /api/agent/register` accepts `result_signing_key` (base64 of the raw 32-byte ed25519 public key): the first key is pinned, a different one later is ignored and audited, and `AgentInfo.result_key_fingerprint` says which is pinned.
 
 `POST /api/agent/jobs/{job_id}/results` accepts an optional `idempotency_key`
