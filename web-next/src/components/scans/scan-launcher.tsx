@@ -15,8 +15,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Label } from "@/components/ui/label";
+import { CheckboxOption, Field, FieldGrid, fieldHintId } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -242,7 +242,7 @@ export function ScanLauncher({
       <Button
         type="button"
         variant="ghost"
-        className="h-6 gap-1 px-2 text-[11px] font-semibold text-primary [&_svg]:size-3"
+        className="h-5 gap-1 px-1 text-xs font-semibold text-primary [&_svg]:size-3.5"
         disabled={filling !== null}
         onClick={() => void fillFromScope(slot)}
         title={label}
@@ -295,21 +295,17 @@ export function ScanLauncher({
   const Icon = family === "external" ? Globe2 : family === "internal" ? Layers : Play;
 
   const domainsField = (
-    <div className="grid gap-2">
-      <div className="flex items-center justify-between gap-2">
-        <Label htmlFor="scan-domains" className="font-semibold text-foreground">
-          {t("launcher.domains")}
-        </Label>
-        <div className="flex items-center gap-2">
-          {fillButton("domains")}
-          <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-            {t("launcher.optional")}
-          </span>
-        </div>
-      </div>
+    <Field
+      label={t("launcher.domains")}
+      htmlFor="scan-domains"
+      optional={t("launcher.optional")}
+      action={fillButton("domains")}
+      hint={t("launcher.domainsHint")}
+    >
       <Textarea
         id="scan-domains"
-        className="min-h-[96px] font-mono text-xs"
+        aria-describedby={fieldHintId("scan-domains")}
+        className="min-h-[8.5rem] font-mono text-body-sm"
         value={domains}
         onChange={(e) => setDomains(e.target.value)}
         placeholder={
@@ -319,26 +315,21 @@ export function ScanLauncher({
         }
         spellCheck={false}
       />
-      <p className="text-[11px] text-muted-foreground">{t("launcher.domainsHint")}</p>
-    </div>
+    </Field>
   );
 
   const rangesField = (
-    <div className="grid gap-2">
-      <div className="flex items-center justify-between gap-2">
-        <Label htmlFor="scan-ranges" className="font-semibold text-foreground">
-          {t("launcher.ranges")}
-        </Label>
-        <div className="flex items-center gap-2">
-          {fillButton("ranges")}
-          <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-            {t("launcher.optional")}
-          </span>
-        </div>
-      </div>
+    <Field
+      label={t("launcher.ranges")}
+      htmlFor="scan-ranges"
+      optional={t("launcher.optional")}
+      action={fillButton("ranges")}
+      hint={family === "external" ? t("launcher.rangesPublicHint") : t("launcher.rangesHint")}
+    >
       <Textarea
         id="scan-ranges"
-        className="min-h-[96px] font-mono text-xs"
+        aria-describedby={fieldHintId("scan-ranges")}
+        className="min-h-[8.5rem] font-mono text-body-sm"
         value={ranges}
         onChange={(e) => setRanges(e.target.value)}
         placeholder={
@@ -346,289 +337,352 @@ export function ScanLauncher({
         }
         spellCheck={false}
       />
-      <p className="text-[11px] text-muted-foreground">
-        {family === "external" ? t("launcher.rangesPublicHint") : t("launcher.rangesHint")}
-      </p>
-    </div>
+    </Field>
   );
+
+  const showAgentGroup = agentMode && (agentGroups ?? []).length > 0;
+  const chosenOptions = [
+    intent === "delta" || delta ? t("launcher.delta") : null,
+    !intent && skipNse ? t("launcher.portsOnly") : null,
+    notify ? t("launcher.notify") : null,
+    exportDefectDojo ? t("launcher.defectdojo") : null,
+  ].filter((item): item is string => item !== null);
 
   return (
     <form
       onSubmit={onSubmit}
-      className={cn("space-y-5 rounded-xl border border-border bg-card p-6 shadow-sm", className)}
+      className={cn("rounded-xl border border-border bg-card shadow-sm", className)}
       data-testid="scan-launcher"
     >
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3">
-        <h3 className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-foreground">
-          <Icon className="h-4 w-4 text-primary" />
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-6 py-4">
+        <h3 className="flex items-center gap-2 text-lg font-semibold text-foreground">
+          <Icon className="h-5 w-5 text-primary" aria-hidden />
           {t(`launcher.title.${family}`)}
         </h3>
-        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-7 gap-1.5 px-2.5 text-xs font-semibold [&_svg]:size-3.5"
-            disabled={filling !== null}
-            onClick={() => void fillFromScope("all")}
-            title={t("launcher.fillAllHint")}
-          >
-            <ShieldCheck />
-            {filling === "all" ? t("launcher.filling") : t("launcher.fillAll")}
-          </Button>
+        <div className="flex flex-wrap items-center gap-3 text-body-sm text-muted-foreground">
           <span>
             {detected
               ? t("launcher.detected", { surface: t(`surface.${detected}`) })
               : t("launcher.detectedNone")}
           </span>
           <SurfaceBadge surface={detected} />
+          <Button
+            type="button"
+            variant="outline"
+            disabled={filling !== null}
+            onClick={() => void fillFromScope("all")}
+            title={t("launcher.fillAllHint")}
+          >
+            <ShieldCheck aria-hidden />
+            {filling === "all" ? t("launcher.filling") : t("launcher.fillAll")}
+          </Button>
         </div>
       </div>
 
-      {mismatch && detected ? (
-        <div
-          role="status"
-          className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200"
-        >
-          <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>
-            {t("launcher.mismatch", { detected: t(`surface.${detected}`), chosen: surfaceLabel })}
-          </span>
-        </div>
-      ) : null}
-
-      {fillNote ? (
-        <div
-          aria-live="polite"
-          data-testid="scope-fill-note"
-          className={cn(
-            "space-y-1 rounded-lg border px-3 py-2 text-xs",
-            fillNote.kind === "filled"
-              ? "border-border bg-muted/40 text-muted-foreground"
-              : "border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-200",
-          )}
-        >
-          {fillNote.kind === "failed" ? (
-            <p>{t("launcher.fillFailed", { error: fillNote.error })}</p>
-          ) : (
-            <>
-              <p>
-                {fillNote.kind === "filled"
-                  ? t("launcher.filled", { domains: fillNote.domains, ranges: fillNote.ranges })
-                  : fillNote.kind === "notApproved"
-                    ? t("launcher.fillNotApproved")
-                    : t("launcher.fillNothing")}
-              </p>
-              {fillNote.otherSurface > 0 && family !== "all" ? (
-                <p>
-                  {t("launcher.fillOtherSurface", {
-                    count: fillNote.otherSurface,
-                    page: t(`page.scans.${family === "external" ? "internal" : "external"}.title`),
-                  })}
-                </p>
-              ) : null}
-              {fillNote.skipped.length > 0 ? (
-                <p>
-                  {t("launcher.fillSkipped", {
-                    items: fillNote.skipped
-                      .map(
-                        (entry) => `${entry.value} (${t(`launcher.fillReason.${entry.reason}`)})`,
-                      )
-                      .join(", "),
-                  })}
-                </p>
-              ) : null}
-            </>
-          )}
-        </div>
-      ) : null}
-
-      <div className="grid gap-5 md:grid-cols-2">
-        {family === "internal" ? rangesField : domainsField}
-        {family === "internal" ? domainsField : rangesField}
-
-        <div className="grid gap-2">
-          <Label htmlFor="scan-intent" className="font-semibold text-foreground">
-            {t("launcher.intent")}
-          </Label>
-          <Select
-            value={intent || NO_INTENT}
-            onValueChange={(v) => setIntent(v === NO_INTENT ? "" : (v as ScanIntent))}
-          >
-            <SelectTrigger id="scan-intent">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {INTENTS_BY_SURFACE[family].map((value) => (
-                <SelectItem key={value || NO_INTENT} value={value || NO_INTENT}>
-                  {value ? t(`launcher.intent.${value}`) : t("launcher.intent.legacy")}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-[11px] text-muted-foreground">{t("launcher.intentHint")}</p>
-        </div>
-
-        {agentMode && (agentGroups ?? []).length > 0 ? (
-          <div className="grid gap-2">
-            <Label htmlFor="scan-agent-group" className="font-semibold text-foreground">
-              {t("launcher.agentGroup")}
-            </Label>
-            <Select
-              value={agentGroup || ANY_AGENT_GROUP}
-              onValueChange={(v) => setAgentGroup(v === ANY_AGENT_GROUP ? "" : v)}
+      <div className="grid gap-6 p-6 lg:grid-cols-[minmax(0,1fr)_18rem]">
+        <div className="min-w-0 space-y-8">
+          {mismatch && detected ? (
+            <div
+              role="status"
+              className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-body-sm text-warning"
             >
-              <SelectTrigger id="scan-agent-group">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ANY_AGENT_GROUP}>{t("launcher.agentGroup.any")}</SelectItem>
-                {(agentGroups ?? []).map((group) => (
-                  <SelectItem key={group.group_id} value={group.name}>
-                    {group.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {selectedGroup && selectedGroup.agent_count === 0 ? (
-              <p className="text-[11px] text-amber-700 dark:text-amber-300">
-                {t("launcher.agentGroupEmpty", { group: selectedGroup.name })}
-              </p>
-            ) : (
-              <p className="text-[11px] text-muted-foreground">{t("launcher.agentGroupHint")}</p>
-            )}
-          </div>
-        ) : null}
-
-        <div className="grid gap-2">
-          <Label htmlFor="scan-mode" className="font-semibold text-foreground">
-            {t("launcher.mode")}
-          </Label>
-          <Select value={mode} onValueChange={setMode}>
-            <SelectTrigger id="scan-mode">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="safe">{t("launcher.mode.safe")}</SelectItem>
-              <SelectItem value="balanced">{t("launcher.mode.balanced")}</SelectItem>
-              <SelectItem value="fast">{t("launcher.mode.fast")}</SelectItem>
-            </SelectContent>
-          </Select>
-          {serviceBackend ? (
-            <p className="text-[11px] text-muted-foreground">
-              {t("launcher.backend", { backend: serviceBackend })}
-            </p>
+              <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <span>
+                {t("launcher.mismatch", {
+                  detected: t(`surface.${detected}`),
+                  chosen: surfaceLabel,
+                })}
+              </span>
+            </div>
           ) : null}
-        </div>
 
-        <div className="grid gap-2">
-          <Label
-            htmlFor="scan-ports"
-            className="flex items-center justify-between font-semibold text-foreground"
-          >
-            <span>{t("launcher.ports")}</span>
-            <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-              {t("launcher.optional")}
-            </span>
-          </Label>
-          <Textarea
-            id="scan-ports"
-            className="min-h-[56px] font-mono text-xs"
-            value={ports}
-            onChange={(e) => setPorts(e.target.value)}
-            placeholder={"22,80,443\n8000-8080"}
-            spellCheck={false}
-          />
-        </div>
+          <section aria-labelledby="launcher-targets" className="space-y-4">
+            <h4 id="launcher-targets" className="text-h3 font-semibold text-foreground">
+              {t("launcher.section.targets")}
+            </h4>
+            <FieldGrid cols={2}>
+              {family === "internal" ? rangesField : domainsField}
+              {family === "internal" ? domainsField : rangesField}
+            </FieldGrid>
+            {fillNote ? (
+              <div
+                aria-live="polite"
+                data-testid="scope-fill-note"
+                className={cn(
+                  "space-y-1 rounded-lg border px-3 py-2 text-body-sm",
+                  fillNote.kind === "filled"
+                    ? "border-success/30 bg-success/10 text-success"
+                    : "border-warning/30 bg-warning/10 text-warning",
+                )}
+              >
+                {fillNote.kind === "failed" ? (
+                  <p>{t("launcher.fillFailed", { error: fillNote.error })}</p>
+                ) : (
+                  <>
+                    <p>
+                      {fillNote.kind === "filled"
+                        ? t("launcher.filled", {
+                            domains: fillNote.domains,
+                            ranges: fillNote.ranges,
+                          })
+                        : fillNote.kind === "notApproved"
+                          ? t("launcher.fillNotApproved")
+                          : t("launcher.fillNothing")}
+                    </p>
+                    {fillNote.otherSurface > 0 && family !== "all" ? (
+                      <p>
+                        {t("launcher.fillOtherSurface", {
+                          count: fillNote.otherSurface,
+                          page: t(
+                            `page.scans.${family === "external" ? "internal" : "external"}.title`,
+                          ),
+                        })}
+                      </p>
+                    ) : null}
+                    {fillNote.skipped.length > 0 ? (
+                      <p>
+                        {t("launcher.fillSkipped", {
+                          items: fillNote.skipped
+                            .map(
+                              (entry) =>
+                                `${entry.value} (${t(`launcher.fillReason.${entry.reason}`)})`,
+                            )
+                            .join(", "),
+                        })}
+                      </p>
+                    ) : null}
+                  </>
+                )}
+              </div>
+            ) : null}
+          </section>
 
-        <div className="grid gap-2">
-          <Label
-            htmlFor="scan-ports-udp"
-            className="flex items-center justify-between font-semibold text-foreground"
-          >
-            <span>{t("launcher.portsUdp")}</span>
-            <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-              {t("launcher.optional")}
-            </span>
-          </Label>
-          <Textarea
-            id="scan-ports-udp"
-            className="min-h-[56px] font-mono text-xs"
-            value={portsUdp}
-            onChange={(e) => setPortsUdp(e.target.value)}
-            placeholder="53,123,161"
-            spellCheck={false}
-          />
-        </div>
+          <section aria-labelledby="launcher-params" className="space-y-4">
+            <h4 id="launcher-params" className="text-h3 font-semibold text-foreground">
+              {t("launcher.section.params")}
+            </h4>
+            <FieldGrid cols={2}>
+              <Field
+                label={t("launcher.intent")}
+                htmlFor="scan-intent"
+                hint={t("launcher.intentHint")}
+              >
+                <Select
+                  value={intent || NO_INTENT}
+                  onValueChange={(v) => setIntent(v === NO_INTENT ? "" : (v as ScanIntent))}
+                >
+                  <SelectTrigger id="scan-intent" aria-describedby={fieldHintId("scan-intent")}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {INTENTS_BY_SURFACE[family].map((value) => (
+                      <SelectItem key={value || NO_INTENT} value={value || NO_INTENT}>
+                        {value ? t(`launcher.intent.${value}`) : t("launcher.intent.legacy")}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
 
-        {wantsWordlists ? (
-          <div className="grid gap-2 md:col-span-2">
-            <Label htmlFor="scan-wordlist" className="font-semibold text-foreground">
-              {t("launcher.wordlist")}
-            </Label>
-            <Select
-              value={wordlistId || NO_WORDLIST}
-              onValueChange={(v) => setWordlistId(v === NO_WORDLIST ? "" : v)}
-            >
-              <SelectTrigger id="scan-wordlist">
-                <SelectValue placeholder={t("launcher.wordlistNone")} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={NO_WORDLIST}>{t("launcher.wordlistNone")}</SelectItem>
-                {(wordlists ?? []).map((wl) => (
-                  <SelectItem key={wl.wordlist_id} value={wl.wordlist_id}>
-                    {wl.name} · {wl.kind} · {wl.line_count.toLocaleString()}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="text-[11px] text-muted-foreground">
-              {t("launcher.wordlistHint")}{" "}
-              <Link href="/wordlists" className="text-primary hover:underline">
-                {t("launcher.manageWordlists")}
-              </Link>
-            </p>
-          </div>
-        ) : null}
+              <Field
+                label={t("launcher.mode")}
+                htmlFor="scan-mode"
+                hint={serviceBackend ? t("launcher.backend", { backend: serviceBackend }) : null}
+              >
+                <Select value={mode} onValueChange={setMode}>
+                  <SelectTrigger id="scan-mode">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="safe">{t("launcher.mode.safe")}</SelectItem>
+                    <SelectItem value="balanced">{t("launcher.mode.balanced")}</SelectItem>
+                    <SelectItem value="fast">{t("launcher.mode.fast")}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
 
-        <div className="flex flex-wrap items-center gap-5 text-xs text-foreground md:col-span-2">
-          <Label className="flex cursor-pointer items-center gap-2 font-semibold">
-            <Checkbox
-              checked={intent === "delta" ? true : delta}
-              disabled={intent === "delta"}
-              onCheckedChange={(checked) => setDelta(checked === true)}
-            />
-            {t("launcher.delta")}
-          </Label>
-          {!intent ? (
-            <Label className="flex cursor-pointer items-center gap-2 font-semibold">
-              <Checkbox
-                checked={skipNse}
-                onCheckedChange={(checked) => setSkipNse(checked === true)}
+              {showAgentGroup ? (
+                <Field
+                  label={t("launcher.agentGroup")}
+                  htmlFor="scan-agent-group"
+                  hintTone={selectedGroup && selectedGroup.agent_count === 0 ? "warning" : "muted"}
+                  hint={
+                    selectedGroup && selectedGroup.agent_count === 0
+                      ? t("launcher.agentGroupEmpty", { group: selectedGroup.name })
+                      : t("launcher.agentGroupHint")
+                  }
+                >
+                  <Select
+                    value={agentGroup || ANY_AGENT_GROUP}
+                    onValueChange={(v) => setAgentGroup(v === ANY_AGENT_GROUP ? "" : v)}
+                  >
+                    <SelectTrigger
+                      id="scan-agent-group"
+                      aria-describedby={fieldHintId("scan-agent-group")}
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={ANY_AGENT_GROUP}>
+                        {t("launcher.agentGroup.any")}
+                      </SelectItem>
+                      {(agentGroups ?? []).map((group) => (
+                        <SelectItem key={group.group_id} value={group.name}>
+                          {group.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+              ) : null}
+
+              <Field
+                label={t("launcher.ports")}
+                htmlFor="scan-ports"
+                optional={t("launcher.optional")}
+                hint={t("launcher.portsHint")}
+              >
+                <Input
+                  id="scan-ports"
+                  aria-describedby={fieldHintId("scan-ports")}
+                  className="font-mono text-body-sm"
+                  value={ports}
+                  onChange={(e) => setPorts(e.target.value)}
+                  placeholder="22,80,443,8000-8080"
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </Field>
+
+              <Field
+                label={t("launcher.portsUdp")}
+                htmlFor="scan-ports-udp"
+                optional={t("launcher.optional")}
+                hint={t("launcher.portsUdpHint")}
+              >
+                <Input
+                  id="scan-ports-udp"
+                  aria-describedby={fieldHintId("scan-ports-udp")}
+                  className="font-mono text-body-sm"
+                  value={portsUdp}
+                  onChange={(e) => setPortsUdp(e.target.value)}
+                  placeholder="53,123,161"
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </Field>
+
+              {wantsWordlists ? (
+                <Field
+                  label={t("launcher.wordlist")}
+                  htmlFor="scan-wordlist"
+                  hint={
+                    <>
+                      {t("launcher.wordlistHint")}{" "}
+                      <Link href="/wordlists" className="text-primary hover:underline">
+                        {t("launcher.manageWordlists")}
+                      </Link>
+                    </>
+                  }
+                >
+                  <Select
+                    value={wordlistId || NO_WORDLIST}
+                    onValueChange={(v) => setWordlistId(v === NO_WORDLIST ? "" : v)}
+                  >
+                    <SelectTrigger
+                      id="scan-wordlist"
+                      aria-describedby={fieldHintId("scan-wordlist")}
+                    >
+                      <SelectValue placeholder={t("launcher.wordlistNone")} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={NO_WORDLIST}>{t("launcher.wordlistNone")}</SelectItem>
+                      {(wordlists ?? []).map((wl) => (
+                        <SelectItem key={wl.wordlist_id} value={wl.wordlist_id}>
+                          {wl.name} · {wl.kind} · {wl.line_count.toLocaleString()}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+              ) : null}
+            </FieldGrid>
+          </section>
+
+          <section aria-labelledby="launcher-options" className="space-y-4">
+            <h4 id="launcher-options" className="text-h3 font-semibold text-foreground">
+              {t("launcher.section.options")}
+            </h4>
+            <div className="grid grid-cols-1 items-stretch gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <CheckboxOption
+                label={t("launcher.delta")}
+                description={t("launcher.deltaHint")}
+                checked={intent === "delta" ? true : delta}
+                disabled={intent === "delta"}
+                onCheckedChange={setDelta}
               />
-              {t("launcher.portsOnly")}
-            </Label>
-          ) : null}
-          <Label className="flex cursor-pointer items-center gap-2 font-semibold">
-            <Checkbox checked={notify} onCheckedChange={(checked) => setNotify(checked === true)} />
-            {t("launcher.notify")}
-          </Label>
-          <Label className="flex cursor-pointer items-center gap-2 font-semibold">
-            <Checkbox
-              checked={exportDefectDojo}
-              onCheckedChange={(checked) => setExportDefectDojo(checked === true)}
-            />
-            {t("launcher.defectdojo")}
-          </Label>
+              {!intent ? (
+                <CheckboxOption
+                  label={t("launcher.portsOnly")}
+                  description={t("launcher.portsOnlyHint")}
+                  checked={skipNse}
+                  onCheckedChange={setSkipNse}
+                />
+              ) : null}
+              <CheckboxOption
+                label={t("launcher.notify")}
+                description={t("launcher.notifyHint")}
+                checked={notify}
+                onCheckedChange={setNotify}
+              />
+              <CheckboxOption
+                label={t("launcher.defectdojo")}
+                description={t("launcher.defectdojoHint")}
+                checked={exportDefectDojo}
+                onCheckedChange={setExportDefectDojo}
+              />
+            </div>
+          </section>
         </div>
-      </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
-        <p className="text-xs text-muted-foreground">{t("launcher.defaultsHint")}</p>
-        <Button type="submit" disabled={mutation.isPending} className="gap-2 font-semibold">
-          <Play className="h-3.5 w-3.5 fill-current" />
-          {mutation.isPending ? t("launcher.starting") : t("launcher.start")}
-        </Button>
+        <aside
+          aria-labelledby="launcher-summary"
+          className="flex flex-col gap-4 self-start rounded-lg border border-border bg-muted/30 p-5"
+        >
+          <h4 id="launcher-summary" className="text-h3 font-semibold text-foreground">
+            {t("launcher.summary")}
+          </h4>
+          <dl className="grid grid-cols-[6rem_minmax(0,1fr)] gap-x-3 gap-y-3 text-body-sm">
+            <dt className="text-muted-foreground">{t("launcher.summary.surface")}</dt>
+            <dd className="text-foreground">{surfaceLabel}</dd>
+            <dt className="text-muted-foreground">{t("launcher.summary.targets")}</dt>
+            <dd className="tabular-nums text-foreground">
+              {t("launcher.summary.targetsValue", { domains: domainCount, ranges: rangeCount })}
+            </dd>
+            <dt className="text-muted-foreground">{t("launcher.summary.intent")}</dt>
+            <dd className="font-mono text-foreground">{intent || "legacy"}</dd>
+            <dt className="text-muted-foreground">{t("launcher.summary.mode")}</dt>
+            <dd className="font-mono text-foreground">{mode}</dd>
+            {showAgentGroup ? (
+              <>
+                <dt className="text-muted-foreground">{t("launcher.summary.agents")}</dt>
+                <dd className="break-words text-foreground">
+                  {agentGroup || t("launcher.agentGroup.any")}
+                </dd>
+              </>
+            ) : null}
+            <dt className="text-muted-foreground">{t("launcher.summary.options")}</dt>
+            <dd className="text-foreground">
+              {chosenOptions.length > 0 ? chosenOptions.join(", ") : t("launcher.summary.none")}
+            </dd>
+          </dl>
+          <div className="h-px bg-border" />
+          <Button type="submit" disabled={mutation.isPending} className="w-full font-semibold">
+            <Play className="fill-current" aria-hidden />
+            {mutation.isPending ? t("launcher.starting") : t("launcher.start")}
+          </Button>
+          <p className="text-xs text-muted-foreground">{t("launcher.defaultsHint")}</p>
+        </aside>
       </div>
 
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
@@ -643,7 +697,7 @@ export function ScanLauncher({
                   })
                 : t("launcher.confirmTitleAny", { intent: intent || "legacy", mode })}
             </AlertDialogTitle>
-            <AlertDialogDescription className="text-xs">
+            <AlertDialogDescription>
               {noTargets
                 ? t("launcher.confirmNoTargets")
                 : t("launcher.confirmTargets", { domains: domainCount, ranges: rangeCount })}
