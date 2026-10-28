@@ -1,7 +1,6 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -12,7 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { CheckboxOption, Field, FieldGrid, fieldHintId } from "@/components/ui/field";
 import {
   WEBHOOK_EVENT_KINDS,
   type CreateWebhookBody,
@@ -34,7 +33,7 @@ const TRANSPORTS: WebhookTransport[] = [
 const SEVERITIES: WebhookSeverity[] = ["low", "medium", "high", "critical"];
 
 const SELECT_CLASS =
-  "h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground";
+  "h-9 w-full rounded-md border border-control bg-background px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
 
 type FormState = {
   transport: WebhookTransport;
@@ -198,10 +197,14 @@ export function WebhookFormDialog({
         </DialogHeader>
 
         <form className="space-y-5" onSubmit={onSubmit}>
-          <div className="grid gap-1.5">
-            <Label htmlFor="wh-transport">{t("integrations.field.transport")}</Label>
+          <Field
+            label={t("integrations.field.transport")}
+            htmlFor="wh-transport"
+            hint={t(`integrations.transport.${form.transport}.about` as MsgKey)}
+          >
             <select
               id="wh-transport"
+              aria-describedby={fieldHintId("wh-transport")}
               className={SELECT_CLASS}
               value={form.transport}
               onChange={(event) => patch({ transport: event.target.value as WebhookTransport })}
@@ -212,14 +215,10 @@ export function WebhookFormDialog({
                 </option>
               ))}
             </select>
-            <p className="text-xs text-muted-foreground">
-              {t(`integrations.transport.${form.transport}.about` as MsgKey)}
-            </p>
-          </div>
+          </Field>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="grid gap-1.5">
-              <Label htmlFor="wh-name">{t("integrations.field.name")}</Label>
+          <FieldGrid cols={2}>
+            <Field label={t("integrations.field.name")} htmlFor="wh-name">
               <Input
                 id="wh-name"
                 value={form.name}
@@ -227,149 +226,144 @@ export function WebhookFormDialog({
                 placeholder="soc-alerts"
                 required
               />
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="wh-url">
-                {t(isTicket ? "integrations.field.urlTicket" : "integrations.field.url")}
-              </Label>
+            </Field>
+            <Field
+              label={t(isTicket ? "integrations.field.urlTicket" : "integrations.field.url")}
+              htmlFor="wh-url"
+              hint={t("integrations.field.urlHint")}
+            >
               <Input
                 id="wh-url"
+                aria-describedby={fieldHintId("wh-url")}
                 value={form.url}
                 onChange={(event) => patch({ url: event.target.value })}
                 placeholder={isTicket ? "https://acme.atlassian.net" : "https://example.test/hook"}
                 required
               />
-            </div>
-          </div>
-          <p className="text-xs text-muted-foreground">{t("integrations.field.urlHint")}</p>
+            </Field>
 
-          {form.transport === "jira" ? (
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="grid gap-1.5">
-                <Label htmlFor="wh-project-key">{t("integrations.field.projectKey")}</Label>
+            {form.transport === "jira" ? (
+              <>
+                <Field label={t("integrations.field.projectKey")} htmlFor="wh-project-key">
+                  <Input
+                    id="wh-project-key"
+                    value={form.projectKey}
+                    onChange={(event) => patch({ projectKey: event.target.value })}
+                    placeholder="SEC"
+                    required
+                  />
+                </Field>
+                <Field label={t("integrations.field.issueType")} htmlFor="wh-issue-type">
+                  <Input
+                    id="wh-issue-type"
+                    value={form.issueType}
+                    onChange={(event) => patch({ issueType: event.target.value })}
+                    placeholder="Bug"
+                  />
+                </Field>
+              </>
+            ) : null}
+
+            {form.transport === "servicenow" ? (
+              <Field label={t("integrations.field.table")} htmlFor="wh-table">
                 <Input
-                  id="wh-project-key"
-                  value={form.projectKey}
-                  onChange={(event) => patch({ projectKey: event.target.value })}
-                  placeholder="SEC"
+                  id="wh-table"
+                  value={form.table}
+                  onChange={(event) => patch({ table: event.target.value })}
+                  placeholder="incident"
+                />
+              </Field>
+            ) : null}
+
+            {form.transport === "github" ? (
+              <Field label={t("integrations.field.repository")} htmlFor="wh-repository">
+                <Input
+                  id="wh-repository"
+                  value={form.repository}
+                  onChange={(event) => patch({ repository: event.target.value })}
+                  placeholder="acme/security"
                   required
                 />
-              </div>
-              <div className="grid gap-1.5">
-                <Label htmlFor="wh-issue-type">{t("integrations.field.issueType")}</Label>
+              </Field>
+            ) : null}
+
+            {form.transport === "gitlab" ? (
+              <Field label={t("integrations.field.gitlabProject")} htmlFor="wh-gitlab-project">
                 <Input
-                  id="wh-issue-type"
-                  value={form.issueType}
-                  onChange={(event) => patch({ issueType: event.target.value })}
-                  placeholder="Bug"
+                  id="wh-gitlab-project"
+                  value={form.gitlabProject}
+                  onChange={(event) => patch({ gitlabProject: event.target.value })}
+                  placeholder="acme/security"
+                  required
                 />
-              </div>
-            </div>
-          ) : null}
+              </Field>
+            ) : null}
 
-          {form.transport === "servicenow" ? (
-            <div className="grid gap-1.5 sm:max-w-xs">
-              <Label htmlFor="wh-table">{t("integrations.field.table")}</Label>
-              <Input
-                id="wh-table"
-                value={form.table}
-                onChange={(event) => patch({ table: event.target.value })}
-                placeholder="incident"
-              />
-            </div>
-          ) : null}
+            {form.transport === "defectdojo" ? (
+              <Field label={t("integrations.field.testId")} htmlFor="wh-test-id">
+                <Input
+                  id="wh-test-id"
+                  type="number"
+                  min={1}
+                  value={form.testId}
+                  onChange={(event) => patch({ testId: event.target.value })}
+                  placeholder="42"
+                  required
+                />
+              </Field>
+            ) : null}
 
-          {form.transport === "github" ? (
-            <div className="grid gap-1.5 sm:max-w-xs">
-              <Label htmlFor="wh-repository">{t("integrations.field.repository")}</Label>
-              <Input
-                id="wh-repository"
-                value={form.repository}
-                onChange={(event) => patch({ repository: event.target.value })}
-                placeholder="acme/security"
-                required
-              />
-            </div>
-          ) : null}
-
-          {form.transport === "gitlab" ? (
-            <div className="grid gap-1.5 sm:max-w-xs">
-              <Label htmlFor="wh-gitlab-project">{t("integrations.field.gitlabProject")}</Label>
-              <Input
-                id="wh-gitlab-project"
-                value={form.gitlabProject}
-                onChange={(event) => patch({ gitlabProject: event.target.value })}
-                placeholder="acme/security"
-                required
-              />
-            </div>
-          ) : null}
-
-          {form.transport === "defectdojo" ? (
-            <div className="grid gap-1.5 sm:max-w-xs">
-              <Label htmlFor="wh-test-id">{t("integrations.field.testId")}</Label>
-              <Input
-                id="wh-test-id"
-                type="number"
-                min={1}
-                value={form.testId}
-                onChange={(event) => patch({ testId: event.target.value })}
-                placeholder="42"
-                required
-              />
-            </div>
-          ) : null}
-
-          {
-            <div className="grid gap-1.5">
-              <Label htmlFor="wh-secret">
-                {t(isTicket ? "integrations.field.secretTicket" : "integrations.field.secret")}
-              </Label>
+            <Field
+              label={t(isTicket ? "integrations.field.secretTicket" : "integrations.field.secret")}
+              htmlFor="wh-secret"
+              className="sm:col-span-2"
+              hint={t(
+                isEdit
+                  ? "integrations.field.secretEditHint"
+                  : isTicket
+                    ? "integrations.field.secretTicketHint"
+                    : "integrations.field.secretHint",
+              )}
+            >
               <Input
                 id="wh-secret"
+                aria-describedby={fieldHintId("wh-secret")}
                 value={form.secret}
                 onChange={(event) => patch({ secret: event.target.value })}
                 placeholder={isEdit ? "••••••••" : isTicket ? "tracker API token" : ""}
                 required={isTicket && !isEdit}
               />
-              <p className="text-xs text-muted-foreground">
-                {t(
-                  isEdit
-                    ? "integrations.field.secretEditHint"
-                    : isTicket
-                      ? "integrations.field.secretTicketHint"
-                      : "integrations.field.secretHint",
-                )}
-              </p>
-            </div>
-          }
+            </Field>
+          </FieldGrid>
 
           <fieldset className="grid gap-2">
-            <legend className="text-sm font-medium">{t("integrations.field.eventKinds")}</legend>
-            <div className="grid gap-2 sm:grid-cols-2">
+            <legend className="mb-2 text-body-sm font-semibold text-foreground">
+              {t("integrations.field.eventKinds")}
+            </legend>
+            <FieldGrid cols={2} className="gap-y-2">
               {WEBHOOK_EVENT_KINDS.map((kind) => (
-                <div key={kind} className="flex items-center gap-2">
-                  <Checkbox
-                    id={`wh-kind-${kind}`}
-                    checked={form.eventKinds.includes(kind)}
-                    onCheckedChange={(checked) => toggleKind(kind, checked === true)}
-                  />
-                  <Label htmlFor={`wh-kind-${kind}`} className="font-normal">
-                    {t(`integrations.event.${kind}` as MsgKey)}
-                  </Label>
-                </div>
+                <CheckboxOption
+                  key={kind}
+                  label={t(`integrations.event.${kind}` as MsgKey)}
+                  checked={form.eventKinds.includes(kind)}
+                  onCheckedChange={(checked) => toggleKind(kind, checked)}
+                />
               ))}
-            </div>
+            </FieldGrid>
             <p className="text-xs text-muted-foreground">
               {t("integrations.field.eventKindsHint")}
             </p>
           </fieldset>
 
-          <div className="grid gap-4 sm:grid-cols-2 sm:items-end">
-            <div className="grid gap-1.5">
-              <Label htmlFor="wh-min-severity">{t("integrations.field.minSeverity")}</Label>
+          <FieldGrid cols={2}>
+            <Field
+              label={t("integrations.field.minSeverity")}
+              htmlFor="wh-min-severity"
+              hint={t("integrations.field.minSeverityHint")}
+            >
               <select
                 id="wh-min-severity"
+                aria-describedby={fieldHintId("wh-min-severity")}
                 className={SELECT_CLASS}
                 value={form.minSeverity}
                 onChange={(event) =>
@@ -383,19 +377,15 @@ export function WebhookFormDialog({
                   </option>
                 ))}
               </select>
-            </div>
-            <div className="flex items-center gap-2 pb-2">
-              <Checkbox
-                id="wh-enabled"
+            </Field>
+            <div className="sm:pt-7">
+              <CheckboxOption
+                label={t("integrations.field.enabled")}
                 checked={form.enabled}
-                onCheckedChange={(checked) => patch({ enabled: checked === true })}
+                onCheckedChange={(checked) => patch({ enabled: checked })}
               />
-              <Label htmlFor="wh-enabled" className="font-normal">
-                {t("integrations.field.enabled")}
-              </Label>
             </div>
-          </div>
-          <p className="text-xs text-muted-foreground">{t("integrations.field.minSeverityHint")}</p>
+          </FieldGrid>
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>

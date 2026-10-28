@@ -75,7 +75,7 @@ export function TenantSwitcher() {
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
-        className="max-h-80 w-56 overflow-y-auto border-border bg-card text-foreground shadow-xl shadow-slate-950"
+        className="max-h-80 w-56 overflow-y-auto border-border bg-card text-foreground shadow-md"
       >
         <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
           {t("tenant.actIn")}

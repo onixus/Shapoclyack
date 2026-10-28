@@ -5,7 +5,7 @@ import { useT } from "@/lib/i18n";
 import { KeyRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Field, FieldGrid, fieldHintId } from "@/components/ui/field";
 import {
   useCreateServiceToken,
   useRevokeServiceToken,
@@ -110,90 +110,95 @@ export function ServiceTokensPanel({
 
   return (
     <section className="space-y-6">
-      <form className="grid gap-3 sm:grid-cols-4 sm:items-end" onSubmit={onSubmit}>
-        <div className="grid gap-1.5">
-          <Label htmlFor="service-token-name">Name</Label>
-          <Input
-            id="service-token-name"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder="ci-pipeline"
-            required
-          />
-        </div>
-        <div className="grid gap-1.5 sm:col-span-2">
-          <Label htmlFor="service-token-scopes">{t("ui.scopes")}</Label>
-          <Input
-            id="service-token-scopes"
-            value={scopes}
-            onChange={(event) => setScopes(event.target.value)}
-            placeholder="runs:read vulnerabilities:read"
-          />
-        </div>
-        <div className="grid gap-1.5">
-          <Label htmlFor="service-token-role">Role</Label>
-          <select
-            id="service-token-role"
-            className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-            value={role}
-            onChange={(event) => setRole(event.target.value as Role)}
+      <form className="space-y-4" onSubmit={onSubmit}>
+        <FieldGrid cols={3}>
+          <Field label="Name" htmlFor="service-token-name">
+            <Input
+              id="service-token-name"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="ci-pipeline"
+              required
+            />
+          </Field>
+          <Field label={t("ui.scopes")} htmlFor="service-token-scopes" className="lg:col-span-2">
+            <Input
+              id="service-token-scopes"
+              value={scopes}
+              onChange={(event) => setScopes(event.target.value)}
+              placeholder="runs:read vulnerabilities:read"
+            />
+          </Field>
+          <Field
+            label="Role"
+            htmlFor="service-token-role"
+            hint={
+              issuable.length < TOKEN_ROLES.length
+                ? "A token cannot be stronger than the hand issuing it, so your role in this tenant caps this list."
+                : undefined
+            }
           >
-            {issuable.map((entry) => (
-              <option key={entry.role} value={entry.role}>
-                {entry.role}
-              </option>
-            ))}
-          </select>
-          {issuable.length < TOKEN_ROLES.length ? (
-            <p className="text-xs text-muted-foreground">
-              A token cannot be stronger than the hand issuing it, so your role in this tenant caps
-              this list.
-            </p>
-          ) : null}
-        </div>
-        <div className="grid gap-1.5 sm:col-span-3">
-          <Label htmlFor="service-token-cidrs">Allowed source networks</Label>
-          <Input
-            id="service-token-cidrs"
-            value={cidrs}
-            onChange={(event) => setCidrs(event.target.value)}
-            placeholder="192.0.2.0/24, 2001:db8::/32"
-          />
-          <p className="text-xs text-muted-foreground">
-            Leave empty to allow every source address.
-          </p>
-        </div>
-        <div className="grid gap-1.5">
-          <Label htmlFor="service-token-notice">Expiry notice (days)</Label>
-          <Input
-            id="service-token-notice"
-            type="number"
-            min={0}
-            max={3650}
-            value={noticeDays}
-            onChange={(event) => setNoticeDays(Number(event.target.value))}
-          />
-        </div>
-        <Button type="submit" className="sm:col-span-4" disabled={createMutation.isPending}>
+            <select
+              id="service-token-role"
+              aria-describedby={fieldHintId("service-token-role")}
+              className="h-9 w-full rounded-md border border-control bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              value={role}
+              onChange={(event) => setRole(event.target.value as Role)}
+            >
+              {issuable.map((entry) => (
+                <option key={entry.role} value={entry.role}>
+                  {entry.role}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field
+            label="Allowed source networks"
+            htmlFor="service-token-cidrs"
+            hint="Leave empty to allow every source address."
+          >
+            <Input
+              id="service-token-cidrs"
+              aria-describedby={fieldHintId("service-token-cidrs")}
+              value={cidrs}
+              onChange={(event) => setCidrs(event.target.value)}
+              placeholder="192.0.2.0/24, 2001:db8::/32"
+            />
+          </Field>
+          <Field label="Expiry notice (days)" htmlFor="service-token-notice">
+            <Input
+              id="service-token-notice"
+              type="number"
+              min={0}
+              max={3650}
+              value={noticeDays}
+              onChange={(event) => setNoticeDays(Number(event.target.value))}
+            />
+          </Field>
+        </FieldGrid>
+        <Button type="submit" disabled={createMutation.isPending}>
           <KeyRound className="mr-2 h-4 w-4" />
           {createMutation.isPending ? "Issuing…" : "Issue token"}
         </Button>
       </form>
 
-      <div className="grid max-w-sm gap-1.5">
-        <Label htmlFor="service-token-grace">Rotation overlap (seconds)</Label>
-        <Input
-          id="service-token-grace"
-          type="number"
-          min={0}
-          max={604800}
-          value={graceSeconds}
-          onChange={(event) => setGraceSeconds(Number(event.target.value))}
-        />
-        <p className="text-xs text-muted-foreground">
-          The previous token works during this window. Zero ends its access immediately.
-        </p>
-      </div>
+      <FieldGrid cols={3}>
+        <Field
+          label="Rotation overlap (seconds)"
+          htmlFor="service-token-grace"
+          hint="The previous token works during this window. Zero ends its access immediately."
+        >
+          <Input
+            id="service-token-grace"
+            aria-describedby={fieldHintId("service-token-grace")}
+            type="number"
+            min={0}
+            max={604800}
+            value={graceSeconds}
+            onChange={(event) => setGraceSeconds(Number(event.target.value))}
+          />
+        </Field>
+      </FieldGrid>
 
       {issued?.token ? (
         <div
@@ -230,7 +235,7 @@ export function ServiceTokensPanel({
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
-            <thead className="text-xs uppercase text-muted-foreground">
+            <thead className="bg-muted text-xs text-muted-foreground font-medium">
               <tr>
                 <th className="py-2 pr-4">Name</th>
                 <th className="py-2 pr-4">{t("ui.prefix")}</th>

@@ -101,7 +101,7 @@ export default function WordlistsPage() {
 
       <form
         onSubmit={onSubmit}
-        className="space-y-5 rounded-xl border border-border bg-card p-6 shadow-xl backdrop-blur"
+        className="space-y-5 rounded-xl border border-border bg-card p-6"
       >
         <div className="flex items-center justify-between border-b border-border pb-3">
           <h3 className="text-sm font-bold uppercase tracking-wider text-foreground">{t("ui.uploadWordlist")}</h3>
@@ -159,7 +159,7 @@ export default function WordlistsPage() {
           <Button
             type="submit"
             disabled={!file || upload.isPending}
-            className="gap-2 bg-sky-600 hover:bg-sky-500 text-foreground font-semibold"
+            className="gap-2 font-semibold"
           >
             <Upload className="h-3.5 w-3.5" />
             {upload.isPending ? "Uploading…" : "Upload Wordlist"}
@@ -167,7 +167,7 @@ export default function WordlistsPage() {
         </div>
       </form>
 
-      <div className="rounded-xl border border-border bg-card shadow-xl">
+      <div className="rounded-xl border border-border bg-card">
         {error ? (
           <p className="p-6 text-xs text-rose-600 dark:text-rose-400">{error.message}</p>
         ) : isLoading ? (
@@ -200,7 +200,7 @@ export default function WordlistsPage() {
                   <TableCell className="text-right font-mono text-foreground">
                     {wl.line_count.toLocaleString()}
                   </TableCell>
-                  <TableCell className="font-mono text-[11px] text-muted-foreground">
+                  <TableCell className="font-mono text-xs text-muted-foreground">
                     {wl.sha256.slice(0, 12)}…
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">

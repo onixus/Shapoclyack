@@ -48,7 +48,7 @@ export default function ExposurePage() {
               <span>{row.original.primary_identifier || row.original.asset_id}</span>
               <ArrowUpRight className="h-3 w-3 opacity-0 group-hover:opacity-100" />
             </div>
-            <span className="block text-[11px] text-muted-foreground">
+            <span className="block text-xs text-muted-foreground">
               {row.original.business_service || t("common.noService")}
               {row.original.owner_email ? ` · ${row.original.owner_email}` : ` · ${t("common.noOwner")}`}
             </span>

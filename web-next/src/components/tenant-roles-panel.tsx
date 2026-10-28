@@ -108,7 +108,7 @@ export function TenantRolesPanel({
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
-            <thead className="text-xs uppercase text-muted-foreground">
+            <thead className="bg-muted text-xs text-muted-foreground font-medium">
               <tr>
                 <th className="py-2 pr-4">{t("roles.col.role")}</th>
                 <th className="py-2 pr-4">{t("roles.col.rank")}</th>

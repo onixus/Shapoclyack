@@ -65,7 +65,7 @@ export default function TenantsPage() {
         cell: ({ row }) => (
           <div>
             <p className="font-semibold text-foreground">{row.original.name}</p>
-            <p className="font-mono text-[10px] text-muted-foreground">{row.original.tenant_id}</p>
+            <p className="font-mono text-xs text-muted-foreground">{row.original.tenant_id}</p>
           </div>
         ),
       },
@@ -143,7 +143,7 @@ export default function TenantsPage() {
         cell: ({ row }) => (
           <div>
             <p className="font-semibold text-foreground">{row.original.name}</p>
-            <p className="font-mono text-[10px] text-muted-foreground">{row.original.tenant_id}</p>
+            <p className="font-mono text-xs text-muted-foreground">{row.original.tenant_id}</p>
           </div>
         ),
       },
@@ -244,7 +244,7 @@ export default function TenantsPage() {
             }}
           >
             <DialogTrigger asChild>
-              <Button className="gap-2 bg-sky-600 hover:bg-sky-500 text-foreground shadow-md">
+              <Button className="gap-2">
                 <Plus className="h-4 w-4" />
                 {t("common.createTenant")}
               </Button>
@@ -274,7 +274,7 @@ export default function TenantsPage() {
                   <p className="font-semibold text-foreground">
                     Provisioning key for <code className="text-sky-600 dark:text-sky-400">{createdTenantId}</code>
                   </p>
-                  <code className="block break-all rounded bg-card border border-border p-2 font-mono text-[11px] text-amber-600 dark:text-amber-300">
+                  <code className="block break-all rounded bg-card border border-border p-2 font-mono text-xs text-amber-600 dark:text-amber-300">
                     {generatedKey}
                   </code>
                   <Button
@@ -293,7 +293,7 @@ export default function TenantsPage() {
                 {!generatedKey ? (
                   <Button
                     type="button"
-                    className="bg-sky-600 hover:bg-sky-500 text-foreground"
+                   
                     onClick={() =>
                       createMutation.mutate(name.trim(), {
                         onSuccess: ({ tenant, key }) => {
@@ -307,7 +307,7 @@ export default function TenantsPage() {
                     {createMutation.isPending ? "Generating…" : "Generate Provisioning Key"}
                   </Button>
                 ) : (
-                  <Button type="button" className="bg-muted text-foreground hover:bg-slate-700" onClick={() => setOpen(false)}>
+                  <Button type="button" className="bg-muted text-foreground hover:bg-accent" onClick={() => setOpen(false)}>
                     Done
                   </Button>
                 )}
@@ -321,7 +321,7 @@ export default function TenantsPage() {
         <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Customer posture
         </p>
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           {t("prose.worstOpenNistRiskFirst")}
         </p>
         <DataTable

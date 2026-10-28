@@ -41,7 +41,7 @@ export function DataSubjectPanel({ currentUsername }: { currentUsername: string 
         <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {t("retention.dsar.title")}
         </p>
-        <p className="text-[11px] text-muted-foreground">{t("retention.dsar.hint")}</p>
+        <p className="text-xs text-muted-foreground">{t("retention.dsar.hint")}</p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <Input
@@ -75,7 +75,7 @@ export function DataSubjectPanel({ currentUsername }: { currentUsername: string 
         </Button>
       </div>
       {isSelf ? (
-        <p className="text-[11px] text-amber-500">{t("retention.dsar.notSelf")}</p>
+        <p className="text-xs text-amber-500">{t("retention.dsar.notSelf")}</p>
       ) : null}
       {erase.data && !erase.isPending ? (
         <p className="text-xs text-muted-foreground" role="status">

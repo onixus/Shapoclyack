@@ -56,7 +56,7 @@ export default function AgentsPage() {
             </div>
             <div>
               <p className="font-mono font-bold text-foreground">{row.original.hostname || "—"}</p>
-              <p className="font-mono text-[10px] text-muted-foreground">{row.original.agent_id}</p>
+              <p className="font-mono text-xs text-muted-foreground">{row.original.agent_id}</p>
             </div>
           </div>
         ),
@@ -116,7 +116,7 @@ export default function AgentsPage() {
             return <span className="text-muted-foreground text-xs">—</span>;
           }
           return (
-            <div className="flex items-center gap-2 font-mono text-[11px] text-foreground">
+            <div className="flex items-center gap-2 font-mono text-xs text-foreground">
               {m.cpu_percent !== undefined && (
                 <span className="rounded bg-muted px-1.5 py-0.5 border border-border">
                   <span className="text-muted-foreground">CPU:</span> {m.cpu_percent}%

@@ -83,7 +83,7 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
 
   if (artifacts.length === 0) {
     return (
-      <p className="rounded-xl border border-border bg-card px-4 py-8 text-center text-xs text-muted-foreground backdrop-blur">
+      <p className="rounded-xl border border-border bg-card px-4 py-8 text-center text-xs text-muted-foreground">
         {t("prose.noTelemetryArtifactsProducedFor")}
       </p>
     );
@@ -92,7 +92,7 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
   return (
     <div className="space-y-4">
       {pdfReport ? (
-        <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-border bg-card p-4 shadow-lg backdrop-blur">
+        <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-border bg-card p-4">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20 shadow-md">
               <FileText className="h-5 w-5" />
@@ -120,7 +120,7 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
             <div>
               <div className="flex items-center gap-2">
                 <p className="font-semibold text-foreground">OASIS SARIF 2.1.0 Security Findings</p>
-                <Badge variant="outline" className="font-mono text-[10px] text-indigo-600 dark:text-indigo-300 border-indigo-500/30 bg-indigo-500/10">
+                <Badge variant="outline" className="font-mono text-xs text-indigo-600 dark:text-indigo-300 border-indigo-500/30 bg-indigo-500/10">
                   SARIF 2.1.0
                 </Badge>
               </div>
@@ -151,7 +151,7 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
         </div>
       ) : null}
 
-      <div className="overflow-hidden rounded-xl border border-border bg-card shadow-lg backdrop-blur">
+      <div className="overflow-hidden rounded-xl border border-border bg-card">
         <table className="w-full text-left text-xs">
           <tbody className="divide-y divide-border">
             {rest.map((path) => (
@@ -203,7 +203,7 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-foreground">
               <span className="font-mono text-sm">{previewPath}</span>
-              {previewPath ? <Badge variant="secondary" className="bg-sky-500/20 text-sky-600 dark:text-sky-300 border-sky-500/30 text-[10px]">PREVIEW</Badge> : null}
+              {previewPath ? <Badge variant="secondary" className="bg-sky-500/20 text-sky-600 dark:text-sky-300 border-sky-500/30 text-xs">PREVIEW</Badge> : null}
             </DialogTitle>
           </DialogHeader>
           {previewLoading ? (

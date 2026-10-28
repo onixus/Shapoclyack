@@ -215,9 +215,9 @@ export function AssetImportDialog({
               onChange={(event) => void onFile(event.target.files?.[0])}
             />
             {reading ? (
-              <p className="text-[11px] text-muted-foreground">{t("assetImport.reading")}</p>
+              <p className="text-xs text-muted-foreground">{t("assetImport.reading")}</p>
             ) : file ? (
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 {t("assetImport.fileInfo", {
                   name: fileName,
                   format: file.format.toUpperCase(),
@@ -290,7 +290,7 @@ export function AssetImportDialog({
                 ))}
               </div>
               {summary.ignored_columns.length > 0 ? (
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-xs text-muted-foreground">
                   {t("assetImport.ignored", { columns: summary.ignored_columns.join(", ") })}
                 </p>
               ) : null}
@@ -299,7 +299,7 @@ export function AssetImportDialog({
 
           {report && !applied ? (
             <div className="max-h-72 overflow-auto rounded border border-border">
-              <table className="w-full text-left text-[11px]">
+              <table className="w-full text-left text-xs">
                 <thead className="sticky top-0 bg-muted text-muted-foreground">
                   <tr>
                     <th className="px-2 py-1">#</th>
@@ -330,7 +330,7 @@ export function AssetImportDialog({
                 </tbody>
               </table>
               {report.rows.length > shown.length ? (
-                <p className="px-2 py-1 text-[11px] text-muted-foreground">
+                <p className="px-2 py-1 text-xs text-muted-foreground">
                   {t("assetImport.more", { count: report.rows.length - shown.length })}
                 </p>
               ) : null}

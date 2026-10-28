@@ -258,7 +258,7 @@ export function AttackSurfaceGraph({
 
   if (hosts.length === 0) {
     return (
-      <div className="rounded-xl border border-border bg-card px-4 py-8 text-center text-xs text-muted-foreground backdrop-blur">
+      <div className="rounded-xl border border-border bg-card px-4 py-8 text-center text-xs text-muted-foreground">
         {t("graph.empty")}
       </div>
     );
@@ -269,8 +269,8 @@ export function AttackSurfaceGraph({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-border bg-card px-4 py-2.5 text-xs backdrop-blur">
-        <span className="font-bold text-foreground uppercase tracking-wider text-[11px]">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-border bg-card px-4 py-2.5 text-xs">
+        <span className="font-bold text-foreground uppercase text-overline">
           {model.clusterMode === "owner"
             ? t("graph.legend.owners")
             : model.clusterMode === "asn"

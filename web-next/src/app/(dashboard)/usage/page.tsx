@@ -126,7 +126,7 @@ function ResourceCell({ resource, t }: { resource: UsageResource; t: Translate }
         })}
       </span>
       <div className="flex items-center gap-2">
-        <span className="text-[11px] text-muted-foreground">{ratioLabel(resource.used_ratio)}</span>
+        <span className="text-xs text-muted-foreground">{ratioLabel(resource.used_ratio)}</span>
         <ToneBadge tone={tone} t={t} />
       </div>
     </div>
@@ -265,7 +265,7 @@ function QuotaForm({
       </div>
       {/* "Inherited" and "unlimited here" are different answers, and an empty
         * box means one of them in each state — so the editor says which. */}
-      <p className="text-[11px] text-muted-foreground">
+      <p className="text-xs text-muted-foreground">
         {inherited ? t("page.usage.editorInherited") : t("page.usage.editorTenant")}
       </p>
 
@@ -381,7 +381,6 @@ export default function UsagePage() {
               label={t("page.usage.period")}
               value={periodLabel(data.period_start, data.period_end)}
               hint={data.enforced ? t("page.usage.enforcedOn") : t("page.usage.enforcedOff")}
-              decorationColor={data.enforced ? "emerald" : "slate"}
             />
             <KpiCard
               label={t("page.usage.quotaSource")}
@@ -398,7 +397,6 @@ export default function UsagePage() {
                     })
                   : undefined
               }
-              decorationColor={data.quota_source === "tenant" ? "sky" : "slate"}
             />
           </div>
 
@@ -433,7 +431,7 @@ export default function UsagePage() {
               </dl>
             </section>
 
-            <Card className="rounded-xl border border-border bg-card p-5 shadow-sm lg:col-span-2">
+            <Card className="rounded-xl border border-border bg-card p-5 lg:col-span-2">
               <Title className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
                 {t("page.usage.history")}
               </Title>
@@ -474,7 +472,7 @@ export default function UsagePage() {
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="text-left text-xs uppercase tracking-wider text-muted-foreground">
+                <thead className="bg-muted text-left text-xs text-muted-foreground font-medium">
                   <tr>
                     <th className="py-1.5 font-semibold">{t("page.usage.col.tenant")}</th>
                     <th className="py-1.5 font-semibold">{t("page.usage.col.assets")}</th>
@@ -494,7 +492,7 @@ export default function UsagePage() {
                     >
                       <td className="py-2 pr-3 align-top">
                         <p className="font-semibold text-foreground">{row.name}</p>
-                        <p className="font-mono text-[10px] text-muted-foreground">
+                        <p className="font-mono text-xs text-muted-foreground">
                           {row.tenant_id} ·{" "}
                           {row.quota_source === "tenant"
                             ? t("page.usage.source.tenant")

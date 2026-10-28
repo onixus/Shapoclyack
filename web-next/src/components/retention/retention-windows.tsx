@@ -121,11 +121,11 @@ export function RetentionWindows({
         <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {t("retention.windows")}
         </p>
-        <p className="text-[11px] text-muted-foreground">{t("retention.windowsHint")}</p>
+        <p className="text-xs text-muted-foreground">{t("retention.windowsHint")}</p>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-left text-sm">
-          <thead className="text-xs uppercase text-muted-foreground">
+          <thead className="bg-muted text-xs text-muted-foreground font-medium">
             <tr>
               <th className="py-2 pr-4">{t("retention.col.category")}</th>
               <th className="py-2 pr-4">{t("retention.col.default")}</th>
@@ -142,7 +142,7 @@ export function RetentionWindows({
                 <tr key={item.category} className="border-t border-border/60 align-top">
                   <td className="py-2 pr-4">
                     <p className="font-medium text-foreground">{label}</p>
-                    <p className="text-[11px] text-muted-foreground">{item.description}</p>
+                    <p className="text-xs text-muted-foreground">{item.description}</p>
                   </td>
                   <td className="py-2 pr-4 tabular-nums">{daysLabel(item.default_days, t)}</td>
                   <td className="py-2 pr-4 tabular-nums text-muted-foreground">
@@ -165,7 +165,7 @@ export function RetentionWindows({
                           }
                         />
                         {error ? (
-                          <p className="text-[11px] text-rose-500" role="alert">
+                          <p className="text-xs text-rose-500" role="alert">
                             {error}
                           </p>
                         ) : null}
@@ -182,7 +182,7 @@ export function RetentionWindows({
                     {daysLabel(item.effective_days, t)}
                     {item.out_of_bounds ? (
                       <p
-                        className="text-[11px] font-normal text-amber-600 dark:text-amber-400"
+                        className="text-xs font-normal text-amber-600 dark:text-amber-400"
                         title={t("retention.storedOutOfBoundsHint", {
                           days: item.override_days ?? 0,
                           min: item.min_days,
@@ -201,7 +201,7 @@ export function RetentionWindows({
       </div>
 
       {policy.updated_at ? (
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           {t("retention.updatedBy", { who: policy.updated_by || "—", when: when(policy.updated_at) })}
         </p>
       ) : null}
@@ -218,7 +218,7 @@ export function RetentionWindows({
           <div className="flex flex-wrap gap-2">
             <Button
               type="button"
-              className="gap-2 bg-sky-600 text-foreground hover:bg-sky-500"
+              className="gap-2"
               disabled={!dirty || errors.length > 0 || update.isPending}
               onClick={save}
             >

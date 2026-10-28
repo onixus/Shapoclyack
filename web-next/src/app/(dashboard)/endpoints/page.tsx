@@ -127,7 +127,7 @@ export default function EndpointsPage() {
         cell: ({ row }) => (
           <div className="space-y-0.5">
             <p className="font-mono font-bold text-foreground">{row.original.hostname || "—"}</p>
-            <p className="font-mono text-[10px] text-muted-foreground">{row.original.device_id}</p>
+            <p className="font-mono text-xs text-muted-foreground">{row.original.device_id}</p>
           </div>
         ),
       },
@@ -141,7 +141,7 @@ export default function EndpointsPage() {
           return (
             <div className="space-y-0.5">
               <p className="text-sm text-foreground">{label}</p>
-              <p className="text-[10px] text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 {[d.os_family, d.os_arch].filter(Boolean).join(" · ") || "—"}
               </p>
             </div>
@@ -182,7 +182,7 @@ export default function EndpointsPage() {
         accessorKey: "agent_version",
         header: t("col.lariska"),
         cell: ({ getValue }) => (
-          <code className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[11px] text-primary">
+          <code className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-xs text-primary">
             {String(getValue() || "—")}
           </code>
         ),

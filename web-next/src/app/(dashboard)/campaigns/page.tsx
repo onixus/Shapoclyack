@@ -38,7 +38,7 @@ function CampaignList() {
             <span className="block font-semibold text-sky-600 dark:text-sky-400">
               {row.original.name}
             </span>
-            <span className="block text-[11px] text-muted-foreground">
+            <span className="block text-xs text-muted-foreground">
               {ago(row.original.created_at)}
               {row.original.created_by ? ` · ${row.original.created_by}` : ""}
             </span>
@@ -53,7 +53,7 @@ function CampaignList() {
           <div className="space-y-0.5">
             <StatusBadge value={row.original.status} map={CAMPAIGN_STATUS} />
             {row.original.past_due ? (
-              <p className="text-[11px] text-rose-600 dark:text-rose-400">{t("campaign.pastDue")}</p>
+              <p className="text-xs text-rose-600 dark:text-rose-400">{t("campaign.pastDue")}</p>
             ) : null}
           </div>
         ),
@@ -92,7 +92,7 @@ function CampaignList() {
         cell: ({ row }) => (
           <div className="w-40 space-y-1">
             <ProgressBar progress={row.original.progress} />
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               {t("campaign.progress.unresolved", { count: row.original.progress.unresolved })}
             </p>
           </div>

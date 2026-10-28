@@ -191,7 +191,7 @@ function VulnerabilitiesInner() {
               <span>{findingLabel(row.original)}</span>
               <ArrowUpRight className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100" />
             </div>
-            <span className="block text-[11px] text-muted-foreground">
+            <span className="block text-xs text-muted-foreground">
               {/* A software finding has no port by construction: its locator is
                   the installed package and the version that closes it. */}
               {row.original.source === "endpoint_software"
@@ -252,7 +252,7 @@ function VulnerabilitiesInner() {
             <div className="space-y-0.5">
               <p className="text-xs text-foreground">{row.original.assignee || "—"}</p>
               {row.original.owner_team ? (
-                <p className="text-[11px] text-muted-foreground">{row.original.owner_team}</p>
+                <p className="text-xs text-muted-foreground">{row.original.owner_team}</p>
               ) : null}
             </div>
           ) : (
@@ -266,7 +266,7 @@ function VulnerabilitiesInner() {
         cell: ({ row }) => (
           <Link
             href={assetDetailHref(row.original.asset_id, row.original.tenant_id)}
-            className="font-mono text-[11px] text-foreground hover:text-sky-600 dark:text-sky-300 hover:underline"
+            className="font-mono text-xs text-foreground hover:text-sky-600 dark:text-sky-300 hover:underline"
           >
             {row.original.asset_id}
           </Link>
@@ -544,7 +544,7 @@ function VulnerabilitiesInner() {
               className={
                 "rounded px-3 py-1 text-xs font-medium transition-colors " +
                 (view === mode
-                  ? "bg-sky-600 text-white dark:bg-sky-500"
+                  ? "bg-primary text-primary-foreground"
                   : "text-muted-foreground hover:text-foreground")
               }
             >

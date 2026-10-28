@@ -3,7 +3,7 @@ import { useT } from "@/lib/i18n";
 export function RunDiffPanel({ counts }: { counts: Record<string, number> }) {
   const t = useT();
   return (
-    <div className="rounded-xl border border-border bg-card p-4 font-mono text-xs shadow-lg backdrop-blur">
+    <div className="rounded-xl border border-border bg-card p-4 font-mono text-xs">
       <p className="font-bold uppercase tracking-wider text-foreground">{t("ui.executionDeltaDiffVsPreviousRun")}</p>
       <div className="mt-2 flex flex-wrap gap-4 text-foreground">
         <div>

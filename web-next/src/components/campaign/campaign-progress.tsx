@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 /** One colour per category. They are deliberately not grouped into
  * "done / not done": the point of the view is that they are different claims. */
 export const CATEGORY_COLOR: Record<CampaignCategory, string> = {
-  open: "bg-slate-400 dark:bg-slate-500",
+  open: "bg-muted-foreground",
   fixing: "bg-orange-500",
   awaiting_verification: "bg-violet-500",
   verified: "bg-emerald-500",
@@ -90,7 +90,7 @@ export function CategoryCards({
             <p className="mt-1 text-2xl font-bold tabular-nums" data-testid={`cat-${category}`}>
               {progress.categories[category]}
             </p>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               {t(`campaign.cat.hint.${category}` as never)}
             </p>
           </button>

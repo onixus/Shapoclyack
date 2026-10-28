@@ -184,7 +184,7 @@ function ControlRow({ control }: { control: ControlItem }) {
                     <span className="font-bold text-foreground shrink-0">{f.id}</span>
                     {f.domain && <span className="text-sky-600 dark:text-sky-400 shrink-0">[{f.domain}]</span>}
                     <span className="text-muted-foreground grow">{f.detail || ""}</span>
-                    <Badge variant="outline" className="text-[10px] uppercase border-border py-0 px-1 shrink-0">
+                    <Badge variant="outline" className="text-overline uppercase border-border py-0 px-1 shrink-0">
                       {f.severity}
                     </Badge>
                   </div>
@@ -231,7 +231,7 @@ export function ControlsMatrix({ runId }: { runId: string }) {
   return (
     <div className="space-y-6">
       {/* Overview Posture Card */}
-      <div className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
+      <div className="rounded-xl border border-border bg-card p-5">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
@@ -245,13 +245,13 @@ export function ControlsMatrix({ runId }: { runId: string }) {
 
           <div className="flex items-center gap-3">
             <div className="text-right">
-              <span className="text-[11px] text-muted-foreground uppercase tracking-wider block">{t("ui.overallVerdict")}</span>
+              <span className="text-overline text-muted-foreground uppercase block">{t("ui.overallVerdict")}</span>
               <div className="mt-0.5">
                 <StatusBadge status={data.overall_verdict} />
               </div>
             </div>
             <div className="text-right border-l border-border pl-3">
-              <span className="text-[11px] text-muted-foreground uppercase tracking-wider block">NIST Risk Level</span>
+              <span className="text-overline text-muted-foreground uppercase block">NIST Risk Level</span>
               <div className="mt-0.5">
                 <RiskBadge risk={data.overall_risk} />
               </div>

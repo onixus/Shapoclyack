@@ -27,57 +27,67 @@ import type { Severity } from "@/lib/run-data";
 
 export type BadgeVariant = "default" | "secondary" | "destructive" | "outline";
 
+/** What a status means, independent of its colour. The badge draws the
+ * tone's icon next to the word (APEX: a status is icon + word, colour only
+ * repeats it); `severity` is the CVSS scale, which carries a label alone. */
+export type StatusTone = "success" | "warning" | "danger" | "info" | "muted" | "severity";
+
 export type StatusStyle = {
   label: string;
   variant?: BadgeVariant;
   /** Color override applied on top of the Badge variant. */
   className?: string;
+  tone?: StatusTone;
 };
 
-// Canonical palette shared by every status family:
-// Theme-adaptive classes with high contrast in both light and dark modes (WCAG AA).
-const SUCCESS = "bg-emerald-500/10 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300 border border-emerald-500/30 font-semibold";
-const IN_PROGRESS = "bg-amber-500/10 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300 border border-amber-500/30 font-semibold";
-const DANGER = "bg-rose-500/10 text-rose-800 dark:bg-rose-500/20 dark:text-rose-300 border border-rose-500/30 font-semibold";
-const INFO_SKY = "bg-sky-500/10 text-sky-800 dark:bg-sky-500/20 dark:text-sky-300 border border-sky-500/30 font-semibold";
-const INFO_INDIGO = "bg-indigo-500/10 text-indigo-800 dark:bg-indigo-500/20 dark:text-indigo-300 border border-indigo-500/30 font-semibold";
-const INFO_ORANGE = "bg-orange-500/10 text-orange-800 dark:bg-orange-500/20 dark:text-orange-300 border border-orange-500/30 font-semibold";
-const INFO_VIOLET = "bg-violet-500/10 text-violet-800 dark:bg-violet-500/20 dark:text-violet-300 border border-violet-500/30 font-semibold";
-const MUTED = "bg-muted text-muted-foreground border border-border font-medium";
+// APEX semantic palette shared by every status family: a `*-subtle` plate
+// with the text and icon in the status colour. Token values for both themes
+// live in globals.css.
+const SUCCESS = { className: "bg-success-subtle text-success border border-success/30 font-semibold", tone: "success" } as const;
+const IN_PROGRESS = { className: "bg-warning-subtle text-warning border border-warning/30 font-semibold", tone: "warning" } as const;
+const DANGER = { className: "bg-danger-subtle text-danger border border-danger/30 font-semibold", tone: "danger" } as const;
+const INFO = { className: "bg-info-subtle text-info border border-info/30 font-semibold", tone: "info" } as const;
+const MUTED = { className: "bg-muted text-muted-foreground border border-border font-medium", tone: "muted" } as const;
+
+// The one CVSS scale (sev-critical … sev-info), shared with Pulse and APEX.
+const SEV_CRITICAL = { className: "bg-sev-critical/10 text-sev-critical border border-sev-critical/40 font-bold", tone: "severity" } as const;
+const SEV_HIGH = { className: "bg-sev-high/10 text-sev-high border border-sev-high/40 font-semibold", tone: "severity" } as const;
+const SEV_MEDIUM = { className: "bg-sev-medium/10 text-sev-medium border border-sev-medium/40 font-semibold", tone: "severity" } as const;
+const SEV_LOW = { className: "bg-sev-low/10 text-sev-low border border-sev-low/40 font-semibold", tone: "severity" } as const;
+const SEV_INFO = { className: "bg-sev-info/10 text-sev-info border border-sev-info/40 font-medium", tone: "severity" } as const;
 
 export const JOB_STATUS: Record<JobInfo["status"], StatusStyle> = {
-  succeeded: { label: "succeeded", className: SUCCESS },
-  running: { label: "running", className: IN_PROGRESS },
-  claimed: { label: "claimed", className: "bg-amber-500/10 text-amber-800 dark:text-amber-300 border border-amber-500/30 font-semibold" },
-  failed: { label: "failed", variant: "destructive", className: DANGER },
-  queued: { label: "queued", variant: "secondary", className: MUTED },
+  succeeded: { label: "succeeded", ...SUCCESS },
+  running: { label: "running", ...IN_PROGRESS },
+  claimed: { label: "claimed", ...IN_PROGRESS, },
+  failed: { label: "failed", variant: "destructive", ...DANGER },
+  queued: { label: "queued", variant: "secondary", ...MUTED },
   // Amber like `claimed`, not red: the scan is on its way down at an
   // operator's request, which is neither a failure nor finished (#360).
   cancelling: {
     label: "cancelling",
-    className:
-      "bg-amber-500/10 text-amber-800 dark:text-amber-300 border border-amber-500/30 font-semibold",
+    ...IN_PROGRESS,
   },
-  cancelled: { label: "cancelled", variant: "secondary", className: MUTED },
+  cancelled: { label: "cancelled", variant: "secondary", ...MUTED },
 };
 
 export type AgentEffectiveStatus = AgentInfo["status"] | "offline";
 
 export const AGENT_STATUS: Record<AgentEffectiveStatus, StatusStyle> = {
-  idle: { label: "idle", className: SUCCESS },
-  busy: { label: "busy", className: IN_PROGRESS },
-  error: { label: "error", variant: "destructive", className: DANGER },
-  stale: { label: "stale", variant: "outline", className: "bg-amber-500/10 text-amber-800 dark:text-amber-300 border border-amber-500/30" },
-  offline: { label: "offline", variant: "secondary", className: MUTED },
+  idle: { label: "idle", ...SUCCESS },
+  busy: { label: "busy", ...IN_PROGRESS },
+  error: { label: "error", variant: "destructive", ...DANGER },
+  stale: { label: "stale", variant: "outline", ...IN_PROGRESS, },
+  offline: { label: "offline", variant: "secondary", ...MUTED },
 };
 
 /** The operator's verdict (#308), shown next to — not instead of — the
  * reported status: a quarantined agent that is still heartbeating is idle
  * *and* quarantined, and an operator needs both facts to act on it. */
 export const AGENT_LIFECYCLE_STATUS: Record<AgentLifecycleStatus, StatusStyle> = {
-  active: { label: "active", className: SUCCESS },
-  disabled: { label: "disabled", variant: "secondary", className: MUTED },
-  quarantined: { label: "quarantined", variant: "destructive", className: DANGER },
+  active: { label: "active", ...SUCCESS },
+  disabled: { label: "disabled", variant: "secondary", ...MUTED },
+  quarantined: { label: "quarantined", variant: "destructive", ...DANGER },
 };
 
 /** Connectivity wins over the agent's self-reported status. */
@@ -86,8 +96,8 @@ export function agentEffectiveStatus(agent: AgentInfo): AgentEffectiveStatus {
 }
 
 export const SCHEDULE_ENABLED_STATUS: Record<"enabled" | "disabled", StatusStyle> = {
-  enabled: { label: "enabled", className: SUCCESS },
-  disabled: { label: "disabled", variant: "secondary", className: MUTED },
+  enabled: { label: "enabled", ...SUCCESS },
+  disabled: { label: "disabled", variant: "secondary", ...MUTED },
 };
 
 /** `suspended`, not `disabled`: that is the word the API serialises and the
@@ -96,39 +106,39 @@ export const SCHEDULE_ENABLED_STATUS: Record<"enabled" | "disabled", StatusStyle
  * rather than an "off" switch. Only a platform admin ever sees it: the tenant
  * listing drops suspended tenants for everyone else. */
 export const TENANT_STATUS: Record<TenantInfo["status"], StatusStyle> = {
-  active: { label: "active", className: SUCCESS },
-  suspended: { label: "suspended", variant: "destructive", className: DANGER },
+  active: { label: "active", ...SUCCESS },
+  suspended: { label: "suspended", variant: "destructive", ...DANGER },
   // The deletion's two halves (#325): refused like a suspension, and on its
   // way out.
-  pending_deletion: { label: "pending deletion", variant: "destructive", className: DANGER },
-  deleting: { label: "deleting", variant: "destructive", className: DANGER },
+  pending_deletion: { label: "pending deletion", variant: "destructive", ...DANGER },
+  deleting: { label: "deleting", variant: "destructive", ...DANGER },
 };
 
 /** One entry of the tenant deletion journal (#325). */
 export const TENANT_DELETION_STATUS: Record<TenantDeletionState, StatusStyle> = {
-  pending: { label: "pending", className: IN_PROGRESS },
-  purging: { label: "purging", variant: "destructive", className: DANGER },
-  blocked: { label: "blocked", variant: "destructive", className: DANGER },
-  cancelled: { label: "cancelled", variant: "secondary", className: MUTED },
-  completed: { label: "completed", className: SUCCESS },
+  pending: { label: "pending", ...IN_PROGRESS },
+  purging: { label: "purging", variant: "destructive", ...DANGER },
+  blocked: { label: "blocked", variant: "destructive", ...DANGER },
+  cancelled: { label: "cancelled", variant: "secondary", ...MUTED },
+  completed: { label: "completed", ...SUCCESS },
 };
 
 /** One store of a tenant purge (#325). */
 export const TENANT_DELETION_STEP_STATUS: Record<TenantDeletionStepState, StatusStyle> = {
-  pending: { label: "pending", variant: "secondary", className: MUTED },
-  running: { label: "running", className: IN_PROGRESS },
-  waiting: { label: "waiting", className: IN_PROGRESS },
-  failed: { label: "failed", variant: "destructive", className: DANGER },
-  done: { label: "done", className: SUCCESS },
-  skipped: { label: "skipped", variant: "secondary", className: MUTED },
+  pending: { label: "pending", variant: "secondary", ...MUTED },
+  running: { label: "running", ...IN_PROGRESS },
+  waiting: { label: "waiting", ...IN_PROGRESS },
+  failed: { label: "failed", variant: "destructive", ...DANGER },
+  done: { label: "done", ...SUCCESS },
+  skipped: { label: "skipped", variant: "secondary", ...MUTED },
 };
 
 /** An allow/deny entry of a tenant's approved scanning scope (#226). Deny is
  * the strong one — it wins over allow by overlap — so it reads as the danger
  * colour rather than as a muted "off". */
 export const SCAN_SCOPE_EFFECT: Record<ScanScopeEffect, StatusStyle> = {
-  allow: { label: "allow", className: SUCCESS },
-  deny: { label: "deny", variant: "destructive", className: DANGER },
+  allow: { label: "allow", ...SUCCESS },
+  deny: { label: "deny", variant: "destructive", ...DANGER },
 };
 
 /** The polarity of a maintenance window (#352). A blackout forbids scanning
@@ -136,66 +146,66 @@ export const SCAN_SCOPE_EFFECT: Record<ScanScopeEffect, StatusStyle> = {
  * the inverse — the only time scanning is permitted — and reads as success
  * even though its effect outside the window is a refusal. */
 export const MAINTENANCE_WINDOW_KIND: Record<MaintenanceWindowKind, StatusStyle> = {
-  blackout: { label: "blackout", variant: "destructive", className: DANGER },
-  allowed: { label: "allowed", className: SUCCESS },
+  blackout: { label: "blackout", variant: "destructive", ...DANGER },
+  allowed: { label: "allowed", ...SUCCESS },
 };
 
 export const ASSET_STATUS: Record<AssetStatus, StatusStyle> = {
-  active: { label: "active", className: SUCCESS },
-  stale: { label: "stale", className: IN_PROGRESS },
-  decommissioned: { label: "decommissioned", className: MUTED },
+  active: { label: "active", ...SUCCESS },
+  stale: { label: "stale", ...IN_PROGRESS },
+  decommissioned: { label: "decommissioned", ...MUTED },
 };
 
 /** Operator-set business criticality (0–4). Keyed by the raw int the API stores. */
 export const ASSET_CRITICALITY: Record<number, StatusStyle> = {
-  0: { label: "none", variant: "secondary", className: MUTED },
-  1: { label: "low", className: INFO_SKY },
-  2: { label: "medium", className: IN_PROGRESS },
-  3: { label: "high", className: INFO_ORANGE },
-  4: { label: "critical", className: `${DANGER} font-bold` },
+  0: { label: "none", variant: "secondary", ...MUTED },
+  1: { label: "low", ...SEV_LOW },
+  2: { label: "medium", ...SEV_MEDIUM },
+  3: { label: "high", ...SEV_HIGH },
+  4: { label: "critical", ...SEV_CRITICAL },
 };
 
 /** Operator- or CMDB-set environment (#146). */
 export const ASSET_ENVIRONMENT: Record<AssetEnvironment, StatusStyle> = {
-  production: { label: "production", className: `${DANGER} font-semibold` },
-  staging: { label: "staging", className: IN_PROGRESS },
-  development: { label: "development", className: INFO_SKY },
-  lab: { label: "lab", variant: "secondary", className: MUTED },
-  other: { label: "other", variant: "secondary", className: MUTED },
+  production: { label: "production", ...DANGER },
+  staging: { label: "staging", ...IN_PROGRESS },
+  development: { label: "development", ...INFO },
+  lab: { label: "lab", variant: "secondary", ...MUTED },
+  other: { label: "other", variant: "secondary", ...MUTED },
 };
 
 export const ASSET_DATA_CLASSIFICATION: Record<AssetDataClassification, StatusStyle> = {
-  public: { label: "public", variant: "secondary", className: MUTED },
-  internal: { label: "internal", className: INFO_SKY },
-  confidential: { label: "confidential", className: IN_PROGRESS },
-  restricted: { label: "restricted", className: `${DANGER} font-semibold` },
+  public: { label: "public", variant: "secondary", ...MUTED },
+  internal: { label: "internal", ...INFO },
+  confidential: { label: "confidential", ...IN_PROGRESS },
+  restricted: { label: "restricted", ...DANGER },
 };
 
 /** Operator-set posture, not a scan measurement (#171 is the network fact). */
 export const ASSET_EXPOSURE: Record<AssetExposureLevel, StatusStyle> = {
-  internet: { label: "internet", className: `${DANGER} font-semibold` },
-  partner: { label: "partner", className: IN_PROGRESS },
-  internal: { label: "internal", className: INFO_SKY },
-  unknown: { label: "unknown", variant: "secondary", className: MUTED },
+  internet: { label: "internet", ...DANGER },
+  partner: { label: "partner", ...IN_PROGRESS },
+  internal: { label: "internal", ...INFO },
+  unknown: { label: "unknown", variant: "secondary", ...MUTED },
 };
 
 export const ASSET_CONTEXT_SOURCE: Record<AssetContextSource, StatusStyle> = {
-  operator: { label: "operator", className: INFO_SKY },
-  cmdb: { label: "CMDB", className: INFO_INDIGO },
-  ad: { label: "AD", className: INFO_INDIGO },
-  other: { label: "other", variant: "secondary", className: MUTED },
+  operator: { label: "operator", ...INFO },
+  cmdb: { label: "CMDB", ...INFO },
+  ad: { label: "AD", ...INFO },
+  other: { label: "other", variant: "secondary", ...MUTED },
 };
 
 export const ENDPOINT_RECONCILIATION_STATUS: Record<EndpointReconciliationStatus, StatusStyle> = {
-  linked: { label: "linked", className: SUCCESS },
-  conflict: { label: "conflict", variant: "destructive", className: `${DANGER} font-semibold` },
-  unlinked: { label: "unlinked", variant: "secondary", className: MUTED },
+  linked: { label: "linked", ...SUCCESS },
+  conflict: { label: "conflict", variant: "destructive", ...DANGER },
+  unlinked: { label: "unlinked", variant: "secondary", ...MUTED },
 };
 
 export const SOFTWARE_CHANGE_STATUS: Record<"installed" | "removed" | "updated", StatusStyle> = {
-  installed: { label: "installed", className: SUCCESS },
-  removed: { label: "removed", variant: "destructive", className: `${DANGER} font-semibold` },
-  updated: { label: "updated", className: IN_PROGRESS },
+  installed: { label: "installed", ...SUCCESS },
+  removed: { label: "removed", variant: "destructive", ...DANGER },
+  updated: { label: "updated", ...IN_PROGRESS },
 };
 
 /** Software→CVE match statuses (ROADMAP Track E M1).
@@ -205,27 +215,27 @@ export const SOFTWARE_CHANGE_STATUS: Record<"installed" | "removed" | "updated",
  * as "nothing found" has drawn exactly the wrong conclusion. ``not_applicable``
  * is the muted one — the vendor answered, and the answer was "no". */
 export const SOFTWARE_CVE_MATCH_STATUS: Record<SoftwareCveMatchStatus, StatusStyle> = {
-  vulnerable: { label: "vulnerable", variant: "destructive", className: DANGER },
-  fixed: { label: "fixed", className: SUCCESS },
-  not_applicable: { label: "not applicable", variant: "secondary", className: MUTED },
-  unknown: { label: "unknown", variant: "outline", className: IN_PROGRESS },
+  vulnerable: { label: "vulnerable", variant: "destructive", ...DANGER },
+  fixed: { label: "fixed", ...SUCCESS },
+  not_applicable: { label: "not applicable", variant: "secondary", ...MUTED },
+  unknown: { label: "unknown", variant: "outline", ...IN_PROGRESS },
 };
 
 /** Which observer found a tracked finding (Track E, M3). Deliberately quiet
  * styling: the source is context for the row, not a severity signal. */
 export const VULN_SOURCE_STATUS: Record<VulnerabilitySource, StatusStyle> = {
-  scan: { label: "scan", variant: "outline", className: MUTED },
-  endpoint_software: { label: "endpoint", variant: "outline", className: INFO_VIOLET },
-  retro_match: { label: "retro match", variant: "outline", className: INFO_INDIGO },
+  scan: { label: "scan", variant: "outline", ...MUTED },
+  endpoint_software: { label: "endpoint", variant: "outline", ...INFO },
+  retro_match: { label: "retro match", variant: "outline", ...INFO },
 };
 
 /** How sure the retro matcher is (docs/retro-cve-matching.md). A vendor's own
  * statement outranks an NVD range, and "backport possible" is the muted one:
  * it is never a tracked finding, only a possible CVE on the service row. */
 export const RETRO_MATCH_CONFIDENCE: Record<RetroMatchConfidence, StatusStyle> = {
-  vendor_advisory: { label: "vendor advisory", variant: "outline", className: INFO_SKY },
-  version_range: { label: "version range", variant: "outline", className: IN_PROGRESS },
-  backport_possible: { label: "backport possible", variant: "secondary", className: MUTED },
+  vendor_advisory: { label: "vendor advisory", variant: "outline", ...INFO },
+  version_range: { label: "version range", variant: "outline", ...IN_PROGRESS },
+  backport_possible: { label: "backport possible", variant: "secondary", ...MUTED },
 };
 
 /** Whether the retro matcher could assess a stored listener. Every reason it
@@ -233,82 +243,69 @@ export const RETRO_MATCH_CONFIDENCE: Record<RetroMatchConfidence, StatusStyle> =
  * matcher's `unknown`: an empty CVE list on such a row means "not asked", and
  * reading it as "clean" is exactly the wrong conclusion. */
 export const ASSET_SERVICE_MATCH_STATUS: Record<AssetServiceMatchStatus, StatusStyle> = {
-  matched: { label: "assessed", className: SUCCESS },
-  unknown_product: { label: "unknown product", variant: "outline", className: IN_PROGRESS },
-  no_version: { label: "no version", variant: "outline", className: IN_PROGRESS },
-  lookalike: { label: "lookalike", variant: "outline", className: IN_PROGRESS },
-  too_old: { label: "too old", variant: "outline", className: IN_PROGRESS },
-  no_dataset: { label: "no dataset", variant: "outline", className: IN_PROGRESS },
+  matched: { label: "assessed", ...SUCCESS },
+  unknown_product: { label: "unknown product", variant: "outline", ...IN_PROGRESS },
+  no_version: { label: "no version", variant: "outline", ...IN_PROGRESS },
+  lookalike: { label: "lookalike", variant: "outline", ...IN_PROGRESS },
+  too_old: { label: "too old", variant: "outline", ...IN_PROGRESS },
+  no_dataset: { label: "no dataset", variant: "outline", ...IN_PROGRESS },
 };
 
 /** A listener no sweep has reached yet (`match_status` null). */
 export const ASSET_SERVICE_NOT_MATCHED: StatusStyle = {
   label: "not yet matched",
   variant: "secondary",
-  className: MUTED,
+  ...MUTED,
 };
 
 export const SEVERITY_STATUS: Record<Severity, StatusStyle & { tremorColor: string }> = {
-  critical: { label: "critical", className: `${DANGER} font-bold`, tremorColor: "rose" },
-  high: { label: "high", className: `${INFO_ORANGE} font-semibold`, tremorColor: "orange" },
-  medium: { label: "medium", className: IN_PROGRESS, tremorColor: "amber" },
-  low: { label: "low", className: INFO_SKY, tremorColor: "sky" },
-  unknown: { label: "unknown", variant: "secondary", className: MUTED, tremorColor: "slate" },
+  critical: { label: "critical", ...SEV_CRITICAL, tremorColor: "rose" },
+  high: { label: "high", ...SEV_HIGH, tremorColor: "orange" },
+  medium: { label: "medium", ...SEV_MEDIUM, tremorColor: "yellow" },
+  low: { label: "low", ...SEV_LOW, tremorColor: "blue" },
+  unknown: { label: "unknown", ...SEV_INFO, tremorColor: "slate" },
 };
 
 /** Happy-path order, matching `api/services/vuln_states.py` ORDER. */
 export const VULN_LIFECYCLE_STATUS: Record<VulnLifecycleState, StatusStyle> = {
-  OPEN: { label: "open", className: INFO_SKY },
-  ACKNOWLEDGED: { label: "acknowledged", className: IN_PROGRESS },
-  PLANNED: { label: "planned", className: INFO_INDIGO },
-  FIXING: { label: "fixing", className: INFO_ORANGE },
-  VERIFYING: { label: "verifying", className: INFO_VIOLET },
-  CLOSED: { label: "closed", className: SUCCESS },
+  OPEN: { label: "open", ...INFO },
+  ACKNOWLEDGED: { label: "acknowledged", ...IN_PROGRESS },
+  PLANNED: { label: "planned", ...INFO },
+  FIXING: { label: "fixing", ...IN_PROGRESS },
+  VERIFYING: { label: "verifying", ...INFO },
+  CLOSED: { label: "closed", ...SUCCESS },
 };
 
 /** Remediation campaign status (#579). `completed` is derived by the API and
  * means every member is verified, an accepted risk or a false positive. */
 export const CAMPAIGN_STATUS: Record<string, StatusStyle> = {
-  active: { label: "active", className: INFO_SKY },
-  completed: { label: "completed", className: SUCCESS },
-  cancelled: { label: "cancelled", variant: "secondary", className: MUTED },
+  active: { label: "active", ...INFO },
+  completed: { label: "completed", ...SUCCESS },
+  cancelled: { label: "cancelled", variant: "secondary", ...MUTED },
 };
 
 export const SLA_STATUS: Record<SlaState, StatusStyle> = {
-  on_track: { label: "on track", className: SUCCESS },
-  due_soon: { label: "due soon", className: IN_PROGRESS },
+  on_track: { label: "on track", ...SUCCESS },
+  due_soon: { label: "due soon", ...IN_PROGRESS },
   breached: {
     label: "breached",
     variant: "destructive",
-    className: `${DANGER} font-bold`,
+    ...DANGER,
   },
   accepted: {
     label: "accepted risk",
-    className: INFO_INDIGO,
+    ...INFO,
   },
-  none: { label: "no SLA", variant: "secondary", className: MUTED },
+  none: { label: "no SLA", variant: "secondary", ...MUTED },
 };
 
 /** NIST SP 800-30 qualitative levels — worst-last, matching `nist_risk.LEVELS`. */
 export const RISK_LEVEL_STATUS: Record<NistRiskLevel, StatusStyle & { tremorColor: string }> = {
-  very_high: {
-    label: "very high",
-    className: `${DANGER} font-bold`,
-    tremorColor: "rose",
-  },
-  high: {
-    label: "high",
-    className: `${INFO_ORANGE} font-semibold`,
-    tremorColor: "orange",
-  },
-  moderate: { label: "moderate", className: IN_PROGRESS, tremorColor: "amber" },
-  low: { label: "low", className: INFO_SKY, tremorColor: "sky" },
-  very_low: {
-    label: "very low",
-    variant: "secondary",
-    className: MUTED,
-    tremorColor: "slate",
-  },
+  very_high: { label: "very high", ...SEV_CRITICAL, tremorColor: "rose" },
+  high: { label: "high", ...SEV_HIGH, tremorColor: "orange" },
+  moderate: { label: "moderate", ...SEV_MEDIUM, tremorColor: "yellow" },
+  low: { label: "low", ...SEV_LOW, tremorColor: "blue" },
+  very_low: { label: "very low", variant: "secondary", ...MUTED, tremorColor: "slate" },
 };
 
 
@@ -316,35 +313,35 @@ export const RISK_LEVEL_STATUS: Record<NistRiskLevel, StatusStyle & { tremorColo
  * budget is spent or the receiver answered with something a retry cannot fix,
  * so it is a failure an admin has to act on rather than a transient one. */
 export const WEBHOOK_DELIVERY_STATUS: Record<"pending" | "delivered" | "dead", StatusStyle> = {
-  delivered: { label: "delivered", className: SUCCESS },
-  pending: { label: "pending", className: IN_PROGRESS },
-  dead: { label: "dead", variant: "destructive", className: DANGER },
+  delivered: { label: "delivered", ...SUCCESS },
+  pending: { label: "pending", ...IN_PROGRESS },
+  dead: { label: "dead", variant: "destructive", ...DANGER },
 };
 
 /** The account's global role (#156). It is the fallback authority: a user's
  * role *inside* a tenant comes from their membership row and can differ. */
 export const USER_ROLE_STATUS: Record<Role, StatusStyle> = {
-  admin: { label: "admin", className: INFO_VIOLET },
-  operator: { label: "operator", className: INFO_SKY },
-  viewer: { label: "viewer", variant: "secondary", className: MUTED },
+  admin: { label: "admin", ...INFO },
+  operator: { label: "operator", ...INFO },
+  viewer: { label: "viewer", variant: "secondary", ...MUTED },
 };
 
 /** Whether the account can sign in. Disabling beats deleting — the memberships
  * and the history survive it — so it reads as muted rather than as a failure. */
 export const ACCOUNT_STATUS: Record<"active" | "disabled" | "erased", StatusStyle> = {
-  active: { label: "active", className: SUCCESS },
-  disabled: { label: "disabled", variant: "secondary", className: MUTED },
+  active: { label: "active", ...SUCCESS },
+  disabled: { label: "disabled", variant: "secondary", ...MUTED },
   // A data-subject erasure's tombstone (#332): disabled for good.
-  erased: { label: "erased", variant: "secondary", className: MUTED },
+  erased: { label: "erased", variant: "secondary", ...MUTED },
 };
 
 /** The account's second factor (#315). "pending" is a setup that was started
  * and never confirmed: the account still signs in with its password alone, so
  * it is a warning rather than a success. */
 export const MFA_STATUS: Record<"on" | "off" | "pending", StatusStyle> = {
-  on: { label: "mfa on", className: SUCCESS },
-  off: { label: "mfa off", variant: "secondary", className: MUTED },
-  pending: { label: "setup unfinished", className: IN_PROGRESS },
+  on: { label: "mfa on", ...SUCCESS },
+  off: { label: "mfa off", variant: "secondary", ...MUTED },
+  pending: { label: "setup unfinished", ...IN_PROGRESS },
 };
 
 /** One decision in the auth trail (#157, #226, #241). `locked` is the rate
@@ -352,14 +349,14 @@ export const MFA_STATUS: Record<"on" | "off" | "pending", StatusStyle> = {
  * authenticated principal refused an action, `trust_change` an SSH host-key
  * pin an admin set or removed — neither an attempt nor a refusal. */
 export const AUTH_EVENT_OUTCOME: Record<AuthEventOutcome, StatusStyle> = {
-  success: { label: "success", className: SUCCESS },
-  failure: { label: "failure", variant: "destructive", className: DANGER },
-  locked: { label: "locked", className: INFO_ORANGE },
-  denied: { label: "denied", variant: "destructive", className: DANGER },
-  trust_change: { label: "trust change", className: INFO_INDIGO },
+  success: { label: "success", ...SUCCESS },
+  failure: { label: "failure", variant: "destructive", ...DANGER },
+  locked: { label: "locked", ...IN_PROGRESS },
+  denied: { label: "denied", variant: "destructive", ...DANGER },
+  trust_change: { label: "trust change", ...INFO },
 };
 
 export const PROVISIONING_KEY_STATUS: Record<"active" | "revoked", StatusStyle> = {
-  active: { label: "active", className: SUCCESS },
-  revoked: { label: "revoked", variant: "secondary", className: MUTED },
+  active: { label: "active", ...SUCCESS },
+  revoked: { label: "revoked", variant: "secondary", ...MUTED },
 };

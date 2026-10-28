@@ -76,7 +76,7 @@ export function JobPublications({ job, open }: { job: JobInfo; open: boolean }) 
 
   return (
     <section className="mt-5" aria-label={t("jobs.publication.title")}>
-      <h4 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+      <h4 className="text-overline font-bold uppercase text-muted-foreground">
         {t("jobs.publication.title")}
       </h4>
       <p className="mt-1 text-xs text-muted-foreground">{t("jobs.publication.hint")}</p>
@@ -87,10 +87,10 @@ export function JobPublications({ job, open }: { job: JobInfo; open: boolean }) 
           data-testid="run-publication"
         >
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-mono text-[11px] text-muted-foreground">
+            <span className="font-mono text-xs text-muted-foreground">
               {row.publication_id}
             </span>
-            <Badge variant="outline" className={`text-[10px] ${STATE_TONE[row.state]}`}>
+            <Badge variant="outline" className={`text-xs ${STATE_TONE[row.state]}`}>
               {t(`jobs.publication.state.${row.state}` as MsgKey)}
             </Badge>
           </div>

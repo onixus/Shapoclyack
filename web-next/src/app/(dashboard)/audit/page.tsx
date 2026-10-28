@@ -110,12 +110,12 @@ function ChangeCell({ event }: { event: AuditEventInfo }) {
   return (
     <div className="w-[17rem] max-w-[17rem] space-y-1">
       {shape ? (
-        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <p className="text-overline font-semibold uppercase text-muted-foreground">
           {shape}
         </p>
       ) : null}
       {fields.length === 0 ? (
-        <p className="text-[11px] text-muted-foreground">{t("audit.change.none")}</p>
+        <p className="text-xs text-muted-foreground">{t("audit.change.none")}</p>
       ) : (
         <ul className="space-y-0.5">
           {fields.slice(0, FIELDS_IN_SUMMARY).map((field) => (
@@ -125,7 +125,7 @@ function ChangeCell({ event }: { event: AuditEventInfo }) {
               // height depends on how long somebody's note was is the problem
               // this cell had. The title carries the untruncated pair, and the
               // document below carries all of it.
-              className="flex items-baseline gap-1 truncate text-[11px]"
+              className="flex items-baseline gap-1 truncate text-xs"
               title={`${field.key}: ${field.from} → ${field.to}`}
             >
               <span className="font-mono font-semibold text-foreground">{field.key}</span>
@@ -136,7 +136,7 @@ function ChangeCell({ event }: { event: AuditEventInfo }) {
           ))}
         </ul>
       )}
-      <div className="flex items-baseline gap-2 text-[11px]">
+      <div className="flex items-baseline gap-2 text-xs">
         {fields.length > FIELDS_IN_SUMMARY ? (
           <span className="text-muted-foreground">
             {t("audit.change.more", { count: fields.length - FIELDS_IN_SUMMARY })}
@@ -151,7 +151,7 @@ function ChangeCell({ event }: { event: AuditEventInfo }) {
         </button>
       </div>
       {open ? (
-        <pre className="max-h-64 overflow-auto rounded-md border border-border bg-muted p-2 font-mono text-[11px] text-foreground">
+        <pre className="max-h-64 overflow-auto rounded-md border border-border bg-muted p-2 font-mono text-xs text-foreground">
           {JSON.stringify({ before: event.before, after: event.after }, null, 2)}
         </pre>
       ) : null}

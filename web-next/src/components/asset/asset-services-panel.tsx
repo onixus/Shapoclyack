@@ -50,7 +50,7 @@ export function AssetServicesPanel({
       <div className="flex items-center gap-2">
         <Network className="h-4 w-4 text-muted-foreground" />
         <h3 className="text-sm font-bold text-foreground">{t("services.title")}</h3>
-        <span className="text-[11px] text-muted-foreground">{t("services.subtitle")}</span>
+        <span className="text-xs text-muted-foreground">{t("services.subtitle")}</span>
       </div>
 
       {servicesQuery.isLoading ? (
@@ -64,7 +64,7 @@ export function AssetServicesPanel({
       ) : (
         <div className="overflow-x-auto rounded-xl border border-border bg-card">
           <table className="w-full text-left text-xs">
-            <thead className="border-b border-border bg-muted font-bold uppercase tracking-wider text-muted-foreground">
+            <thead className="border-b border-border bg-muted font-semibold text-muted-foreground text-xs">
               <tr>
                 <th className="px-3.5 py-3">{t("services.col.port")}</th>
                 <th className="px-3.5 py-3">{t("services.col.service")}</th>
@@ -84,7 +84,7 @@ export function AssetServicesPanel({
         </div>
       )}
 
-      <p className="text-[11px] text-muted-foreground">{t("services.footnote")}</p>
+      <p className="text-xs text-muted-foreground">{t("services.footnote")}</p>
     </div>
   );
 }
@@ -119,7 +119,7 @@ function ServiceRow({
         <p className="font-mono text-foreground">{product || "—"}</p>
         {packaging ? (
           <p
-            className="font-mono text-[10px] text-muted-foreground"
+            className="font-mono text-xs text-muted-foreground"
             title={t("services.packageRevision")}
             data-testid="service-packaging"
           >
@@ -127,12 +127,12 @@ function ServiceRow({
           </p>
         ) : null}
         {service.banner && service.banner !== product ? (
-          <p className="max-w-[18rem] truncate text-[10px] text-muted-foreground" title={service.banner}>
+          <p className="max-w-[18rem] truncate text-xs text-muted-foreground" title={service.banner}>
             {service.banner}
           </p>
         ) : null}
       </td>
-      <td className="px-3.5 py-3 font-mono text-[11px] text-muted-foreground">
+      <td className="px-3.5 py-3 font-mono text-xs text-muted-foreground">
         {service.cpe.length ? service.cpe.map((cpe) => <p key={cpe}>{cpe}</p>) : "—"}
       </td>
       <td className="px-3.5 py-3 text-muted-foreground">{ago(service.last_seen_at)}</td>
@@ -145,13 +145,13 @@ function ServiceRow({
           )}
         </span>
         {reason && status !== "matched" ? (
-          <p className="mt-1 max-w-[16rem] text-[10px] text-muted-foreground">{reason}</p>
+          <p className="mt-1 max-w-[16rem] text-xs text-muted-foreground">{reason}</p>
         ) : null}
       </td>
       <td className="px-3.5 py-3">
         {status === "matched" ? (
           <div className="space-y-1">
-            <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[11px]">
+            <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-xs">
               <Count
                 label={t("services.counts.vulnerable")}
                 value={counts.vulnerable ?? 0}
@@ -171,7 +171,7 @@ function ServiceRow({
               />
             </div>
             {service.possible_cves.length ? (
-              <details className="text-[11px]">
+              <details className="text-xs">
                 <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
                   {t("services.possibleList")}
                 </summary>

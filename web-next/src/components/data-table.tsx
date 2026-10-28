@@ -28,8 +28,8 @@ import { DEFAULT_PAGE_SIZE } from "@/lib/config/constants";
 import { useT } from "@/lib/i18n";
 
 function SortIcon({ sorted }: { sorted: false | "asc" | "desc" }) {
-  if (sorted === "asc") return <ArrowUp className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" aria-hidden />;
-  if (sorted === "desc") return <ArrowDown className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" aria-hidden />;
+  if (sorted === "asc") return <ArrowUp className="h-3.5 w-3.5 text-primary" aria-hidden />;
+  if (sorted === "desc") return <ArrowDown className="h-3.5 w-3.5 text-primary" aria-hidden />;
   return <ArrowUpDown className="h-3.5 w-3.5 opacity-40 text-muted-foreground" aria-hidden />;
 }
 
@@ -190,7 +190,7 @@ export function DataTable<TData>({
         // Indeterminate is deliberately not used: Radix renders it as
         // unchecked with a different glyph, and the useful behaviour for a
         // half-selected page is "one click selects the rest".
-        className={somePageSelected && !allPageSelected ? "border-sky-400" : undefined}
+        className={somePageSelected && !allPageSelected ? "border-primary" : undefined}
       />
     ),
     cell: ({ row }) => {
@@ -260,9 +260,9 @@ export function DataTable<TData>({
   return (
     <div className="space-y-3.5">
       {selection && selectedIds.length > 0 ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-sky-500/40 bg-sky-500/5 px-3 py-2">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/40 bg-accent-subtle px-3 py-2">
           <div className="flex items-center gap-3">
-            <p className="text-xs font-semibold text-sky-600 dark:text-sky-300">
+            <p className="text-xs font-semibold text-primary">
               {selectedIds.length} selected
               {selectionLimit !== undefined && selectedIds.length >= selectionLimit
                 ? ` (max ${selectionLimit} per action)`
@@ -310,20 +310,20 @@ export function DataTable<TData>({
         </Alert>
       ) : null}
 
-      <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+      <div className="overflow-hidden rounded-xl border border-border bg-card">
         <Table aria-busy={!!isLoading}>
-          <TableHeader className="bg-muted/50 border-b border-border">
+          <TableHeader className="border-b border-border">
             {table.getHeaderGroups().map((headerGroup) => (
               <TableRow key={headerGroup.id} className="hover:bg-transparent border-border">
                 {headerGroup.headers.map((header) => (
-                  <TableHead aria-sort={header.column.getIsSorted() === "asc" ? "ascending" : header.column.getIsSorted() === "desc" ? "descending" : undefined} key={header.id} className="text-xs font-bold uppercase tracking-wider text-muted-foreground py-3">
+                  <TableHead aria-sort={header.column.getIsSorted() === "asc" ? "ascending" : header.column.getIsSorted() === "desc" ? "descending" : undefined} key={header.id} className="py-2 text-xs font-semibold text-muted-foreground">
                     {header.isPlaceholder ? null : header.column.getCanSort() &&
                       canSortColumn(header.column.id) ? (
                       <Button
                         type="button"
                         variant="ghost"
                         size="sm"
-                        className="-ml-3 h-8 gap-1.5 px-2 font-bold hover:bg-muted hover:text-foreground text-muted-foreground"
+                        className="-ml-2 h-8 gap-1.5 px-2 text-xs font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
                         onClick={header.column.getToggleSortingHandler()}
                       >
                         {flexRender(header.column.columnDef.header, header.getContext())}
@@ -358,9 +358,9 @@ export function DataTable<TData>({
               </TableRow>
             ) : (
               rows.map((row) => (
-                <TableRow key={row.id} className="hover:bg-muted/40 border-border/60 transition-colors">
+                <TableRow key={row.id} className="border-border/60 transition-colors hover:bg-accent">
                   {row.getVisibleCells().map((cell) => (
-                    <TableCell key={cell.id} className="py-3 text-sm text-foreground">
+                    <TableCell key={cell.id} className="py-2.5 text-body-sm text-foreground">
                       {flexRender(cell.column.columnDef.cell, cell.getContext())}
                     </TableCell>
                   ))}
@@ -390,7 +390,7 @@ export function DataTable<TData>({
               {t("common.previous")}
             </Button>
             <span className="text-xs font-medium text-muted-foreground px-1">
-              {pageIndex + 1} / {pageCount}
+              <span className="tabular-nums">{pageIndex + 1} / {pageCount}</span>
             </span>
             <Button
               variant="outline"

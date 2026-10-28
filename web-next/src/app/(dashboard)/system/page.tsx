@@ -6,6 +6,8 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { ConfigEditor } from "@/components/config-editor";
 import { KpiCard } from "@/components/kpi-card";
+import { StatusBadge } from "@/components/status-badge";
+import { SCHEDULE_ENABLED_STATUS } from "@/lib/config/statuses";
 import { useAgentSummary } from "@/hooks/use-agents";
 import { useRetroMatchStatus } from "@/hooks/use-retro-match";
 import { useSystemStatus } from "@/hooks/use-system";
@@ -17,12 +19,7 @@ import { useRelativeTime } from "@/lib/i18n/datetime";
 const STALE_AFTER_DAYS = 30;
 
 function EnabledBadge({ on }: { on: boolean }) {
-  const t = useT();
-  return (
-    <Badge variant={on ? "default" : "outline"} className={on ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 font-semibold" : "border-border bg-muted text-muted-foreground font-normal"}>
-      {on ? t.label("enabled").toUpperCase() : t.label("disabled").toUpperCase()}
-    </Badge>
-  );
+  return <StatusBadge value={on ? "enabled" : "disabled"} map={SCHEDULE_ENABLED_STATUS} />;
 }
 
 // Age and size describe a seed and a real corpus identically — the seed's mtime
@@ -106,7 +103,6 @@ export default function SystemPage() {
                   ? "—"
                   : `${data.inventory.agents_online ?? 0} / ${data.inventory.agents_total}`
               }
-              decorationColor="emerald"
             />
             <KpiCard
               label={t("kpi.scanExecution")}
@@ -119,12 +115,11 @@ export default function SystemPage() {
               }
               hint={noSensor ? t("kpi.scanExecutionNoSensorHint") : undefined}
               href={noSensor ? "/agents" : undefined}
-              decorationColor={noSensor ? "rose" : "amber"}
             />
           </div>
 
           <div className="grid gap-6 lg:grid-cols-2">
-            <Card className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
+            <Card className="rounded-xl border border-border bg-card p-5">
               <Title className="text-sm font-bold uppercase tracking-wider text-foreground">Scanner Toolchain & Binaries</Title>
               <table className="mt-4 w-full text-left text-xs">
                 <tbody className="divide-y divide-border">
@@ -133,12 +128,12 @@ export default function SystemPage() {
                       <td className="py-2.5 px-2 font-mono font-bold text-foreground">
                         {tool.name}
                         {tool.optional ? (
-                          <span className="ml-1.5 text-[10px] font-semibold uppercase text-muted-foreground">optional</span>
+                          <span className="ml-1.5 text-overline font-semibold uppercase text-muted-foreground">optional</span>
                         ) : null}
                       </td>
                       <td className="py-2.5 px-2 text-right">
                         {tool.version ? (
-                          <code className="rounded bg-muted px-2 py-0.5 font-mono text-[11px] text-sky-600 dark:text-sky-400 border border-border">{tool.version}</code>
+                          <code className="rounded bg-muted px-2 py-0.5 font-mono text-xs text-sky-600 dark:text-sky-400 border border-border">{tool.version}</code>
                         ) : tool.optional ? (
                           <Badge variant="secondary" className="bg-muted text-muted-foreground border-border">
                             {tool.error || "not installed"}
@@ -153,7 +148,7 @@ export default function SystemPage() {
               </table>
             </Card>
 
-            <Card className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
+            <Card className="rounded-xl border border-border bg-card p-5">
               <Title className="text-sm font-bold uppercase tracking-wider text-foreground">{t("ui.enrichmentDatabases")}</Title>
               <table className="mt-4 w-full text-left text-xs">
                 <tbody className="divide-y divide-border">
@@ -163,12 +158,12 @@ export default function SystemPage() {
                       <tr key={db.name} className="hover:bg-muted transition-colors">
                         <td className="py-2.5 px-2">
                           <p className="font-mono font-bold uppercase text-foreground">{db.name}</p>
-                          <p className="font-mono text-[10px] text-muted-foreground">{db.path}</p>
+                          <p className="font-mono text-xs text-muted-foreground">{db.path}</p>
                           {/* The file's age says when it was written; what the
                               retro matcher actually loaded from it — or why it
                               could not — is the retro status's answer. */}
                           {db.name === "nvd_cpe" && retroDataset ? (
-                            <p className="text-[10px] text-muted-foreground" data-testid="nvd-cpe-detail">
+                            <p className="text-xs text-muted-foreground" data-testid="nvd-cpe-detail">
                               {!retroDataset.present ? (
                                 t("retro.noDataset")
                               ) : retroDataset.error ? (
@@ -187,7 +182,7 @@ export default function SystemPage() {
                             </p>
                           ) : null}
                         </td>
-                        <td className="py-2.5 px-2 text-right text-[11px] text-muted-foreground">
+                        <td className="py-2.5 px-2 text-right text-xs text-muted-foreground">
                           {formatBytes(db.size_bytes)}
                           {db.modified_at
                             ? ` · ${ago(db.modified_at)}`
@@ -197,7 +192,7 @@ export default function SystemPage() {
                           <span
                             data-testid="enrichment-freshness"
                             title={db.usable === false ? t("page.system.enrichment.stub") : undefined}
-                            className={`inline-block rounded px-2 py-0.5 text-[10px] font-bold uppercase border ${badge.className}`}
+                            className={`inline-block rounded px-2 py-0.5 text-overline font-bold uppercase border ${badge.className}`}
                           >
                             {t.label(badge.label)}
                           </span>
@@ -209,7 +204,7 @@ export default function SystemPage() {
               </table>
             </Card>
 
-            <Card className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
+            <Card className="rounded-xl border border-border bg-card p-5">
               <Title className="text-sm font-bold uppercase tracking-wider text-foreground">Pipeline Stages & Profiles</Title>
               <div className="mt-4 grid grid-cols-2 gap-y-3 gap-x-4 text-xs">
                 {Object.entries(data.scan_config.stages).map(([stage, on]) => (
@@ -223,7 +218,7 @@ export default function SystemPage() {
                 {data.scan_config.service_backend ? (
                   <div className="flex items-center justify-between rounded-lg bg-muted p-2 border border-border">
                     <span className="font-medium text-foreground">{t("ui.serviceProbeBackend")}</span>
-                    <Badge variant="secondary" className="bg-sky-500/20 text-sky-600 dark:text-sky-300 border-sky-500/30 font-mono text-[11px]">
+                    <Badge variant="secondary" className="bg-sky-500/20 text-sky-600 dark:text-sky-300 border-sky-500/30 font-mono text-xs">
                       {data.scan_config.service_backend}
                     </Badge>
                   </div>
@@ -232,19 +227,19 @@ export default function SystemPage() {
                   <p className="text-muted-foreground font-semibold mb-1">{t("ui.speedProfiles")}</p>
                   <div className="flex flex-wrap gap-1.5">
                     {data.scan_config.profiles.map((p) => (
-                      <Badge key={p} variant="secondary" className="bg-muted text-sky-600 dark:text-sky-300 font-mono text-[11px]">{p}</Badge>
+                      <Badge key={p} variant="secondary" className="bg-muted text-sky-600 dark:text-sky-300 font-mono text-xs">{p}</Badge>
                     ))}
                   </div>
                 </div>
               </div>
             </Card>
 
-            <Card className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
+            <Card className="rounded-xl border border-border bg-card p-5">
               <Title className="text-sm font-bold uppercase tracking-wider text-foreground">Runtime Services & Integration</Title>
               <div className="mt-4 space-y-2.5 text-xs">
                 <div className="flex items-center justify-between rounded-lg bg-muted p-2.5 border border-border">
                   <span className="font-semibold text-foreground">{t("ui.jobExecutionMode")}</span>
-                  <Badge variant="secondary" className="bg-sky-500/20 text-sky-600 dark:text-sky-300 border-sky-500/30 uppercase font-bold text-[10px]">{data.runtime.job_execution_mode}</Badge>
+                  <Badge variant="secondary" className="bg-sky-500/20 text-sky-600 dark:text-sky-300 border-sky-500/30 uppercase font-bold text-overline">{data.runtime.job_execution_mode}</Badge>
                 </div>
                 <div className="flex items-center justify-between rounded-lg bg-muted p-2.5 border border-border">
                   <span className="font-semibold text-foreground">{t("ui.postgresPrimary")}</span>
@@ -269,7 +264,7 @@ export default function SystemPage() {
               </div>
             </Card>
 
-            <Card className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
+            <Card className="rounded-xl border border-border bg-card p-5">
               <Title className="text-sm font-bold uppercase tracking-wider text-foreground">Endpoint Inventory & Retention</Title>
               <div className="mt-4 space-y-2.5 text-xs">
                 <div className="flex items-center justify-between rounded-lg bg-muted p-2.5 border border-border">

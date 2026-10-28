@@ -77,21 +77,21 @@ function CandidateRow({
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-semibold text-foreground text-sm font-mono">{candidate.domain}</span>
               {isConfirmed ? (
-                <Badge className="bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border-emerald-500/40 gap-1 font-mono text-[11px]">
+                <Badge className="bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border-emerald-500/40 gap-1 font-mono text-xs">
                   <CheckCircle2 className="h-3 w-3" />
                   CONFIRMED
                 </Badge>
               ) : (
-                <Badge variant="outline" className="text-muted-foreground border-border bg-muted gap-1 font-mono text-[11px]">
+                <Badge variant="outline" className="text-muted-foreground border-border bg-muted gap-1 font-mono text-xs">
                   <HelpCircle className="h-3 w-3" />
                   CANDIDATE
                 </Badge>
               )}
-              <Badge variant="outline" className="text-[11px] border-border text-sky-600 dark:text-sky-400 font-mono">
+              <Badge variant="outline" className="text-xs border-border text-sky-600 dark:text-sky-400 font-mono">
                 {Math.round(candidate.confidence * 100)}% confidence
               </Badge>
               {isPromoted && (
-                <Badge className="bg-purple-500/20 text-purple-600 dark:text-purple-300 border-purple-500/40 text-[11px] font-mono">
+                <Badge className="bg-purple-500/20 text-purple-600 dark:text-purple-300 border-purple-500/40 text-xs font-mono">
                   PROMOTED
                 </Badge>
               )}
@@ -102,7 +102,7 @@ function CandidateRow({
               {candidate.sources.map((s) => (
                 <span
                   key={s}
-                  className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-foreground border border-border"
+                  className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground border border-border"
                 >
                   {s}
                 </span>
@@ -156,7 +156,7 @@ function CandidateRow({
                 key={i}
                 className="flex items-start gap-2 bg-card p-2 rounded border border-border font-mono text-xs"
               >
-                <Badge variant="outline" className="text-[10px] uppercase border-border py-0 px-1 shrink-0 text-foreground">
+                <Badge variant="outline" className="text-overline uppercase border-border py-0 px-1 shrink-0 text-foreground">
                   {ev.source}
                 </Badge>
                 <span className="text-foreground grow">{ev.detail}</span>
@@ -246,7 +246,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
   return (
     <div className="space-y-6">
       {/* Registrant / Ownership Overview Card */}
-      <div className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur space-y-4">
+      <div className="rounded-xl border border-border bg-card p-5 space-y-4">
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
@@ -295,7 +295,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
             <PlusCircle className="h-4 w-4 text-purple-600 dark:text-purple-400" />
             Promoted Scope ({promoted.length})
           </CardTitle>
-          <p className="text-[11px] text-muted-foreground mt-1">
+          <p className="text-xs text-muted-foreground mt-1">
             {t("prose.everyOrdinaryScanOfThis")}
           </p>
         </CardHeader>
@@ -367,7 +367,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
         </CardHeader>
 
         {/* Disclaimer banner */}
-        <div className="px-4 py-2 bg-amber-50 dark:bg-amber-950/20 border-b border-amber-300 dark:border-amber-900/30 flex items-center gap-2 text-[11px] text-amber-600 dark:text-amber-300/80">
+        <div className="px-4 py-2 bg-amber-50 dark:bg-amber-950/20 border-b border-amber-300 dark:border-amber-900/30 flex items-center gap-2 text-xs text-amber-600 dark:text-amber-300/80">
           <AlertCircle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
           <span>
             {related?.disclaimer ||
@@ -379,7 +379,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
           {actionError && (
             <div
               role="alert"
-              className="px-4 py-2 bg-rose-50 dark:bg-rose-950/30 border-b border-rose-300 dark:border-rose-900/40 flex items-center gap-2 text-[11px] text-rose-600 dark:text-rose-300"
+              className="px-4 py-2 bg-rose-50 dark:bg-rose-950/30 border-b border-rose-300 dark:border-rose-900/40 flex items-center gap-2 text-xs text-rose-600 dark:text-rose-300"
             >
               <AlertCircle className="h-3.5 w-3.5 text-rose-600 dark:text-rose-400 shrink-0" />
               <span>{actionError}</span>

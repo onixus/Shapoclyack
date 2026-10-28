@@ -79,7 +79,7 @@ function RunsInner() {
         accessorKey: "profile",
         header: t("col.profileMode"),
         cell: ({ getValue }) => (
-          <Badge variant="secondary" className="font-mono text-[11px]">
+          <Badge variant="secondary" className="font-mono text-xs">
             {String(getValue() || "—")}
           </Badge>
         ),
@@ -135,7 +135,7 @@ function RunsInner() {
               </span>
               {unconfirmed > 0 ? (
                 <span
-                  className="font-mono text-[10px] text-amber-600 dark:text-amber-300/80"
+                  className="font-mono text-xs text-amber-600 dark:text-amber-300/80"
                   title="Unconfirmed — reachable-service exposures and unverified keyword CVE hits, included in the total"
                 >
                   {unconfirmed.toLocaleString()} unconf.
@@ -154,7 +154,7 @@ function RunsInner() {
             {row.original.has_diff ? (
               <Badge
                 variant="secondary"
-                className="border-indigo-500/30 bg-indigo-500/20 text-[10px] text-indigo-700 dark:text-indigo-300"
+                className="border-indigo-500/30 bg-indigo-500/20 text-xs text-indigo-700 dark:text-indigo-300"
               >
                 diff
               </Badge>
@@ -162,7 +162,7 @@ function RunsInner() {
             {row.original.has_summary ? (
               <Badge
                 variant="outline"
-                className="border-emerald-500/30 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-300"
+                className="border-emerald-500/30 bg-emerald-500/10 text-xs text-emerald-700 dark:text-emerald-300"
               >
                 pdf
               </Badge>

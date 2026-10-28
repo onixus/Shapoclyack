@@ -9,12 +9,20 @@ describe("StatusBadge", () => {
     render(<StatusBadge value="succeeded" map={JOB_STATUS} />);
     const badge = screen.getByText("succeeded").closest("div");
     expect(badge).toBeInTheDocument();
-    expect(badge?.className).toContain("bg-emerald-500/20");
+    expect(badge?.className).toContain("bg-success-subtle");
+  });
+
+  it("draws the tone's icon next to the word", () => {
+    const { container } = render(<StatusBadge value="failed" map={JOB_STATUS} />);
+    const badge = container.querySelector("[data-tone]");
+    expect(badge?.getAttribute("data-tone")).toBe("danger");
+    expect(badge?.querySelector("svg")).not.toBeNull();
+    expect(badge).toHaveTextContent("failed");
   });
 
   it("renders the destructive variant for failed", () => {
     render(<StatusBadge value="failed" map={JOB_STATUS} />);
-    expect(screen.getByText("failed").closest("div")?.className).toContain("bg-rose-500/20");
+    expect(screen.getByText("failed").closest("div")?.className).toContain("bg-danger-subtle");
   });
 
   it("falls back to a secondary badge with the raw value for unknown statuses", () => {

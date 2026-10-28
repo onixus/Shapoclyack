@@ -379,9 +379,9 @@ function AssetDetailInner() {
               ) : vulns.length === 0 ? (
                 <EmptyNote>{t("asset.empty.noScanFindings")}</EmptyNote>
               ) : (
-                <div className="overflow-hidden rounded-xl border border-border bg-card shadow-lg backdrop-blur">
+                <div className="overflow-hidden rounded-xl border border-border bg-card">
                   <table className="w-full text-left text-xs">
-                    <thead className="border-b border-border bg-muted text-muted-foreground font-bold uppercase tracking-wider">
+                    <thead className="border-b border-border bg-muted text-muted-foreground font-semibold text-xs">
                       <tr>
                         <th className="px-3.5 py-3">CVE / Script ID</th>
                         <th className="px-3.5 py-3">Port</th>
@@ -430,7 +430,7 @@ function AssetDetailInner() {
                 emptyMessage={ip ? t("asset.empty.noPorts") : t("asset.empty.noIp")}
               />
               {hostRow ? (
-                <div className="grid grid-cols-2 gap-4 rounded-xl border border-border bg-card p-5 text-xs shadow-lg backdrop-blur">
+                <div className="grid grid-cols-2 gap-4 rounded-xl border border-border bg-card p-5 text-xs">
                   <Field label={t("asset.field.hostname")} value={hostRow.hostname || hostRow.names[0] || "—"} />
                   <Field label={t("asset.field.geoip")} value={formatLocation(hostRow) || "—"} />
                   <Field
@@ -503,9 +503,9 @@ function TrackedFindingsPanel({
           {t("asset.findings.remediationBoard")}
         </Link>
       </p>
-      <div className="overflow-hidden rounded-xl border border-border bg-card shadow-lg backdrop-blur">
+      <div className="overflow-hidden rounded-xl border border-border bg-card">
         <table className="w-full text-left text-xs">
-          <thead className="border-b border-border bg-muted text-muted-foreground font-bold uppercase tracking-wider">
+          <thead className="border-b border-border bg-muted text-muted-foreground font-semibold text-xs">
             <tr>
               <th className="px-3.5 py-3">{t("asset.col.finding")}</th>
               <th className="px-3.5 py-3">{t("col.severity")}</th>
@@ -525,7 +525,7 @@ function TrackedFindingsPanel({
                   >
                     {findingLabel(vuln)}
                   </Link>
-                  <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  <p className="mt-0.5 text-xs text-muted-foreground">
                     {vuln.port ? t("vulns.port", { port: vuln.port }) : t("asset.noPort")}
                     {vuln.assignee ? ` · ${vuln.assignee}` : ` · ${t("asset.unassignedShort")}`}
                   </p>
@@ -563,7 +563,7 @@ function OverviewCard({ asset }: { asset: AssetDetail }) {
   const t = useT();
   const when = useAbsoluteTime();
   return (
-    <div className="space-y-4 rounded-xl border border-border bg-card p-5 text-xs shadow-lg backdrop-blur">
+    <div className="space-y-4 rounded-xl border border-border bg-card p-5 text-xs">
       <p className="text-sm font-bold uppercase tracking-wider text-foreground border-b border-border pb-2">{t("asset.businessContext")}</p>
       <div className="grid grid-cols-2 gap-3">
         <Field label={t("asset.field.firstDiscovered")} value={when(asset.first_seen)} />
@@ -572,7 +572,7 @@ function OverviewCard({ asset }: { asset: AssetDetail }) {
         <Field label={t("asset.field.businessUnit")} value={asset.business_unit || t("common.unassigned")} />
         <Field label={t("asset.field.businessService")} value={asset.business_service || t("common.unassigned")} />
         <div>
-          <p className="text-[11px] font-medium text-muted-foreground">{t("asset.field.environment")}</p>
+          <p className="text-xs font-medium text-muted-foreground">{t("asset.field.environment")}</p>
           <div className="mt-0.5">
             {asset.environment ? (
               <StatusBadge value={asset.environment} map={ASSET_ENVIRONMENT} />
@@ -582,7 +582,7 @@ function OverviewCard({ asset }: { asset: AssetDetail }) {
           </div>
         </div>
         <div>
-          <p className="text-[11px] font-medium text-muted-foreground">{t("asset.field.dataClassification")}</p>
+          <p className="text-xs font-medium text-muted-foreground">{t("asset.field.dataClassification")}</p>
           <div className="mt-0.5">
             {asset.data_classification ? (
               <StatusBadge value={asset.data_classification} map={ASSET_DATA_CLASSIFICATION} />
@@ -592,7 +592,7 @@ function OverviewCard({ asset }: { asset: AssetDetail }) {
           </div>
         </div>
         <div>
-          <p className="text-[11px] font-medium text-muted-foreground">{t("asset.field.exposure")}</p>
+          <p className="text-xs font-medium text-muted-foreground">{t("asset.field.exposure")}</p>
           <div className="mt-0.5">
             {asset.exposure_level ? (
               <StatusBadge value={asset.exposure_level} map={ASSET_EXPOSURE} />
@@ -603,7 +603,7 @@ function OverviewCard({ asset }: { asset: AssetDetail }) {
         </div>
       </div>
       {asset.context_source ? (
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           {t("asset.contextWrittenBy", {
             // The badge is gone from this sentence: a pill in the middle of a
             // line of prose reads as a button. The word itself is vocabulary
@@ -625,7 +625,7 @@ function OverviewCard({ asset }: { asset: AssetDetail }) {
               key={`${identifier.identifier_type}:${identifier.identifier_value}`}
               className="flex items-center justify-between rounded-lg bg-muted p-2 border border-border"
             >
-              <Badge variant="secondary" className="uppercase font-semibold text-[10px] bg-muted text-sky-600 dark:text-sky-400">
+              <Badge variant="secondary" className="uppercase font-semibold text-overline bg-muted text-sky-600 dark:text-sky-400">
                 {identifier.identifier_type}
               </Badge>
               <span className="font-mono font-bold text-foreground">{identifier.identifier_value}</span>
@@ -638,7 +638,7 @@ function OverviewCard({ asset }: { asset: AssetDetail }) {
           <p className="mb-1.5 text-xs font-semibold text-muted-foreground">{t("asset.tags")}</p>
           <div className="flex flex-wrap gap-1.5">
             {Object.entries(asset.tags).map(([key, value]) => (
-              <Badge key={key} variant="outline" className="border-border bg-muted text-foreground text-[11px]">
+              <Badge key={key} variant="outline" className="border-border bg-muted text-foreground text-xs">
                 {key}={value}
               </Badge>
             ))}
@@ -652,7 +652,7 @@ function OverviewCard({ asset }: { asset: AssetDetail }) {
 function NoEndpointCard({ loading }: { loading: boolean }) {
   const t = useT();
   return (
-    <div className="space-y-3 rounded-xl border border-dashed border-border bg-card p-5 text-xs shadow-lg backdrop-blur">
+    <div className="space-y-3 rounded-xl border border-dashed border-border bg-card p-5 text-xs">
       <p className="text-sm font-bold uppercase tracking-wider text-foreground">
         {t("asset.endpointTitle")}
       </p>
@@ -678,11 +678,11 @@ function EndpointCard({ device }: { device: EndpointDeviceInfo }) {
   const isStale = device.status === "stale" && device.last_inventory_at != null;
 
   return (
-    <div className="space-y-4 rounded-xl border border-border bg-card p-5 text-xs shadow-lg backdrop-blur">
+    <div className="space-y-4 rounded-xl border border-border bg-card p-5 text-xs">
       <div className="flex items-center justify-between border-b border-border pb-2">
         <div>
           <p className="text-sm font-bold uppercase tracking-wider text-foreground">{t("asset.endpointTitle")}</p>
-          <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">{device.hostname}</p>
+          <p className="mt-0.5 font-mono text-xs text-muted-foreground">{device.hostname}</p>
         </div>
         <StatusBadge value={device.reconciliation_status} map={ENDPOINT_RECONCILIATION_STATUS} />
       </div>
@@ -758,9 +758,9 @@ function SoftwareTab({
       ) : filtered.length === 0 ? (
         <EmptyNote>{t("asset.noSoftware")}</EmptyNote>
       ) : (
-        <div className="overflow-hidden rounded-xl border border-border bg-card shadow-lg backdrop-blur">
+        <div className="overflow-hidden rounded-xl border border-border bg-card">
           <table className="w-full text-left text-xs">
-            <thead className="border-b border-border bg-muted text-muted-foreground font-bold uppercase tracking-wider">
+            <thead className="border-b border-border bg-muted text-muted-foreground font-semibold text-xs">
               <tr>
                 {(["name", "version", "publisher", "source"] as const).map((col) => (
                   <th
@@ -780,7 +780,7 @@ function SoftwareTab({
                   <td className="px-3.5 py-3 font-semibold text-foreground">
                     {item.name}
                     {item.installation_identity && (
-                      <p className="mt-1 font-mono text-[10px] font-normal text-muted-foreground" title={item.installation_identity}>
+                      <p className="mt-1 font-mono text-xs font-normal text-muted-foreground" title={item.installation_identity}>
                         {[item.scope, item.package_id, item.installation_identity.slice(0, 12)].filter(Boolean).join(" · ")}
                       </p>
                     )}
@@ -846,7 +846,7 @@ function EditCard({ asset }: { asset: AssetDetail }) {
   }
 
   return (
-    <div className="space-y-4 rounded-xl border border-border bg-card p-5 text-xs shadow-lg backdrop-blur">
+    <div className="space-y-4 rounded-xl border border-border bg-card p-5 text-xs">
       <p className="text-sm font-bold uppercase tracking-wider text-foreground border-b border-border pb-2">{t("asset.postureConfigurator")}</p>
 
       <div className="space-y-1.5">
@@ -931,7 +931,7 @@ function EditCard({ asset }: { asset: AssetDetail }) {
             ))}
           </SelectContent>
         </Select>
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           A decision about how this asset is treated — not inferred from scan IPs.
         </p>
       </div>
@@ -954,7 +954,7 @@ function EditCard({ asset }: { asset: AssetDetail }) {
       </div>
 
       <div className="flex items-center justify-between pt-3 border-t border-border">
-        <Button onClick={save} disabled={update.isPending} size="sm" className="bg-sky-600 hover:bg-sky-500 text-foreground font-semibold">
+        <Button onClick={save} disabled={update.isPending} size="sm" className="font-semibold">
           {update.isPending ? t("asset.edit.saving") : t("asset.edit.save")}
         </Button>
 
@@ -997,7 +997,7 @@ function ContextHistoryCard({ assetId, tenantId }: { assetId: string; tenantId: 
   const events = eventsQuery.data?.items ?? [];
 
   return (
-    <div className="space-y-3 rounded-xl border border-border bg-card p-5 text-xs shadow-lg backdrop-blur">
+    <div className="space-y-3 rounded-xl border border-border bg-card p-5 text-xs">
       <p className="text-sm font-bold uppercase tracking-wider text-foreground border-b border-border pb-2">
         {t("asset.contextHistory")}
       </p>
@@ -1020,7 +1020,7 @@ function ContextHistoryItem({ event }: { event: AssetContextEvent }) {
   return (
     <li className="relative border-l border-border pl-4 before:absolute before:-left-1 before:top-1.5 before:h-2 before:w-2 before:rounded-full before:bg-sky-500/70">
       <p className="font-semibold text-foreground">{describeContextEvent(event)}</p>
-      <p className="mt-0.5 text-[11px] text-muted-foreground">
+      <p className="mt-0.5 text-xs text-muted-foreground">
         {event.occurred_at ? new Date(event.occurred_at).toLocaleString() : "—"}
         {" · "}
         {event.actor ? <span className="font-mono text-foreground">{event.actor}</span> : <span>platform</span>}
@@ -1038,7 +1038,7 @@ function ContextHistoryItem({ event }: { event: AssetContextEvent }) {
 function Field({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
+      <p className="text-xs font-medium text-muted-foreground">{label}</p>
       <p className="text-xs font-semibold text-foreground mt-0.5">{value}</p>
     </div>
   );
@@ -1046,7 +1046,7 @@ function Field({ label, value }: { label: string; value: string }) {
 
 function EmptyNote({ children }: { children: React.ReactNode }) {
   return (
-    <div className="rounded-xl border border-border bg-card px-4 py-8 text-center text-xs text-muted-foreground backdrop-blur">
+    <div className="rounded-xl border border-border bg-card px-4 py-8 text-center text-xs text-muted-foreground">
       {children}
     </div>
   );

@@ -149,6 +149,7 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | Guide | Scope |
 |---|---|
 | [Development](development.md) | Toolchains, local setup, tests, builds, review checklist |
+| [Console design system](console-design-system.md) | APEX rules for `web-next`: tokens, status and severity badges, type scale, tables, forms, notes for localisation |
 | [Architecture decision records](adr/README.md) | Pulse distribution (proposed), Nmap replacement (accepted), discovery backend decision (proposed on main) |
 | [FSTEC certification roadmap](fstec-certification.ru.md) 🇷🇺 | Certified boundary, УД4 planning baseline, evidence set, supply-chain and test traceability |
 | [Architecture review — 2026-09-18](architecture-review-2026-09-18.ru.md) 🇷🇺 | Source-based assessment, ingestion risks, priorities, and local validation limits |
@@ -199,6 +200,7 @@ Documentation is part of the feature definition. A behavior change is incomplete
 | Runtime lifecycle, storage, retention, recovery | `docs/operations.md` |
 | Architecture or trust boundaries | `docs/architecture.md`; security policy when relevant |
 | Developer workflow or validation | `docs/development.md` |
+| Console look, components or UI strings | `docs/console-design-system.md` |
 | Planned product behavior | `ROADMAP.md` or a focused design/roadmap document plus issues |
 | Released behavior | `CHANGELOG.md`; update `ROADMAP.md` when a planned item lands |
 

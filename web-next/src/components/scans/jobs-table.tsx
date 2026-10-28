@@ -220,7 +220,7 @@ export function JobsTable({
             ) : null}
             {row.original.attempts && row.original.attempts > 1 ? (
               <span
-                className="font-mono text-[10px] text-amber-600 dark:text-amber-300"
+                className="font-mono text-xs text-amber-600 dark:text-amber-300"
                 title={t("jobs.attemptsHint")}
               >
                 ×{row.original.attempts}
@@ -249,7 +249,7 @@ export function JobsTable({
           );
           return (
             <span className="flex flex-col gap-0.5">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-foreground">
+              <span className="text-overline font-bold uppercase text-foreground">
                 {typeof intentVal === "string" && intentVal ? intentVal : "legacy"}
                 <span className="font-medium normal-case tracking-normal text-muted-foreground">
                   {" "}
@@ -257,11 +257,11 @@ export function JobsTable({
                 </span>
               </span>
               {counts.length > 0 ? (
-                <span className="font-mono text-[10px] text-muted-foreground">
+                <span className="font-mono text-xs text-muted-foreground">
                   {counts.map(([k, n]) => `${k} ${n}`).join(" · ")}
                 </span>
               ) : (
-                <span className="text-[10px] text-muted-foreground">{t("jobs.targetsNone")}</span>
+                <span className="text-xs text-muted-foreground">{t("jobs.targetsNone")}</span>
               )}
             </span>
           );
@@ -297,7 +297,7 @@ export function JobsTable({
               {row.original.execution || "local"}
             </span>
             {row.original.assigned_agent_id ? (
-              <span className="font-mono text-[10px] text-muted-foreground">
+              <span className="font-mono text-xs text-muted-foreground">
                 {row.original.assigned_agent_id}
               </span>
             ) : null}
@@ -315,7 +315,7 @@ export function JobsTable({
                 {format(new Date(row.original.started_at), "yyyy-MM-dd HH:mm:ss")}
               </span>
               {duration ? (
-                <span className="text-[10px] text-muted-foreground">{duration}</span>
+                <span className="text-xs text-muted-foreground">{duration}</span>
               ) : null}
             </span>
           ) : (
@@ -497,7 +497,7 @@ export function JobsTable({
               onChange={(event) => setPriorityDraft(event.target.value)}
             />
             {!canRaise ? (
-              <p className="text-[11px] text-muted-foreground">{t("jobs.priorityRaiseNeeded")}</p>
+              <p className="text-xs text-muted-foreground">{t("jobs.priorityRaiseNeeded")}</p>
             ) : null}
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={() => setPriorityTarget(null)}>

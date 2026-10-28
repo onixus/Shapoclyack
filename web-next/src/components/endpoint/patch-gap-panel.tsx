@@ -13,10 +13,10 @@ import { useT } from "@/lib/i18n";
  * word an operator has to lean in to read, which is exactly what these are
  * meant not to be. */
 const SEVERITY_TONE: Record<string, string> = {
-  critical: "text-rose-600 dark:text-rose-400",
-  high: "text-orange-600 dark:text-orange-400",
-  medium: "text-amber-600 dark:text-amber-400",
-  low: "text-sky-600 dark:text-sky-400",
+  critical: "text-sev-critical",
+  high: "text-sev-high",
+  medium: "text-sev-medium",
+  low: "text-sev-low",
   negligible: "text-muted-foreground",
   unknown: "text-muted-foreground",
 };
@@ -62,7 +62,7 @@ export function PatchGapPanel({ tenantId = "default" }: { tenantId?: string }) {
   if (data.packages_to_upgrade === 0 && data.unfixed_findings === 0) return null;
 
   return (
-    <section className="rounded-xl border border-border bg-card p-4 shadow-lg">
+    <section className="rounded-xl border border-border bg-card p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <PackageCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
@@ -121,7 +121,7 @@ export function PatchGapPanel({ tenantId = "default" }: { tenantId?: string }) {
       </ul>
 
       {data.truncated ? (
-        <p className="mt-2 text-[11px] text-muted-foreground">{t("patchGap.truncated")}</p>
+        <p className="mt-2 text-xs text-muted-foreground">{t("patchGap.truncated")}</p>
       ) : null}
     </section>
   );
@@ -137,7 +137,7 @@ export function DevicePatchGapCard({
   if (gap.packages_to_upgrade === 0 && gap.unfixed_findings === 0) return null;
 
   return (
-    <section className="rounded-xl border border-border bg-card p-4 shadow-lg">
+    <section className="rounded-xl border border-border bg-card p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="flex items-center gap-2 text-sm font-semibold text-foreground">
           <PackageCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
@@ -149,7 +149,7 @@ export function DevicePatchGapCard({
       </div>
 
       {gap.combined_upgrade_command ? (
-        <pre className="mt-3 overflow-x-auto rounded-lg border border-border bg-muted p-3 font-mono text-[11px] text-foreground">
+        <pre className="mt-3 overflow-x-auto rounded-lg border border-border bg-muted p-3 font-mono text-xs text-foreground">
           {gap.combined_upgrade_command}
         </pre>
       ) : null}
@@ -170,17 +170,17 @@ export function DevicePatchGapCard({
                 </span>
               </span>
             </div>
-            <p className="mt-1 font-mono text-[11px] text-muted-foreground">
+            <p className="mt-1 font-mono text-xs text-muted-foreground">
               {item.installed_version ?? "—"} →{" "}
               {/* No target means the published fixes could not be ordered; naming
                   one would promise a fix that may not close every CVE below. */}
               {item.target_version ? (
                 <span className="text-emerald-600 dark:text-emerald-400">{item.target_version}</span>
               ) : (
-                <span className="text-amber-600 dark:text-amber-400">{t("patchGap.targetUnresolved")}</span>
+                <span className="text-sev-medium">{t("patchGap.targetUnresolved")}</span>
               )}
             </p>
-            <p className="mt-1 truncate font-mono text-[11px] text-muted-foreground" title={item.cve_ids.join(", ")}>
+            <p className="mt-1 truncate font-mono text-xs text-muted-foreground" title={item.cve_ids.join(", ")}>
               {item.cve_ids.join(", ")}
             </p>
           </li>
@@ -188,7 +188,7 @@ export function DevicePatchGapCard({
       </ul>
 
       {gap.unfixed_findings > 0 ? (
-        <p className="mt-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400/90">
+        <p className="mt-3 flex items-start gap-1.5 text-xs leading-relaxed text-amber-600 dark:text-amber-400/90">
           <ShieldAlert className="mt-0.5 h-3 w-3 shrink-0" />
           {t("patchGap.unfixedDetail", { count: gap.unfixed_findings })}
         </p>

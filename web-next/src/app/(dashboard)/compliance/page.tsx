@@ -17,7 +17,7 @@ import type { ComplianceControlStatus } from "@/lib/api";
 const STATUS_STYLE: Record<ComplianceControlStatus["status"], string> = {
   passed: "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
   failed: "border-rose-500/30 bg-rose-500/10 text-rose-600 dark:text-rose-400",
-  not_assessed: "border-slate-500/30 bg-slate-500/10 text-muted-foreground",
+  not_assessed: "border-border-strong bg-muted text-muted-foreground",
 };
 
 const STATUS_LABEL: Record<ComplianceControlStatus["status"], string> = {

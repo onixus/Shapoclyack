@@ -36,7 +36,7 @@ import {
 import { type WebhookDelivery, type WebhookInfo } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import { canOperate, isTenantAdmin } from "@/lib/authz";
-import { WEBHOOK_DELIVERY_STATUS } from "@/lib/config/statuses";
+import { SCHEDULE_ENABLED_STATUS, WEBHOOK_DELIVERY_STATUS } from "@/lib/config/statuses";
 import { useT, type MsgKey, type Translate } from "@/lib/i18n";
 
 const DELIVERY_STATUSES = ["pending", "delivered", "dead"] as const;
@@ -117,7 +117,7 @@ export default function IntegrationsPage() {
         cell: ({ row }) => (
           <div>
             <p className="font-semibold text-foreground">{row.original.name}</p>
-            <p className="font-mono text-[10px] text-muted-foreground">
+            <p className="font-mono text-xs text-muted-foreground">
               {row.original.subscription_id}
             </p>
           </div>
@@ -167,9 +167,13 @@ export default function IntegrationsPage() {
         accessorKey: "enabled",
         header: t("col.enabled"),
         cell: ({ row }) => (
-          <Badge variant={row.original.enabled ? "default" : "secondary"}>
-            {t(row.original.enabled ? "integrations.state.enabled" : "integrations.state.disabled")}
-          </Badge>
+          <StatusBadge
+            value={row.original.enabled ? "enabled" : "disabled"}
+            map={{
+              enabled: { ...SCHEDULE_ENABLED_STATUS.enabled, label: t("integrations.state.enabled") },
+              disabled: { ...SCHEDULE_ENABLED_STATUS.disabled, label: t("integrations.state.disabled") },
+            }}
+          />
         ),
       },
       {
@@ -271,7 +275,7 @@ export default function IntegrationsPage() {
               <p className="text-xs font-semibold text-foreground">
                 {subscription?.name ?? row.original.subscription_id}
               </p>
-              <p className="font-mono text-[10px] text-muted-foreground">
+              <p className="font-mono text-xs text-muted-foreground">
                 {row.original.delivery_id}
               </p>
             </div>

@@ -182,14 +182,14 @@ export function CampaignDetail({ id }: { id: string }) {
             <p className="whitespace-nowrap font-mono text-sm font-bold text-sky-600 group-hover:underline dark:text-sky-400">
               {row.original.cve || row.original.title || row.original.problem_key}
             </p>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               {row.original.recurred ? `${t("campaign.recurred")} · ` : ""}
               {row.original.problem_key}
             </p>
           </Link>
         ),
       },
-      { id: "asset_id", header: t("col.asset"), accessorKey: "asset_id", cell: ({ row }) => <span className="font-mono text-[11px]">{row.original.asset_id}</span> },
+      { id: "asset_id", header: t("col.asset"), accessorKey: "asset_id", cell: ({ row }) => <span className="font-mono text-xs">{row.original.asset_id}</span> },
       {
         id: "severity",
         accessorFn: (row) => row.severity,
@@ -233,7 +233,7 @@ export function CampaignDetail({ id }: { id: string }) {
           const { verification, last_verify: last } = row.original;
           if (!verification && !last.outcome) return <span className="text-xs text-muted-foreground">—</span>;
           return (
-            <div className="space-y-0.5 text-[11px]">
+            <div className="space-y-0.5 text-xs">
               {last.outcome ? (
                 <p>
                   <strong>{last.outcome}</strong>

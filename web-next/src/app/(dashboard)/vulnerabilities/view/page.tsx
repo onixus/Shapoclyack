@@ -282,7 +282,7 @@ function VulnerabilityDetailInner() {
         </div>
 
         <div className="lg:col-span-2 space-y-6">
-          <section className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
+          <section className="rounded-xl border border-border bg-card p-5">
             <h2 className="text-sm font-semibold text-foreground">{t("ui.finding")}</h2>
             <dl className="mt-4 grid gap-4 sm:grid-cols-2 text-xs">
               <Field label="CVE" value={vuln.cve || "—"} mono />
@@ -416,7 +416,7 @@ function VulnerabilityDetailInner() {
           {vuln.source === "retro_match" ? <RetroEvidenceCard vuln={vuln} /> : null}
           {vuln.source === "scan" ? <DetectorsCard vuln={vuln} /> : null}
 
-          <section className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
+          <section className="rounded-xl border border-border bg-card p-5">
             <h2 className="text-sm font-semibold text-foreground">{t("ui.evidence")}</h2>
             {observation?.risk_explanation ? (
               <p className="mt-3 text-sm text-foreground">{observation.risk_explanation}</p>
@@ -447,7 +447,7 @@ function VulnerabilityDetailInner() {
             ) : null}
           </section>
 
-          <section className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
+          <section className="rounded-xl border border-border bg-card p-5">
             <h2 className="text-sm font-semibold text-foreground">{t("ui.auditTrail")}</h2>
             <div className="mt-4">
               {eventsQuery.isLoading ? (
@@ -478,7 +478,7 @@ function Field({
 }) {
   return (
     <div>
-      <dt className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</dt>
+      <dt className="text-overline font-semibold uppercase text-muted-foreground">{label}</dt>
       <dd className={mono ? "mt-1 font-mono text-foreground" : "mt-1 text-foreground"} title={hint}>
         {value}
       </dd>
@@ -502,7 +502,7 @@ function RetroEvidenceCard({ vuln }: { vuln: TrackedVulnerability }) {
 
   return (
     <section
-      className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur"
+      className="rounded-xl border border-border bg-card p-5"
       data-testid="retro-evidence"
     >
       <div className="flex flex-wrap items-center gap-2">
@@ -525,7 +525,7 @@ function RetroEvidenceCard({ vuln }: { vuln: TrackedVulnerability }) {
             <>
               <span className="font-mono">{product || "—"}</span>
               {evidence.upstream_version && evidence.upstream_version !== evidence.version ? (
-                <span className="block text-[11px] text-muted-foreground">
+                <span className="block text-xs text-muted-foreground">
                   {t("vuln.retro.upstream", { version: evidence.upstream_version })}
                 </span>
               ) : null}
@@ -556,7 +556,7 @@ function RetroEvidenceCard({ vuln }: { vuln: TrackedVulnerability }) {
               <>
                 <span className="font-mono">{advisory.advisory_id}</span>
                 {advisory.provider ? (
-                  <span className="block text-[11px] text-muted-foreground">
+                  <span className="block text-xs text-muted-foreground">
                     {advisory.provider}
                     {advisory.feed_date ? ` · ${advisory.feed_date}` : ""}
                   </span>
@@ -599,7 +599,7 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
   if (options.length === 0) return null;
 
   return (
-    <section className="rounded-xl border border-border bg-card p-5 shadow-lg space-y-4">
+    <section className="rounded-xl border border-border bg-card p-5 space-y-4">
       <div>
         <h2 className="text-sm font-semibold text-foreground">{t("ui.moveLifecycle")}</h2>
         <form onSubmit={onSubmit} className="mt-3 space-y-3">
@@ -644,7 +644,7 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
             type="submit"
             size="sm"
             disabled={mutation.isPending}
-            className="bg-sky-600 hover:bg-sky-500"
+           
           >
             {mutation.isPending ? "Moving…" : VULN_TRANSITION_LABEL[target]}
           </Button>
@@ -658,8 +658,8 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
       {vuln.source === "endpoint_software" ? (
         <div className="border-t border-border pt-3 space-y-1">
           <h3 className="text-xs font-semibold text-foreground">{t("ui.automatedVerification")}</h3>
-          <p className="text-[11px] text-muted-foreground">{t("vuln.software.noVerify")}</p>
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-xs text-muted-foreground">{t("vuln.software.noVerify")}</p>
+          <p className="text-xs text-muted-foreground">
             {t("vuln.software.lastSnapshot")}: {formatWhen(vuln.last_seen_at)}
           </p>
         </div>
@@ -669,12 +669,12 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
         // checks do not know this CVE would "verify" it by silence.
         <div className="border-t border-border pt-3 space-y-1">
           <h3 className="text-xs font-semibold text-foreground">{t("ui.automatedVerification")}</h3>
-          <p className="text-[11px] text-muted-foreground">{t("vuln.retro.noVerify")}</p>
+          <p className="text-xs text-muted-foreground">{t("vuln.retro.noVerify")}</p>
         </div>
       ) : (vuln.state === "FIXING" || vuln.state === "VERIFYING") ? (
         <div className="border-t border-border pt-3 space-y-2">
           <h3 className="text-xs font-semibold text-foreground">{t("ui.automatedVerification")}</h3>
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             {t("prose.dispatchATargetedRescanAgainst")}
           </p>
           <Button
@@ -711,7 +711,7 @@ function AssignCard({ vuln }: { vuln: TrackedVulnerability }) {
   }
 
   return (
-    <section className="rounded-xl border border-border bg-card p-5 shadow-lg">
+    <section className="rounded-xl border border-border bg-card p-5">
       <h2 className="text-sm font-semibold text-foreground">{t("ui.ownership")}</h2>
       <form onSubmit={onSubmit} className="mt-3 space-y-3">
         <div className="space-y-1.5">
@@ -762,7 +762,7 @@ function CommentCard({ vulnId }: { vulnId: string }) {
     mutation.mutate(note.trim(), { onSuccess: () => setNote("") });
   }
   return (
-    <section className="rounded-xl border border-border bg-card p-5 shadow-lg">
+    <section className="rounded-xl border border-border bg-card p-5">
       <h2 className="text-sm font-semibold text-foreground">{t("ui.comment")}</h2>
       <form onSubmit={onSubmit} className="mt-3 space-y-3">
         <Textarea
@@ -793,7 +793,7 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
     setMutation.mutate({ system, key: key.trim() || null, url: url.trim() || null });
   }
   return (
-    <section className="rounded-xl border border-border bg-card p-5 shadow-lg">
+    <section className="rounded-xl border border-border bg-card p-5">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-foreground">{t("ui.ticketLink")}</h2>
         {vuln.ticket_key ? (
@@ -810,14 +810,14 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
           </Button>
         ) : null}
       </div>
-      <p className="mt-1 text-[11px] text-muted-foreground">
+      <p className="mt-1 text-xs text-muted-foreground">
         {t("prose.recordsWhereTheWorkLives")}
       </p>
       {vuln.ticket_sync_error ? (
         // A link that has stopped working — a renamed key, a revoked token —
         // is otherwise only in the worker's log, which is where "why is this
         // finding not updating?" goes unanswered.
-        <p className="mt-2 rounded-md border border-amber-300 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/40 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-300">
+        <p className="mt-2 rounded-md border border-amber-300 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/40 px-2 py-1 text-xs text-amber-600 dark:text-amber-300">
           Last read failed: {vuln.ticket_sync_error}
         </p>
       ) : null}
@@ -847,7 +847,7 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
           className="bg-muted border-border text-foreground"
         />
         <div className="flex flex-wrap gap-2">
-          <Button type="submit" size="sm" disabled={setMutation.isPending} className="bg-sky-600 hover:bg-sky-500">
+          <Button type="submit" size="sm" disabled={setMutation.isPending}>
             {setMutation.isPending ? "Saving…" : "Link ticket"}
           </Button>
           {vuln.ticket_key || vuln.ticket_url ? (
@@ -922,7 +922,7 @@ function ExceptionCard({
   }
 
   return (
-    <section className="rounded-xl border border-border bg-card p-5 shadow-lg">
+    <section className="rounded-xl border border-border bg-card p-5">
       <h2 className="text-sm font-semibold text-foreground">{t("ui.acceptedRisk")}</h2>
       {inForce ? (
         <p className="mt-2 text-xs text-muted-foreground">
@@ -1136,7 +1136,7 @@ function FalsePositiveCard({ vuln }: { vuln: TrackedVulnerability }) {
   }
 
   return (
-    <section className="rounded-xl border border-border bg-card p-5 shadow-lg">
+    <section className="rounded-xl border border-border bg-card p-5">
       <h2 className="text-sm font-semibold text-foreground">{t("vuln.fp.title")}</h2>
       {marked ? (
         <p className="mt-2 text-xs text-muted-foreground">

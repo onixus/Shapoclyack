@@ -187,7 +187,7 @@ export function AgentDetailsDrawer({
                 </h4>
                 <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
                   {/* CPU */}
-                  <div className="rounded-xl border border-border bg-card p-3.5 shadow-sm">
+                  <div className="rounded-xl border border-border bg-card p-3.5">
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
                       <span className="flex items-center gap-1.5 font-medium"><Cpu className="h-3.5 w-3.5 text-sky-500" /> CPU Load</span>
                       <span className="font-mono font-bold text-foreground">{cpuPercent}%</span>
@@ -201,7 +201,7 @@ export function AgentDetailsDrawer({
                   </div>
 
                   {/* Memory */}
-                  <div className="rounded-xl border border-border bg-card p-3.5 shadow-sm">
+                  <div className="rounded-xl border border-border bg-card p-3.5">
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
                       <span className="flex items-center gap-1.5 font-medium"><Database className="h-3.5 w-3.5 text-indigo-500" /> Memory</span>
                       <span className="font-mono font-bold text-foreground">
@@ -217,7 +217,7 @@ export function AgentDetailsDrawer({
                   </div>
 
                   {/* Disk */}
-                  <div className="rounded-xl border border-border bg-card p-3.5 shadow-sm">
+                  <div className="rounded-xl border border-border bg-card p-3.5">
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
                       <span className="flex items-center gap-1.5 font-medium"><HardDrive className="h-3.5 w-3.5 text-emerald-500" /> Disk Free</span>
                       <span className="font-mono font-bold text-foreground">

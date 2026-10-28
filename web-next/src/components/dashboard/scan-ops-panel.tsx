@@ -37,7 +37,7 @@ function SurfaceCard({ surface }: { surface: Exclude<ScanSurface, "mixed"> }) {
       : "border-violet-500/30 bg-violet-500/10 text-violet-600 dark:text-violet-400";
 
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 shadow-sm">
+    <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <span className={cn("flex h-8 w-8 items-center justify-center rounded-lg border", tone)}>
@@ -45,7 +45,7 @@ function SurfaceCard({ surface }: { surface: Exclude<ScanSurface, "mixed"> }) {
           </span>
           <div>
             <p className="text-sm font-bold text-foreground">{t(`surface.${surface}`)}</p>
-            <p className="text-[11px] text-muted-foreground">{t(`surface.hint.${surface}`)}</p>
+            <p className="text-xs text-muted-foreground">{t(`surface.hint.${surface}`)}</p>
           </div>
         </div>
         {canOperate ? (
@@ -60,7 +60,7 @@ function SurfaceCard({ surface }: { surface: Exclude<ScanSurface, "mixed"> }) {
 
       <dl className="grid grid-cols-3 gap-2 text-xs">
         <div>
-          <dt className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+          <dt className="truncate text-xs font-medium text-muted-foreground">
             {t("dash.ops.lastRun")}
           </dt>
           <dd
@@ -77,7 +77,7 @@ function SurfaceCard({ surface }: { surface: Exclude<ScanSurface, "mixed"> }) {
           </dd>
         </div>
         <div>
-          <dt className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+          <dt className="truncate text-xs font-medium text-muted-foreground">
             {t("dash.ops.running")}
           </dt>
           <dd className="mt-0.5 font-mono font-semibold text-foreground">
@@ -85,7 +85,7 @@ function SurfaceCard({ surface }: { surface: Exclude<ScanSurface, "mixed"> }) {
           </dd>
         </div>
         <div>
-          <dt className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+          <dt className="truncate text-xs font-medium text-muted-foreground">
             {t("dash.ops.findings")}
           </dt>
           <dd
@@ -101,7 +101,7 @@ function SurfaceCard({ surface }: { surface: Exclude<ScanSurface, "mixed"> }) {
         </div>
       </dl>
 
-      <div className="flex items-center justify-between text-[11px]">
+      <div className="flex items-center justify-between text-xs">
         <span className="text-muted-foreground">
           {last
             ? stale
@@ -142,13 +142,13 @@ function ExposureSplit() {
   const rows: Array<{ key: "external" | "internal" | "unknown"; color: string }> = [
     { key: "external", color: "bg-sky-500" },
     { key: "internal", color: "bg-violet-500" },
-    { key: "unknown", color: "bg-slate-400" },
+    { key: "unknown", color: "bg-muted-foreground" },
   ];
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 shadow-sm">
+    <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4">
       <div>
         <p className="text-sm font-bold text-foreground">{t("dash.ops.exposureSplit")}</p>
-        <p className="text-[11px] text-muted-foreground">{t("dash.ops.exposureHint")}</p>
+        <p className="text-xs text-muted-foreground">{t("dash.ops.exposureHint")}</p>
       </div>
       <div className="flex h-2 w-full overflow-hidden rounded-full bg-muted">
         {total > 0
@@ -170,7 +170,7 @@ function ExposureSplit() {
               className="group flex flex-col rounded-md p-1 hover:bg-muted"
               title={t(`vuln.exposure.${key}`)}
             >
-              <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+              <span className="flex items-center gap-1.5 text-overline font-bold uppercase text-muted-foreground">
                 <span className={cn("h-2 w-2 rounded-full", color)} aria-hidden />
                 {t(`surface.${key}`)}
               </span>

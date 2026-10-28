@@ -175,7 +175,7 @@ export function JobDetailsDrawer({
         <JobPublications job={current} open={open} />
 
         <section className="mt-5">
-          <h4 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+          <h4 className="text-overline font-bold uppercase text-muted-foreground">
             {t("jobs.timeline")}
           </h4>
           <dl className="mt-1 divide-y divide-border/60">
@@ -206,7 +206,7 @@ export function JobDetailsDrawer({
         </section>
 
         <section className="mt-5">
-          <h4 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+          <h4 className="text-overline font-bold uppercase text-muted-foreground">
             {t("jobs.options")}
           </h4>
           <dl className="mt-1 divide-y divide-border/60">
@@ -255,7 +255,7 @@ export function JobDetailsDrawer({
               ) : (
                 <span className="flex flex-wrap gap-1.5">
                   {counts.map(([key, n]) => (
-                    <Badge key={key} variant="secondary" className="font-mono text-[10px]">
+                    <Badge key={key} variant="secondary" className="font-mono text-xs">
                       {key}: {n}
                     </Badge>
                   ))}
@@ -304,7 +304,7 @@ export function JobDetailsDrawer({
               type="button"
               variant="ghost"
               size="sm"
-              className="-ml-2 h-7 gap-1 px-2 text-[11px] font-bold uppercase tracking-wider text-muted-foreground"
+              className="-ml-2 h-7 gap-1 px-2 text-overline font-bold uppercase text-muted-foreground"
               onClick={() => setShowCommand((v) => !v)}
               aria-expanded={showCommand}
             >
@@ -314,7 +314,7 @@ export function JobDetailsDrawer({
               {t("jobs.command")}
             </Button>
             {showCommand ? (
-              <pre className="mt-1 max-h-48 overflow-auto rounded-lg border border-border bg-muted/50 p-3 font-mono text-[11px] leading-relaxed text-foreground">
+              <pre className="mt-1 max-h-48 overflow-auto rounded-lg border border-border bg-muted/50 p-3 font-mono text-xs leading-relaxed text-foreground">
                 {command}
               </pre>
             ) : null}
