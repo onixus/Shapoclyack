@@ -506,6 +506,41 @@ class JobSurfaceCounts(BaseModel):
     total: int = 0
 
 
+class ScopeTargetInfo(BaseModel):
+    """One target the approved scope lets this tenant scan."""
+
+    kind: Literal["cidr", "domain"]
+    value: str
+    # Which launcher it belongs on; a name is always external evidence, as in
+    # api.services.scan_surface.classify.
+    surface: Literal["external", "internal"]
+
+
+class ScopeTargetSkippedInfo(BaseModel):
+    """An allow entry that yields no target, and why.
+
+    ``wildcard`` — ``*`` or a ``/0``, an approval of anything rather than a list
+    of things to scan; ``denied`` — every address or the name itself is under a
+    deny entry; ``invalid`` — a stored value that no longer parses.
+    """
+
+    kind: Literal["cidr", "domain"]
+    value: str
+    reason: Literal["wildcard", "denied", "invalid"]
+
+
+class ScopeTargetsInfo(BaseModel):
+    """`GET /api/jobs/scope-targets`: the approved scope, as targets for a new scan.
+
+    ``approved`` is false for a tenant with no scope at all, which starts no
+    scan whatever the launcher is filled with.
+    """
+
+    approved: bool
+    targets: list[ScopeTargetInfo] = Field(default_factory=list)
+    skipped: list[ScopeTargetSkippedInfo] = Field(default_factory=list)
+
+
 class JobSummary(BaseModel):
     """Queue depth for a scan console's header (`GET /api/jobs/summary`).
 

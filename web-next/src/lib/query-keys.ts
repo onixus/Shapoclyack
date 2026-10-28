@@ -31,6 +31,7 @@ export const queryKeys = {
   job: (jobId: string) => ["jobs", "detail", jobId] as const,
   jobPublications: (jobId: string) => ["jobs", "publications", jobId] as const,
   jobSummary: ["jobs", "summary"] as const,
+  scopeTargets: ["jobs", "scope-targets"] as const,
   wordlists: (tenantId: string | null) => ["wordlists", tenantId] as const,
   schedules: ["schedules"] as const,
   /** The maintenance calendar plus the verdict it produces right now (#352).

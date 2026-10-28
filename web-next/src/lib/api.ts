@@ -2199,6 +2199,41 @@ export async function fetchJobSummary() {
   }
 }
 
+export type ScopeTarget = {
+  kind: ScanScopeKind;
+  value: string;
+  /** Which launcher it belongs on; a name is always external evidence. */
+  surface: "external" | "internal";
+};
+
+export type ScopeTargetSkipped = {
+  kind: ScanScopeKind;
+  value: string;
+  /** `wildcard` — `*` or a `/0`; `denied` — wholly under a deny entry;
+   * `invalid` — a stored value that no longer parses. */
+  reason: "wildcard" | "denied" | "invalid";
+};
+
+export type ScopeTargets = {
+  /** False for a tenant with no scope at all, which starts no scan. */
+  approved: boolean;
+  targets: ScopeTarget[];
+  skipped: ScopeTargetSkipped[];
+};
+
+/** The approved scope as launcher targets (`GET /api/jobs/scope-targets`):
+ * allowed ranges with the denied ones carved out, allowed domains no deny
+ * covers. Open to whoever may start a scan — unlike the scope itself, which
+ * needs `scan_scope.read` and which a scan operator does not hold. */
+export async function fetchScopeTargets() {
+  try {
+    const { data } = await api.get<ScopeTargets>("/jobs/scope-targets");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
 export async function fetchJob(jobId: string) {
   try {
     const { data } = await api.get<JobInfo>(`/jobs/${encodeURIComponent(jobId)}`);
