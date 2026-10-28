@@ -61,15 +61,15 @@ export function MaintenancePanel({
   if (!data.change_freeze && windows.length === 0 && !canAdmin) return null;
 
   return (
-    <section className="space-y-3" aria-label="Maintenance calendar">
+    <section className="space-y-3" aria-label={t("scanCopy.calendarLabel")}>
       {data.change_freeze ? (
         <Alert variant="destructive">
           <Snowflake className="h-4 w-4" />
           <AlertTitle>{t("ui.changeFreezeIsOn")}</AlertTitle>
           <AlertDescription>
-            No scan will start in {data.tenant_id} until an admin lifts it
+            {t("scanCopy.freezeDescription", { tenant: data.tenant_id })}
             {data.change_freeze_note ? `: ${data.change_freeze_note}` : ""}
-            {data.change_freeze_by ? ` (set by ${data.change_freeze_by})` : ""}.
+            {data.change_freeze_by ? t("scanCopy.setBy", { actor: data.change_freeze_by }) : ""}.
           </AlertDescription>
         </Alert>
       ) : !admission.allowed ? (
@@ -77,8 +77,14 @@ export function MaintenancePanel({
           <CalendarClock className="h-4 w-4" />
           <AlertTitle>{t("ui.scanningIsPausedByTheMaintenance")}</AlertTitle>
           <AlertDescription>
-            {admission.detail}
-            {admission.retry_at ? ` Scans resume at ${shown(admission.retry_at)}.` : ""}
+            {t.locale === "ru" ? t("scanCopy.paused") : admission.detail}
+            {admission.detail && t.locale === "ru" ? (
+              <details>
+                <summary>{t("scanCopy.technical")}</summary>
+                {admission.detail}
+              </details>
+            ) : null}
+            {admission.retry_at ? t("scanCopy.resumeAt", { time: shown(admission.retry_at) }) : ""}
           </AlertDescription>
         </Alert>
       ) : null}
@@ -89,10 +95,10 @@ export function MaintenancePanel({
             <thead className="bg-muted text-left text-xs text-muted-foreground font-medium">
               <tr>
                 <th className="px-3 py-2">{t("ui.window")}</th>
-                <th className="px-3 py-2">Kind</th>
+                <th className="px-3 py-2">{t("scanCopy.kind")}</th>
                 <th className="px-3 py-2">{t("ui.appliesTo")}</th>
                 <th className="px-3 py-2">{t("ui.recurrence")}</th>
-                <th className="px-3 py-2">Now</th>
+                <th className="px-3 py-2">{t("scanCopy.now")}</th>
               </tr>
             </thead>
             <tbody>
@@ -101,19 +107,43 @@ export function MaintenancePanel({
                   <td className="px-3 py-2 font-medium">
                     {window.name}
                     {!window.enabled && (
-                      <span className="ml-2 text-xs text-muted-foreground">(disabled)</span>
+                      <span className="ml-2 text-xs text-muted-foreground">
+                        {t("scanCopy.disabled")}
+                      </span>
                     )}
                   </td>
                   <td className="px-3 py-2">
                     <StatusBadge value={window.kind} map={MAINTENANCE_WINDOW_KIND} />
                   </td>
-                  <td className="px-3 py-2 text-muted-foreground">{windowScope(window)}</td>
-                  <td className="px-3 py-2 font-mono text-xs">{windowCadence(window)}</td>
+                  <td className="px-3 py-2 text-muted-foreground">
+                    {windowScope(window, t.locale)}
+                  </td>
+                  <td className="px-3 py-2 font-mono text-xs">
+                    {windowCadence(window, t.locale)}
+                    <details className="mt-1 break-words">
+                      <summary className="cursor-pointer">{t("scanCopy.technical")}</summary>
+                      <pre className="whitespace-pre-wrap">
+                        {JSON.stringify(
+                          {
+                            window_id: window.window_id,
+                            kind: window.kind,
+                            scope_kind: window.scope_kind,
+                            rrule: window.rrule,
+                            dtstart_local: window.dtstart_local,
+                            timezone: window.timezone,
+                            duration_minutes: window.duration_minutes,
+                          },
+                          null,
+                          2,
+                        )}
+                      </pre>
+                    </details>
+                  </td>
                   <td className="px-3 py-2">
                     {window.open_now
-                      ? `open until ${shown(window.open_until)}`
+                      ? t("scanCopy.openUntil", { time: shown(window.open_until) })
                       : window.enabled
-                        ? `next ${shown(window.next_start_at)}`
+                        ? t("scanCopy.next", { time: shown(window.next_start_at) })
                         : "—"}
                   </td>
                 </tr>
@@ -128,20 +158,18 @@ export function MaintenancePanel({
           {!data.change_freeze && (
             <Input
               className="max-w-xs"
-              placeholder="Why (shown in the refusal)"
+              placeholder={t("scanCopy.freezePlaceholder")}
               value={note}
               onChange={(event) => setNote(event.target.value)}
-              aria-label="Change freeze note"
+              aria-label={t("scanCopy.freezeNote")}
             />
           )}
           <Button
             variant={data.change_freeze ? "outline" : "destructive"}
             disabled={freezeMutation.isPending}
-            onClick={() =>
-              freezeMutation.mutate({ change_freeze: !data.change_freeze, note })
-            }
+            onClick={() => freezeMutation.mutate({ change_freeze: !data.change_freeze, note })}
           >
-            {data.change_freeze ? "Lift change freeze" : "Freeze changes"}
+            {data.change_freeze ? t("scanCopy.unfreeze") : t("scanCopy.freeze")}
           </Button>
         </div>
       )}

@@ -113,6 +113,33 @@ afterEach(() => {
 });
 
 describe("operator console", () => {
+  it("uses understandable Russian runtime and advisory labels without exposing their internal codes", async () => {
+    savedSession();
+    useAppearanceStore.setState({ locale: "ru" });
+    const view = renderConsole();
+    expect(
+      await screen.findByText("Готовность среды выполнения модели не проверена."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Не проверено")).toBeInTheDocument();
+    expect(screen.getByText(/Локальный провайдер \/ Qwen-test/)).toBeInTheDocument();
+    for (const [value, label] of [
+      ["safe", "Безопасный"],
+      ["balanced", "Сбалансированный"],
+      ["fast", "Быстрый"],
+      ["test", "Тестовый"],
+    ]) {
+      expect(await screen.findByRole("option", { name: label })).toHaveValue(value);
+    }
+
+    expect(
+      await screen.findByText("Найти исправление из бюллетеня безопасности"),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("ID устройства")).toBeInTheDocument();
+    expect(view.container.textContent).not.toMatch(
+      /runtime|not_checked|advisory|endpoint|inference|worker|scope|discovery/,
+    );
+  });
+
   it("shows manifest-attested startup integrity and live readiness separately from model quality", async () => {
     vi.mocked(operatorApi.status).mockResolvedValue({
       provider: "local",
@@ -185,6 +212,49 @@ describe("operator console", () => {
     expect(screen.getByLabelText("Personal sessions")).toHaveFocus();
     await userEvent.tab();
     expect(screen.getByRole("button", { name: "New session" })).toHaveFocus();
+  });
+
+  it("translates comparison counters and keeps original diagnostic reasons collapsed", async () => {
+    useAppearanceStore.setState({ locale: "ru" });
+    vi.mocked(operatorApi.compare).mockResolvedValue({
+      status: "incomplete",
+      quality_status: "deterministic",
+      summary: "Нужна проверка",
+      reason: "Baseline mismatch",
+      counts: { hosts_added: 2, ports_removed: 1 },
+      citations: [],
+      diff_source: null,
+    });
+    renderConsole();
+    await screen.findByText("Найти исправление из бюллетеня безопасности");
+    await userEvent.type(screen.getByLabelText("ID предыдущего скана"), "before");
+    await userEvent.type(screen.getByLabelText("ID текущего скана"), "after");
+    await userEvent.click(screen.getByRole("button", { name: "Сравнить опубликованные сканы" }));
+    expect(await screen.findByText("Новые хосты")).toBeInTheDocument();
+    expect(screen.getByText("Не обнаруженные повторно порты")).toBeInTheDocument();
+    expect(screen.getByText("Baseline mismatch").closest("details")).not.toHaveAttribute("open");
+    expect(operatorApi.compare).toHaveBeenCalledWith(
+      "tenant-a",
+      "before",
+      "after",
+      "ru",
+      expect.any(AbortSignal),
+    );
+  });
+  it("translates restored plan parameters without changing the stored plan or confirming it", async () => {
+    useAppearanceStore.setState({ locale: "ru" });
+    savedSession();
+    sessionStorage.setItem(
+      `operator-proposal:${JSON.stringify(["tenant-a", "alice", "s1"])}`,
+      "plan1",
+    );
+    const view = renderConsole();
+    await screen.findByRole("button", { name: "Подтвердить этот план" });
+    expect(
+      Array.from(view.container.querySelectorAll("dd")).map((node) => node.textContent),
+    ).toContain("Безопасный");
+    expect(plan.arguments.mode).toBe("safe");
+    expect(operatorApi.confirm).not.toHaveBeenCalled();
   });
   it("shows unsupported comparisons without turning missing observations into fixes", async () => {
     renderConsole();
@@ -263,6 +333,112 @@ describe("operator console", () => {
     );
   });
 
+  it.each(["en", "ru"] as const)(
+    "labels recommendations in %s and opens the technical source with a fresh check",
+    async (locale) => {
+      useAppearanceStore.setState({ locale });
+      savedSession();
+      const citation = {
+        source_id: "long-private-source-id",
+        source_hash: "a".repeat(64),
+        snapshot_id: "snap",
+        status: "partial",
+      };
+      vi.mocked(operatorApi.session).mockResolvedValue({
+        ...sessionRow,
+        tasks: [
+          {
+            ...queued,
+            status: "succeeded",
+            result: {
+              quality_status: "quality_unverified",
+              analysis: {
+                status: "incomplete",
+                summary: "Review",
+                recommendations: [
+                  {
+                    source_id: citation.source_id,
+                    category: "exposure",
+                    proposed_priority: "unknown",
+                    next_steps: ["Review access"],
+                  },
+                ],
+                citations: [citation],
+              },
+            },
+          },
+        ],
+      });
+      vi.mocked(operatorApi.evidence).mockResolvedValue({
+        context: { host: "192.0.2.8", port: 22 },
+        source_display: {
+          run_id: "run1",
+          match_count: 1,
+          findings: [{ title: "SSH host key observed" }],
+        },
+      });
+      renderConsole();
+      const row = await screen.findByRole("button", {
+        name:
+          locale === "ru"
+            ? /192.0.2.8:22 · Обнаружен ключ SSH-сервера/
+            : /192.0.2.8:22 · SSH host key observed/,
+      });
+      expect(screen.queryByText(/long-private-source-id/)).not.toBeInTheDocument();
+      if (locale === "ru") {
+        expect(screen.getByText(/Анализ скана · run1/)).toBeInTheDocument();
+        expect(screen.getByText("Неполные данные · Качество не подтверждено")).toBeInTheDocument();
+        expect(screen.queryByText("succeeded")).not.toBeInTheDocument();
+      }
+      expect(operatorApi.evidence).toHaveBeenCalledTimes(1);
+      await userEvent.click(row);
+      const dialog = await screen.findByRole("dialog", {
+        name: locale === "ru" ? "Доказательства источника" : "Source evidence",
+      });
+      expect(await within(dialog).findByText("SSH host key observed")).toBeInTheDocument();
+      expect(operatorApi.evidence).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("does not invent a finding label when source access fails", async () => {
+    savedSession();
+    const citation = {
+      source_id: "hidden-source-id",
+      source_hash: "a".repeat(64),
+      snapshot_id: "snap",
+      status: "partial",
+    };
+    vi.mocked(operatorApi.session).mockResolvedValue({
+      ...sessionRow,
+      tasks: [
+        {
+          ...queued,
+          status: "succeeded",
+          result: {
+            analysis: {
+              status: "incomplete",
+              summary: "Review",
+              recommendations: [
+                {
+                  source_id: citation.source_id,
+                  category: "exposure",
+                  proposed_priority: "unknown",
+                  next_steps: [],
+                },
+              ],
+              citations: [citation],
+            },
+          },
+        },
+      ],
+    });
+    vi.mocked(operatorApi.evidence).mockRejectedValue(new Error("denied"));
+    renderConsole();
+    await waitFor(() => expect(operatorApi.evidence).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(/hidden-source-id/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/SSH host key/)).not.toBeInTheDocument();
+  });
+
   it("renders malicious source text as text and fetches citations only after a click", async () => {
     savedSession();
     const citation = {
@@ -299,6 +475,80 @@ describe("operator console", () => {
         expect.any(AbortSignal),
       ),
     );
+  });
+
+  it("opens source in a visible dialog and restores keyboard focus on Escape", async () => {
+    savedSession();
+    const citation = {
+      schema_version: "1" as const,
+      source_id: "source1",
+      source_type: "finding" as const,
+      source_hash: "a".repeat(64),
+      snapshot_id: "snap1",
+      observed_at: "2026-10-25T10:00:00Z",
+      status: "partial" as const,
+    };
+    vi.mocked(operatorApi.session).mockResolvedValue({
+      ...sessionRow,
+      tasks: [
+        {
+          ...queued,
+          status: "succeeded",
+          result: {
+            quality_status: "quality_unverified",
+            analysis: { status: "incomplete", summary: "Review", citations: [citation] },
+          },
+        },
+      ],
+    });
+    vi.mocked(operatorApi.evidence).mockResolvedValue({ context: { host: "192.0.2.8" } });
+    renderConsole();
+    const button = await screen.findByRole("button", { name: /Open authorized source: source1/ });
+    await userEvent.click(button);
+    const dialog = await screen.findByRole("dialog", { name: "Source evidence" });
+    expect(await within(dialog).findByText(/192.0.2.8/)).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(button).toHaveFocus();
+  });
+
+  it("shows a visible error without cached source data when access is rejected on reopen", async () => {
+    savedSession();
+    const citation = {
+      schema_version: "1" as const,
+      source_id: "source1",
+      source_type: "finding" as const,
+      source_hash: "a".repeat(64),
+      snapshot_id: "snap1",
+      observed_at: "2026-10-25T10:00:00Z",
+      status: "partial" as const,
+    };
+    vi.mocked(operatorApi.session).mockResolvedValue({
+      ...sessionRow,
+      tasks: [
+        {
+          ...queued,
+          status: "succeeded",
+          result: {
+            quality_status: "quality_unverified",
+            analysis: { status: "incomplete", summary: "Review", citations: [citation] },
+          },
+        },
+      ],
+    });
+    vi.mocked(operatorApi.evidence).mockResolvedValueOnce({ context: { host: "192.0.2.8" } });
+    renderConsole();
+    const button = await screen.findByRole("button", { name: /Open authorized source: source1/ });
+    await userEvent.click(button);
+    expect(await within(await screen.findByRole("dialog")).findByText(/192.0.2.8/)).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    vi.mocked(operatorApi.evidence).mockRejectedValue(new Error("Forbidden"));
+    await userEvent.click(button);
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByRole("alert")).toBeVisible();
+    expect(within(dialog).queryByText(/192.0.2.8/)).not.toBeInTheDocument();
+    expect(operatorApi.evidence).toHaveBeenCalledTimes(2);
   });
 
   it("clears tenant data and aborts old reads when the context changes", async () => {
@@ -620,9 +870,7 @@ describe("operator console", () => {
       });
       renderConsole("tenant-a", false);
       await userEvent.type(
-        await screen.findByLabelText(
-          locale === "en" ? "Endpoint device ID" : "ID устройства endpoint",
-        ),
+        await screen.findByLabelText(locale === "en" ? "Endpoint device ID" : "ID устройства"),
         "d1",
       );
       await userEvent.click(

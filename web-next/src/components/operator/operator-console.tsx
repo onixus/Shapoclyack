@@ -10,6 +10,21 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import {
+  answerLabels,
+  operatorStatusLabel,
+  operatorProfileLabel,
+  operatorProviderLabel,
+  operatorActionLabel,
+} from "@/components/operator/answer-labels";
+import { SourceEvidenceCard } from "@/components/operator/source-evidence-card";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 import { useT } from "@/lib/i18n";
 import {
   activeTask,
@@ -107,6 +122,8 @@ const copy = {
     cancelling: "Cancellation requested; waiting for worker confirmation.",
     openSource: "Open authorized source",
     source: "Source evidence",
+    sourceHelp:
+      "Current permissions and source freshness are checked before evidence is displayed.",
     preparation: "Prepare an action",
     action: "Action",
     start: "Start scan",
@@ -167,11 +184,12 @@ const copy = {
   },
   ru: {
     runtimeReady:
-      "Модель подтверждена манифестом при запуске (веса не пересчитываются); runtime доступен.",
-    runtimeUnavailable: "Runtime недоступен. Проверьте его состояние перед задачами модели.",
+      "Модель подтверждена манифестом при запуске (хеши весов повторно не вычислялись); среда выполнения доступна.",
+    runtimeUnavailable:
+      "Среда выполнения модели недоступна. Проверьте её состояние перед запуском задач.",
     modelDigest: "SHA-256 модели",
     contextBudget: "Токенов контекста",
-    parallelBudget: "Параллельных inference",
+    parallelBudget: "Одновременных запросов к модели",
     runtimeVerifiedAt: "Проверено",
     trackJob: "Открыть задание скана",
     planner: "Запрос оператору",
@@ -180,7 +198,7 @@ const copy = {
     boundContext: "Выбранный контекст (необязательно)",
     selectedRun: "ID выбранного скана",
     selectedPrevious: "ID выбранного предыдущего скана",
-    selectedDevice: "ID выбранного endpoint-устройства",
+    selectedDevice: "ID выбранного устройства",
     selectedJob: "ID выбранного задания",
     selectedFinding: "ID выбранной находки",
     includeScan: "Добавить явные цели скана",
@@ -197,21 +215,21 @@ const copy = {
     intent: "Назначение скана",
     defaults: "По умолчанию на сервере",
     policy: "Политика",
-    scope: "Утверждённый scope",
+    scope: "Разрешённая область проверки",
     effect: "Эффект",
     network: "Сетевые проверки",
     details: "Технические подробности",
     yes: "Да",
     no: "Нет",
-    rateDiscovery: "Лимит discovery (пакетов/с)",
+    rateDiscovery: "Лимит обнаружения (пакетов/с)",
     ratePorts: "Лимит портов (пакетов/с)",
     hostConcurrency: "Лимит одновременных хостов",
     hostRate: "Лимит частоты на хост",
     avoidPorts: "Исключённые порты",
-    safeOnly: "Только профиль safe",
+    safeOnly: "Только безопасный профиль",
     asynchronous: "Остановка асинхронна",
     findingState: "Состояние находки",
-    scopeApproval: "Scope утверждён",
+    scopeApproval: "Область проверки утверждена",
     verifyMethod: "Метод проверки",
     compare: "Сравнить опубликованные сканы",
     previous: "ID предыдущего скана",
@@ -224,11 +242,11 @@ const copy = {
     retry: "Обновить состояние сервера",
     tenant: "Тенант",
     actor: "Пользователь",
-    runtime: "Готовность runtime не проверена.",
+    runtime: "Готовность среды выполнения модели не проверена.",
     quality: "Качество модели не принято. Проверяйте каждое предложение и его источники.",
     local: "Настроен локальный провайдер; офлайн-работа ещё не подтверждена.",
     hosted:
-      "Настроен внешний inference. Разрешённые данные задачи могут передаваться настроенному провайдеру.",
+      "Настроена внешняя обработка моделью. Разрешённые данные задачи могут передаваться настроенному провайдеру.",
     history: "Личные сессии",
     newSession: "Новая сессия",
     chooseSession: "Выберите сессию",
@@ -241,9 +259,10 @@ const copy = {
     tasks: "Задачи и ответы",
     noTasks: "В этой сессии пока нет задач.",
     cancel: "Запросить отмену",
-    cancelling: "Отмена запрошена; ожидается подтверждение worker.",
+    cancelling: "Отмена запрошена; ожидается подтверждение обработчика задач.",
     openSource: "Открыть разрешённый источник",
     source: "Доказательства источника",
+    sourceHelp: "Перед показом источника проверяются актуальные права доступа и свежесть данных.",
     preparation: "Подготовить действие",
     action: "Действие",
     start: "Запуск скана",
@@ -269,10 +288,10 @@ const copy = {
       "План истёк или уже не ожидает подтверждения. При необходимости подготовьте новый предпросмотр.",
     staleServer:
       "Сервер отклонил этот план: он истёк или уже не ожидает подтверждения. Ничего не выполнено. Подготовьте новый предпросмотр.",
-    remediation: "Найти исправление из advisory",
-    device: "ID устройства endpoint",
+    remediation: "Найти исправление из бюллетеня безопасности",
+    device: "ID устройства",
     remediationScope: "Контекст исправления",
-    endpointScope: "Инвентаризация endpoint",
+    endpointScope: "Инвентаризация устройства",
     findingScope: "Сетевая находка",
     findingId: "ID сетевой находки",
     configuration: "Усиление конфигурации",
@@ -290,12 +309,13 @@ const copy = {
     lookup: "Найти исправления",
     noFixes: "Подтверждённых карточек исправления нет; это не доказательство безопасности.",
     installed: "Установлено",
-    target: "Версия из advisory",
+    target: "Версия из бюллетеня безопасности",
     unknown: "неизвестно",
     context: "Дистрибутив / выпуск / архитектура",
     command: "Команда только для проверки пользователем",
     limited: "Результат усечён. Уточните выборку перед действием.",
-    noWorker: "Постановка задач отключена. Перед анализом запустите настроенный worker оператора.",
+    noWorker:
+      "Постановка задач отключена. Перед анализом запустите настроенный обработчик задач оператора.",
     safety:
       "Действия требуют проверенного сервером плана. Консоль не устанавливает патчи и не закрывает находки.",
     pending: "Запрос выполняется…",
@@ -476,7 +496,10 @@ export function OperatorConsole({
     retry: false,
     staleTime: 0,
   });
+  const sourceReturnFocus = useRef<HTMLElement | null>(null);
   const source = (citation: Citation, device?: string, finding?: string) => {
+    sourceReturnFocus.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setSourceRequest({ citation, device, finding });
     // Clicking the same citation must recheck current authorization/freshness.
     if (sourceRequest?.citation === citation) void evidence.refetch();
@@ -506,7 +529,7 @@ export function OperatorConsole({
             <strong>{c.tenant}:</strong> {tenant} · <strong>{c.actor}:</strong> {actor}
           </p>
           <p className="font-mono">
-            {status.data.provider} / {status.data.model}
+            {operatorProviderLabel(language, status.data.provider)} / {status.data.model}
           </p>
           <p>{status.data.external_inference ? c.hosted : c.local}</p>
           <p>
@@ -515,7 +538,9 @@ export function OperatorConsole({
               : status.data.runtime_status === "unavailable"
                 ? c.runtimeUnavailable
                 : c.runtime}{" "}
-            <span className="font-mono">{status.data.runtime_status}</span>
+            <span className="font-mono">
+              {operatorStatusLabel(language, status.data.runtime_status)}
+            </span>
           </p>
           {status.data.runtime_status === "ready" && (
             <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
@@ -554,8 +579,11 @@ export function OperatorConsole({
               {c.retry}
             </Button>
           )}
-          <p className="text-amber-700 dark:text-amber-300">
-            {c.quality} <span className="font-mono">{status.data.quality_status}</span>
+          <p className="text-warning">
+            {c.quality}{" "}
+            <span className="font-mono">
+              {operatorStatusLabel(language, status.data.quality_status)}
+            </span>
           </p>
           <p>{c.safety}</p>
         </CardContent>
@@ -696,6 +724,8 @@ export function OperatorConsole({
                 <Task
                   key={task.task_id}
                   task={task}
+                  tenant={tenant}
+                  actor={actor}
                   c={c}
                   canOperate={canOperate}
                   cancelling={cancel.isPending}
@@ -731,20 +761,30 @@ export function OperatorConsole({
         draft={draft}
       />
       {sourceRequest && (
-        <Card>
-          <CardHeader>
-            <CardTitle>{c.source}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {evidence.isPending && <p role="status">{c.loading}</p>}
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setSourceRequest(null);
+          }}
+        >
+          <DialogContent
+            className="max-h-[85vh] overflow-y-auto sm:max-w-2xl"
+            onCloseAutoFocus={(event) => {
+              event.preventDefault();
+              sourceReturnFocus.current?.focus();
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>{c.source}</DialogTitle>
+              <DialogDescription>{c.sourceHelp}</DialogDescription>
+            </DialogHeader>
+            {evidence.isFetching && <p role="status">{c.loading}</p>}
             {evidence.isError && <p role="alert">{c.failed}</p>}
-            {evidence.data && (
-              <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-4 text-xs">
-                {JSON.stringify(evidence.data, null, 2)}
-              </pre>
+            {evidence.data && !evidence.isFetching && !evidence.isError && (
+              <SourceEvidenceCard data={evidence.data} language={language} />
             )}
-          </CardContent>
-        </Card>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   );
@@ -943,7 +983,7 @@ function PlannerPanel({
                   >
                     {["safe", "balanced", "fast", "test"].map((mode) => (
                       <option key={mode} value={mode}>
-                        {mode}
+                        {operatorProfileLabel(language, mode)}
                       </option>
                     ))}
                   </select>
@@ -1080,14 +1120,29 @@ function ComparePanel({
         {comparison.data && (
           <div className="space-y-2 text-sm">
             <p role="status">
-              {comparison.data.status} · {comparison.data.quality_status}
+              {operatorStatusLabel(language, comparison.data.status)} ·{" "}
+              {operatorStatusLabel(language, comparison.data.quality_status)}
             </p>
             <p>{comparison.data.summary}</p>
-            <p className="text-muted-foreground">{comparison.data.reason}</p>
+            <ReasonText value={comparison.data.reason} c={c} />
             <dl className="grid grid-cols-2 gap-2 md:grid-cols-4">
               {Object.entries(comparison.data.counts).map(([key, value]) => (
                 <div key={key} className="rounded border p-3">
-                  <dt className="text-xs text-muted-foreground">{key}</dt>
+                  <dt className="text-xs text-muted-foreground">
+                    {language === "ru"
+                      ? (
+                          {
+                            hosts_added: "Новые хосты",
+                            hosts_removed: "Не обнаруженные повторно хосты",
+                            ports_added: "Новые порты",
+                            ports_removed: "Не обнаруженные повторно порты",
+                            vulns_added: "Новые находки",
+                            vulns_removed: "Не обнаруженные повторно находки",
+                            events: "События",
+                          } as Record<string, string>
+                        )[key] || "Другие изменения"
+                      : key}
+                  </dt>
                   <dd className="font-mono text-lg">{value}</dd>
                 </div>
               ))}
@@ -1097,14 +1152,115 @@ function ComparePanel({
                 {comparison.data.diff_source.artifact} · {comparison.data.diff_source.source_hash}
               </p>
             )}
-            <p className="text-amber-700 dark:text-amber-300">{c.removal}</p>
+            <p className="text-warning">{c.removal}</p>
           </div>
         )}
       </CardContent>
     </Card>
   );
 }
+function ReasonText({ value, c }: { value?: string | null; c: Copy }) {
+  const language = useT().locale;
+  if (!value) return null;
+  if (language === "en" || /[А-Яа-яЁё]/.test(value))
+    return <p className="text-sm text-muted-foreground">{value}</p>;
+  const reasons: Record<string, string> = {
+    no_assessed_matches: "Нет проверенных совпадений для подбора исправления.",
+    result_truncated: "Показана только часть результатов; уточните выборку.",
+    operator_source_unavailable: "Источник недоступен или ещё не опубликован.",
+    operator_source_changed: "Источник изменился; проверьте свежие данные.",
+    operator_incomplete_response: "Модель вернула незавершённый ответ.",
+    operator_invalid_model_output: "Ответ модели не прошёл проверку формата.",
+    operator_upstream_rejected: "Провайдер модели отклонил запрос.",
+    missing_inventory: "Нет данных инвентаризации устройства.",
+    unsupported_distro: "Дистрибутив не поддерживается для подбора исправления.",
+    inventory_stale: "Данные инвентаризации устарели.",
+    no_eligible_findings: "Нет находок с достаточными исходными данными.",
+    no_reviewed_vendor_workaround_source:
+      "Нет проверенного источника обходного решения поставщика.",
+  };
+  return (
+    <div className="space-y-1 text-sm">
+      <p>
+        {reasons[value] ||
+          "Для оценки результата проверьте исходные данные и технические подробности."}
+      </p>
+      <details className="text-xs text-muted-foreground">
+        <summary className="cursor-pointer">{c.details}</summary>
+        <p className="break-all">{value}</p>
+      </details>
+    </div>
+  );
+}
+
+function RecommendationSource({
+  tenant,
+  actor,
+  item,
+  citation,
+  c,
+  onSource,
+}: {
+  tenant: string;
+  actor: string;
+  item: { source_id: string; category: string; proposed_priority: string; next_steps: string[] };
+  citation?: Citation;
+  c: Copy;
+  onSource: (citation: Citation) => void;
+}) {
+  // Display names come from the same authorized, hash-bound source as the dialog,
+  // never from model-generated prose. Opening still performs a fresh access check.
+  const preview = useQuery({
+    queryKey: [...operatorKey(tenant, actor), "answer-source-label", citation],
+    queryFn: ({ signal }) => operatorApi.evidence(tenant, citation!, signal),
+    enabled: Boolean(citation),
+    retry: false,
+    staleTime: 0,
+  });
+  const data = !preview.isFetching && !preview.isError ? preview.data : undefined;
+  const context = data?.context as Record<string, unknown> | undefined;
+  const origin = data?.source_display as
+    { findings?: Record<string, unknown>[]; match_count?: number } | undefined;
+  const finding = origin?.match_count === 1 ? origin.findings?.[0] : undefined;
+  const host = typeof context?.host === "string" ? context.host : "";
+  const port =
+    typeof context?.port === "number" &&
+    Number.isInteger(context.port) &&
+    context.port >= 0 &&
+    context.port <= 65535
+      ? String(context.port)
+      : "";
+  const labels = answerLabels(useT().locale, item.category, item.proposed_priority, finding);
+  const title = labels.title;
+  const heading = [host, port ? `:${port}` : ""].join("");
+  return (
+    <button
+      type="button"
+      disabled={!citation}
+      onClick={() => citation && onSource(citation)}
+      className="block w-full space-y-2 rounded border bg-muted p-3 text-left text-sm hover:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+    >
+      <span className="block break-words font-semibold">
+        {[heading, title].filter(Boolean).join(" · ") || c.source}
+      </span>
+      <span className="block text-xs text-muted-foreground">
+        {labels.category} · {labels.priority}
+      </span>
+      {item.next_steps.map((step, index) => (
+        <span className="block" key={index}>
+          • {step}
+        </span>
+      ))}
+      <span className="block text-xs text-primary">
+        {preview.isFetching ? c.loading : preview.isError ? c.failed : c.openSource}
+      </span>
+    </button>
+  );
+}
+
 function Task({
+  tenant,
+  actor,
   task,
   c,
   canOperate,
@@ -1113,6 +1269,8 @@ function Task({
   onSource,
   onAdopt,
 }: {
+  tenant: string;
+  actor: string;
   task: OperatorTask;
   c: Copy;
   canOperate: boolean;
@@ -1121,24 +1279,28 @@ function Task({
   onSource: (citation: Citation) => void;
   onAdopt: (plan: OperatorPlan) => void;
 }) {
+  const locale = useT().locale;
   const answer = task.result?.analysis ?? task.result?.answer?.answer;
   const plan = task.result?.plan;
   return (
     <article className="space-y-3 rounded-lg border p-4">
       <p className="text-sm font-semibold">
-        {task.kind === "plan_request" ? c.planner : `${task.kind} · ${task.run_id}`} ·{" "}
-        <span role="status">{task.status}</span>
+        {task.kind === "plan_request"
+          ? c.planner
+          : `${operatorStatusLabel(locale, task.kind)} · ${task.run_id}`}{" "}
+        · <span role="status">{operatorStatusLabel(locale, task.status)}</span>
       </p>
       {task.cancel_requested && <p className="text-sm">{c.cancelling}</p>}
       {task.error && (
-        <p role="alert" className="text-sm">
-          {task.error}
-        </p>
+        <div role="alert" className="text-sm">
+          <ReasonText value={task.error} c={c} />
+        </div>
       )}
       {plan && (
         <div className="space-y-3 rounded border bg-muted/30 p-3 text-sm">
           <p className="font-semibold">
-            {toolLabel(plan.tool, c)} · {plan.status} · {plan.quality_status}
+            {toolLabel(plan.tool, c)} · {operatorStatusLabel(locale, plan.status)} ·{" "}
+            {operatorStatusLabel(locale, plan.quality_status)}
           </p>
           <p>{plan.effect_executed === false ? c.noEffect : c.effectUnexpected}</p>
           {plan.tool === "abstain" ? (
@@ -1159,32 +1321,38 @@ function Task({
       {answer && (
         <>
           <p className="text-sm font-medium">
-            {answer.status} · {task.result?.quality_status}
+            {operatorStatusLabel(locale, answer.status)} ·{" "}
+            {operatorStatusLabel(locale, task.result?.quality_status)}
           </p>
           <p className="whitespace-pre-wrap text-sm">{answer.summary}</p>
-          <p className="text-sm text-muted-foreground">{answer.reason}</p>
+          <ReasonText value={answer.reason} c={c} />
           {answer.recommendations?.map((item, index) => (
-            <div key={`${index}:${item.source_id}`} className="rounded bg-muted p-3 text-sm">
-              <p>
-                {item.source_id}: {item.category} · {item.proposed_priority}
-              </p>
-              <ul className="list-inside list-disc">
-                {item.next_steps.map((step, stepIndex) => (
-                  <li key={`${stepIndex}:${step}`}>{step}</li>
-                ))}
-              </ul>
-            </div>
+            <RecommendationSource
+              key={`${index}:${item.source_id}`}
+              tenant={tenant}
+              actor={actor}
+              item={item}
+              citation={answer.citations?.find((citation) => citation.source_id === item.source_id)}
+              c={c}
+              onSource={onSource}
+            />
           ))}
-          {answer.citations?.map((citation, index) => (
-            <Button
-              key={`${index}:${citation.source_id}`}
-              size="sm"
-              variant="outline"
-              onClick={() => onSource(citation)}
-            >
-              {c.openSource}: {citation.source_id} · {citation.status}
-            </Button>
-          ))}
+          {answer.citations
+            ?.filter(
+              (citation) =>
+                !answer.recommendations?.some((item) => item.source_id === citation.source_id),
+            )
+            .map((citation, index) => (
+              <Button
+                key={`${index}:${citation.source_id}`}
+                size="sm"
+                variant="outline"
+                onClick={() => onSource(citation)}
+              >
+                {c.openSource}: {citation.source_id} ·{" "}
+                {operatorStatusLabel(locale, citation.status)}
+              </Button>
+            ))}
         </>
       )}
       {activeTask(task) && (
@@ -1218,6 +1386,7 @@ function ActionPanel({
   history: OperatorProposal[];
   draft?: AdoptedPlan;
 }) {
+  const language = useT().locale;
   const proposalStorage = `operator-proposal:${JSON.stringify([tenant, actor, session])}`;
   const active = useActiveMount();
   const [proposalId, setProposalId] = useState(() => remembered(proposalStorage));
@@ -1344,7 +1513,8 @@ function ActionPanel({
               <option value="">—</option>
               {history.map((item) => (
                 <option value={item.proposal_id} key={item.proposal_id}>
-                  {item.action} · {item.status} · {item.proposal_id}
+                  {operatorActionLabel(language, item.action)} ·{" "}
+                  {operatorStatusLabel(language, item.status)} · {item.proposal_id}
                 </option>
               ))}
             </select>
@@ -1407,10 +1577,10 @@ function ActionPanel({
                   value={mode}
                   onChange={(event) => setMode(event.target.value)}
                 >
-                  <option value="safe">safe</option>
-                  <option value="balanced">balanced</option>
-                  <option value="fast">fast</option>
-                  <option value="test">test</option>
+                  <option value="safe">{operatorProfileLabel(language, "safe")}</option>
+                  <option value="balanced">{operatorProfileLabel(language, "balanced")}</option>
+                  <option value="fast">{operatorProfileLabel(language, "fast")}</option>
+                  <option value="test">{operatorProfileLabel(language, "test")}</option>
                 </select>
               </label>
               <label className="space-y-2 text-sm">
@@ -1467,8 +1637,9 @@ function ActionPanel({
           <section className="space-y-3 rounded-lg border p-4" aria-label={c.preview}>
             <h3 className="font-semibold">{c.preview}</h3>
             <p className="text-sm">
-              {c.tenant}: {data.tenant_id} · {c.actor}: {data.username ?? actor} · {data.action} ·{" "}
-              {data.status}
+              {c.tenant}: {data.tenant_id} · {c.actor}: {data.username ?? actor} ·{" "}
+              {operatorActionLabel(language, data.action)} ·{" "}
+              {operatorStatusLabel(language, data.status)}
             </p>
             <PlanArguments proposal={data} c={c} />
             <p className="break-all text-xs">
@@ -1499,7 +1670,7 @@ function ActionPanel({
             </Button>
             {data.execution && (
               <div className="space-y-2 text-sm">
-                <p>{data.execution.status}</p>
+                <p>{operatorStatusLabel(language, data.execution.status)}</p>
                 {resultJobId && (
                   <a
                     className="inline-flex rounded border px-3 py-2 font-medium underline-offset-4 hover:underline"
@@ -1616,6 +1787,7 @@ function PlanArguments({ proposal, c }: { proposal: OperatorProposal; c: Copy })
 }
 
 function ArgumentRows({ arguments: args, c }: { arguments: Record<string, unknown>; c: Copy }) {
+  const language = useT().locale;
   const labels: Record<string, string> = {
     ranges: c.targets,
     domains: c.domains,
@@ -1632,11 +1804,18 @@ function ArgumentRows({ arguments: args, c }: { arguments: Record<string, unknow
     device_id: c.device,
   };
   return (
-    <PlanRows c={c} rows={Object.entries(args).map(([key, item]) => [labels[key] ?? key, item])} />
+    <PlanRows
+      c={c}
+      rows={Object.entries(args).map(([key, item]) => [
+        labels[key] ?? key,
+        key === "mode" && typeof item === "string" ? operatorProfileLabel(language, item) : item,
+      ])}
+    />
   );
 }
 
 function PlanImpact({ proposal, c }: { proposal: OperatorProposal; c: Copy }) {
+  const language = useT().locale;
   const impact =
     proposal.impact && typeof proposal.impact === "object"
       ? (proposal.impact as Record<string, unknown>)
@@ -1672,7 +1851,8 @@ function PlanImpact({ proposal, c }: { proposal: OperatorProposal; c: Copy }) {
     rows.push([c.udp, impact.ports_udp === "server_default" ? null : impact.ports_udp]);
   if ("stopping_is_asynchronous" in impact)
     rows.push([c.asynchronous, impact.stopping_is_asynchronous]);
-  if ("finding_state" in impact) rows.push([c.findingState, impact.finding_state]);
+  if ("finding_state" in impact)
+    rows.push([c.findingState, operatorStatusLabel(language, String(impact.finding_state))]);
   if ("approved" in scope) rows.push([c.scopeApproval, scope.approved]);
   if (impact.policy === null) rows.push([c.policy, null]);
   const policyLabels: Record<string, string> = {
@@ -1685,7 +1865,13 @@ function PlanImpact({ proposal, c }: { proposal: OperatorProposal; c: Copy }) {
     avoid_ports: c.avoidPorts,
   };
   for (const [key, label] of Object.entries(policyLabels))
-    if (key in policy) rows.push([label, policy[key]]);
+    if (key in policy)
+      rows.push([
+        label,
+        key === "profile" && typeof policy[key] === "string"
+          ? operatorProfileLabel(language, policy[key] as string)
+          : policy[key],
+      ]);
   // Server data is untrusted: tolerate null/non-object rows inside entries.
   const entries = (Array.isArray(scope.entries) ? scope.entries : []).filter(
     (entry): entry is { effect: string; kind: string; value: string } =>
@@ -1701,7 +1887,8 @@ function PlanImpact({ proposal, c }: { proposal: OperatorProposal; c: Copy }) {
           <ul className="list-inside list-disc">
             {entries.map((entry, index) => (
               <li key={index}>
-                {entry.effect} · {entry.kind} · {entry.value}
+                {operatorStatusLabel(language, entry.effect)} ·{" "}
+                {operatorStatusLabel(language, entry.kind)} · {entry.value}
               </li>
             ))}
           </ul>
@@ -1802,8 +1989,10 @@ function RemediationPanel({
         {result.data && (
           <>
             <p role="status" className="text-sm">
-              {result.data.state} · {result.data.quality_status} · {result.data.reason}
+              {operatorStatusLabel(language, result.data.state)} ·{" "}
+              {operatorStatusLabel(language, result.data.quality_status)}
             </p>
+            <ReasonText value={result.data.reason} c={c} />
             {result.data.truncated && <p>{c.limited}</p>}
             {!result.data.items.length && (
               <p className="text-sm text-muted-foreground">{c.noFixes}</p>
@@ -1815,7 +2004,7 @@ function RemediationPanel({
               >
                 <h3 className="font-semibold">
                   {item.kind === "configuration_hardening" ? c.configuration : item.package} ·{" "}
-                  {item.status}
+                  {operatorStatusLabel(language, item.status)}
                 </h3>
                 {item.kind === "configuration_hardening" ? (
                   <>
@@ -1849,7 +2038,7 @@ function RemediationPanel({
                 )}
                 {item.cve_ids.length > 0 && <p>{item.cve_ids.join(", ")}</p>}
                 <p className="text-muted-foreground">
-                  {c.verifyMethod}: {item.verification.method}
+                  {c.verifyMethod}: {operatorStatusLabel(language, item.verification.method)}
                 </p>
                 {item.upgrade_command && (
                   <>
@@ -1884,7 +2073,7 @@ function RemediationPanel({
                                 ? c.unknown
                                 : item.plan![step].status === "manual_approval_required"
                                   ? c.manualApproval
-                                  : item.plan![step].status}
+                                  : operatorStatusLabel(language, item.plan![step].status)}
                             </dt>
                             <dd className="mt-1 text-muted-foreground">
                               {item.plan![step]?.[language]}
@@ -1900,13 +2089,17 @@ function RemediationPanel({
                         {!item.plan.vendor_workaround ||
                         item.plan.vendor_workaround.status === "unsupported"
                           ? c.noWorkaround
-                          : item.plan.vendor_workaround.status}
+                          : operatorStatusLabel(language, item.plan.vendor_workaround.status)}
                       </p>
                       <details className="text-xs text-muted-foreground">
                         <summary className="cursor-pointer">{c.details}</summary>
                         <p>{item.plan.runbook_id}</p>
-                        <p className="break-all">runbook SHA-256: {item.plan.runbook_sha256}</p>
-                        <p className="break-all">plan SHA-256: {item.plan.plan_sha256}</p>
+                        <p className="break-all">
+                          {c.operatorRunbook} SHA-256: {item.plan.runbook_sha256}
+                        </p>
+                        <p className="break-all">
+                          {c.preview} SHA-256: {item.plan.plan_sha256}
+                        </p>
                       </details>
                     </section>
                   )}
@@ -1934,7 +2127,7 @@ function RemediationPanel({
                       }
                     >
                       {c.openSource}: {citation.advisory_id ?? citation.source_id} ·{" "}
-                      {citation.status}
+                      {operatorStatusLabel(language, citation.status)}
                     </Button>
                   </div>
                 ))}

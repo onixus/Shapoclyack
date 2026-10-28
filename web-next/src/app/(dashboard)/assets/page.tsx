@@ -1,4 +1,6 @@
 "use client";
+import { assetText } from "@/lib/asset-presentation";
+import { SystemTechnicalDetails } from "@/components/system-technical-details";
 
 import Link from "next/link";
 import { Suspense, useMemo, useState } from "react";
@@ -95,15 +97,26 @@ function AssetsInner() {
           const heading = asset.primary_identifier || asset.asset_id;
           const secondary = asset.primary_fqdn && asset.primary_ip ? asset.primary_ip : null;
           return (
-            <Link href={assetDetailHref(asset.asset_id)} className="group space-y-0.5">
-              <div className="flex items-center gap-1.5 font-mono font-bold text-primary group-hover:underline">
-                <span>{heading}</span>
-                <ArrowUpRight className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100" />
-              </div>
-              <span className="block font-mono text-xs text-muted-foreground">
-                {secondary ?? identifierCount(t, asset.identifier_count)}
-              </span>
-            </Link>
+            <div>
+              <a href={assetDetailHref(asset.asset_id)} className="group inline-block space-y-0.5">
+                <div className="flex items-center gap-1.5 font-mono font-bold text-primary group-hover:underline">
+                  <span>{heading}</span>
+                  <ArrowUpRight className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100" />
+                </div>
+                <span className="block font-mono text-xs text-muted-foreground">
+                  {secondary ?? identifierCount(t, asset.identifier_count)}
+                </span>
+              </a>
+              <SystemTechnicalDetails
+                data={{
+                  asset_id: asset.asset_id,
+                  status: asset.status,
+                  environment: asset.environment,
+                  exposure_level: asset.exposure_level,
+                  asset_criticality: asset.asset_criticality,
+                }}
+              />
+            </div>
           );
         },
       },
@@ -122,10 +135,12 @@ function AssetsInner() {
           }
           return (
             <span className="text-xs text-muted-foreground">
-              {assetRiskLabel({
-                estate_risk: row.original.estate_risk,
-                open_total: row.original.open_findings,
-              })}
+              {t.label(
+                assetRiskLabel({
+                  estate_risk: row.original.estate_risk,
+                  open_total: row.original.open_findings,
+                }),
+              )}
             </span>
           );
         },
@@ -190,10 +205,7 @@ function AssetsInner() {
         header: t("col.criticality"),
         cell: ({ row }) =>
           row.original.asset_criticality != null ? (
-            <StatusBadge
-              value={String(row.original.asset_criticality)}
-              map={ASSET_CRITICALITY}
-            />
+            <StatusBadge value={String(row.original.asset_criticality)} map={ASSET_CRITICALITY} />
           ) : (
             <span className="text-xs text-muted-foreground">{t("common.unset")}</span>
           ),
@@ -243,13 +255,32 @@ function AssetsInner() {
             {assetsQuery.isFetching ? " · Refreshing inventory stream…" : ""}
           </p>
         </div>
-        <div className="flex flex-wrap gap-2"><Button variant="outline" asChild><Link href="/assets/groups">Dynamic groups</Link></Button><AssetImportButton /></div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" asChild>
+            <Link href="/assets/groups">{assetText(t.locale, "Dynamic groups")}</Link>
+          </Button>
+          <AssetImportButton />
+        </div>
       </div>
 
-      <SavedViews page="assets" state={{ version: 1, search: pagination.search, sort: pagination.sort ?? null, order: pagination.order, filters: { status, unowned } }} onApply={(view) => {
-        pagination.setSearch(view.search); pagination.setSort(view.sort ?? undefined, view.order);
-        setStatus((view.filters.status || "") as AssetStatus | ""); setUnowned(view.filters.unowned === true); setSelected([]); pagination.reset();
-      }} />
+      <SavedViews
+        page="assets"
+        state={{
+          version: 1,
+          search: pagination.search,
+          sort: pagination.sort ?? null,
+          order: pagination.order,
+          filters: { status, unowned },
+        }}
+        onApply={(view) => {
+          pagination.setSearch(view.search);
+          pagination.setSort(view.sort ?? undefined, view.order);
+          setStatus((view.filters.status || "") as AssetStatus | "");
+          setUnowned(view.filters.unowned === true);
+          setSelected([]);
+          pagination.reset();
+        }}
+      />
       <DataTable
         columns={columns}
         data={data}
@@ -272,7 +303,9 @@ function AssetsInner() {
                 <SelectValue placeholder={t("page.assets.filterAllStatuses")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={STATUS_FILTER_ALL}>{t("page.assets.filterAllStatuses")}</SelectItem>
+                <SelectItem value={STATUS_FILTER_ALL}>
+                  {t("page.assets.filterAllStatuses")}
+                </SelectItem>
                 <SelectItem value="active">{t.label("active")}</SelectItem>
                 <SelectItem value="stale">{t.label("stale")}</SelectItem>
                 <SelectItem value="decommissioned">{t.label("decommissioned")}</SelectItem>
@@ -300,6 +333,10 @@ function AssetsInner() {
         emptyMessage={t("page.assets.empty")}
         selection={{
           rowId: (row) => row.asset_id,
+          selectRowLabel: (id) =>
+            t.locale === "ru"
+              ? `Выбрать актив ${data.find((row) => row.asset_id === id)?.primary_identifier || id}`
+              : `Select ${id}`,
           selected,
           onChange: setSelected,
           max: MAX_BULK_IDS,
@@ -333,4 +370,3 @@ function AssetsInner() {
     </div>
   );
 }
-

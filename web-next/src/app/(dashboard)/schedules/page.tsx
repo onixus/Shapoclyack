@@ -1,4 +1,6 @@
 "use client";
+import { scanIntentLabel, scanModeLabel } from "@/lib/scan-labels";
+import { ScanTechnicalDetails } from "@/components/scans/scan-technical-details";
 
 import { FormEvent, useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
@@ -7,6 +9,7 @@ import { Pencil, Plus, Timer, Trash2 } from "lucide-react";
 import { MaintenancePanel } from "@/components/scans/maintenance-panel";
 import { SurfaceBadge } from "@/components/scans/surface-badge";
 import { scheduleSurface, type ScanSurface } from "@/lib/scan-surface";
+import { translate, type Locale } from "@/lib/i18n";
 import { useT } from "@/lib/i18n";
 import {
   AlertDialog,
@@ -73,17 +76,29 @@ const EMPTY_FORM = {
   portsUdp: "",
 };
 
-function targetsSummary(schedule: ScanSchedule): string {
+function targetsSummary(schedule: ScanSchedule, locale: Locale): string {
   const parts: string[] = [];
-  if (schedule.targets.ranges) parts.push(schedule.targets.ranges.split(/\s+/).filter(Boolean).length + " range(s)");
-  if (schedule.targets.domains) parts.push(schedule.targets.domains.split(/\s+/).filter(Boolean).length + " domain(s)");
-  if (!parts.length) return "server defaults";
+  if (schedule.targets.ranges)
+    parts.push(
+      translate(locale, "scanCopy.rangeCount", {
+        count: schedule.targets.ranges.split(/\s+/).filter(Boolean).length,
+      }),
+    );
+  if (schedule.targets.domains)
+    parts.push(
+      translate(locale, "scanCopy.domainCount", {
+        count: schedule.targets.domains.split(/\s+/).filter(Boolean).length,
+      }),
+    );
+  if (!parts.length) return translate(locale, "scanCopy.defaults");
   return parts.join(", ");
 }
 
-function cadenceSummary(schedule: ScanSchedule): string {
-  if (schedule.cron) return `cron: ${schedule.cron}`;
-  if (schedule.interval_seconds) return `every ${schedule.interval_seconds}s`;
+function cadenceSummary(schedule: ScanSchedule, locale: Locale): string {
+  if (schedule.cron)
+    return locale === "ru" ? translate(locale, "scanCopy.calendar") : `cron: ${schedule.cron}`;
+  if (schedule.interval_seconds)
+    return translate(locale, "scanCopy.every", { seconds: schedule.interval_seconds });
   return "—";
 }
 
@@ -144,7 +159,8 @@ export default function SchedulesPage() {
     return {
       name: form.name.trim(),
       cron: form.cadenceKind === "cron" ? form.cron.trim() : null,
-      interval_seconds: form.cadenceKind === "interval" ? Number(form.intervalSeconds) || null : null,
+      interval_seconds:
+        form.cadenceKind === "interval" ? Number(form.intervalSeconds) || null : null,
       mode: form.mode,
       intent: form.intent || null,
       surface: form.surface || null,
@@ -179,7 +195,17 @@ export default function SchedulesPage() {
         cell: ({ row }) => (
           <div>
             <p className="font-semibold text-foreground">{row.original.name}</p>
-            <p className="font-mono text-xs text-muted-foreground">{row.original.schedule_id}</p>
+            <p className="text-xs text-muted-foreground">
+              {scanIntentLabel(t.locale, row.original.scan_options.intent)} ·{" "}
+              {scanModeLabel(t.locale, row.original.scan_options.mode)}
+            </p>
+            <ScanTechnicalDetails
+              id={row.original.schedule_id}
+              intent={row.original.scan_options.intent || "legacy"}
+              mode={row.original.scan_options.mode}
+              cron={row.original.cron}
+              interval={row.original.interval_seconds}
+            />
           </div>
         ),
       },
@@ -187,7 +213,12 @@ export default function SchedulesPage() {
         id: "enabled",
         header: t("col.status"),
         accessorFn: (schedule) => (schedule.enabled ? "enabled" : "disabled"),
-        cell: ({ row }) => <StatusBadge value={row.original.enabled ? "enabled" : "disabled"} map={SCHEDULE_ENABLED_STATUS} />,
+        cell: ({ row }) => (
+          <StatusBadge
+            value={row.original.enabled ? "enabled" : "disabled"}
+            map={SCHEDULE_ENABLED_STATUS}
+          />
+        ),
       },
       {
         id: "surface",
@@ -199,13 +230,19 @@ export default function SchedulesPage() {
         id: "cadence",
         header: t("col.cadence"),
         enableSorting: false,
-        cell: ({ row }) => <span className="font-mono text-xs text-foreground">{cadenceSummary(row.original)}</span>,
+        cell: ({ row }) => (
+          <span className="font-mono text-xs text-foreground">
+            {cadenceSummary(row.original, t.locale)}
+          </span>
+        ),
       },
       {
         id: "targets",
         header: t("col.targets"),
         enableSorting: false,
-        cell: ({ row }) => <span className="text-xs text-foreground">{targetsSummary(row.original)}</span>,
+        cell: ({ row }) => (
+          <span className="text-xs text-foreground">{targetsSummary(row.original, t.locale)}</span>
+        ),
       },
       {
         accessorKey: "last_run_at",
@@ -213,7 +250,9 @@ export default function SchedulesPage() {
         sortingFn: "datetime",
         cell: ({ row }) =>
           row.original.last_run_at ? (
-            <span className="font-mono text-xs text-muted-foreground">{format(new Date(row.original.last_run_at), "yyyy-MM-dd HH:mm")}</span>
+            <span className="font-mono text-xs text-muted-foreground">
+              {format(new Date(row.original.last_run_at), "yyyy-MM-dd HH:mm")}
+            </span>
           ) : (
             <span className="text-muted-foreground">—</span>
           ),
@@ -224,7 +263,9 @@ export default function SchedulesPage() {
         sortingFn: "datetime",
         cell: ({ row }) =>
           row.original.next_run_at ? (
-            <span className="font-mono text-xs text-muted-foreground">{format(new Date(row.original.next_run_at), "yyyy-MM-dd HH:mm")}</span>
+            <span className="font-mono text-xs text-muted-foreground">
+              {format(new Date(row.original.next_run_at), "yyyy-MM-dd HH:mm")}
+            </span>
           ) : (
             <span className="text-muted-foreground">—</span>
           ),
@@ -244,7 +285,10 @@ export default function SchedulesPage() {
                 className="h-7 border-border bg-muted text-xs text-foreground hover:bg-muted"
                 disabled={updateMutation.isPending}
                 onClick={() =>
-                  updateMutation.mutate({ scheduleId: schedule.schedule_id, body: { enabled: !schedule.enabled } })
+                  updateMutation.mutate({
+                    scheduleId: schedule.schedule_id,
+                    body: { enabled: !schedule.enabled },
+                  })
                 }
               >
                 {schedule.enabled ? t("common.disable") : t("common.enable")}
@@ -255,7 +299,7 @@ export default function SchedulesPage() {
                 variant="outline"
                 className="h-7 w-7 border-border bg-muted p-0 text-foreground hover:bg-muted"
                 onClick={() => openEdit(schedule)}
-                aria-label="Edit schedule"
+                aria-label={t("scanCopy.editAction")}
               >
                 <Pencil className="h-3.5 w-3.5" />
               </Button>
@@ -266,7 +310,7 @@ export default function SchedulesPage() {
                   variant="outline"
                   className="h-7 w-7 border-rose-300 dark:border-rose-900/50 bg-muted p-0 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:bg-rose-950"
                   onClick={() => setDeleteTarget(schedule)}
-                  aria-label="Delete schedule"
+                  aria-label={t("scanCopy.deleteAction")}
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
@@ -282,10 +326,10 @@ export default function SchedulesPage() {
   if (!canOperate) {
     return (
       <div className="space-y-2 rounded-xl border border-border bg-card p-8 text-center">
-        <h1 className="text-2xl font-bold tracking-tight text-foreground">{t("page.schedules.title")}</h1>
-        <p className="text-xs text-muted-foreground">
-          {t("page.schedules.denied")}
-        </p>
+        <h1 className="text-2xl font-bold tracking-tight text-foreground">
+          {t("page.schedules.title")}
+        </h1>
+        <p className="text-xs text-muted-foreground">{t("page.schedules.denied")}</p>
       </div>
     );
   }
@@ -298,7 +342,9 @@ export default function SchedulesPage() {
             <Timer className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-foreground">{t("page.schedules.title")}</h1>
+            <h1 className="text-2xl font-extrabold tracking-tight text-foreground">
+              {t("page.schedules.title")}
+            </h1>
             <p className="text-xs text-muted-foreground">
               {t("page.schedules.subtitle")}
               {isFetching ? t("common.refreshing") : ""}
@@ -319,12 +365,14 @@ export default function SchedulesPage() {
           <DialogTrigger asChild>
             <Button className="gap-2" onClick={openCreate}>
               <Plus className="h-4 w-4" />
-              Create Schedule
+              {t("scanCopy.create")}
             </Button>
           </DialogTrigger>
-          <DialogContent className="bg-card border-border text-foreground max-w-2xl">
+          <DialogContent className="bg-card border-border text-foreground max-w-2xl max-h-[90dvh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle className="text-foreground">{editing ? "Edit Schedule" : "Create Schedule"}</DialogTitle>
+              <DialogTitle className="text-foreground">
+                {editing ? t("scanCopy.edit") : t("scanCopy.create")}
+              </DialogTitle>
               <DialogDescription className="text-xs text-muted-foreground">
                 {t("prose.recurringScansRunThroughThe")}
               </DialogDescription>
@@ -332,18 +380,25 @@ export default function SchedulesPage() {
 
             <form onSubmit={onSubmit} className="space-y-5 py-2">
               <FieldGrid cols={2}>
-                <Field label="Name" htmlFor="schedule-name" reserveHint={false} className="sm:col-span-2">
+                <Field
+                  label={t("scanCopy.name")}
+                  htmlFor="schedule-name"
+                  reserveHint={false}
+                  className="sm:col-span-2"
+                >
                   <Input
                     id="schedule-name"
                     value={form.name}
                     onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                    placeholder="Nightly external sweep"
+                    placeholder={t("scanCopy.namePlaceholder")}
                   />
                 </Field>
                 <Field label={t("ui.cadence")} htmlFor="schedule-cadence" reserveHint={false}>
                   <Select
                     value={form.cadenceKind}
-                    onValueChange={(value) => setForm((f) => ({ ...f, cadenceKind: value as CadenceKind }))}
+                    onValueChange={(value) =>
+                      setForm((f) => ({ ...f, cadenceKind: value as CadenceKind }))
+                    }
                   >
                     <SelectTrigger id="schedule-cadence">
                       <SelectValue />
@@ -365,7 +420,11 @@ export default function SchedulesPage() {
                     />
                   </Field>
                 ) : (
-                  <Field label={t("ui.intervalSeconds")} htmlFor="schedule-interval" reserveHint={false}>
+                  <Field
+                    label={t("ui.intervalSeconds")}
+                    htmlFor="schedule-interval"
+                    reserveHint={false}
+                  >
                     <Input
                       id="schedule-interval"
                       type="number"
@@ -376,11 +435,19 @@ export default function SchedulesPage() {
                     />
                   </Field>
                 )}
-                <Field label={t("surface.filterLabel")} htmlFor="schedule-surface" reserveHint={false} className="sm:col-span-2">
+                <Field
+                  label={t("surface.filterLabel")}
+                  htmlFor="schedule-surface"
+                  reserveHint={false}
+                  className="sm:col-span-2"
+                >
                   <Select
                     value={form.surface || "__auto__"}
                     onValueChange={(value) =>
-                      setForm((f) => ({ ...f, surface: value === "__auto__" ? "" : (value as ScanSurface) }))
+                      setForm((f) => ({
+                        ...f,
+                        surface: value === "__auto__" ? "" : (value as ScanSurface),
+                      }))
                     }
                   >
                     <SelectTrigger id="schedule-surface">
@@ -388,8 +455,12 @@ export default function SchedulesPage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="__auto__">{t("schedules.surfaceAuto")}</SelectItem>
-                      <SelectItem value="external">{t("surface.external")} — {t("surface.hint.external")}</SelectItem>
-                      <SelectItem value="internal">{t("surface.internal")} — {t("surface.hint.internal")}</SelectItem>
+                      <SelectItem value="external">
+                        {t("surface.external")} — {t("surface.hint.external")}
+                      </SelectItem>
+                      <SelectItem value="internal">
+                        {t("surface.internal")} — {t("surface.hint.internal")}
+                      </SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>
@@ -399,7 +470,10 @@ export default function SchedulesPage() {
                     onValueChange={(value) =>
                       setForm((f) => ({
                         ...f,
-                        intent: value === "__none__" ? "" : (value as NonNullable<CreateScheduleBody["intent"]>),
+                        intent:
+                          value === "__none__"
+                            ? ""
+                            : (value as NonNullable<CreateScheduleBody["intent"]>),
                       }))
                     }
                   >
@@ -407,23 +481,28 @@ export default function SchedulesPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="inventory">inventory — ports only</SelectItem>
-                      <SelectItem value="vuln">vuln — probe + high nuclei</SelectItem>
-                      <SelectItem value="full">full — assessment</SelectItem>
-                      <SelectItem value="delta">delta — full + incremental</SelectItem>
-                      <SelectItem value="__none__">legacy — manual flags</SelectItem>
+                      <SelectItem value="inventory">{t("launcher.intent.inventory")}</SelectItem>
+                      <SelectItem value="vuln">{t("launcher.intent.vuln")}</SelectItem>
+                      <SelectItem value="full">{t("launcher.intent.full")}</SelectItem>
+                      <SelectItem value="delta">{t("launcher.intent.delta")}</SelectItem>
+                      <SelectItem value="__none__">{t("launcher.intent.legacy")}</SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>
                 <Field label={t("ui.speedProfile")} htmlFor="schedule-mode" reserveHint={false}>
-                  <Select value={form.mode} onValueChange={(value) => setForm((f) => ({ ...f, mode: value as CreateScheduleBody["mode"] }))}>
+                  <Select
+                    value={form.mode}
+                    onValueChange={(value) =>
+                      setForm((f) => ({ ...f, mode: value as CreateScheduleBody["mode"] }))
+                    }
+                  >
                     <SelectTrigger id="schedule-mode">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="safe">safe (500 pps · low load)</SelectItem>
-                      <SelectItem value="balanced">balanced (2,000 pps · standard)</SelectItem>
-                      <SelectItem value="fast">fast (5,000 pps · aggressive)</SelectItem>
+                      <SelectItem value="safe">{t("launcher.mode.safe")}</SelectItem>
+                      <SelectItem value="balanced">{t("launcher.mode.balanced")}</SelectItem>
+                      <SelectItem value="fast">{t("launcher.mode.fast")}</SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>
@@ -432,7 +511,7 @@ export default function SchedulesPage() {
               <div className="space-y-2">
                 <FieldGrid cols={3} className="gap-y-2">
                   <CheckboxOption
-                    label="Delta discovery"
+                    label={t("scanCopy.deltaDiscovery")}
                     checked={form.intent === "delta" ? true : form.delta}
                     disabled={form.intent === "delta"}
                     onCheckedChange={(checked) => setForm((f) => ({ ...f, delta: checked }))}
@@ -445,20 +524,22 @@ export default function SchedulesPage() {
                     />
                   ) : null}
                   <CheckboxOption
-                    label="Notify"
+                    label={t("scanCopy.notify")}
                     checked={form.notify}
                     onCheckedChange={(checked) => setForm((f) => ({ ...f, notify: checked }))}
                   />
                 </FieldGrid>
                 {serviceBackend ? (
-                  <p className="text-xs text-muted-foreground">
-                    Full probe uses <code className="font-mono text-foreground">{serviceBackend}</code> backend
-                  </p>
+                  <p className="text-xs text-muted-foreground">{t("scanCopy.backendHint")}</p>
                 ) : null}
               </div>
 
               <FieldGrid cols={2}>
-                <Field label={t("ui.targetCidrRangesOptional")} htmlFor="schedule-ranges" reserveHint={false}>
+                <Field
+                  label={t("ui.targetCidrRangesOptional")}
+                  htmlFor="schedule-ranges"
+                  reserveHint={false}
+                >
                   <Textarea
                     id="schedule-ranges"
                     className="min-h-[72px] font-mono text-xs"
@@ -468,7 +549,11 @@ export default function SchedulesPage() {
                     spellCheck={false}
                   />
                 </Field>
-                <Field label={t("ui.targetDomainsOptional")} htmlFor="schedule-domains" reserveHint={false}>
+                <Field
+                  label={t("ui.targetDomainsOptional")}
+                  htmlFor="schedule-domains"
+                  reserveHint={false}
+                >
                   <Textarea
                     id="schedule-domains"
                     className="min-h-[72px] font-mono text-xs"
@@ -478,7 +563,12 @@ export default function SchedulesPage() {
                     spellCheck={false}
                   />
                 </Field>
-                <Field label="TCP ports override" htmlFor="schedule-ports" optional={t("launcher.optional")} reserveHint={false}>
+                <Field
+                  label={t("scanCopy.tcp")}
+                  htmlFor="schedule-ports"
+                  optional={t("launcher.optional")}
+                  reserveHint={false}
+                >
                   <Input
                     id="schedule-ports"
                     className="font-mono text-xs"
@@ -488,7 +578,12 @@ export default function SchedulesPage() {
                     spellCheck={false}
                   />
                 </Field>
-                <Field label="UDP ports override" htmlFor="schedule-ports-udp" optional={t("launcher.optional")} reserveHint={false}>
+                <Field
+                  label={t("scanCopy.udp")}
+                  htmlFor="schedule-ports-udp"
+                  optional={t("launcher.optional")}
+                  reserveHint={false}
+                >
                   <Input
                     id="schedule-ports-udp"
                     className="font-mono text-xs"
@@ -500,23 +595,32 @@ export default function SchedulesPage() {
                 </Field>
               </FieldGrid>
 
+              <ScanTechnicalDetails
+                intent={form.intent}
+                mode={form.mode}
+                backend={serviceBackend}
+                cron={form.cadenceKind === "cron" ? form.cron : null}
+                interval={form.cadenceKind === "interval" ? Number(form.intervalSeconds) : null}
+              />
               <DialogFooter>
                 <Button
                   type="submit"
                   disabled={
                     !form.name.trim() ||
-                    (form.cadenceKind === "cron" ? !form.cron.trim() : !Number(form.intervalSeconds)) ||
+                    (form.cadenceKind === "cron"
+                      ? !form.cron.trim()
+                      : !Number(form.intervalSeconds)) ||
                     createMutation.isPending ||
                     updateMutation.isPending
                   }
                 >
                   {editing
                     ? updateMutation.isPending
-                      ? "Saving…"
-                      : "Save Changes"
+                      ? t("scanCopy.saving")
+                      : t("scanCopy.save")
                     : createMutation.isPending
-                      ? "Creating…"
-                      : "Create Schedule"}
+                      ? t("scanCopy.creating")
+                      : t("scanCopy.create")}
                 </Button>
               </DialogFooter>
             </form>
@@ -545,23 +649,37 @@ export default function SchedulesPage() {
           onOffsetChange: pagination.setOffset,
           search: pagination.search,
           onSearchChange: pagination.setSearch,
-          sortableColumns: ["created_at", "name", "next_run_at", "last_run_at", "enabled", "tenant_id"],
+          sortableColumns: [
+            "created_at",
+            "name",
+            "next_run_at",
+            "last_run_at",
+            "enabled",
+            "tenant_id",
+          ],
           sort: pagination.sort,
           order: pagination.order,
           onSortChange: pagination.setSort,
         }}
       />
 
-      <AlertDialog open={deleteTarget !== null} onOpenChange={(next) => !next && setDeleteTarget(null)}>
+      <AlertDialog
+        open={deleteTarget !== null}
+        onOpenChange={(next) => !next && setDeleteTarget(null)}
+      >
         <AlertDialogContent className="bg-card border-border text-foreground">
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-foreground">Delete schedule &quot;{deleteTarget?.name}&quot;?</AlertDialogTitle>
+            <AlertDialogTitle className="text-foreground">
+              {t("scanCopy.deleteConfirm", { name: deleteTarget?.name || "" })}
+            </AlertDialogTitle>
             <AlertDialogDescription className="text-muted-foreground text-xs">
               {t("prose.thisStopsFutureAutomaticRuns")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel className="border-border bg-muted text-foreground hover:bg-muted">{t("ui.cancel")}</AlertDialogCancel>
+            <AlertDialogCancel className="border-border bg-muted text-foreground hover:bg-muted">
+              {t("ui.cancel")}
+            </AlertDialogCancel>
             <AlertDialogAction
               className="bg-rose-600 text-foreground hover:bg-rose-500"
               onClick={() => {
@@ -569,7 +687,7 @@ export default function SchedulesPage() {
                 setDeleteTarget(null);
               }}
             >
-              Delete
+              {t("scanCopy.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

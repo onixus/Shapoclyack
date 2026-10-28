@@ -1,5 +1,22 @@
 "use client";
 
+import { EndpointDeviceCard } from "@/components/endpoint/endpoint-device-card";
+import { EndpointError } from "@/components/endpoint/endpoint-error";
+import { SystemTechnicalDetails } from "@/components/system-technical-details";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import {
+  endpointText,
+  endpointFamily,
+  endpointArchitecture,
+  endpointReconciliation,
+  endpointFreshness,
+} from "@/lib/endpoint-presentation";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
@@ -51,9 +68,9 @@ function RecentChangesFeed({ tenantId }: { tenantId: string }) {
         {changesQuery.isLoading ? (
           <p className="px-4 py-4 text-xs text-muted-foreground">{t("common.loading")}</p>
         ) : changesQuery.error ? (
-          <p className="px-4 py-4 text-xs text-destructive">
-            {(changesQuery.error as Error).message}
-          </p>
+          <div className="px-4 py-4">
+            <EndpointError error={changesQuery.error} message="Failed to load software changes." />
+          </div>
         ) : changes.length === 0 ? (
           <p className="px-4 py-4 text-xs text-muted-foreground">{t("page.endpoints.noChanges")}</p>
         ) : (
@@ -61,10 +78,17 @@ function RecentChangesFeed({ tenantId }: { tenantId: string }) {
             {changes.map((change, idx) => (
               <li
                 key={`${change.device_id}-${change.snapshot_id}-${change.display_name}-${idx}`}
-                className="flex items-center justify-between gap-3 px-4 py-2 text-xs"
+                className="flex flex-wrap items-center justify-between gap-3 px-4 py-2 text-xs"
               >
                 <div className="flex min-w-0 items-center gap-2">
-                  <StatusBadge value={change.event_type} map={SOFTWARE_CHANGE_STATUS} />
+                  <StatusBadge
+                    value={change.event_type}
+                    map={SOFTWARE_CHANGE_STATUS}
+                    fallback={{
+                      label: endpointText(t.locale, "Other state"),
+                      variant: "secondary",
+                    }}
+                  />
                   <span className="truncate font-mono text-foreground">{change.display_name}</span>
                   <span className="shrink-0 text-muted-foreground">
                     {t("page.endpoints.changeOn")}
@@ -82,7 +106,10 @@ function RecentChangesFeed({ tenantId }: { tenantId: string }) {
                     </span>
                   )}
                 </div>
-                <span className="shrink-0 text-muted-foreground">{ago(change.observed_at)}</span>
+                <div className="shrink-0 text-muted-foreground">
+                  {ago(change.observed_at)}
+                  <SystemTechnicalDetails data={change} />
+                </div>
               </li>
             ))}
           </ul>
@@ -94,6 +121,10 @@ function RecentChangesFeed({ tenantId }: { tenantId: string }) {
 
 export default function EndpointsPage() {
   const t = useT();
+  const [selectedDevice, setSelectedDevice] = useState<{
+    device: EndpointDeviceInfo;
+    tenant: string;
+  } | null>(null);
   const [reconFilter, setReconFilter] = useState<string>(FILTER_ALL);
   const [staleOnly, setStaleOnly] = useState(false);
 
@@ -126,8 +157,10 @@ export default function EndpointsPage() {
         header: t("col.hostname"),
         cell: ({ row }) => (
           <div className="space-y-0.5">
-            <p className="font-mono font-bold text-foreground">{row.original.hostname || "—"}</p>
-            <p className="font-mono text-xs text-muted-foreground">{row.original.device_id}</p>
+            <p className="break-all font-mono font-bold text-foreground">
+              {row.original.hostname || endpointText(t.locale, "Device name unavailable")}
+            </p>
+            <SystemTechnicalDetails data={row.original} />
           </div>
         ),
       },
@@ -142,7 +175,10 @@ export default function EndpointsPage() {
             <div className="space-y-0.5">
               <p className="text-sm text-foreground">{label}</p>
               <p className="text-xs text-muted-foreground">
-                {[d.os_family, d.os_arch].filter(Boolean).join(" · ") || "—"}
+                {[
+                  endpointFamily(t.locale, d.os_family),
+                  endpointArchitecture(t.locale, d.os_arch),
+                ].join(" · ")}
               </p>
             </div>
           );
@@ -154,8 +190,31 @@ export default function EndpointsPage() {
         cell: ({ row }) => (
           <StatusBadge
             value={row.original.reconciliation_status}
-            map={ENDPOINT_RECONCILIATION_STATUS}
+            map={
+              t.locale === "ru"
+                ? Object.fromEntries(
+                    Object.entries(ENDPOINT_RECONCILIATION_STATUS).map(([key, style]) => [
+                      key,
+                      { ...style, label: endpointReconciliation(t.locale, key) },
+                    ]),
+                  )
+                : ENDPOINT_RECONCILIATION_STATUS
+            }
+            fallback={{
+              label: endpointReconciliation(t.locale, row.original.reconciliation_status),
+              variant: "secondary",
+            }}
           />
+        ),
+      },
+      {
+        id: "freshness",
+        accessorFn: (row) => row.status,
+        header: endpointText(t.locale, "Inventory freshness"),
+        cell: ({ row }) => (
+          <span>
+            {endpointFreshness(t.locale, row.original.status, row.original.last_inventory_at)}
+          </span>
         ),
       },
       {
@@ -172,7 +231,7 @@ export default function EndpointsPage() {
               href={assetHref(id, tenantId)}
               className="group inline-flex items-center gap-1 font-mono text-xs font-semibold text-primary hover:underline"
             >
-              <span className="max-w-[10rem] truncate">{id}</span>
+              <span>{t("common.openAsset")}</span>
               <ArrowUpRight className="h-3 w-3 opacity-70 group-hover:opacity-100" />
             </Link>
           );
@@ -208,11 +267,22 @@ export default function EndpointsPage() {
         enableSorting: false,
         cell: ({ row }) => {
           const id = row.original.asset_id;
-          if (!id) return null;
           return (
-            <Button asChild variant="outline" size="sm" className="h-7 text-xs">
-              <Link href={assetHref(id, tenantId)}>{t("common.openAsset")}</Link>
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => setSelectedDevice({ device: row.original, tenant: tenantId })}
+              >
+                {endpointText(t.locale, "Open device card")}
+              </Button>
+              {id && (
+                <Button asChild variant="outline" size="sm" className="h-7 text-xs">
+                  <Link href={assetHref(id, tenantId)}>{t("common.openAsset")}</Link>
+                </Button>
+              )}
+            </div>
           );
         },
       },
@@ -274,7 +344,9 @@ export default function EndpointsPage() {
               {(Object.keys(ENDPOINT_RECONCILIATION_STATUS) as EndpointReconciliationStatus[]).map(
                 (status) => (
                   <SelectItem key={status} value={status}>
-                    {t.label(ENDPOINT_RECONCILIATION_STATUS[status].label)}
+                    {t.locale === "ru"
+                      ? endpointReconciliation(t.locale, status)
+                      : t.label(ENDPOINT_RECONCILIATION_STATUS[status].label)}
                   </SelectItem>
                 ),
               )}
@@ -291,19 +363,59 @@ export default function EndpointsPage() {
 
       <RecentChangesFeed tenantId={tenantId} />
 
+      <EndpointError error={devicesQuery.error} message="Failed to load endpoint data." />
       <DataTable
         columns={columns}
         data={data}
         isLoading={devicesQuery.isLoading}
-        error={devicesQuery.error ? (devicesQuery.error as Error).message : null}
+        error={
+          t.locale === "ru"
+            ? null
+            : devicesQuery.error
+              ? (devicesQuery.error as Error).message
+              : null
+        }
         emptyMessage={
-          raw.length > 0
-            ? "No endpoints match the current filters."
-            : "No Lariska endpoints yet. Install the endpoint agent with a tenant provisioning key."
+          devicesQuery.error
+            ? endpointText(t.locale, "Endpoint data unavailable.")
+            : raw.length > 0
+              ? endpointText(t.locale, "No endpoints match the current filters.")
+              : endpointText(
+                  t.locale,
+                  "No Lariska endpoints yet. Install the endpoint agent with a tenant provisioning key.",
+                )
         }
         searchPlaceholder={t("search.endpoints")}
-        meta={devicesQuery.isFetching && !devicesQuery.isLoading ? "Refreshing…" : undefined}
+        meta={
+          devicesQuery.isFetching && !devicesQuery.isLoading
+            ? endpointText(t.locale, "Refreshing…")
+            : undefined
+        }
       />
+      <Dialog
+        open={Boolean(selectedDevice && selectedDevice.tenant === tenantId)}
+        onOpenChange={(open) => {
+          if (!open) setSelectedDevice(null);
+        }}
+      >
+        <DialogContent className="max-h-[90vh] min-w-0 max-w-3xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{endpointText(t.locale, "Device card")}</DialogTitle>
+            <DialogDescription>
+              {endpointText(
+                t.locale,
+                "Device inventory and its link to a network asset. Viewing does not change device data.",
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          {selectedDevice && selectedDevice.tenant === tenantId && (
+            <EndpointDeviceCard device={selectedDevice.device} />
+          )}
+          <Button variant="outline" onClick={() => setSelectedDevice(null)}>
+            {endpointText(t.locale, "Close")}
+          </Button>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

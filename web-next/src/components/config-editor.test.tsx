@@ -1,8 +1,11 @@
+import { useAppearanceStore } from "@/lib/appearance";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ConfigEditor } from "@/components/config-editor";
 
+const updateMock = vi.hoisted(() => vi.fn());
 const SECRET_MASK = "••••••••";
 
 /** The API masks a stored secret, so that is what the editor is handed. */
@@ -32,7 +35,7 @@ const CONFIG = {
 
 vi.mock("@/hooks/use-config", () => ({
   useConfig: () => ({ data: CONFIG, isLoading: false, error: null }),
-  useUpdateConfig: () => ({ mutate: vi.fn(), isPending: false }),
+  useUpdateConfig: () => ({ mutate: updateMock, isPending: false }),
 }));
 
 function renderEditor(canEdit = true) {
@@ -45,6 +48,30 @@ function renderEditor(canEdit = true) {
 }
 
 describe("ConfigEditor secret fields", () => {
+  it("shows Russian labels, preserves technical keys and never copies secrets into disclosures", async () => {
+    useAppearanceStore.setState({ locale: "ru" });
+    renderEditor();
+    expect(screen.getByText("Профиль: Безопасный")).toBeVisible();
+    expect(screen.getByText("Проверять соответствие имени сертификата")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Сохранить изменения" })).toBeVisible();
+    for (const pre of Array.from(document.querySelectorAll("pre")))
+      expect(pre).not.toHaveTextContent(SECRET_MASK);
+    const keyInput = screen.getByDisplayValue(SECRET_MASK);
+    expect(keyInput).toHaveAttribute("type", "password");
+    const technical = keyInput.closest("details")!;
+    expect(technical).not.toHaveAttribute("open");
+    await userEvent.setup().click(technical.querySelector("summary")!);
+    expect(keyInput).toHaveAttribute("type", "password");
+    expect(document.body.textContent).toContain("enrichment.cvss4.nvd_api_key");
+    await userEvent
+      .setup()
+      .click(screen.getByLabelText("Проверять соответствие имени сертификата"));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Сохранить изменения" }));
+    expect(updateMock.mock.calls.at(-1)?.[0]).toMatchObject({
+      "tls_posture.hostname_mismatch": false,
+    });
+  });
+
   it("renders an API key as a password input, not readable text", () => {
     renderEditor();
     const input = screen.getByDisplayValue(SECRET_MASK);

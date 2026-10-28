@@ -1,5 +1,7 @@
 "use client";
+import { runText } from "@/lib/run-presentation";
 
+import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { SEVERITIES, type Severity } from "@/lib/run-data";
 
@@ -14,6 +16,7 @@ export function SeverityFilter({
   total: number;
   onChange: (severity: Severity | "all") => void;
 }) {
+  const t = useT();
   return (
     <div className="flex flex-wrap gap-2">
       <Button
@@ -22,7 +25,7 @@ export function SeverityFilter({
         variant={active === "all" ? "default" : "outline"}
         onClick={() => onChange("all")}
       >
-        All ({total})
+        {runText(t.locale, "All")} ({total})
       </Button>
       {SEVERITIES.map((sev) => (
         <Button
@@ -33,7 +36,7 @@ export function SeverityFilter({
           onClick={() => onChange(sev)}
           disabled={counts[sev] === 0}
         >
-          {sev} ({counts[sev]})
+          {t.label(sev)} ({counts[sev]})
         </Button>
       ))}
     </div>

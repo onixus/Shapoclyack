@@ -1,5 +1,7 @@
 "use client";
+import { runText } from "@/lib/run-presentation";
 
+import { OriginalRunData } from "@/components/run/original-data";
 import { useState } from "react";
 import { useT } from "@/lib/i18n";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -75,30 +77,40 @@ function CandidateRow({
 
           <div>
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-semibold text-foreground text-sm font-mono">{candidate.domain}</span>
+              <span className="font-semibold text-foreground text-sm font-mono">
+                {candidate.domain}
+              </span>
               {isConfirmed ? (
                 <Badge className="bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border-emerald-500/40 gap-1 font-mono text-xs">
                   <CheckCircle2 className="h-3 w-3" />
-                  CONFIRMED
+                  {runText(t.locale, "CONFIRMED")}
                 </Badge>
               ) : (
-                <Badge variant="outline" className="text-muted-foreground border-border bg-muted gap-1 font-mono text-xs">
+                <Badge
+                  variant="outline"
+                  className="text-muted-foreground border-border bg-muted gap-1 font-mono text-xs"
+                >
                   <HelpCircle className="h-3 w-3" />
-                  CANDIDATE
+                  {runText(t.locale, "CANDIDATE")}
                 </Badge>
               )}
-              <Badge variant="outline" className="text-xs border-border text-sky-600 dark:text-sky-400 font-mono">
-                {Math.round(candidate.confidence * 100)}% confidence
+              <Badge
+                variant="outline"
+                className="text-xs border-border text-sky-600 dark:text-sky-400 font-mono"
+              >
+                {runText(t.locale, "{count}% confidence", {
+                  count: Math.round(candidate.confidence * 100),
+                })}
               </Badge>
               {isPromoted && (
                 <Badge className="bg-purple-500/20 text-purple-600 dark:text-purple-300 border-purple-500/40 text-xs font-mono">
-                  PROMOTED
+                  {runText(t.locale, "PROMOTED")}
                 </Badge>
               )}
             </div>
 
             <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-              <span className="text-muted-foreground text-xs">Sources:</span>
+              <span className="text-muted-foreground text-xs">{runText(t.locale, "Sources")}:</span>
               {candidate.sources.map((s) => (
                 <span
                   key={s}
@@ -119,11 +131,19 @@ function CandidateRow({
               disabled={isPromoting}
               title={
                 isPromoted
-                  ? "Every scan of this tenant carries this domain; withdraw to stop that"
-                  : "Add to the targets of every later scan of this tenant (starts nothing)"
+                  ? runText(
+                      t.locale,
+                      "Every scan of this tenant carries this domain; withdraw to stop that",
+                    )
+                  : runText(
+                      t.locale,
+                      "Add to the targets of every later scan of this tenant (starts nothing)",
+                    )
               }
               className={`h-7 text-xs font-mono gap-1.5 ${
-                isPromoted ? "hover:border-rose-500 hover:text-rose-600 dark:text-rose-300" : "hover:border-sky-500 hover:text-sky-600 dark:text-sky-300"
+                isPromoted
+                  ? "hover:border-rose-500 hover:text-rose-600 dark:text-rose-300"
+                  : "hover:border-sky-500 hover:text-sky-600 dark:text-sky-300"
               }`}
               onClick={(e) => {
                 e.stopPropagation();
@@ -139,7 +159,7 @@ function CandidateRow({
               ) : (
                 <>
                   <PlusCircle className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
-                  Promote to Scope
+                  {runText(t.locale, "Promote to Scope")}
                 </>
               )}
             </Button>
@@ -147,16 +167,30 @@ function CandidateRow({
         </div>
       </div>
 
+      <div className="px-4 pb-2">
+        <OriginalRunData
+          data={{
+            status: candidate.status,
+            sources: candidate.sources,
+            confidence: candidate.confidence,
+          }}
+        />
+      </div>
       {expanded && (
         <div className="px-6 pb-4 pt-2 bg-muted space-y-2.5 text-xs border-t border-border">
-          <span className="font-semibold text-foreground block">Attribution Evidence Trail:</span>
+          <span className="font-semibold text-foreground block">
+            {runText(t.locale, "Attribution Evidence Trail")}:
+          </span>
           <div className="space-y-1.5">
             {candidate.evidence?.map((ev, i) => (
               <div
                 key={i}
                 className="flex items-start gap-2 bg-card p-2 rounded border border-border font-mono text-xs"
               >
-                <Badge variant="outline" className="text-overline uppercase border-border py-0 px-1 shrink-0 text-foreground">
+                <Badge
+                  variant="outline"
+                  className="text-overline uppercase border-border py-0 px-1 shrink-0 text-foreground"
+                >
                   {ev.source}
                 </Badge>
                 <span className="text-foreground grow">{ev.detail}</span>
@@ -252,18 +286,21 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
             <div className="flex items-center gap-2">
               <Building2 className="h-5 w-5 text-sky-600 dark:text-sky-400" />
               <h2 className="text-base font-bold text-foreground">
-                {primaryOwner?.org_name || primaryOwner?.registrant_organization || "Organization Profile"}
+                {primaryOwner?.org_name ||
+                  primaryOwner?.registrant_organization ||
+                  runText(t.locale, "Organization Profile")}
               </h2>
             </div>
             <p className="text-xs text-muted-foreground font-mono">
-              Seed Scope: {data.seed_domains?.join(", ") || "No seed domains recorded"}
+              {runText(t.locale, "Seed Scope")}:{" "}
+              {data.seed_domains?.join(", ") || runText(t.locale, "No seed domains recorded")}
             </p>
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
             {primaryOwner?.registrar && (
               <Badge variant="outline" className="border-border text-foreground text-xs">
-                Registrar: {primaryOwner.registrar}
+                {runText(t.locale, "Registrar")}: {primaryOwner.registrar}
               </Badge>
             )}
             {primaryOwner?.dnssec != null && (
@@ -274,7 +311,8 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
                     : "bg-muted text-muted-foreground border-border"
                 }
               >
-                DNSSEC: {primaryOwner.dnssec ? "Signed" : "Unsigned"}
+                DNSSEC:{" "}
+                {primaryOwner.dnssec ? runText(t.locale, "Signed") : runText(t.locale, "Unsigned")}
               </Badge>
             )}
           </div>
@@ -282,7 +320,9 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
 
         {primaryOwner?.nameservers && primaryOwner.nameservers.length > 0 && (
           <div className="pt-2 border-t border-border flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
-            <span className="text-muted-foreground font-semibold">Authoritative NS:</span>
+            <span className="text-muted-foreground font-semibold">
+              {runText(t.locale, "Authoritative NS")}:
+            </span>
             <span className="font-mono text-foreground">{primaryOwner.nameservers.join(", ")}</span>
           </div>
         )}
@@ -293,11 +333,9 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
         <CardHeader className="py-3.5 px-4 border-b border-border">
           <CardTitle className="text-xs font-bold uppercase tracking-wider text-foreground flex items-center gap-2">
             <PlusCircle className="h-4 w-4 text-purple-600 dark:text-purple-400" />
-            Promoted Scope ({promoted.length})
+            {runText(t.locale, "Promoted Scope")} ({promoted.length})
           </CardTitle>
-          <p className="text-xs text-muted-foreground mt-1">
-            {t("prose.everyOrdinaryScanOfThis")}
-          </p>
+          <p className="text-xs text-muted-foreground mt-1">{t("prose.everyOrdinaryScanOfThis")}</p>
         </CardHeader>
         <CardContent className="p-0">
           {promoted.length > 0 ? (
@@ -334,7 +372,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
           <div className="flex items-center gap-2">
             <Globe className="h-4 w-4 text-sky-600 dark:text-sky-400" />
             <CardTitle className="text-xs font-bold uppercase tracking-wider text-foreground">
-              Discovered Co-Owned Domains ({candidates.length})
+              {runText(t.locale, "Discovered Co-Owned Domains")} ({candidates.length})
             </CardTitle>
           </div>
 
@@ -345,7 +383,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
               className="h-6 text-xs px-2"
               onClick={() => setFilter("all")}
             >
-              All ({candidates.length})
+              {runText(t.locale, "All")} ({candidates.length})
             </Button>
             <Button
               size="sm"
@@ -353,7 +391,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
               className="h-6 text-xs px-2"
               onClick={() => setFilter("confirmed")}
             >
-              Confirmed ({related?.confirmed_count ?? 0})
+              {runText(t.locale, "Confirmed")} ({related?.confirmed_count ?? 0})
             </Button>
             <Button
               size="sm"
@@ -361,7 +399,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
               className="h-6 text-xs px-2"
               onClick={() => setFilter("candidates")}
             >
-              Candidates ({related?.candidate_count ?? 0})
+              {runText(t.locale, "Candidates")} ({related?.candidate_count ?? 0})
             </Button>
           </div>
         </CardHeader>
@@ -370,8 +408,16 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
         <div className="px-4 py-2 bg-amber-50 dark:bg-amber-950/20 border-b border-amber-300 dark:border-amber-900/30 flex items-center gap-2 text-xs text-amber-600 dark:text-amber-300/80">
           <AlertCircle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
           <span>
-            {related?.disclaimer ||
-              "Attribution is probabilistic. The operator is responsible for verifying domain authorization prior to active scanning."}
+            {t.locale === "ru"
+              ? runText(
+                  t.locale,
+                  "Attribution is probabilistic. The operator is responsible for verifying domain authorization prior to active scanning.",
+                )
+              : related?.disclaimer ||
+                "Attribution is probabilistic. The operator is responsible for verifying domain authorization prior to active scanning."}
+            {related?.disclaimer && t.locale === "ru" ? (
+              <OriginalRunData data={related.disclaimer} />
+            ) : null}
           </span>
         </div>
 

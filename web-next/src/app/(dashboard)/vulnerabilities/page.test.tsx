@@ -7,6 +7,8 @@ import * as apiModule from "@/lib/api";
 import type { Me, TrackedVulnerability } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 
+import { useAppearanceStore } from "@/lib/appearance";
+
 let searchParams = new URLSearchParams();
 const replace = vi.fn();
 
@@ -118,24 +120,87 @@ function renderPage() {
 
 describe("Vulnerability Center", () => {
   it("separates non-CVE issues and sends type/detector deep-link filters", async () => {
-    searchParams = new URLSearchParams({ finding_type: "misconfiguration", detector_source: "nuclei" });
+    searchParams = new URLSearchParams({
+      finding_type: "misconfiguration",
+      detector_source: "nuclei",
+    });
     const fetchSpy = vi.spyOn(apiModule, "fetchTrackedVulnerabilities").mockResolvedValue({
-      items: [vuln({ cve: null, script_id: "public-backup", finding_type: "misconfiguration", detector_source: "nuclei" })],
-      total: 1, offset: 0, limit: 25, has_more: false,
+      items: [
+        vuln({
+          cve: null,
+          script_id: "public-backup",
+          finding_type: "misconfiguration",
+          detector_source: "nuclei",
+        }),
+      ],
+      total: 1,
+      offset: 0,
+      limit: 25,
+      has_more: false,
     });
     vi.spyOn(apiModule, "fetchVulnerabilitySummary").mockResolvedValue({
-      total: 2, open_total: 2, untriaged: 2, unassigned: 2, estate_risk: "high",
-      by_state: { OPEN: 2 }, by_severity_open: { high: 2 }, by_risk_level_open: { high: 2 },
-      by_sla: {}, breached: 0, worst_breached_severity: null, generated_at: null,
-      cve_findings: 1, non_cve_findings: 1,
+      total: 2,
+      open_total: 2,
+      untriaged: 2,
+      unassigned: 2,
+      estate_risk: "high",
+      by_state: { OPEN: 2 },
+      by_severity_open: { high: 2 },
+      by_risk_level_open: { high: 2 },
+      by_sla: {},
+      breached: 0,
+      worst_breached_severity: null,
+      generated_at: null,
+      cve_findings: 1,
+      non_cve_findings: 1,
     });
     renderPage();
     expect(await screen.findByText("public-backup")).toBeInTheDocument();
     expect(screen.getByText("All tracked findings: 1 CVE · 1 non-CVE")).toBeInTheDocument();
-    expect(fetchSpy.mock.calls[0][0]).toMatchObject({ finding_type: "misconfiguration", detector_source: "nuclei" });
+    expect(fetchSpy.mock.calls[0][0]).toMatchObject({
+      finding_type: "misconfiguration",
+      detector_source: "nuclei",
+    });
     expect(screen.getByRole("combobox", { name: "Finding type" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Detector" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Network exposure" })).toBeInTheDocument();
+  });
+
+  it("shows Russian finding names and keeps the exact finding link and API values", async () => {
+    useAppearanceStore.setState({ locale: "ru" });
+    try {
+      searchParams = new URLSearchParams({ finding_type: "exposure" });
+      const fetchSpy = vi.spyOn(apiModule, "fetchTrackedVulnerabilities").mockResolvedValue({
+        items: [
+          vuln({
+            cve: null,
+            script_id: "pulse:exposure:445:eternalblue-smbv1-rce",
+            title: "EternalBlue (SMBv1 RCE)",
+            finding_type: "exposure",
+          }),
+        ],
+        total: 1,
+        offset: 0,
+        limit: 25,
+        has_more: false,
+      });
+      renderPage();
+      const link = await screen.findByRole("link", {
+        name: /Доступен SMB: проверьте защиту от EternalBlue/,
+      });
+      expect(link).toHaveAttribute("href", "/vulnerabilities/view?vulnId=vln_scan");
+      expect(
+        screen.queryByText("pulse:exposure:445:eternalblue-smbv1-rce"),
+      ).not.toBeInTheDocument();
+      expect(screen.getByText("Доступность сервиса")).toBeInTheDocument();
+      expect(screen.getByText("Сканирование")).toBeInTheDocument();
+      expect(
+        screen.getByRole("checkbox", { name: "Выбрать все находки на странице" }),
+      ).toBeInTheDocument();
+      expect(fetchSpy.mock.calls[0][0]).toMatchObject({ finding_type: "exposure" });
+    } finally {
+      useAppearanceStore.setState({ locale: "en" });
+    }
   });
 
   it("normalises deep-link filters to values a saved view accepts", async () => {
@@ -148,12 +213,25 @@ describe("Vulnerability Center", () => {
       sla: "bogus",
     });
     const fetchSpy = vi.spyOn(apiModule, "fetchTrackedVulnerabilities").mockResolvedValue({
-      items: [], total: 0, offset: 0, limit: 25, has_more: false,
+      items: [],
+      total: 0,
+      offset: 0,
+      limit: 25,
+      has_more: false,
     });
     vi.spyOn(apiModule, "fetchVulnerabilitySummary").mockResolvedValue({
-      total: 0, open_total: 0, untriaged: 0, unassigned: 0, estate_risk: "low",
-      by_state: {}, by_severity_open: {}, by_risk_level_open: {},
-      by_sla: {}, breached: 0, worst_breached_severity: null, generated_at: null,
+      total: 0,
+      open_total: 0,
+      untriaged: 0,
+      unassigned: 0,
+      estate_risk: "low",
+      by_state: {},
+      by_severity_open: {},
+      by_risk_level_open: {},
+      by_sla: {},
+      breached: 0,
+      worst_breached_severity: null,
+      generated_at: null,
     });
     renderPage();
     await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
@@ -222,7 +300,11 @@ describe("Vulnerability Center", () => {
       activeTenant: "default",
     });
     vi.spyOn(apiModule, "fetchTrackedVulnerabilities").mockResolvedValue({
-      items: [], total: 0, offset: 0, limit: 25, has_more: false,
+      items: [],
+      total: 0,
+      offset: 0,
+      limit: 25,
+      has_more: false,
     });
     const view = {
       view_id: "v1",
@@ -299,9 +381,7 @@ describe("Vulnerability Center", () => {
     renderPage();
 
     expect(await screen.findByText("CVE-2023-38545")).toBeInTheDocument();
-    expect(
-      screen.getByText("curl 7.68.0-1ubuntu2.1 → 7.68.0-1ubuntu2.20"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("curl 7.68.0-1ubuntu2.1 → 7.68.0-1ubuntu2.20")).toBeInTheDocument();
     // Never "no port": the absence of a port is a property of the finding
     // kind, not missing data about it.
     expect(screen.queryByText("no port")).not.toBeInTheDocument();

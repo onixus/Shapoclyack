@@ -1,4 +1,5 @@
 "use client";
+import { runText } from "@/lib/run-presentation";
 
 import { useMemo, useState } from "react";
 import { useT } from "@/lib/i18n";
@@ -163,11 +164,15 @@ export function SarifViewerDialog({
               </div>
               <div>
                 <DialogTitle className="text-base font-bold text-foreground font-mono">
-                  SARIF 2.1.0 Security Report · <span className="text-sky-600 dark:text-sky-400">{runId}</span>
+                  {runText(t.locale, "SARIF 2.1.0 Security Report")} ·{" "}
+                  <span className="text-sky-600 dark:text-sky-400">{runId}</span>
                 </DialogTitle>
                 <p className="text-xs text-muted-foreground">
-                  {driver?.name || "Shapoclyack Engine"} {driver?.version ? `v${driver.version}` : ""}{" "}
-                  · OASIS Standard Static Analysis Results Interchange Format
+                  {driver?.name || "Shapoclyack Engine"}{" "}
+                  {driver?.version ? `v${driver.version}` : ""} ·{" "}
+                  {t.locale === "ru"
+                    ? "Стандарт OASIS для обмена результатами анализа"
+                    : "OASIS Standard Static Analysis Results Interchange Format"}
                 </p>
               </div>
             </div>
@@ -190,30 +195,47 @@ export function SarifViewerDialog({
           <div className="flex items-center gap-2.5 rounded-lg bg-card p-2.5 border border-border">
             <Layers className="h-4 w-4 text-muted-foreground" />
             <div>
-              <p className="text-overline uppercase font-bold text-muted-foreground">{t("ui.totalFindings")}</p>
-              <p className="text-sm font-bold font-mono text-foreground">{counts.total.toLocaleString()}</p>
+              <p className="text-overline uppercase font-bold text-muted-foreground">
+                {t("ui.totalFindings")}
+              </p>
+              <p className="text-sm font-bold font-mono text-foreground">
+                {counts.total.toLocaleString()}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-2.5 rounded-lg bg-rose-50 dark:bg-rose-950/20 p-2.5 border border-rose-300 dark:border-rose-900/30">
             <AlertCircle className="h-4 w-4 text-rose-600 dark:text-rose-400" />
             <div>
-              <p className="text-overline uppercase font-bold text-rose-600 dark:text-rose-400">{t("ui.errorsHighcrit")}</p>
-              <p className="text-sm font-bold font-mono text-rose-600 dark:text-rose-300">{counts.errors.toLocaleString()}</p>
+              <p className="text-overline uppercase font-bold text-rose-600 dark:text-rose-400">
+                {t("ui.errorsHighcrit")}
+              </p>
+              <p className="text-sm font-bold font-mono text-rose-600 dark:text-rose-300">
+                {counts.errors.toLocaleString()}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/20 p-2.5 border border-amber-300 dark:border-amber-900/30">
             <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
             <div>
-              <p className="text-overline uppercase font-bold text-amber-600 dark:text-amber-400">{t("ui.warningsMedium")}</p>
-              <p className="text-sm font-bold font-mono text-amber-600 dark:text-amber-300">{counts.warnings.toLocaleString()}</p>
+              <p className="text-overline uppercase font-bold text-amber-600 dark:text-amber-400">
+                {t("ui.warningsMedium")}
+              </p>
+              <p className="text-sm font-bold font-mono text-amber-600 dark:text-amber-300">
+                {counts.warnings.toLocaleString()}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-2.5 rounded-lg bg-sky-50 dark:bg-sky-950/20 p-2.5 border border-sky-300 dark:border-sky-900/30">
             <Info className="h-4 w-4 text-sky-600 dark:text-sky-400" />
             <div>
-              <p className="text-overline uppercase font-bold text-sky-600 dark:text-sky-400">Notes & Rules</p>
+              <p className="text-overline uppercase font-bold text-sky-600 dark:text-sky-400">
+                {runText(t.locale, "Notes & Rules")}
+              </p>
               <p className="text-sm font-bold font-mono text-sky-600 dark:text-sky-300">
-                {counts.notes} notes · {counts.rules} rules
+                {runText(t.locale, "{notes} notes · {rules} rules", {
+                  notes: counts.notes,
+                  rules: counts.rules,
+                })}
               </p>
             </div>
           </div>
@@ -227,17 +249,26 @@ export function SarifViewerDialog({
         >
           <div className="flex flex-wrap items-center justify-between gap-3 pb-2">
             <TabsList className="bg-card border border-border p-1">
-              <TabsTrigger value="findings" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300 gap-1.5">
+              <TabsTrigger
+                value="findings"
+                className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300 gap-1.5"
+              >
                 <ShieldAlert className="h-3.5 w-3.5" />
-                Findings ({counts.total})
+                {runText(t.locale, "Findings")} ({counts.total})
               </TabsTrigger>
-              <TabsTrigger value="rules" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300 gap-1.5">
+              <TabsTrigger
+                value="rules"
+                className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300 gap-1.5"
+              >
                 <BookOpen className="h-3.5 w-3.5" />
-                Rules Catalog ({counts.rules})
+                {runText(t.locale, "Rules Catalog")} ({counts.rules})
               </TabsTrigger>
-              <TabsTrigger value="raw" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300 gap-1.5">
+              <TabsTrigger
+                value="raw"
+                className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300 gap-1.5"
+              >
                 <Code2 className="h-3.5 w-3.5" />
-                Raw JSON
+                {runText(t.locale, "Raw JSON")}
               </TabsTrigger>
             </TabsList>
 
@@ -246,7 +277,7 @@ export function SarifViewerDialog({
                 <div className="relative">
                   <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                   <Input
-                    placeholder="Filter rule, target, message…"
+                    placeholder={runText(t.locale, "Filter rule, target, message\u2026")}
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                     className="h-8 w-60 pl-8 text-xs bg-card border-border text-foreground"
@@ -264,7 +295,9 @@ export function SarifViewerDialog({
                           : "text-muted-foreground hover:text-foreground"
                       }`}
                     >
-                      {lvl.charAt(0).toUpperCase() + lvl.slice(1)}
+                      {t.locale === "ru"
+                        ? runText(t.locale, lvl.charAt(0).toUpperCase() + lvl.slice(1))
+                        : lvl.toUpperCase()}
                     </button>
                   ))}
                 </div>
@@ -299,28 +332,39 @@ export function SarifViewerDialog({
                             lvl === "error"
                               ? "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/30 font-bold font-mono text-xs"
                               : lvl === "warning"
-                              ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30 font-bold font-mono text-xs"
-                              : "bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/30 font-bold font-mono text-xs"
+                                ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30 font-bold font-mono text-xs"
+                                : "bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/30 font-bold font-mono text-xs"
                           }
                         >
-                          {lvl.toUpperCase()}
+                          {t.locale === "ru"
+                            ? runText(t.locale, lvl.charAt(0).toUpperCase() + lvl.slice(1))
+                            : lvl.toUpperCase()}
                         </Badge>
                         <span className="font-mono text-xs font-bold text-foreground">
                           {res.ruleId}
                         </span>
                         {rule?.name && rule.name !== res.ruleId && (
-                          <span className="text-xs text-muted-foreground font-medium">· {rule.name}</span>
+                          <span className="text-xs text-muted-foreground font-medium">
+                            · {rule.name}
+                          </span>
                         )}
                       </div>
 
                       <div className="flex items-center gap-1.5 flex-wrap">
                         {cve && (
-                          <Badge variant="secondary" className="bg-muted text-rose-600 dark:text-rose-300 font-mono text-xs">
+                          <Badge
+                            variant="secondary"
+                            className="bg-muted text-rose-600 dark:text-rose-300 font-mono text-xs"
+                          >
                             {cve}
                           </Badge>
                         )}
                         {cweList.slice(0, 2).map((cwe) => (
-                          <Badge key={cwe} variant="secondary" className="bg-muted text-sky-600 dark:text-sky-300 font-mono text-xs">
+                          <Badge
+                            key={cwe}
+                            variant="secondary"
+                            className="bg-muted text-sky-600 dark:text-sky-300 font-mono text-xs"
+                          >
                             {cwe}
                           </Badge>
                         ))}
@@ -328,19 +372,27 @@ export function SarifViewerDialog({
                     </div>
 
                     <p className="text-xs text-foreground leading-relaxed font-sans">
-                      {res.message?.text || rule?.shortDescription?.text || "No description"}
+                      {res.message?.text ||
+                        rule?.shortDescription?.text ||
+                        runText(t.locale, "No description")}
                     </p>
 
                     {locationUri && (
                       <div className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground bg-muted px-2.5 py-1 rounded-lg border border-border">
-                        <span className="text-muted-foreground font-semibold">Target URI:</span>
-                        <span className="text-sky-600 dark:text-sky-300 truncate">{locationUri}</span>
+                        <span className="text-muted-foreground font-semibold">
+                          {runText(t.locale, "Target URI")}:
+                        </span>
+                        <span className="text-sky-600 dark:text-sky-300 truncate">
+                          {locationUri}
+                        </span>
                       </div>
                     )}
 
                     {rule?.help?.text && (
                       <div className="text-xs text-muted-foreground pt-1 border-t border-border">
-                        <span className="text-muted-foreground font-semibold">Remediation: </span>
+                        <span className="text-muted-foreground font-semibold">
+                          {runText(t.locale, "Remediation")}:{" "}
+                        </span>
                         {rule.help.text}
                       </div>
                     )}
@@ -364,26 +416,37 @@ export function SarifViewerDialog({
                 >
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
-                      <Badge variant="outline" className="font-mono text-xs text-sky-600 dark:text-sky-400 border-sky-500/30">
-                        RULE
+                      <Badge
+                        variant="outline"
+                        className="font-mono text-xs text-sky-600 dark:text-sky-400 border-sky-500/30"
+                      >
+                        {runText(t.locale, "RULE")}
                       </Badge>
                       <span className="font-mono text-xs font-bold text-foreground">{rule.id}</span>
                     </div>
                     {rule.defaultConfiguration?.level && (
                       <span className="font-mono text-overline text-muted-foreground uppercase">
-                        Default Level: {rule.defaultConfiguration.level}
+                        {runText(t.locale, "Default Level")}:{" "}
+                        {runText(
+                          t.locale,
+                          rule.defaultConfiguration.level.charAt(0).toUpperCase() +
+                            rule.defaultConfiguration.level.slice(1),
+                        )}
                       </span>
                     )}
                   </div>
                   {rule.shortDescription?.text && (
                     <p className="text-xs text-foreground">{rule.shortDescription.text}</p>
                   )}
-                  {rule.fullDescription?.text && rule.fullDescription.text !== rule.shortDescription?.text && (
-                    <p className="text-xs text-muted-foreground">{rule.fullDescription.text}</p>
-                  )}
+                  {rule.fullDescription?.text &&
+                    rule.fullDescription.text !== rule.shortDescription?.text && (
+                      <p className="text-xs text-muted-foreground">{rule.fullDescription.text}</p>
+                    )}
                   {rule.help?.text && (
                     <div className="text-xs text-muted-foreground bg-muted p-2.5 rounded-lg border border-border">
-                      <span className="font-semibold text-foreground">Guidance: </span>
+                      <span className="font-semibold text-foreground">
+                        {runText(t.locale, "Guidance")}:{" "}
+                      </span>
                       {rule.help.text}
                     </div>
                   )}

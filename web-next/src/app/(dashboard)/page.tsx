@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { vulnerabilityName } from "@/lib/vulnerability-presentation";
 import { useMemo } from "react";
 import { AreaChart, BarChart, Card, DonutChart, Title } from "@tremor/react";
 import { ArrowUpRight, Camera, Play, RefreshCw, ShieldAlert, TrendingUp } from "lucide-react";
@@ -31,7 +32,6 @@ import { useT } from "@/lib/i18n";
 import { estateRiskColor, estateRiskLabel } from "@/lib/risk-overview";
 import {
   assetDetailHref,
-  findingLabel,
   NIST_RISK_LEVELS,
   vulnDetailHref,
   vulnListHref,
@@ -42,6 +42,14 @@ const SEVERITY_DONUT_COLORS = ["rose", "orange", "amber", "sky", "slate"];
 
 export default function DashboardPage() {
   const t = useT();
+  const series = {
+    open: t("riskOverview.copy0"),
+    critical: t("riskOverview.copy1"),
+    breached: t("riskOverview.copy2"),
+    assets: t("riskOverview.copy3"),
+    hosts: t("riskOverview.copy4"),
+    findings: t("riskOverview.copy5"),
+  };
   const summaryQuery = useVulnerabilitySummary();
   const assetsQuery = useAssetSummary();
   const topRisksQuery = useTrackedVulnerabilities(
@@ -57,13 +65,21 @@ export default function DashboardPage() {
   const topRisks = topRisksQuery.data?.items ?? [];
   const runs = useMemo(() => runsQuery.data?.items ?? [], [runsQuery.data]);
   const latest = useMemo(() => pickLatestRun(runs), [runs]);
-  const trend = useMemo(() => recentRunTrend(runs, 15), [runs]);
+  const trend = useMemo(
+    () =>
+      recentRunTrend(runs, 15).map((row) => ({
+        date: row.date,
+        [t("riskOverview.copy4")]: row.Hosts,
+        [t("riskOverview.copy5")]: row.Vulns,
+      })),
+    [runs, t],
+  );
   const riskHistory = useMemo(() => riskHistoryQuery.data ?? [], [riskHistoryQuery.data]);
 
   const riskHistoryTrend = useMemo(() => {
     return riskHistory.map((snap) => {
       const date = snap.recorded_at
-        ? new Date(snap.recorded_at).toLocaleDateString(undefined, {
+        ? new Date(snap.recorded_at).toLocaleDateString(t.locale === "ru" ? "ru-RU" : "en-US", {
             month: "short",
             day: "numeric",
             hour: "2-digit",
@@ -74,12 +90,12 @@ export default function DashboardPage() {
         (snap.by_severity_open?.critical ?? 0) + (snap.by_severity_open?.high ?? 0);
       return {
         date,
-        "Open Vulns": snap.open_total,
-        "Critical & High": criticalHigh,
-        "SLA Breached": snap.breached,
+        [t("riskOverview.copy0")]: snap.open_total,
+        [t("riskOverview.copy1")]: criticalHigh,
+        [t("riskOverview.copy2")]: snap.breached,
       };
     });
-  }, [riskHistory]);
+  }, [riskHistory, t]);
 
   const riskData = useMemo(
     () =>
@@ -109,7 +125,7 @@ export default function DashboardPage() {
           key === "unset"
             ? t.label("unset")
             : `L${key} · ${t.label(ASSET_CRITICALITY[Number(key)]?.label ?? key)}`,
-        Assets: assets.by_criticality[key] ?? 0,
+        [t("riskOverview.copy3")]: assets.by_criticality[key] ?? 0,
       }));
   }, [assets, t]);
 
@@ -119,7 +135,8 @@ export default function DashboardPage() {
       ? ((summaryQuery.error || assetsQuery.error || topRisksQuery.error) as Error)
       : null;
 
-  const criticalOpen = (summary?.by_severity_open.critical ?? 0) + (summary?.by_severity_open.high ?? 0);
+  const criticalOpen =
+    (summary?.by_severity_open.critical ?? 0) + (summary?.by_severity_open.high ?? 0);
   const estateLabel = isLoading ? "…" : t.label(estateRiskLabel(summary));
 
   return (
@@ -127,14 +144,16 @@ export default function DashboardPage() {
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div>
           <div className="flex items-center gap-2.5">
-            <h1 className="text-2xl font-extrabold tracking-tight text-foreground">{t("page.risk.title")}</h1>
-            <span className="rounded-full bg-sky-500/10 px-2.5 py-0.5 text-xs font-semibold text-sky-600 dark:text-sky-400 border border-sky-500/20">
+            <h1 className="text-2xl font-extrabold tracking-tight text-foreground">
+              {t("page.risk.title")}
+            </h1>
+            <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-semibold text-primary border border-primary/20">
               {t("page.risk.badge")}
             </span>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
             {t("page.risk.subtitle")}{" "}
-            <Link href="/vulnerabilities" className="text-sky-600 dark:text-sky-400 hover:underline">
+            <Link href="/vulnerabilities" className="text-primary hover:underline">
               {t("page.risk.centerLink")}
             </Link>
           </p>
@@ -153,7 +172,7 @@ export default function DashboardPage() {
             className="gap-2 border-border bg-card text-foreground hover:bg-muted hover:text-foreground"
           >
             <RefreshCw
-              className={`h-3.5 w-3.5 ${summaryQuery.isFetching || assetsQuery.isFetching ? "animate-spin text-sky-600 dark:text-sky-400" : ""}`}
+              className={`h-3.5 w-3.5 ${summaryQuery.isFetching || assetsQuery.isFetching ? "animate-spin text-primary" : ""}`}
             />
             {t("common.refresh")}
           </Button>
@@ -167,7 +186,10 @@ export default function DashboardPage() {
       </div>
 
       {error ? (
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
+        <Alert
+          variant="destructive"
+          className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+        >
           <AlertDescription>{error.message}</AlertDescription>
         </Alert>
       ) : null}
@@ -175,12 +197,12 @@ export default function DashboardPage() {
       {!isLoading && (summary?.total ?? 0) === 0 ? (
         <div className="rounded-xl border border-border bg-card p-8 text-center">
           <ShieldAlert className="mx-auto h-10 w-10 text-muted-foreground" />
-          <h3 className="mt-3 text-sm font-semibold text-foreground">{t("page.risk.emptyTitle")}</h3>
+          <h3 className="mt-3 text-sm font-semibold text-foreground">
+            {t("page.risk.emptyTitle")}
+          </h3>
           <p className="mt-1 text-xs text-muted-foreground">{t("page.risk.emptyBody")}</p>
           <Link href="/scans" className="mt-4 inline-block">
-            <Button size="sm">
-              {t("page.risk.emptyCta")}
-            </Button>
+            <Button size="sm">{t("page.risk.emptyCta")}</Button>
           </Link>
         </div>
       ) : null}
@@ -234,25 +256,23 @@ export default function DashboardPage() {
       <ScanOpsPanel />
 
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-        <Link href={vulnListHref()} className="text-sky-600 dark:text-sky-400 hover:underline">
+        <Link href={vulnListHref()} className="text-primary hover:underline">
           {t("page.risk.allOpen")}
         </Link>
-        <Link href={vulnListHref({ sla: "breached" })} className="text-sky-600 dark:text-sky-400 hover:underline">
+        <Link href={vulnListHref({ sla: "breached" })} className="text-primary hover:underline">
           {t("page.risk.slaBreaches")}
         </Link>
-        <Link href={vulnListHref({ unassigned: true })} className="text-sky-600 dark:text-sky-400 hover:underline">
+        <Link href={vulnListHref({ unassigned: true })} className="text-primary hover:underline">
           {t("page.risk.unassignedLink")}
         </Link>
-        <Link href="/assets?unowned=1" className="text-sky-600 dark:text-sky-400 hover:underline">
+        <Link href="/assets?unowned=1" className="text-primary hover:underline">
           {t("page.risk.unownedLink")}
         </Link>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-5">
         <Card className="min-w-0 xl:col-span-3 rounded-xl border border-border bg-card p-5">
-          <Title className="text-sm font-bold text-foreground uppercase tracking-wider">
-            {t("page.risk.byNist")}
-          </Title>
+          <Title className="text-sm font-semibold text-foreground">{t("page.risk.byNist")}</Title>
           {riskData.every((row) => row.value === 0) ? (
             <p className="mt-6 text-xs text-muted-foreground">{t("page.risk.noRiskLevels")}</p>
           ) : (
@@ -283,7 +303,7 @@ export default function DashboardPage() {
         </Card>
 
         <Card className="min-w-0 xl:col-span-2 rounded-xl border border-border bg-card p-5">
-          <Title className="text-sm font-bold text-foreground uppercase tracking-wider">
+          <Title className="text-sm font-semibold text-foreground">
             {t("page.risk.bySeverity")}
           </Title>
           {severityData.every((row) => row.value === 0) ? (
@@ -319,23 +339,23 @@ export default function DashboardPage() {
       <div className="grid gap-4 xl:grid-cols-5">
         <Card className="min-w-0 xl:col-span-3 rounded-xl border border-border bg-card p-5">
           <div className="flex items-center justify-between">
-            <Title className="text-sm font-bold text-foreground uppercase tracking-wider">
+            <Title className="text-sm font-semibold text-foreground">
               {t("page.risk.topRisksTitle")}
             </Title>
             <span className="text-xs text-muted-foreground">{t("ui.openWorstNistScoreFirst")}</span>
           </div>
           {topRisksQuery.isLoading ? (
-            <p className="mt-6 text-xs text-muted-foreground">Loading tracked findings…</p>
+            <p className="mt-6 text-xs text-muted-foreground">{t("riskOverview.copy6")}</p>
           ) : topRisks.length === 0 ? (
             <p className="mt-6 text-xs text-muted-foreground">{t("ui.noOpenTrackedFindings")}</p>
           ) : (
             <div className="mt-4 overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="border-b border-border bg-muted text-muted-foreground font-semibold text-xs">
+                <thead className="border-b border-border bg-muted text-muted-foreground font-semibold">
                   <tr>
                     <th className="py-2.5 px-2">{t("ui.finding")}</th>
                     <th className="py-2.5 px-2">{t("ui.asset")}</th>
-                    <th className="py-2.5 px-2">Risk</th>
+                    <th className="py-2.5 px-2">{t("riskOverview.copy7")}</th>
                     <th className="py-2.5 px-2">SLA</th>
                     <th className="py-2.5 px-2">{t("ui.owner")}</th>
                   </tr>
@@ -346,35 +366,49 @@ export default function DashboardPage() {
                       <td className="py-2.5 px-2">
                         <Link
                           href={vulnDetailHref(row.vuln_id, row.tenant_id)}
-                          className="inline-flex items-center gap-1 font-mono font-semibold text-sky-600 dark:text-sky-400 hover:underline"
+                          className="inline-flex items-center gap-1 font-mono font-semibold text-primary hover:underline"
                         >
-                          {findingLabel(row)}
+                          {vulnerabilityName(row, t.locale)}
                           <ArrowUpRight className="h-3 w-3" />
                         </Link>
+                        <details className="mt-1 text-xs text-muted-foreground">
+                          <summary className="cursor-pointer">{t("riskOverview.copy8")}</summary>
+                          <dl className="mt-2 space-y-1 break-all">
+                            <dt>{t("riskOverview.copy9")}</dt>
+                            <dd>{row.title || "—"}</dd>
+                            <dt>{t("riskOverview.copy10")}</dt>
+                            <dd>{row.script_id || "—"}</dd>
+                            <dt>{t("riskOverview.copy11")}</dt>
+                            <dd>{row.asset_id}</dd>
+                            <dt>{t("riskOverview.copy12")}</dt>
+                            <dd>{row.risk_level || "—"}</dd>
+                          </dl>
+                        </details>
                       </td>
                       <td className="py-2.5 px-2">
                         <Link
                           href={assetDetailHref(row.asset_id, row.tenant_id)}
-                          className="font-mono text-foreground hover:text-sky-600 dark:text-sky-300 hover:underline"
+                          className="font-mono text-foreground hover:text-primary hover:underline"
                         >
-                          {row.asset_id}
+                          {t("riskOverview.copy13")}
                         </Link>
                       </td>
                       <td className="py-2.5 px-2">
                         {row.risk_level ? (
                           <StatusBadge value={row.risk_level} map={RISK_LEVEL_STATUS} />
                         ) : (
-                          <StatusBadge
-                            value={row.severity}
-                            map={SEVERITY_STATUS}
-                          />
+                          <StatusBadge value={row.severity} map={SEVERITY_STATUS} />
                         )}
                       </td>
                       <td className="py-2.5 px-2">
                         <SlaIndicator slaState={row.sla_state} dueAt={row.due_at} showDue={false} />
                       </td>
                       <td className="py-2.5 px-2 text-foreground">
-                        {row.assignee || <span className="text-muted-foreground">{t("page.risk.unassignedCell")}</span>}
+                        {row.assignee || (
+                          <span className="text-muted-foreground">
+                            {t("page.risk.unassignedCell")}
+                          </span>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -386,10 +420,10 @@ export default function DashboardPage() {
 
         <Card className="min-w-0 xl:col-span-2 rounded-xl border border-border bg-card p-5">
           <div className="flex items-center justify-between">
-            <Title className="text-sm font-bold text-foreground uppercase tracking-wider">
+            <Title className="text-sm font-semibold text-foreground">
               {t("page.risk.assetPosture")}
             </Title>
-            <Link href="/assets" className="text-xs text-sky-600 dark:text-sky-400 hover:underline">
+            <Link href="/assets" className="text-xs text-primary hover:underline">
               {t("page.risk.viewAssets")}
             </Link>
           </div>
@@ -412,16 +446,13 @@ export default function DashboardPage() {
                   ) : null,
                 )}
               </div>
-              <p className="mt-3 text-xs text-muted-foreground">
-                Internet-facing exposure is not counted yet — that input is{" "}
-                <span className="text-foreground">#171 / #146</span>, not a zero.
-              </p>
+              <p className="mt-3 text-xs text-muted-foreground">{t("riskOverview.copy14")}</p>
               {criticalityData.length > 0 ? (
                 <BarChart
                   className="mt-4 h-56"
                   data={criticalityData}
                   index="name"
-                  categories={["Assets"]}
+                  categories={[series.assets]}
                   colors={["cyan"]}
                   showLegend={false}
                   showAnimation={false}
@@ -436,8 +467,8 @@ export default function DashboardPage() {
       <Card className="rounded-xl border border-border bg-card p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            <TrendingUp className="h-4 w-4 text-sky-600 dark:text-sky-400" />
-            <Title className="text-sm font-bold text-foreground uppercase tracking-wider">
+            <TrendingUp className="h-4 w-4 text-primary" />
+            <Title className="text-sm font-semibold text-foreground">
               {t("prose.estateRiskVulnerabilityTrend144")}
             </Title>
           </div>
@@ -449,7 +480,7 @@ export default function DashboardPage() {
             disabled={triggerSnapshot.isPending}
           >
             <Camera className="h-3.5 w-3.5" />
-            {triggerSnapshot.isPending ? "Recording…" : "Capture Snapshot"}
+            {triggerSnapshot.isPending ? t("riskOverview.copy15") : t("riskOverview.copy16")}
           </Button>
         </div>
         <p className="mt-1 text-xs text-muted-foreground">
@@ -457,7 +488,9 @@ export default function DashboardPage() {
         </p>
         {riskHistoryTrend.length === 0 ? (
           <div className="mt-6 flex flex-col items-center justify-center p-6 border border-dashed border-border rounded-lg text-center">
-            <p className="text-xs text-muted-foreground">{t("ui.noHistoricalRiskSnapshotsRecordedYet")}</p>
+            <p className="text-xs text-muted-foreground">
+              {t("ui.noHistoricalRiskSnapshotsRecordedYet")}
+            </p>
             <Button
               size="sm"
               variant="secondary"
@@ -474,7 +507,7 @@ export default function DashboardPage() {
             className="mt-4 h-64"
             data={riskHistoryTrend}
             index="date"
-            categories={["Open Vulns", "Critical & High", "SLA Breached"]}
+            categories={[series.open, series.critical, series.breached]}
             colors={["sky", "rose", "amber"]}
             showLegend
             showAnimation={false}
@@ -484,22 +517,20 @@ export default function DashboardPage() {
 
       <Card className="rounded-xl border border-border bg-card p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <Title className="text-sm font-bold text-foreground uppercase tracking-wider">
+          <Title className="text-sm font-semibold text-foreground">
             {t("page.risk.scanActivity")}
           </Title>
           {latest ? (
             <Link
               href={runDetailHref(latest.run_id)}
-              className="inline-flex items-center gap-1 font-mono text-xs text-sky-600 dark:text-sky-400 hover:underline"
+              className="inline-flex items-center gap-1 font-mono text-xs text-primary hover:underline"
             >
-              latest {latest.run_id}
+              {t("riskOverview.copy17")} {latest.run_id}
               <ArrowUpRight className="h-3 w-3" />
             </Link>
           ) : null}
         </div>
-        <p className="mt-1 text-xs text-muted-foreground">
-          {t("page.risk.scanActivityHint")}
-        </p>
+        <p className="mt-1 text-xs text-muted-foreground">{t("page.risk.scanActivityHint")}</p>
         {trend.length === 0 ? (
           <p className="mt-6 text-xs text-muted-foreground">{t("page.risk.noRuns")}</p>
         ) : (
@@ -507,7 +538,7 @@ export default function DashboardPage() {
             className="mt-4 h-64"
             data={trend}
             index="date"
-            categories={["Hosts", "Vulns"]}
+            categories={[series.hosts, series.findings]}
             colors={["cyan", "rose"]}
             showLegend
             showAnimation={false}

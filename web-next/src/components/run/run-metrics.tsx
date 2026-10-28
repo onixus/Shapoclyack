@@ -1,3 +1,4 @@
+import { runText } from "@/lib/run-presentation";
 import { KpiCard } from "@/components/kpi-card";
 import { useT } from "@/lib/i18n";
 import type { AliveHost, PortAggregate } from "@/lib/api";
@@ -27,7 +28,7 @@ export function RunMetrics({
   // "unconfirmed" badge only shows once the list is open.
   const vulnHint =
     typeof unconfirmed === "number" && unconfirmed > 0
-      ? `${unconfirmed.toLocaleString()} unconfirmed`
+      ? runText(t.locale, "{count} unconfirmed", { count: unconfirmed.toLocaleString() })
       : undefined;
 
   return (
@@ -35,7 +36,9 @@ export function RunMetrics({
       <KpiCard
         label={t("kpi.aliveHosts")}
         value={aliveHosts ?? hosts.length}
-        hint={hosts.some((h) => h.country || h.city) ? "GeoIP available" : undefined}
+        hint={
+          hosts.some((h) => h.country || h.city) ? runText(t.locale, "GeoIP available") : undefined
+        }
       />
       <KpiCard
         label={t("kpi.openPorts")}

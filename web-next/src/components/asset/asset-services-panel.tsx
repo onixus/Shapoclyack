@@ -1,5 +1,7 @@
 "use client";
 
+import { SystemTechnicalDetails } from "@/components/system-technical-details";
+import { assetServiceLabel } from "@/lib/asset-presentation";
 import { Network } from "lucide-react";
 import { StatusBadge } from "@/components/status-badge";
 import { useAssetServices } from "@/hooks/use-retro-match";
@@ -114,7 +116,9 @@ function ServiceRow({
       <td className="px-3.5 py-3 font-mono font-semibold text-foreground">
         {service.port}/{service.protocol}
       </td>
-      <td className="px-3.5 py-3 text-foreground">{service.service || "—"}</td>
+      <td className="px-3.5 py-3 text-foreground">
+        {assetServiceLabel(t.locale, service.service)}
+      </td>
       <td className="px-3.5 py-3">
         <p className="font-mono text-foreground">{product || "—"}</p>
         {packaging ? (
@@ -126,14 +130,33 @@ function ServiceRow({
             {packaging}
           </p>
         ) : null}
-        {service.banner && service.banner !== product ? (
-          <p className="max-w-[18rem] truncate text-xs text-muted-foreground" title={service.banner}>
+        {t.locale !== "ru" && service.banner && service.banner !== product ? (
+          <p
+            className="max-w-[18rem] truncate text-xs text-muted-foreground"
+            title={service.banner}
+          >
             {service.banner}
           </p>
         ) : null}
       </td>
       <td className="px-3.5 py-3 font-mono text-xs text-muted-foreground">
-        {service.cpe.length ? service.cpe.map((cpe) => <p key={cpe}>{cpe}</p>) : "—"}
+        {t.locale === "ru" ? (
+          <>
+            <span>{service.cpe.length ? `Идентификаторов CPE: ${service.cpe.length}` : "—"}</span>
+            <SystemTechnicalDetails
+              data={{
+                service: service.service,
+                cpe: service.cpe,
+                banner: service.banner,
+                match_status: service.match_status,
+              }}
+            />
+          </>
+        ) : service.cpe.length ? (
+          service.cpe.map((cpe) => <p key={cpe}>{cpe}</p>)
+        ) : (
+          "—"
+        )}
       </td>
       <td className="px-3.5 py-3 text-muted-foreground">{ago(service.last_seen_at)}</td>
       <td className="px-3.5 py-3">
@@ -205,15 +228,7 @@ function ServiceRow({
   );
 }
 
-function Count({
-  label,
-  value,
-  className,
-}: {
-  label: string;
-  value: number;
-  className?: string;
-}) {
+function Count({ label, value, className }: { label: string; value: number; className?: string }) {
   return (
     <span className={value > 0 && className ? className : "text-muted-foreground"}>
       {label} <span className="font-semibold tabular-nums">{value}</span>
