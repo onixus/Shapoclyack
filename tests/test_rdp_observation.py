@@ -136,3 +136,11 @@ def test_trickled_response_cannot_extend_total_deadline(monkeypatch):
 
     monkeypatch.setattr(rdp.socket, "create_connection", lambda *args, **kwargs: Connection())
     assert rdp.observe("127.0.0.1", timeout=1.5) == ("unknown", None)
+
+
+def test_hostname_is_not_reresolved_after_scope_admission(monkeypatch):
+    def forbidden_connect(*args, **kwargs):
+        raise AssertionError("hostname must not reach DNS or the network")
+
+    monkeypatch.setattr(rdp.socket, "create_connection", forbidden_connect)
+    assert rdp.observe("example.com") == ("unknown", None)

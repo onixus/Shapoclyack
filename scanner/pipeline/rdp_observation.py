@@ -6,6 +6,7 @@ facts (or an inconclusive reason) for the separate observation receipt.
 """
 from __future__ import annotations
 
+import ipaddress
 import socket
 import struct
 import time
@@ -58,6 +59,12 @@ def observe(host: str, port: int = 3389, *, timeout: float = 1.5) -> tuple[str, 
             or isinstance(timeout, bool) or not isinstance(timeout, (int, float))
             or not 0 < timeout <= 5):
         raise ValueError("RDP observation requires scoped TCP port 3389 and bounded timeout")
+    try:
+        # Connect to the previously scoped address only; never re-resolve a
+        # hostname after admission, where DNS could move outside the scope.
+        host = str(ipaddress.ip_address(host))
+    except ValueError:
+        return "unknown", None
     try:
         deadline = time.monotonic() + timeout
         with socket.create_connection((host, port), timeout=timeout) as connection:

@@ -128,12 +128,12 @@ def record(*, tenant_id: str, run_id: str, family: str, implementation_sha256: s
     return {**core, "observation_id": "pobs:" + _sha(core)}
 
 
-def document(records: list[dict[str, Any]], *, tenant_id: str, run_id: str) -> dict[str, Any]:
+def document(records: list[dict[str, Any]], *, tenant_id: str, run_id: str, omitted_targets: int = 0) -> dict[str, Any]:
     """Create deterministic additive sidecar document from validated records."""
     if not isinstance(records, list) or len(records) > MAX_RECORDS:
         raise ValueError("invalid receipt records")
-    if not records:
-        return {"schema": SCHEMA, "context": {"tenant_id": tenant_id, "run_id": run_id}, "records": []}
+    if isinstance(omitted_targets, bool) or not isinstance(omitted_targets, int) or omitted_targets < 0:
+        raise ValueError("invalid omitted target count")
     checked = []
     for item in records:
         if not isinstance(item, dict) or item.get("schema") != SCHEMA:
@@ -145,15 +145,19 @@ def document(records: list[dict[str, Any]], *, tenant_id: str, run_id: str) -> d
             raise ValueError("invalid observation identity")
         checked.append(item)
     checked.sort(key=lambda r: (r["family"], r["subject"]["host"], r["subject"]["port"], r["variant"], r["observation_id"]))
-    return {"schema": SCHEMA, "context": {"tenant_id": tenant_id, "run_id": run_id}, "records": checked}
+    result = {"schema": SCHEMA, "context": {"tenant_id": tenant_id, "run_id": run_id}, "records": checked}
+    if omitted_targets:
+        result["omitted_targets"] = omitted_targets
+    return result
 
 
-def write_receipt(root: Path, records: list[dict[str, Any]], *, tenant_id: str, run_id: str) -> dict[str, Any]:
+def write_receipt(root: Path, records: list[dict[str, Any]], *, tenant_id: str, run_id: str,
+                  omitted_targets: int = 0) -> dict[str, Any]:
     """Atomically replace only observation_receipt.json under a trusted run directory."""
     base = root.resolve(strict=True)
     if not base.is_dir() or (base / FILENAME).is_symlink():
         raise ValueError("invalid run artifact directory")
-    result = document(records, tenant_id=tenant_id, run_id=run_id)
+    result = document(records, tenant_id=tenant_id, run_id=run_id, omitted_targets=omitted_targets)
     temp: str | None = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=base,

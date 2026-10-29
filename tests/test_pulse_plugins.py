@@ -449,6 +449,21 @@ def test_rdp_observation_can_be_skipped_under_packet_ceiling(tmp_path, plugin_di
     assert row["state"] == "skipped" and row["outcome"] is None
 
 
+def test_rdp_observation_caps_targets_and_marks_exhausted_budget(tmp_path, plugin_dir, pulse, monkeypatch):
+    observed = []
+    monkeypatch.setattr(pp, "OBSERVATION_MAX_RECORDS", 2)
+    monkeypatch.setattr(pp, "RDP_OBSERVATION_BUDGET_SECONDS", 0)
+    monkeypatch.setattr(pp, "observe_rdp_x224", lambda host, port: observed.append((host, port)))
+    endpoints = [f"10.0.0.{n}:3389/tcp" for n in (1, 2, 3)]
+    out = _run(tmp_path, endpoints, plugins=True, observation_tenant_id="tenant",
+               observation_run_id="run", observation_receipts_enabled=True)
+    receipt = _receipt(out)
+    assert observed == []
+    assert receipt["omitted_targets"] == 1
+    assert [row["state"] for row in receipt["records"]] == ["skipped", "skipped"]
+    assert [row["subject"]["host"] for row in receipt["records"]] == ["10.0.0.1", "10.0.0.2"]
+
+
 def test_run_drops_findings_when_plugins_are_off(tmp_path, plugin_dir, pulse):
     pulse.findings = [_plugin_row()]
     out = _run(tmp_path, plugins=False)

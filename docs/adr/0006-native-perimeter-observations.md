@@ -89,10 +89,16 @@ request variant and applicability must be explicit; output is exclusively a
 neutral observation, never a Rhai finding or vulnerability input. No further
 probe families are authorized by this acceptance.
 
-The probe has a single 1.5-second connection/write/read deadline. When a
+The probe connects only to the already-scoped numeric IP (hostnames remain
+`unknown`), avoiding a new DNS resolution after scope admission. It has a single
+1.5-second connection/write/read deadline. When a
 per-host packet-rate ceiling is configured, this unpaced request is not sent;
 the receipt records `skipped` rather than a negative result. Resume schedules
 the observation independently of Pulse's host checkpoint.
+The serial network probes have a 30-second total budget (or the configured
+stage timeout, if smaller); remaining recorded targets are `skipped`. Receipt
+construction and persistence have additional processing time. The
+receipt holds at most 10,000 targets and explicitly counts any omitted targets.
 
 ## Consequences
 

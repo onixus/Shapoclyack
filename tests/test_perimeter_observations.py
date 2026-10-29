@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import hashlib
 import json
-from pathlib import Path
 
 import pytest
 
@@ -73,3 +71,12 @@ def test_failed_and_unknown_are_explicit_states_not_invented_negative_facts():
     for state in ("failed", "skipped", "unknown"):
         record = make_record(state=state, outcome=None)
         assert record["state"] == state and record["outcome"] is None
+
+
+def test_receipt_explicitly_accounts_for_omitted_targets(tmp_path):
+    row = make_record()
+    doc = po.write_receipt(tmp_path, [row], tenant_id="tenant-a", run_id="run-1", omitted_targets=42)
+    assert doc["omitted_targets"] == 42
+    assert json.loads((tmp_path / po.FILENAME).read_text())["omitted_targets"] == 42
+    with pytest.raises(ValueError):
+        po.document([], tenant_id="tenant-a", run_id="run-1", omitted_targets=-1)
