@@ -173,6 +173,7 @@ def test_new_raw_source_artifacts_keep_operator_download_guard():
     from api.services.runs import is_restricted_artifact
     assert is_restricted_artifact('report_sources.json')
     assert is_restricted_artifact('finding_evidence.json')
+    assert is_restricted_artifact('observation_receipt.json')
 
 
 @pytest.mark.parametrize('mutation', [
