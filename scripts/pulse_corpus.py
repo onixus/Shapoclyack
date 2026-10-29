@@ -380,6 +380,12 @@ NSE_PLUGIN_MAP.update({
     "vnc-info": {"plugin": "shapo_vnc_security", "covers": "advertised RFB security types only, no authentication"},
 })
 PLUGIN_ONLY = dict(RECORDED_PLUGIN_ONLY)
+PLUGIN_ONLY.update({
+    "shapo_rsync_modules": "unauthenticated listing only; module and file access untested",
+    "shapo_zookeeper_envi": "unauthenticated envi diagnostic only; znode access untested",
+    "shapo_redis_info": "unauthenticated INFO SERVER only; key and write access untested",
+    "shapo_memcached_stats": "unauthenticated TCP stats only; item and UDP access untested",
+})
 NSE_VULN_MAP = {key: dict(value) for key, value in RECORDED_NSE_VULN_MAP.items()}
 NSE_VULN_MAP["smb-vuln-ms17-010"].update(destination="plugin", ref="shapo_ms17_010")
 NSE_VULN_MAP["smb-protocols"].update(destination="plugin", ref="shapo_smb_protocols")
