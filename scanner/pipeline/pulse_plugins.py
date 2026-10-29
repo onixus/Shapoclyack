@@ -24,6 +24,13 @@ What this module owns, so that ``pulse_probe`` stays about the command line:
   lines on stderr; ``parse_plugin_errors`` turns them into records.
 * **How long it may take.** ``plugin_budget_seconds``.
 
+Neutral observation caveat
+--------------------------
+Pulse's current Rhai contract maps every returned value to a finding-shaped plugin
+row. RDP X.224 inventory is instead scanner-native and writes to a separate typed
+receipt; it must never be routed through Rhai or counted as a vulnerability. Do
+not call the process allowance a per-probe deadline.
+
 Wall-clock budget
 -----------------
 Pulse runs the scripts after the scan, in one blocking task, one open port at a
@@ -221,6 +228,10 @@ def verify_plugins(
 #: given, contains the second string, or the port is in ``ports`` and the
 #: service is unknown.
 APPLICABILITY: dict[str, dict[str, Any]] = {
+    "shapo_rsync_modules": {"services": {"rsync"}, "banner": (), "ports": {873}},
+    "shapo_zookeeper_envi": {"services": {"zookeeper"}, "banner": (), "ports": {2181}},
+    "shapo_redis_info": {"services": {"redis"}, "banner": (), "ports": {6379}},
+    "shapo_memcached_stats": {"services": {"memcached", "memcache"}, "banner": (), "ports": {11211}},
     "shapo_ssh_algorithms": {"services": {"ssh"}, "banner": (("ssh-", ""),), "ports": set()},
     "shapo_ssh_banner": {"services": {"ssh"}, "banner": (("ssh-", ""),), "ports": set()},
     "shapo_ftp_anonymous": {"services": {"ftp"}, "banner": (("220", "ftp"),), "ports": set()},
@@ -257,6 +268,8 @@ def applies(plugin: str, *, service: str, port: int, banner: str) -> bool:
     # banner in their gates, so it is lower-cased here.
     svc = service or ""
     text = (banner or "").lower()
+    if gate.get("neutral"):
+        return svc in ("", "unknown") and port in gate["ports"] or svc in gate["services"]
     if svc in gate["services"]:
         return True
     if any(text.startswith(prefix) and needle in text for prefix, needle in gate["banner"]):
