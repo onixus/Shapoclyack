@@ -11,11 +11,29 @@ def pytest_addoption(parser):
     parser.addoption("--ci-timing-jsonl", help="Exclusive-create incremental timing log")
 
 
+def _open_exclusive(path):
+    """Create the log, or the first free ``<stem>.<n><suffix>`` next to it.
+
+    Evidence from an earlier run in the same workspace is never truncated,
+    and a rerun is never refused for it.
+    """
+    path = Path(path)
+    for attempt in range(1000):
+        candidate = path if not attempt else path.with_name(f"{path.stem}.{attempt}{path.suffix}")
+        try:
+            return candidate.open("x", encoding="utf-8", buffering=1)
+        except FileExistsError:
+            continue
+    raise FileExistsError(path)
+
+
 def pytest_configure(config):
     path = config.getoption("--ci-timing-jsonl")
-    if path:
+    # Under pytest-xdist each worker loads plugins too; the controller sees
+    # every report, so only it writes.
+    if path and not hasattr(config, "workerinput"):
         try:
-            stream = Path(path).open("x", encoding="utf-8", buffering=1)
+            stream = _open_exclusive(path)
         except OSError as exc:
             raise pytest.UsageError(f"Cannot create timing evidence: {exc}") from exc
         config.pluginmanager.register(TimingLog(stream), "ci-timing-writer")

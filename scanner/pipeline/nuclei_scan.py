@@ -466,33 +466,80 @@ def _interactsh_args(server: str) -> tuple[list[str], Path | None]:
     return [*args, "-config", str(config_file)], private_dir
 
 
+_DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+# Per invocation part and for the whole sweep: raw matches plus error logs.
+_AUTHORITY_PART_BYTES = 8 * 1024 * 1024
+_AUTHORITY_SWEEP_BYTES = 16 * 1024 * 1024
+
+
+def _authority_name(name: Any) -> str | None:
+    """An ASCII (A-label) DNS name usable as Host and SNI, or None.
+
+    The name comes from input-forward DNS only. It goes to nuclei as one argv
+    element, and the label grammar already excludes whitespace, CR/LF, ``:``
+    and a leading ``-``, so it can neither split a header nor read as a flag.
+    """
+    if not isinstance(name, str):
+        return None
+    name = name.lower()
+    name = name[:-1] if name.endswith(".") else name
+    labels = name.split(".")
+    if len(name) > 253 or len(labels) < 2:
+        return None
+    if not all(_DNS_LABEL.fullmatch(label) for label in labels):
+        return None
+    # An all-numeric last label is an IP literal, never a virtual host name
+    # (and RFC 6066 forbids it in SNI).
+    return None if labels[-1].isdigit() else name
+
+
 def _sweep_authorities(candidates, names):
     """Bind input-forward DNS authority to a discovered IP; never dial the name."""
     targets = []
     for ip, port, scheme in candidates:
-        valid = sorted({name.lower().rstrip('.') for name in names.get(ip, [])
-                        if isinstance(name, str) and len(name) <= 253
-                        and all(re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
-                                for label in name.rstrip('.').split('.'))
-                        and '.' in name.rstrip('.')})
-        for name in valid or [None]:
+        valid = sorted({n for n in map(_authority_name, names.get(ip, [])) if n})
+        # The bare IP stays: its default virtual host is what the sweep
+        # covered before names were bound, as the planner keeps it too.
+        for name in [None, *valid]:
             authority = (name or (f"[{ip}]" if ':' in ip else ip)) + f":{port}"
+            # A client omits a default port; exact-match vhost routers
+            # (Envoy domains, HAProxy hdr(host)) do not strip it.
+            host_header = name if port == _DEFAULT_PORTS.get(scheme) else authority
             targets.append(dict(ip=ip, port=port, url=_build_url(ip, port, scheme),
                                 authority=authority, sni=name if scheme == 'https' else None,
-                                host_header=authority if name else None))
+                                host_header=host_header if name else None))
     return targets
 
 
+def _bounded_part(path: Path, limit: int) -> tuple[bytes, bool]:
+    """Read at most ``limit`` bytes, cut back to the last complete line."""
+    with path.open('rb') as handle:
+        content = handle.read(max(limit, 0) + 1)
+    if len(content) <= limit:
+        return content, False
+    content = content[:max(limit, 0)]
+    return content[:content.rfind(b'\n') + 1], True
+
+
 def _run_authority_sweep(command, targets, output_dir, timeout, expected_templates=None):
-    """Isolate each authority's Host/SNI and preserve per-invocation raw evidence."""
+    """Isolate each authority's Host/SNI and preserve per-invocation raw evidence.
+
+    Returns the aggregate process and one receipt per target, in order: an
+    authority is ``complete``, ``failed`` or ``skipped_deadline``, and only a
+    sweep whose every receipt is complete exits 0.
+    """
     deadline = time.monotonic() + timeout
-    codes, stderr, matches, errors = [], [], [], []
-    bytes_left = 16 * 1024 * 1024
+    stderr, matches, errors, receipts = [], [], [], []
+    bytes_left = _AUTHORITY_SWEEP_BYTES
     for index, target in enumerate(targets):
+        receipt = {'index': index, 'authority': target['authority'], 'sni': target['sni'],
+                   'status': 'skipped_deadline', 'returncode': None, 'templates_loaded': None,
+                   'malformed_result': False, 'artifact_truncated': False}
+        receipts.append(receipt)
         remaining = int(deadline - time.monotonic())
-        if remaining <= 0:
-            codes.append(1)
-            break
+        if remaining < _MIN_PROCESS_SECONDS:
+            continue
         cmd = list(command)
         inputs = output_dir / f"nuclei_authority_{index:04d}_targets.txt"
         raw = output_dir / f"nuclei_authority_{index:04d}_raw.jsonl"
@@ -509,39 +556,41 @@ def _run_authority_sweep(command, targets, output_dir, timeout, expected_templat
             cmd.extend(['-sni', target['sni']])
         try:
             result = run_command(cmd, timeout=remaining, retries=0, check=False)
-            codes.append(result.returncode)
+            receipt['returncode'] = result.returncode
             stderr.append(result.stderr or '')
-            if expected_templates is not None:
-                loaded = _TEMPLATES_LOADED.findall(result.stderr or '')
-                if not loaded or int(loaded[-1]) != expected_templates:
-                    codes.append(1)
-        except Exception as exc:  # preserve partial evidence and fail coverage
-            codes.append(1)
+        except Exception as exc:  # noqa: BLE001 - partial evidence is kept; the receipt fails
             stderr.append(str(exc))
+        loaded = _TEMPLATES_LOADED.findall(stderr[-1])
+        receipt['templates_loaded'] = int(loaded[-1]) if loaded else None
         for path, sink in [(raw, matches), (elog, errors)]:
-            if path.exists():
-                with path.open('rb') as handle:
-                    content = handle.read(min(bytes_left, 8 * 1024 * 1024) + 1)
-                if len(content) > min(bytes_left, 8 * 1024 * 1024):
-                    codes.append(1)
-                    content = content[:min(bytes_left, 8 * 1024 * 1024)].rsplit(b'\n', 1)[0]
-                bytes_left -= len(content)
-                if path == raw:
-                    for line in content.decode(errors='replace').splitlines():
-                        record = _parse_result_line(line)
-                        if record is None:
-                            codes.append(1)
-                            continue
-                        if record is not None:
-                            record['shapoclyack_input'] = dict(schema='octo.nuclei_input.v1',
-                                **{k: target[k] for k in ['ip', 'port', 'authority', 'sni']})
-                            sink.append(json.dumps(record))
-                else:
-                    sink.append(content.decode(errors='replace'))
+            if not path.exists():
+                continue
+            content, cut = _bounded_part(path, min(bytes_left, _AUTHORITY_PART_BYTES))
+            receipt['artifact_truncated'] |= cut
+            bytes_left -= len(content)
+            if path == elog:
+                sink.append(content.decode(errors='replace'))
+                continue
+            for line in content.decode(errors='replace').splitlines():
+                if not line.strip():
+                    continue
+                record = _parse_result_line(line)
+                if record is None:
+                    receipt['malformed_result'] = True
+                    continue
+                record['shapoclyack_input'] = dict(schema='octo.nuclei_input.v1',
+                    **{k: target[k] for k in ['ip', 'port', 'authority', 'sni']})
+                sink.append(json.dumps(record))
+        receipt['status'] = 'complete' if (
+            receipt['returncode'] == 0
+            and (expected_templates is None or receipt['templates_loaded'] == expected_templates)
+            and not receipt['malformed_result']
+            and not receipt['artifact_truncated']
+        ) else 'failed'
     Path(command[command.index('-jsonl-export') + 1]).write_text('\n'.join(matches))
     Path(command[command.index('-elog') + 1]).write_text('\n'.join(errors))
-    return subprocess.CompletedProcess(command, 0 if len(codes) == len(targets) and all(c == 0 for c in codes) else 1,
-                                       '', '\n'.join(stderr))
+    code = 0 if all(r['status'] == 'complete' for r in receipts) else 1
+    return subprocess.CompletedProcess(command, code, '', '\n'.join(stderr)), receipts
 
 
 def _run_web_sweep(
@@ -877,7 +926,7 @@ def _run_web_sweep(
             expected_per_process = coverage['templates_expected']
             if expected_per_process is not None:
                 coverage['templates_expected'] = expected_per_process * len(authorities)
-            completed = _run_authority_sweep(
+            completed, coverage['authority_results'] = _run_authority_sweep(
                 command, authorities, output_dir, config.overall_timeout_seconds, expected_per_process
             )
         elif plan is None:
@@ -1068,6 +1117,10 @@ def _run_web_sweep(
             coverage["ran"]
             and len(receipts) == len(plan["targets"])
             and all(r["complete"] for r in receipts)
+        )
+    if coverage.get("authority_results") is not None:
+        coverage["ran"] = coverage["ran"] and all(
+            r["status"] == "complete" for r in coverage["authority_results"]
         )
     if coverage["returncode"] not in (0, None):
         LOG.warning("nuclei exited %s; its run is not counted as coverage", returncode)

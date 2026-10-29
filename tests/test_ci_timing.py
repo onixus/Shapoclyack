@@ -34,8 +34,26 @@ def test_timing_is_incremental_and_preserves_outcomes(tmp_path, abrupt):
         assert rows[-1]["exitstatus"] == 1
         assert {r["outcome"] for r in rows if r["event"] == "phase"} == {"passed", "failed", "skipped"}
     original = output.read_bytes()
-    again = subprocess.run([sys.executable, "-m", "pytest", "-p", "tests.ci_timing",
-                            "--ci-timing-jsonl", str(output)], cwd=tmp_path, env=env,
-                           capture_output=True, timeout=30)
-    assert again.returncode == 4
+    # A rerun in the same workspace keeps the earlier evidence byte-exact and
+    # still runs the suite: evidence must never be what fails a build.
+    again = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "tests.ci_timing",
+                            "--ci-timing-jsonl", str(output), str(tmp_path / "test_sample.py")],
+                           cwd=tmp_path, env=env, capture_output=True, timeout=30)
+    assert again.returncode == (7 if abrupt else 1), again.stderr
     assert output.read_bytes() == original
+    rerun = tmp_path / "timing.1.jsonl"
+    assert json.loads(rerun.read_text().splitlines()[0])["event"] == "session_start"
+
+
+def test_xdist_workers_leave_the_log_to_the_controller(tmp_path):
+    from tests import ci_timing
+
+    class Config:
+        workerinput = {"workerid": "gw0"}
+        pluginmanager = None
+
+        def getoption(self, name):
+            return str(tmp_path / "timing.jsonl")
+
+    ci_timing.pytest_configure(Config())
+    assert not any(tmp_path.iterdir())
