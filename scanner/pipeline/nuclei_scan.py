@@ -466,6 +466,80 @@ def _interactsh_args(server: str) -> tuple[list[str], Path | None]:
     return [*args, "-config", str(config_file)], private_dir
 
 
+def _sweep_authorities(candidates, names):
+    """Bind input-forward DNS authority to a discovered IP; never dial the name."""
+    targets = []
+    for ip, port, scheme in candidates:
+        valid = sorted({name.lower().rstrip('.') for name in names.get(ip, [])
+                        if isinstance(name, str) and len(name) <= 253
+                        and all(re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+                                for label in name.rstrip('.').split('.'))
+                        and '.' in name.rstrip('.')})
+        for name in valid or [None]:
+            authority = (name or (f"[{ip}]" if ':' in ip else ip)) + f":{port}"
+            targets.append(dict(ip=ip, port=port, url=_build_url(ip, port, scheme),
+                                authority=authority, sni=name if scheme == 'https' else None,
+                                host_header=authority if name else None))
+    return targets
+
+
+def _run_authority_sweep(command, targets, output_dir, timeout):
+    """Isolate each authority's Host/SNI and preserve per-invocation raw evidence."""
+    deadline = time.monotonic() + timeout
+    codes, stderr, matches, errors = [], [], [], []
+    bytes_left = 16 * 1024 * 1024
+    for index, target in enumerate(targets):
+        remaining = int(deadline - time.monotonic())
+        if remaining <= 0:
+            codes.append(1)
+            break
+        cmd = list(command)
+        inputs = output_dir / f"nuclei_authority_{index:04d}_targets.txt"
+        raw = output_dir / f"nuclei_authority_{index:04d}_raw.jsonl"
+        elog = output_dir / f"nuclei_authority_{index:04d}_errors.jsonl"
+        write_lines(inputs, [target['url']])
+        raw.unlink(missing_ok=True)
+        elog.unlink(missing_ok=True)
+        cmd[cmd.index('-list') + 1] = str(inputs)
+        cmd[cmd.index('-jsonl-export') + 1] = str(raw)
+        cmd[cmd.index('-elog') + 1] = str(elog)
+        if target['host_header']:
+            cmd.extend(['-H', 'Host: ' + target['host_header']])
+        if target['sni']:
+            cmd.extend(['-sni', target['sni']])
+        try:
+            result = run_command(cmd, timeout=remaining, retries=0, check=False)
+            codes.append(result.returncode)
+            stderr.append(result.stderr or '')
+        except Exception as exc:  # preserve partial evidence and fail coverage
+            codes.append(1)
+            stderr.append(str(exc))
+        for path, sink in [(raw, matches), (elog, errors)]:
+            if path.exists():
+                with path.open('rb') as handle:
+                    content = handle.read(min(bytes_left, 8 * 1024 * 1024) + 1)
+                if len(content) > min(bytes_left, 8 * 1024 * 1024):
+                    codes.append(1)
+                    content = content[:min(bytes_left, 8 * 1024 * 1024)].rsplit(b'\n', 1)[0]
+                bytes_left -= len(content)
+                if path == raw:
+                    for line in content.decode(errors='replace').splitlines():
+                        record = _parse_result_line(line)
+                        if record is None:
+                            codes.append(1)
+                            continue
+                        if record is not None:
+                            record['shapoclyack_input'] = dict(schema='octo.nuclei_input.v1',
+                                **{k: target[k] for k in ['ip', 'port', 'authority', 'sni']})
+                            sink.append(json.dumps(record))
+                else:
+                    sink.append(content.decode(errors='replace'))
+    Path(command[command.index('-jsonl-export') + 1]).write_text('\n'.join(matches))
+    Path(command[command.index('-elog') + 1]).write_text('\n'.join(errors))
+    return subprocess.CompletedProcess(command, 0 if len(codes) == len(targets) and all(c == 0 for c in codes) else 1,
+                                       '', '\n'.join(stderr))
+
+
 def _run_web_sweep(
     open_ports: list[str],
     config: NucleiConfig,
@@ -789,7 +863,14 @@ def _run_web_sweep(
         result["interactsh"] = "disabled"
 
     try:
-        if plan is None:
+        authorities = _sweep_authorities(candidates, forward_names(output_dir)) if plan is None and not exact_targets else []
+        if authorities and any(t['host_header'] for t in authorities):
+            if len(authorities) > config.max_targets:
+                result['truncated'] = True
+            authorities = authorities[:config.max_targets]
+            coverage['authorities'] = authorities
+            completed = _run_authority_sweep(command, authorities, output_dir, config.overall_timeout_seconds)
+        elif plan is None:
             completed = run_command(
                 command, timeout=config.overall_timeout_seconds, retries=0, check=False
             )
