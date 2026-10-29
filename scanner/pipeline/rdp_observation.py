@@ -39,7 +39,8 @@ def parse_reply(data: bytes) -> dict[str, Any]:
     if data[5:11] != bytes.fromhex("d00000000000"):
         raise RdpNegotiationError("malformed_x224_confirm")
     # RDP_NEG_RSP and RDP_NEG_FAILURE are exactly 8 bytes; X.224 CR has no user data.
-    if data[11] not in (0x02, 0x03) or data[12] != 0 or data[13:15] != b"\x08\x00":
+    if (data[11] not in (0x02, 0x03) or (data[11] == 0x03 and data[12] != 0)
+            or data[13:15] != b"\x08\x00"):
         raise RdpNegotiationError("malformed_negotiation_structure")
     value = struct.unpack("<I", data[15:19])[0]
     if len(data) != 19:

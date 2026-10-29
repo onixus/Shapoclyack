@@ -20,6 +20,20 @@ def test_parse_offered_protocols(value, name):
     assert rdp.parse_reply(reply(2, value)) == {"result": "selected", "selected_protocol": name}
 
 
+@pytest.mark.parametrize("flags", [1, 2, 4, 8, 16, 31])
+def test_response_flags_do_not_hide_selected_protocol(flags):
+    data = bytearray(reply(2, 2))
+    data[12] = flags
+    assert rdp.parse_reply(bytes(data)) == {"result": "selected", "selected_protocol": "PROTOCOL_HYBRID"}
+
+
+def test_failure_flags_must_be_zero():
+    data = bytearray(reply(3, 2))
+    data[12] = 1
+    with pytest.raises(rdp.RdpNegotiationError, match="malformed_negotiation_structure"):
+        rdp.parse_reply(bytes(data))
+
+
 def test_parse_explicit_request_failure():
     assert rdp.parse_reply(reply(3, 2)) == {"result": "explicit_failure", "failure_code": 2}
 
