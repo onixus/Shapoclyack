@@ -24,7 +24,7 @@ from api.services.local_operator.contracts import (
     AnswerPayload, Citation, OperatorAnswer, ServerContext,
 )
 from api.services.local_operator.providers import InferenceProvider, OperatorProviderError
-from api.services.local_operator import runtime
+from api.services.local_operator import overrides, runtime
 from api.services.local_operator import store as operator_store
 
 PROMPT_VERSION = "run-counts-v2-grounded"
@@ -184,6 +184,11 @@ def read_evidence(settings, principal, run_id):
 async def execute_task(settings, task):
     if not settings.operator_enabled or not settings.operator_worker_enabled:
         raise GatewayError("operator_disabled")
+    try:
+        # The admin-edited endpoint, read per task so an edit applies to the next one.
+        settings = await run_in_threadpool(overrides.effective_settings, settings)
+    except ValueError:
+        raise GatewayError("operator_configuration_invalid") from None
     if runtime.manifest_configured(settings):
         # A configured manifest makes readiness mandatory: never infer on a runtime
         # that is unreachable or does not match the pinned alias/context.

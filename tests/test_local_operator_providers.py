@@ -100,13 +100,14 @@ def test_input_limit_never_opens_transport():
         complete(OperatorConfig(enabled=True, max_input_chars=2), handler=lambda _: pytest.fail("too large input made request"))
 
 
-@pytest.mark.parametrize("status", [302, 401, 429, 500])
+@pytest.mark.parametrize("status", [302, 401, 403, 429, 500])
 def test_upstream_errors_and_redirects_are_sanitized_without_fallback(status):
     seen = []
     def handler(request):
         seen.append(request)
         return httpx.Response(status, headers={"location": "https://attacker.example/key"}, text="private-key upstream exception")
-    with pytest.raises(OperatorProviderError, match="^operator_upstream_rejected$"):
+    code = "operator_upstream_unauthorized" if status in (401, 403) else "operator_upstream_rejected"
+    with pytest.raises(OperatorProviderError, match=f"^{code}$"):
         complete(handler=handler)
     assert len(seen) == 1
 

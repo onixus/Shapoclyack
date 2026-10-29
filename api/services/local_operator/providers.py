@@ -77,6 +77,16 @@ class Completion:
     model: str
 
 
+MAX_MODELS = 500
+MAX_MODELS_BYTES = 1048576
+
+
+@dataclass(frozen=True)
+class ModelInfo:
+    id: str
+    context_tokens: int | None = None
+
+
 async def _system_resolver(host: str, port: int) -> list[str]:
     infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
     return [info[4][0] for info in infos]
@@ -111,6 +121,60 @@ class InferenceProvider:
             if not public:
                 raise OperatorProviderError("operator_endpoint_not_public")
 
+    def _headers(self) -> dict[str, str]:
+        headers = {"Accept": "application/json", "Accept-Encoding": "identity"}
+        if self.config.api_key:
+            headers["Authorization"] = "Bearer " + self.config.api_key
+        return headers
+
+    async def list_models(self) -> list[ModelInfo]:
+        """Model discovery over ``GET {base}/models``; works before the operator is enabled.
+
+        Only bounded, printable identifiers leave this method: never the
+        upstream body, which an arbitrary endpoint controls.
+        """
+        config = self.config
+        if not config.base_url:
+            raise OperatorProviderError("invalid_operator_base_url")
+        try:
+            async with asyncio.timeout(min(config.timeout_seconds, 15.0)):
+                await self._require_public_endpoint()
+                async with httpx.AsyncClient(timeout=min(config.timeout_seconds, 15.0), trust_env=False, follow_redirects=False, transport=self._transport) as client:
+                    async with client.stream("GET", config.base_url.rstrip("/") + "/models", headers=self._headers()) as response:
+                        if response.status_code in (401, 403):
+                            raise OperatorProviderError("operator_upstream_unauthorized")
+                        if response.status_code == 404:
+                            raise OperatorProviderError("operator_models_unsupported")
+                        if response.status_code != 200:
+                            raise OperatorProviderError("operator_upstream_rejected")
+                        if response.headers.get("content-encoding", "identity").lower() != "identity":
+                            raise OperatorProviderError("operator_invalid_response")
+                        data = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            if len(data) + len(chunk) > MAX_MODELS_BYTES:
+                                raise OperatorProviderError("operator_response_too_large")
+                            data.extend(chunk)
+            entries = json.loads(data)["data"]
+            if not isinstance(entries, list):
+                raise ValueError
+            models: list[ModelInfo] = []
+            for entry in entries[:MAX_MODELS]:
+                model_id = entry.get("id") if isinstance(entry, dict) else None
+                if not isinstance(model_id, str) or not 0 < len(model_id) <= 256 or any(ord(c) < 32 or ord(c) == 127 for c in model_id):
+                    continue
+                # OpenRouter reports context_length; llama.cpp reports meta.n_ctx.
+                context = entry.get("context_length")
+                if context is None and isinstance(entry.get("meta"), dict):
+                    context = entry["meta"].get("n_ctx")
+                models.append(ModelInfo(id=model_id, context_tokens=context if type(context) is int and 0 < context <= 10_000_000 else None))
+            return models
+        except OperatorProviderError:
+            raise
+        except (httpx.HTTPError, TimeoutError, OSError):
+            raise OperatorProviderError("operator_transport_failed") from None
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError, RecursionError):
+            raise OperatorProviderError("operator_invalid_response") from None
+
     async def complete(self, messages: Sequence[dict[str, str]], *, response_schema: dict | None = None) -> Completion:
         config = self.config
         if not config.enabled:
@@ -126,9 +190,7 @@ class InferenceProvider:
             cleaned.append({"role": message["role"], "content": message["content"]})
         if size > config.max_input_chars:
             raise OperatorProviderError("operator_input_too_large")
-        headers = {"Accept": "application/json", "Accept-Encoding": "identity"}
-        if config.api_key:
-            headers["Authorization"] = "Bearer " + config.api_key
+        headers = self._headers()
         payload = {"model": config.model, "messages": cleaned, "max_tokens": config.max_output_tokens, "stream": False}
         if response_schema is not None:
             payload["response_format"] = _response_format(response_schema)
@@ -138,6 +200,8 @@ class InferenceProvider:
                 await self._require_public_endpoint()
                 async with httpx.AsyncClient(timeout=config.timeout_seconds, trust_env=False, follow_redirects=False, transport=self._transport) as client:
                     async with client.stream("POST", config.base_url.rstrip("/") + "/chat/completions", headers=headers, json=payload) as response:
+                        if response.status_code in (401, 403):
+                            raise OperatorProviderError("operator_upstream_unauthorized")
                         if response.status_code != 200:
                             raise OperatorProviderError("operator_upstream_rejected")
                         if response.headers.get("content-encoding", "identity").lower() != "identity":

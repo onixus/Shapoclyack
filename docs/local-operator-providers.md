@@ -25,10 +25,12 @@ its accepted model identifier must match the deployment setting.
 | `OCTO_OPERATOR_MAX_INPUT_CHARS` | `24000` | Maximum combined message characters; hard ceiling 131072 |
 | `OCTO_OPERATOR_MAX_OUTPUT_TOKENS` | `1024` | Requested output token limit; hard ceiling 8192 |
 
-Settings are deployment-owned. Clients cannot supply an endpoint or credential
-per inference request. API keys must come from a protected deployment secret and
-must not be committed to configuration examples or stored through a general
-configuration editor. The public configuration status omits the key and endpoint.
+Enablement, worker activation and permission for external inference are
+deployment-owned. Platform administrators can edit the endpoint through the
+operator's dedicated settings API/UI. Tenant inference requests cannot supply
+endpoints or credentials. API keys must not be committed to configuration
+examples or stored through the general scanner configuration editor. Public
+operator status omits the key and endpoint.
 
 ## Local isolation and hosted opt-in
 
@@ -130,3 +132,57 @@ and refuses it with `operator_runtime_not_ready` unless the probe is `ready`;
 there is no silent skip. `GET /api/operator/status` serves the probe from a cache
 (30 s for `ready`, 5 s otherwise, dropped when any `operator_*` setting changes)
 so viewers cannot exhaust the thread pool; the worker never uses the cache.
+
+
+## Admin connection settings
+
+Platform administrators can expand **AI connection settings** on the Operator
+page, including from the fleet view without selecting a tenant. The form edits
+provider, API base URL (including `/v1` where required), model, optional local or
+required cloud bearer key, external-data consent, timeout and output token limit.
+Discover models and Test connection use the unsaved form. Discovery sends no
+completion; the optional completion test sends a small fixed prompt and can incur
+provider charges. Discovered identifiers are selectable in the model field.
+
+The installation-wide API requires platform `config.write` permission:
+
+| Method/path (under `/api`) | Behavior |
+| --- | --- |
+| `GET /operator/settings` | Deployment, saved override and effective settings; keys are represented only by presence/source |
+| `PUT /operator/settings` | Validate and save editable fields, audit the change without credentials |
+| `DELETE /operator/settings` | Restore deployment settings |
+| `POST /operator/settings/test` | Validate unsaved candidate, discover models, optionally send one small completion (`completion: true`); never save |
+| `GET /operator/settings/models` | Discover models from the saved effective endpoint |
+
+PUT is replacement of the override: omitted or null non-secret fields inherit
+deployment values. An omitted/null `api_key` preserves a saved key only for the
+same provider and base URL; `""` clears it. Moving an endpoint does not inherit
+the deployment key or its external-data consent. Cloud edits require both
+`OCTO_OPERATOR_ALLOW_EXTERNAL=true` and explicit endpoint consent plus a key.
+Revoking deployment consent disables a stored cloud endpoint. Limits remain
+bounded and timeout must fit the worker lease. Operator/worker enablement,
+manifest pins, input/response byte limits and queue settings cannot be edited.
+
+Overrides use the existing `config_overrides` table (`operator` scope); no new
+migration is required. Stored keys use the configured envelope-encryption
+provider; configure secrets-at-rest encryption for encrypted database storage.
+Storage/decryption failures fail closed. Changes apply to the next worker task;
+an already running request retains its original configuration. Reset restores
+the deployment endpoint and credentials. No endpoint or credential is accepted
+on tenant task requests and there is no provider fallback.
+
+Tests return sanitized codes, reachability, authentication, model presence,
+model identifiers and completion status. Upstream bodies are never returned.
+Discovery is limited to 500 entries and 1 MiB, with a 15-second deadline, no
+redirects/proxies and the same hosted-address checks as inference. A server
+without `/models` can pass an explicit completion test; automatic status remains
+unavailable because it never spends inference tokens to check readiness.
+
+`GET /operator/status` exposes cached `endpoint_status`/`endpoint_error` for
+cloud and arbitrary local endpoints. A listed configured model establishes API
+readiness, not successful generation, model quality or weight integrity.
+`analysis_available` additionally requires an enabled worker. When a runtime
+manifest is configured, its attested readiness remains mandatory and cannot be
+bypassed through endpoint edits. Endpoint readiness does not confer manifest
+attestation. The UI displays endpoint readiness and disables model requests when
+analysis is unavailable.

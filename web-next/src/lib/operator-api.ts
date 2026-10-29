@@ -5,6 +5,9 @@ export type OperatorStatus = {
   model: string;
   external_inference: boolean;
   runtime_status: string;
+  endpoint_status?: "not_checked" | "ready" | "unavailable";
+  endpoint_error?: string | null;
+  analysis_available?: boolean;
   quality_status: string;
   task_submission_enabled: boolean;
   /** Deprecated alias of `manifest_attested` (kept one release). */
