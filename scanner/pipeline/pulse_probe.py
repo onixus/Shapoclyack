@@ -97,6 +97,7 @@ from .service_schema import (
     services_to_report_findings,
 )
 from .utils import run_command, save_json, write_lines
+from .perimeter_observations import FILENAME as OBSERVATION_FILENAME
 from .perimeter_observations import MAX_RECORDS as OBSERVATION_MAX_RECORDS
 from .perimeter_observations import record as perimeter_observation, write_receipt as write_observation_receipt
 from .rdp_observation import VARIANT as RDP_OBSERVATION_VARIANT, observe as observe_rdp_x224
@@ -671,7 +672,6 @@ def write_pulse_artifacts(
     os_records: list[OsRecord],
     cves: list[CveRecord],
     raw: dict[str, Any] | None = None,
-    observation_receipts_enabled: bool = False,
 ) -> Path:
     """Write canonical JSON files; return pulse/ directory."""
     pulse_dir = output_dir / "pulse"
@@ -950,6 +950,10 @@ def _run_pulse_probe(
     receipt_tenant_id = observation_tenant_id or ""
     receipt_run_id = observation_run_id or output_dir.name or ""
     observation_records: list[dict[str, Any]] = []
+    # A receipt left in the run directory by an earlier attempt of this stage
+    # must not outlive it: this attempt writes its own at the end or none at all
+    # (a Pulse failure, receipts disabled), never the previous one's facts.
+    (output_dir / OBSERVATION_FILENAME).unlink(missing_ok=True)
     pulse_bin = resolve_pulse_bin(bin_path)
     plugin_set = resolve_plugin_set(enabled=plugins)
     # Which plugins Pulse will actually load. It loads every script of its
@@ -1052,6 +1056,9 @@ def _run_pulse_probe(
                 try:
                     state, outcome = observe_rdp_x224(host, 3389)
                 except Exception:
+                    # observe() maps socket errors itself; anything else is a
+                    # defect in it and must cost this one record, not the stage.
+                    logging.warning("RDP observation of %s raised; recorded as unknown", host, exc_info=True)
                     state, outcome = "unknown", None
             else:
                 state, outcome = "skipped", None
@@ -1121,8 +1128,7 @@ def _run_pulse_probe(
     if not chunks:
         logging.info("pulse_probe: no TCP open ports to probe")
         write_rdp_observations()
-        write_pulse_artifacts(output_dir, all_services, all_os, all_cves, raw=merged_raw,
-                              observation_receipts_enabled=observation_receipts_enabled)
+        write_pulse_artifacts(output_dir, all_services, all_os, all_cves, raw=merged_raw)
         sync_report_primary_marker(pulse_dir, report_primary)
         return pulse_dir
 
@@ -1333,9 +1339,6 @@ def _run_pulse_probe(
                 )
 
         resolved_hosts = completed_hosts({host: ports_list for host in host_chunk}, payload, returncode)
-        # The scanner-owned X.224 runner is deliberately independent of Pulse's
-        # endpoint result schema. Probe only explicitly approved input endpoints;
-        # one bounded request per host, no follow-up protocol transitions.
         unresolved_hosts = [host for host in host_chunk if host not in resolved_hosts]
         resolved = not unresolved_hosts
         if unresolved_hosts and on_unresolved:
@@ -1452,8 +1455,7 @@ def _run_pulse_probe(
 
     # Pulse checkpoints do not own the separate RDP observation family.
     # Native observations are never added to finding-shaped Pulse artifacts.
-    write_pulse_artifacts(output_dir, deduped, all_os, all_cves, raw=merged_raw,
-                          observation_receipts_enabled=observation_receipts_enabled)
+    write_pulse_artifacts(output_dir, deduped, all_os, all_cves, raw=merged_raw)
     write_rdp_observations()
 
     # Mark report preference: explicit flag, else OCTO_SERVICE_BACKEND env.

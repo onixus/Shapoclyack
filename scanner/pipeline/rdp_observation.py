@@ -34,7 +34,7 @@ def parse_reply(data: bytes) -> dict[str, Any]:
     if data[0] != 3 or data[1] != 0 or data[4] != 0x0E:
         raise RdpNegotiationError("malformed_tpkt_header")
     length = struct.unpack(">H", data[2:4])[0]
-    if length != len(data) or data[4] != 0x0E:
+    if length != len(data):
         raise RdpNegotiationError("malformed_tpkt_length")
     if data[5:11] != bytes.fromhex("d00000000000"):
         raise RdpNegotiationError("malformed_x224_confirm")

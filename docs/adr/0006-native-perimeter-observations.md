@@ -99,6 +99,15 @@ The serial network probes have a 30-second total budget (or the configured
 stage timeout, if smaller); remaining recorded targets are `skipped`. Receipt
 construction and persistence have additional processing time. The
 receipt holds at most 10,000 targets and explicitly counts any omitted targets.
+A probe starts only while a full 1.5 seconds of the budget remain, so with
+silent endpoints only about 20 are probed per run; on a larger perimeter most
+records may be `skipped`, which states that no
+request was sent, not that RDP is absent. The receipt is written after Pulse
+completes: when the Pulse stage fails there is no receipt, and a receipt left by
+an earlier attempt of the stage is deleted when the stage starts, so a reader
+never sees facts from a previous attempt. `observation_id` is the digest of the
+whole record including `observed_at`; it detects tampering within the receipt
+and is not a cross-run deduplication key.
 
 ## Consequences
 

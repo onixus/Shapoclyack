@@ -158,3 +158,27 @@ def test_hostname_is_not_reresolved_after_scope_admission(monkeypatch):
 
     monkeypatch.setattr(rdp.socket, "create_connection", forbidden_connect)
     assert rdp.observe("example.com") == ("unknown", None)
+
+
+def _mutated(offset: int, value: int) -> bytes:
+    data = bytearray(reply(2, 1))
+    data[offset] = value
+    return bytes(data)
+
+
+@pytest.mark.parametrize(("data", "reason"), [
+    (_mutated(0, 2), "malformed_tpkt_header"),             # TPKT version
+    (_mutated(1, 1), "malformed_tpkt_header"),             # TPKT reserved
+    (_mutated(4, 0x0D), "malformed_tpkt_header"),          # X.224 length indicator
+    (_mutated(3, 0x14), "malformed_tpkt_length"),          # TPKT length disagrees with the bytes
+    (_mutated(5, 0xE0), "malformed_x224_confirm"),         # a Connection Request, not a Confirm
+    (_mutated(6, 1), "malformed_x224_confirm"),            # DST-REF
+    (_mutated(10, 1), "malformed_x224_confirm"),           # class option
+    (_mutated(11, 1), "malformed_negotiation_structure"),  # RDP_NEG_REQ echoed back
+    (_mutated(11, 4), "malformed_negotiation_structure"),
+    (_mutated(13, 9), "malformed_negotiation_structure"),  # negotiation length
+    (_mutated(14, 1), "malformed_negotiation_structure"),
+])
+def test_each_header_field_is_checked(data, reason):
+    with pytest.raises(rdp.RdpNegotiationError, match=reason):
+        rdp.parse_reply(data)
