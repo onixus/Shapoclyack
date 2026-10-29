@@ -1,3 +1,4 @@
+import { useAppearanceStore } from "@/lib/appearance";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { render, screen, waitFor } from "@testing-library/react";
@@ -80,23 +81,34 @@ describe("MaintenancePanel", () => {
     vi.restoreAllMocks();
   });
 
+  it("shows Russian maintenance labels and keeps the recurrence verbatim in technical details", async () => {
+    useAppearanceStore.setState({ locale: "ru" });
+    vi.spyOn(apiModule, "fetchMaintenanceCalendar").mockResolvedValue(calendar());
+    renderPanel({ canAdmin: true });
+    expect(
+      await screen.findByRole("region", { name: "Календарь обслуживания" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Весь арендатор")).toBeInTheDocument();
+    expect(screen.getByText("Запрет сканирования")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Приостановить изменения" })).toBeInTheDocument();
+    const details = screen.getByText("Технические данные").closest("details")!;
+    expect(details).not.toHaveAttribute("open");
+    await userEvent.setup().click(screen.getByText("Технические данные"));
+    expect(details).toHaveTextContent("FREQ=WEEKLY;BYDAY=SA");
+    expect(details).toHaveTextContent("Europe/Berlin");
+  });
+
   it("stays out of an operator's way when nothing is configured", async () => {
-    vi.spyOn(apiModule, "fetchMaintenanceCalendar").mockResolvedValue(
-      calendar({ windows: [] }),
-    );
+    vi.spyOn(apiModule, "fetchMaintenanceCalendar").mockResolvedValue(calendar({ windows: [] }));
     renderPanel({ canAdmin: false });
-    await waitFor(() =>
-      expect(apiModule.fetchMaintenanceCalendar).toHaveBeenCalled(),
-    );
+    await waitFor(() => expect(apiModule.fetchMaintenanceCalendar).toHaveBeenCalled());
     expect(screen.queryByLabelText("Maintenance calendar")).toBeNull();
   });
 
   it("still offers an admin the freeze switch before anything is configured", async () => {
     // The control an admin reaches for in a hurry must not be one that only
     // appears after somebody has already used the API to freeze the tenant.
-    vi.spyOn(apiModule, "fetchMaintenanceCalendar").mockResolvedValue(
-      calendar({ windows: [] }),
-    );
+    vi.spyOn(apiModule, "fetchMaintenanceCalendar").mockResolvedValue(calendar({ windows: [] }));
     renderPanel({ canAdmin: true });
     expect(await screen.findByRole("button", { name: "Freeze changes" })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
@@ -112,12 +124,8 @@ describe("MaintenancePanel", () => {
     // The rule is shown verbatim, with the wall clock and the zone it is read
     // in — the point of the feature is that the window is not in the server's
     // timezone.
-    expect(
-      screen.getByText("FREQ=WEEKLY;BYDAY=SA at 22:00 Europe/Berlin, 4h"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(`next ${shown("2026-09-12T20:00:00Z")}`),
-    ).toBeInTheDocument();
+    expect(screen.getByText("FREQ=WEEKLY;BYDAY=SA at 22:00 Europe/Berlin, 4h")).toBeInTheDocument();
+    expect(screen.getByText(`next ${shown("2026-09-12T20:00:00Z")}`)).toBeInTheDocument();
     // Nothing is blocked right now, so there is no banner.
     expect(screen.queryByRole("alert")).toBeNull();
   });
@@ -143,9 +151,7 @@ describe("MaintenancePanel", () => {
     const banner = await screen.findByRole("alert");
     expect(banner).toHaveTextContent("Scanning is paused by the maintenance calendar");
     expect(banner).toHaveTextContent(`Scans resume at ${shown("2026-09-13T00:00:00Z")}`);
-    expect(
-      screen.getByText(`open until ${shown("2026-09-13T00:00:00Z")}`),
-    ).toBeInTheDocument();
+    expect(screen.getByText(`open until ${shown("2026-09-13T00:00:00Z")}`)).toBeInTheDocument();
   });
 
   it("says a change freeze has no end and names who set it", async () => {
@@ -177,15 +183,13 @@ describe("MaintenancePanel", () => {
 
   it("offers the freeze switch to an admin only, and sends the note with it", async () => {
     vi.spyOn(apiModule, "fetchMaintenanceCalendar").mockResolvedValue(calendar());
-    const setFreeze = vi
-      .spyOn(apiModule, "setChangeFreeze")
-      .mockResolvedValue({
-        tenant_id: "default",
-        change_freeze: true,
-        change_freeze_note: "quarter close",
-        change_freeze_at: "2026-09-10T09:00:00Z",
-        change_freeze_by: "admin",
-      });
+    const setFreeze = vi.spyOn(apiModule, "setChangeFreeze").mockResolvedValue({
+      tenant_id: "default",
+      change_freeze: true,
+      change_freeze_note: "quarter close",
+      change_freeze_at: "2026-09-10T09:00:00Z",
+      change_freeze_by: "admin",
+    });
 
     renderPanel({ canAdmin: false });
     expect(await screen.findByText("Saturday night")).toBeInTheDocument();

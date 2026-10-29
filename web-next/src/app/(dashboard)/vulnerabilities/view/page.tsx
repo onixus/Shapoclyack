@@ -1,6 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import { CisaDecision } from "@/components/vulnerability/cisa-decision";
+import { RiskExplanation } from "@/components/vulnerability/risk-explanation";
+import { vulnerabilityName, vulnerabilityText as vt } from "@/lib/vulnerability-presentation";
 import { FormEvent, Suspense, useMemo, useState, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import { format, isValid, parseISO } from "date-fns";
@@ -61,7 +64,6 @@ import { normalizeSeverity, runDetailHref } from "@/lib/run-data";
 import { useT } from "@/lib/i18n";
 import {
   assetDetailHref,
-  findingLabel,
   legalTransitions,
   VULN_PRIMARY_NEXT,
   VULN_TRANSITION_LABEL,
@@ -149,11 +151,7 @@ function VulnerabilityDetailInner() {
   // `isAdmin` showed it to the one person the API refuses (the tenant admin
   // who filed the request) and hid it from the only person who can answer.
   // The fallbacks keep the old behaviour on an API that predates #318.
-  const canApproveException = holdsPermission(
-    user,
-    "vulnerability.exception.approve",
-    isAdmin,
-  );
+  const canApproveException = holdsPermission(user, "vulnerability.exception.approve", isAdmin);
   // Filing a request is `require_tenant(Role.admin)` — a rank, which a role
   // the tenant defined can carry under any name (#318); comparing the name to
   // "admin" hid the request from a rank-3 tenant role the API serves.
@@ -180,7 +178,10 @@ function VulnerabilityDetailInner() {
     return (
       <div className="space-y-4">
         <BackToVulnerabilities />
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
+        <Alert
+          variant="destructive"
+          className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+        >
           <AlertDescription>{t("ui.missingVulnidQueryParameter")}</AlertDescription>
         </Alert>
       </div>
@@ -192,13 +193,20 @@ function VulnerabilityDetailInner() {
       return (
         <div className="space-y-4">
           <BackToVulnerabilities />
-          <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
+          <Alert
+            variant="destructive"
+            className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+          >
             <AlertDescription>{(detailQuery.error as Error).message}</AlertDescription>
           </Alert>
         </div>
       );
     }
-    return <p className="text-sm text-muted-foreground">Loading tracked finding…</p>;
+    return (
+      <p className="text-sm text-muted-foreground">
+        {vt(t.locale, "Loading tracked finding\u2026")}
+      </p>
+    );
   }
 
   const assetName =
@@ -214,7 +222,7 @@ function VulnerabilityDetailInner() {
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-3">
               <h1 className="text-2xl font-extrabold font-mono tracking-tight text-foreground">
-                {findingLabel(vuln)}
+                {vulnerabilityName(vuln, t.locale)}
               </h1>
               <StatusBadge value={normalizeSeverity(vuln.severity)} map={SEVERITY_STATUS} />
               <StatusBadge value={vuln.state} map={VULN_LIFECYCLE_STATUS} />
@@ -245,12 +253,16 @@ function VulnerabilityDetailInner() {
                 </Badge>
               ) : null}
             </div>
-            {vuln.title && vuln.title !== findingLabel(vuln) ? (
-              <p className="text-sm text-foreground">{vuln.title}</p>
-            ) : null}
+            <details className="text-xs text-muted-foreground">
+              <summary className="cursor-pointer">{vt(t.locale, "Technical data")}</summary>
+              <dl className="mt-2 space-y-2">
+                <Field label="Original title" value={vuln.title || "—"} />
+                <Field label="Detection source" value={vuln.script_id || "—"} mono />
+              </dl>
+            </details>
             <p className="font-mono text-xs text-muted-foreground">
               {vuln.vuln_id}
-              {vuln.port ? ` · port ${vuln.port}` : ""}
+              {vuln.port ? ` · ${vt(t.locale, "Port")} ${vuln.port}` : ""}
             </p>
           </div>
         </div>
@@ -286,8 +298,12 @@ function VulnerabilityDetailInner() {
             <h2 className="text-sm font-semibold text-foreground">{t("ui.finding")}</h2>
             <dl className="mt-4 grid gap-4 sm:grid-cols-2 text-xs">
               <Field label="CVE" value={vuln.cve || "—"} mono />
-              {vuln.finding_type ? <Field label="Finding type" value={vuln.finding_type} /> : null}
-              {vuln.detector_source ? <Field label="Detector" value={vuln.detector_source} /> : null}
+              {vuln.finding_type ? (
+                <Field label="Finding type" value={vt(t.locale, vuln.finding_type)} />
+              ) : null}
+              {vuln.detector_source ? (
+                <Field label="Detector" value={vuln.detector_source} />
+              ) : null}
               {vuln.template_id ? <Field label="Template" value={vuln.template_id} mono /> : null}
               {vuln.remediation ? <Field label="Remediation" value={vuln.remediation} /> : null}
               <Field
@@ -299,7 +315,6 @@ function VulnerabilityDetailInner() {
                     : "NVD/nuclei did not name a CWE; not inferred from the CVE id"
                 }
               />
-              <Field label="Detection source" value={vuln.script_id || "—"} mono />
               <Field
                 label={t("vuln.source")}
                 value={
@@ -330,8 +345,11 @@ function VulnerabilityDetailInner() {
                 value={observation?.epss != null ? `${Math.round(observation.epss * 100)}%` : "—"}
                 hint={observation ? undefined : "From the last observing run, when present"}
               />
-              <Field label="KEV" value={observation ? (observation.in_kev ? "Yes" : "No") : "—"} />
-              <Field label="Risk level" value={vuln.risk_level || "—"} />
+              <Field
+                label="KEV"
+                value={observation ? vt(t.locale, observation.in_kev ? "Yes" : "No") : "—"}
+              />
+              <Field label="Risk level" value={t.label(vuln.risk_level || "—")} />
               <Field
                 label="Contextual score"
                 value={vuln.contextual_score != null ? vuln.contextual_score.toFixed(1) : "—"}
@@ -347,7 +365,10 @@ function VulnerabilityDetailInner() {
                   </Link>
                 }
               />
-              <Field label={t("select.owner")} value={vuln.assignee || "Unassigned"} />
+              <Field
+                label={t("select.owner")}
+                value={vuln.assignee || vt(t.locale, "Unassigned")}
+              />
               <Field label="Team" value={vuln.owner_team || "—"} />
               <Field
                 label="Ticket"
@@ -370,14 +391,26 @@ function VulnerabilityDetailInner() {
               <Field label="Last seen" value={formatWhen(vuln.last_seen_at)} />
               <Field label="Observations" value={String(vuln.observation_count)} />
               <Field label="Reopens" value={String(vuln.reopen_count)} />
-              <Field label="Machine verified" value={vuln.machine_verified ? "Yes (Re-scan confirmed)" : "No"} />
+              <Field
+                label="Machine verified"
+                value={
+                  vuln.machine_verified
+                    ? vt(t.locale, "Yes (Re-scan confirmed)")
+                    : vt(t.locale, "No")
+                }
+              />
               {vuln.closure_reason ? (
-                <Field label={t("vuln.closureReason")} value={closureReasonLabel(t, vuln.closure_reason)} />
+                <Field
+                  label={t("vuln.closureReason")}
+                  value={closureReasonLabel(t, vuln.closure_reason)}
+                />
               ) : null}
-              {vuln.last_verified_at ? <Field label="Last verified" value={formatWhen(vuln.last_verified_at)} /> : null}
+              {vuln.last_verified_at ? (
+                <Field label="Last verified" value={formatWhen(vuln.last_verified_at)} />
+              ) : null}
               <Field
                 label={t("select.sla")}
-                value={`${vuln.sla_days ?? "—"} days${vuln.sla_source ? ` · ${vuln.sla_source}` : ""}`}
+                value={`${vuln.sla_days ?? "—"} ${t.locale === "ru" ? "дн." : "days"}${vuln.sla_source ? ` · ${vt(t.locale, vuln.sla_source)}` : ""}`}
               />
               <Field label="Due" value={formatWhen(vuln.due_at)} />
               <Field
@@ -419,41 +452,40 @@ function VulnerabilityDetailInner() {
           <section className="rounded-xl border border-border bg-card p-5">
             <h2 className="text-sm font-semibold text-foreground">{t("ui.evidence")}</h2>
             {observation?.risk_explanation ? (
-              <p className="mt-3 text-sm text-foreground">{observation.risk_explanation}</p>
+              <RiskExplanation text={observation.risk_explanation} />
             ) : (
               <p className="mt-3 text-xs text-muted-foreground">
-                No risk explanation on the last observation
+                {vt(t.locale, "No risk explanation on the last observation")}
                 {vuln.last_seen_run_id ? (
                   <>
-                    . Open the{" "}
+                    {vt(t.locale, ". Open the")}{" "}
                     <Link
                       href={runDetailHref(vuln.last_seen_run_id)}
                       className="text-sky-600 dark:text-sky-400 hover:underline"
                     >
-                      last seeing run
+                      {vt(t.locale, "last seeing run")}
                     </Link>{" "}
-                    for the raw finding.
+                    {vt(t.locale, "for the raw finding.")}
                   </>
                 ) : (
                   "."
                 )}
               </p>
             )}
-            {observation?.cisa_decision ? (
-              <p className="mt-2 text-xs text-muted-foreground">
-                CISA decision:{" "}
-                <span className="font-semibold text-foreground">{observation.cisa_decision}</span>
-              </p>
-            ) : null}
+            {observation?.cisa_decision ? <CisaDecision value={observation.cisa_decision} /> : null}
           </section>
 
           <section className="rounded-xl border border-border bg-card p-5">
             <h2 className="text-sm font-semibold text-foreground">{t("ui.auditTrail")}</h2>
             <div className="mt-4">
               {eventsQuery.isLoading ? (
-                <p className="text-xs text-muted-foreground">Loading events…</p>
+                <p className="text-xs text-muted-foreground">
+                  {vt(t.locale, "Loading events\u2026")}
+                </p>
               ) : eventsQuery.error ? (
-                <p className="text-xs text-rose-600 dark:text-rose-300">{(eventsQuery.error as Error).message}</p>
+                <p className="text-xs text-rose-600 dark:text-rose-300">
+                  {(eventsQuery.error as Error).message}
+                </p>
               ) : (
                 <VulnerabilityTimeline events={eventsQuery.data?.items ?? []} />
               )}
@@ -476,10 +508,16 @@ function Field({
   mono?: boolean;
   hint?: string;
 }) {
+  const t = useT();
   return (
     <div>
-      <dt className="text-overline font-semibold uppercase text-muted-foreground">{label}</dt>
-      <dd className={mono ? "mt-1 font-mono text-foreground" : "mt-1 text-foreground"} title={hint}>
+      <dt className="text-overline font-semibold uppercase text-muted-foreground">
+        {vt(t.locale, label)}
+      </dt>
+      <dd
+        className={mono ? "mt-1 font-mono text-foreground" : "mt-1 text-foreground"}
+        title={hint ? vt(t.locale, hint) : undefined}
+      >
         {value}
       </dd>
     </div>
@@ -605,9 +643,12 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
         <form onSubmit={onSubmit} className="mt-3 space-y-3">
           <div className="space-y-1.5">
             <Label htmlFor="vuln-next-state" className="text-xs text-muted-foreground">
-              Next state
+              {vt(t.locale, "Next state")}
             </Label>
-            <Select value={target} onValueChange={(value) => setTarget(value as VulnLifecycleState)}>
+            <Select
+              value={target}
+              onValueChange={(value) => setTarget(value as VulnLifecycleState)}
+            >
               <SelectTrigger
                 id="vuln-next-state"
                 className="bg-muted border-border text-foreground"
@@ -617,7 +658,8 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
               <SelectContent className="bg-card border-border text-foreground">
                 {options.map((state) => (
                   <SelectItem key={state} value={state}>
-                    {VULN_TRANSITION_LABEL[state]} ({state})
+                    {t.label(VULN_TRANSITION_LABEL[state])} (
+                    {t.label(VULN_LIFECYCLE_STATUS[state].label)})
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -625,7 +667,8 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="vuln-note" className="text-xs text-muted-foreground">
-              Note {target === "CLOSED" ? "(recommended)" : "(optional)"}
+              {vt(t.locale, "Note")}{" "}
+              {target === "CLOSED" ? vt(t.locale, "(recommended)") : vt(t.locale, "(optional)")}
             </Label>
             <Textarea
               id="vuln-note"
@@ -635,8 +678,8 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
               className="bg-muted border-border text-foreground"
               placeholder={
                 target === "CLOSED"
-                  ? "Why this is closed — false positive, fixed, decommissioned…"
-                  : "Optional context for the audit trail"
+                  ? vt(t.locale, "Why this is closed — false positive, fixed, decommissioned…")
+                  : vt(t.locale, "Optional context for the audit trail")
               }
             />
           </div>
@@ -644,9 +687,13 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
             type="submit"
             size="sm"
             disabled={mutation.isPending}
-           
+
           >
-            {mutation.isPending ? "Moving…" : VULN_TRANSITION_LABEL[target]}
+            {mutation.isPending
+              ? t.locale === "ru"
+                ? "Изменение состояния…"
+                : "Moving…"
+              : t.label(VULN_TRANSITION_LABEL[target])}
           </Button>
         </form>
       </div>
@@ -671,7 +718,7 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
           <h3 className="text-xs font-semibold text-foreground">{t("ui.automatedVerification")}</h3>
           <p className="text-xs text-muted-foreground">{t("vuln.retro.noVerify")}</p>
         </div>
-      ) : (vuln.state === "FIXING" || vuln.state === "VERIFYING") ? (
+      ) : vuln.state === "FIXING" || vuln.state === "VERIFYING" ? (
         <div className="border-t border-border pt-3 space-y-2">
           <h3 className="text-xs font-semibold text-foreground">{t("ui.automatedVerification")}</h3>
           <p className="text-xs text-muted-foreground">
@@ -686,9 +733,7 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
             className="w-full border-sky-500/40 bg-sky-50 dark:bg-sky-950/30 text-sky-600 dark:text-sky-300 hover:bg-sky-50 dark:bg-sky-900/40 gap-1.5"
           >
             <ShieldCheck className="h-4 w-4" />
-            {verifyMutation.isPending
-              ? t("vuln.verifyingInProgress")
-              : t("vuln.verifyBtn")}
+            {verifyMutation.isPending ? t("vuln.verifyingInProgress") : t("vuln.verifyBtn")}
           </Button>
         </div>
       ) : null}
@@ -716,26 +761,26 @@ function AssignCard({ vuln }: { vuln: TrackedVulnerability }) {
       <form onSubmit={onSubmit} className="mt-3 space-y-3">
         <div className="space-y-1.5">
           <Label htmlFor="vuln-assignee" className="text-xs text-muted-foreground">
-            Assignee
+            {vt(t.locale, "Assignee")}
           </Label>
           <Input
             id="vuln-assignee"
             value={assignee}
             onChange={(event) => setAssignee(event.target.value)}
             className="bg-muted border-border text-foreground"
-            placeholder="username or email"
+            placeholder={vt(t.locale, "username or email")}
           />
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="vuln-team" className="text-xs text-muted-foreground">
-            Owner team
+            {vt(t.locale, "Owner team")}
           </Label>
           <Input
             id="vuln-team"
             value={ownerTeam}
             onChange={(event) => setOwnerTeam(event.target.value)}
             className="bg-muted border-border text-foreground"
-            placeholder="queue or team name"
+            placeholder={vt(t.locale, "queue or team name")}
           />
         </div>
         <Button
@@ -745,7 +790,7 @@ function AssignCard({ vuln }: { vuln: TrackedVulnerability }) {
           disabled={mutation.isPending}
           className="border-border bg-muted text-foreground hover:bg-muted"
         >
-          {mutation.isPending ? "Saving…" : "Save owner"}
+          {mutation.isPending ? vt(t.locale, "Saving\u2026") : vt(t.locale, "Save owner")}
         </Button>
       </form>
     </section>
@@ -772,8 +817,13 @@ function CommentCard({ vulnId }: { vulnId: string }) {
           className="bg-muted border-border text-foreground"
           required
         />
-        <Button type="submit" size="sm" disabled={mutation.isPending} className="bg-indigo-600 hover:bg-indigo-500">
-          {mutation.isPending ? "Posting…" : "Add comment"}
+        <Button
+          type="submit"
+          size="sm"
+          disabled={mutation.isPending}
+          className="bg-indigo-600 hover:bg-indigo-500"
+        >
+          {mutation.isPending ? vt(t.locale, "Posting\u2026") : vt(t.locale, "Add comment")}
         </Button>
       </form>
     </section>
@@ -785,7 +835,9 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
   const setMutation = useSetVulnerabilityTicket(vuln.vuln_id);
   const clearMutation = useClearVulnerabilityTicket(vuln.vuln_id);
   const syncMutation = useSyncVulnTicket(vuln.vuln_id);
-  const [system, setSystem] = useState<TicketSystem>((vuln.ticket_system as TicketSystem) || "jira");
+  const [system, setSystem] = useState<TicketSystem>(
+    (vuln.ticket_system as TicketSystem) || "jira",
+  );
   const [key, setKey] = useState(vuln.ticket_key ?? "");
   const [url, setUrl] = useState(vuln.ticket_url ?? "");
   function onSubmit(event: FormEvent) {
@@ -818,7 +870,7 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
         // is otherwise only in the worker's log, which is where "why is this
         // finding not updating?" goes unanswered.
         <p className="mt-2 rounded-md border border-amber-300 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/40 px-2 py-1 text-xs text-amber-600 dark:text-amber-300">
-          Last read failed: {vuln.ticket_sync_error}
+          {vt(t.locale, "Last read failed:")} {vuln.ticket_sync_error}
         </p>
       ) : null}
       <form onSubmit={onSubmit} className="mt-3 space-y-3">
@@ -847,8 +899,13 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
           className="bg-muted border-border text-foreground"
         />
         <div className="flex flex-wrap gap-2">
-          <Button type="submit" size="sm" disabled={setMutation.isPending}>
-            {setMutation.isPending ? "Saving…" : "Link ticket"}
+          <Button
+            type="submit"
+            size="sm"
+            disabled={setMutation.isPending}
+
+          >
+            {setMutation.isPending ? vt(t.locale, "Saving\u2026") : vt(t.locale, "Link ticket")}
           </Button>
           {vuln.ticket_key || vuln.ticket_url ? (
             <Button
@@ -859,7 +916,7 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
               onClick={() => clearMutation.mutate()}
               className="border-border bg-muted text-foreground"
             >
-              Unlink
+              {vt(t.locale, "Unlink")}
             </Button>
           ) : null}
         </div>
@@ -910,8 +967,7 @@ function ExceptionCard({
   // The window against the clock, not against the workflow state: the sweep
   // that writes `exception_expired` runs on the worker's tick, and until it
   // does an acceptance that ran out an hour ago still reads `exception_approved`.
-  const lapsed =
-    !!vuln.exception_until && new Date(vuln.exception_until).getTime() <= Date.now();
+  const lapsed = !!vuln.exception_until && new Date(vuln.exception_until).getTime() <= Date.now();
   const inForce = !!vuln.exception_until && !lapsed;
 
   function onSubmit(event: FormEvent) {
@@ -926,18 +982,20 @@ function ExceptionCard({
       <h2 className="text-sm font-semibold text-foreground">{t("ui.acceptedRisk")}</h2>
       {inForce ? (
         <p className="mt-2 text-xs text-muted-foreground">
-          In force until <span className="text-foreground">{formatWhen(vuln.exception_until)}</span>
+          {vt(t.locale, "In force until")}{" "}
+          <span className="text-foreground">{formatWhen(vuln.exception_until)}</span>
           {vuln.exception_by ? (
             <>
               {" "}
-              · by <span className="font-mono text-foreground">{vuln.exception_by}</span>
+              · {vt(t.locale, "by")}{" "}
+              <span className="font-mono text-foreground">{vuln.exception_by}</span>
             </>
           ) : null}
         </p>
       ) : lapsed ? (
         <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">
-          The acceptance lapsed on {formatWhen(vuln.exception_until)} and the finding is back
-          under its deadline.
+          {vt(t.locale, "The acceptance lapsed on")} {formatWhen(vuln.exception_until)}{" "}
+          {vt(t.locale, "and the finding is back under its deadline.")}
         </p>
       ) : vuln.exception_state === "exception_rejected" ? (
         <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">
@@ -945,21 +1003,21 @@ function ExceptionCard({
           {vuln.exception_decided_by ? (
             <>
               {" "}
-              by <span className="font-mono text-foreground">{vuln.exception_decided_by}</span>
+              {vt(t.locale, "by")}{" "}
+              <span className="font-mono text-foreground">{vuln.exception_decided_by}</span>
             </>
           ) : null}
-          . The deadline never moved.
+          {vt(t.locale, ". The deadline never moved.")}
         </p>
       ) : (
-        <p className="mt-2 text-xs text-muted-foreground">
-          {t("prose.noExceptionBothExpiryAnd")}
-        </p>
+        <p className="mt-2 text-xs text-muted-foreground">{t("prose.noExceptionBothExpiryAnd")}</p>
       )}
       {pending ? (
         <p className="mt-2 text-xs text-sky-600 dark:text-sky-300">
-          Requested by <span className="font-mono">{vuln.exception_requested_by ?? "—"}</span>{" "}
-          until {formatWhen(vuln.exception_requested_until)} · waiting for approval. The SLA
-          clock is still running.
+          {vt(t.locale, "Requested by")}{" "}
+          <span className="font-mono">{vuln.exception_requested_by ?? "—"}</span>{" "}
+          {vt(t.locale, "until")} {formatWhen(vuln.exception_requested_until)}{" "}
+          {vt(t.locale, "· waiting for approval. The SLA clock is still running.")}
         </p>
       ) : null}
       {vuln.exception_reason ? (
@@ -973,8 +1031,11 @@ function ExceptionCard({
       {pending && !canDecide ? (
         <p className="mt-2 text-xs text-muted-foreground">
           {ownRequest
-            ? "Your own request: it needs a second pair of eyes, so somebody holding vulnerability.exception.approve has to answer it."
-            : "Waiting for somebody holding vulnerability.exception.approve."}
+            ? vt(
+                t.locale,
+                "Your own request: it needs a second pair of eyes, so somebody holding vulnerability.exception.approve has to answer it.",
+              )
+            : vt(t.locale, "Waiting for somebody holding vulnerability.exception.approve.")}
         </p>
       ) : null}
       {canDecide ? (
@@ -986,7 +1047,7 @@ function ExceptionCard({
             onClick={() => decideMutation.mutate({ decision: "approve" })}
             className="bg-emerald-600 hover:bg-emerald-500"
           >
-            Approve
+            {vt(t.locale, "Approve")}
           </Button>
           <Button
             type="button"
@@ -996,66 +1057,70 @@ function ExceptionCard({
             onClick={() => decideMutation.mutate({ decision: "reject" })}
             className="border-border bg-muted text-foreground hover:bg-muted"
           >
-            Reject
+            {vt(t.locale, "Reject")}
           </Button>
         </div>
       ) : null}
       {canRequest ? (
-      <form onSubmit={onSubmit} className="mt-3 space-y-3">
-        <div className="space-y-1.5">
-          <Label htmlFor="vuln-until" className="text-xs text-muted-foreground">
-            Until
-          </Label>
-          <Input
-            id="vuln-until"
-            type="datetime-local"
-            value={until}
-            onChange={(event) => setUntil(event.target.value)}
-            className="bg-muted border-border text-foreground"
-            required
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="vuln-reason" className="text-xs text-muted-foreground">
-            Reason
-          </Label>
-          <Textarea
-            id="vuln-reason"
-            value={reason}
-            onChange={(event) => setReason(event.target.value)}
-            rows={3}
-            className="bg-muted border-border text-foreground"
-            required
-          />
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            type="submit"
-            size="sm"
-            disabled={setMutation.isPending}
-            className="bg-indigo-600 hover:bg-indigo-500"
-          >
-            {setMutation.isPending ? "Saving…" : "Request acceptance"}
-          </Button>
-          {/* Two buttons, because they were always two acts (#348). The
+        <form onSubmit={onSubmit} className="mt-3 space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="vuln-until" className="text-xs text-muted-foreground">
+              {vt(t.locale, "Until")}
+            </Label>
+            <Input
+              id="vuln-until"
+              type="datetime-local"
+              value={until}
+              onChange={(event) => setUntil(event.target.value)}
+              className="bg-muted border-border text-foreground"
+              required
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="vuln-reason" className="text-xs text-muted-foreground">
+              {vt(t.locale, "Reason")}
+            </Label>
+            <Textarea
+              id="vuln-reason"
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              rows={3}
+              className="bg-muted border-border text-foreground"
+              required
+            />
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="submit"
+              size="sm"
+              disabled={setMutation.isPending}
+              className="bg-indigo-600 hover:bg-indigo-500"
+            >
+              {setMutation.isPending
+                ? vt(t.locale, "Saving\u2026")
+                : vt(t.locale, "Request acceptance")}
+            </Button>
+            {/* Two buttons, because they were always two acts (#348). The
               first takes back your own ask and touches nothing that was
               granted; the second destroys a window somebody else signed for
               and breaches the finding on the spot. One button did the second
               while the person pressing it meant the first. */}
-          {pending && ownRequest ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={withdrawMutation.isPending}
-              onClick={() => withdrawMutation.mutate()}
-              className="border-border bg-muted text-foreground hover:bg-muted"
-            >
-              {withdrawMutation.isPending ? "Withdrawing…" : "Withdraw request"}
-            </Button>
-          ) : null}
-        </div>
-      </form>
+            {pending && ownRequest ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={withdrawMutation.isPending}
+                onClick={() => withdrawMutation.mutate()}
+                className="border-border bg-muted text-foreground hover:bg-muted"
+              >
+                {withdrawMutation.isPending
+                  ? vt(t.locale, "Withdrawing\u2026")
+                  : vt(t.locale, "Withdraw request")}
+              </Button>
+            ) : null}
+          </div>
+        </form>
       ) : null}
       {/* Revoking is the approver's, not the requester's: the API moved this
           from the tenant-admin rank to `vulnerability.exception.approve`,
@@ -1067,10 +1132,10 @@ function ExceptionCard({
             <div className="space-y-2">
               <p className="text-xs text-amber-600 dark:text-amber-300">
                 Revoking the acceptance signed by{" "}
-                <span className="font-mono">{vuln.exception_by ?? "—"}</span> until{" "}
-                {formatWhen(vuln.exception_until)} puts this finding back under its original
-                deadline immediately — which may be in the past. Only somebody holding
-                vulnerability.exception.approve can grant it again.
+                <span className="font-mono">{vuln.exception_by ?? "—"}</span>{" "}
+                {vt(t.locale, "until")} {formatWhen(vuln.exception_until)} puts this finding back
+                under its original deadline immediately — which may be in the past. Only somebody
+                holding vulnerability.exception.approve can grant it again.
               </p>
               <div className="flex flex-wrap gap-2">
                 <Button
@@ -1080,7 +1145,9 @@ function ExceptionCard({
                   onClick={() => clearMutation.mutate()}
                   className="bg-rose-600 hover:bg-rose-500"
                 >
-                  {clearMutation.isPending ? "Revoking…" : "Revoke acceptance"}
+                  {clearMutation.isPending
+                    ? vt(t.locale, "Revoking\u2026")
+                    : vt(t.locale, "Revoke acceptance")}
                 </Button>
                 <Button
                   type="button"

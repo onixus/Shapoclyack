@@ -1,4 +1,6 @@
 "use client";
+import { scanIntentLabel, scanModeLabel } from "@/lib/scan-labels";
+import { ScanTechnicalDetails } from "@/components/scans/scan-technical-details";
 
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
@@ -487,7 +489,7 @@ export function ScanLauncher({
               <Field
                 label={t("launcher.mode")}
                 htmlFor="scan-mode"
-                hint={serviceBackend ? t("launcher.backend", { backend: serviceBackend }) : null}
+                hint={serviceBackend ? t("scanCopy.backendHint") : null}
               >
                 <Select value={mode} onValueChange={setMode}>
                   <SelectTrigger id="scan-mode">
@@ -660,9 +662,9 @@ export function ScanLauncher({
               {t("launcher.summary.targetsValue", { domains: domainCount, ranges: rangeCount })}
             </dd>
             <dt className="text-muted-foreground">{t("launcher.summary.intent")}</dt>
-            <dd className="font-mono text-foreground">{intent || "legacy"}</dd>
+            <dd className="font-mono text-foreground">{scanIntentLabel(t.locale, intent)}</dd>
             <dt className="text-muted-foreground">{t("launcher.summary.mode")}</dt>
-            <dd className="font-mono text-foreground">{mode}</dd>
+            <dd className="font-mono text-foreground">{scanModeLabel(t.locale, mode)}</dd>
             {showAgentGroup ? (
               <>
                 <dt className="text-muted-foreground">{t("launcher.summary.agents")}</dt>
@@ -676,6 +678,7 @@ export function ScanLauncher({
               {chosenOptions.length > 0 ? chosenOptions.join(", ") : t("launcher.summary.none")}
             </dd>
           </dl>
+          <ScanTechnicalDetails intent={intent} mode={mode} backend={serviceBackend} />
           <div className="h-px bg-border" />
           <Button type="submit" disabled={mutation.isPending} className="w-full font-semibold">
             <Play className="fill-current" aria-hidden />
@@ -692,10 +695,13 @@ export function ScanLauncher({
               {surface
                 ? t("launcher.confirmTitle", {
                     surface: surfaceLabel.toLowerCase(),
-                    intent: intent || "legacy",
-                    mode,
+                    intent: scanIntentLabel(t.locale, intent),
+                    mode: scanModeLabel(t.locale, mode),
                   })
-                : t("launcher.confirmTitleAny", { intent: intent || "legacy", mode })}
+                : t("launcher.confirmTitleAny", {
+                    intent: scanIntentLabel(t.locale, intent),
+                    mode: scanModeLabel(t.locale, mode),
+                  })}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {noTargets

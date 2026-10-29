@@ -1,5 +1,7 @@
 "use client";
 
+import { systemText, configGroup, configLabel } from "@/lib/system-presentation";
+import { SystemTechnicalDetails } from "@/components/system-technical-details";
 import { useMemo, useState } from "react";
 import { useT } from "@/lib/i18n";
 import { Card, Title } from "@tremor/react";
@@ -109,124 +111,194 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
 
   return (
     <Card className="rounded-xl border border-border bg-card p-6">
-      <div className="flex items-center justify-between">
-        <Title className="text-sm font-bold uppercase tracking-wider text-foreground">{t("ui.scannerConfigurationTuner")}</Title>
+      <div className="flex flex-wrap gap-2 items-center justify-between">
+        <Title className="text-sm font-bold uppercase tracking-wider text-foreground">
+          {t("ui.scannerConfigurationTuner")}
+        </Title>
         {overrideCount > 0 ? (
-          <Badge variant="secondary" className="bg-amber-500/20 text-amber-600 dark:text-amber-300 border-amber-500/30 font-mono text-xs">{overrideCount} overridden</Badge>
+          <Badge
+            variant="secondary"
+            className="bg-amber-500/20 text-amber-600 dark:text-amber-300 border-amber-500/30 font-mono text-xs"
+          >
+            {overrideCount} {systemText(t.locale, "overridden")}
+          </Badge>
         ) : (
-          <Badge variant="outline" className="border-border text-muted-foreground font-mono text-xs">defaults</Badge>
+          <Badge
+            variant="outline"
+            className="border-border text-muted-foreground font-mono text-xs"
+          >
+            {systemText(t.locale, "defaults")}
+          </Badge>
         )}
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
         {canEdit
-          ? "Overrides are merged onto the base YAML config for local scans. Only changed parameters are stored."
-          : "Read-only — admin privilege required to mutate runtime configuration parameters."}
+          ? systemText(
+              t.locale,
+              "Overrides are merged onto the base YAML config for local scans. Only changed parameters are stored.",
+            )
+          : systemText(
+              t.locale,
+              "Read-only — admin privilege required to mutate runtime configuration parameters.",
+            )}
       </p>
 
       <div className="mt-5 space-y-6">
         {Object.entries(grouped).map(([group, groupPaths]) => (
           <div key={group}>
-            <p className="mb-2 text-xs font-mono font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400">{group}</p>
+            <p className="mb-2 text-xs font-mono font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400">
+              {configGroup(t.locale, group)}
+            </p>
             <div className="grid gap-3 sm:grid-cols-2">
               {groupPaths.map((path) => {
                 const widget = widgetFor(path, values[path] ?? data?.defaults?.[path]);
-                const leaf = path.split(".").slice(group.startsWith("profile") ? 2 : 1).join(".");
+                const leaf = path
+                  .split(".")
+                  .slice(group.startsWith("profile") ? 2 : 1)
+                  .join(".");
+                const codeInput =
+                  t.locale === "ru" && ["backend", "list", "text", "secret"].includes(widget);
+                const WidgetContainer = codeInput ? "details" : "div";
                 return (
-                  <div key={path} className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted px-3 py-2">
-                    <Label className="text-xs font-mono text-foreground" title={humanize(path)}>
-                      {leaf}
-                      {isOverridden(path) ? <span className="ml-1 text-amber-600 dark:text-amber-400 font-bold">•</span> : null}
-                    </Label>
-                    {widget === "bool" ? (
-                      <Checkbox
-                        checked={Boolean(values[path])}
-                        disabled={!canEdit}
-                        onCheckedChange={(c) => setValue(path, Boolean(c))}
-                        className="border-border data-[state=checked]:bg-sky-500 data-[state=checked]:border-sky-500"
-                      />
-                    ) : widget === "topports" ? (
-                      <Select
-                        value={String(values[path] ?? "")}
-                        onValueChange={(v) => setValue(path, Number(v))}
-                        disabled={!canEdit}
+                  <div
+                    key={path}
+                    className="flex flex-wrap items-center justify-between gap-3 min-w-0 rounded-lg border border-border bg-muted px-3 py-2"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <Label
+                        htmlFor={`config-${path}`}
+                        className="text-xs text-foreground"
+                        title={t.locale === "en" ? humanize(path) : undefined}
                       >
-                        <SelectTrigger className="w-24 h-8 bg-card border-border text-foreground font-mono text-xs">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent className="bg-card border-border text-foreground font-mono text-xs">
-                          {TOP_PORTS.map((n) => (
-                            <SelectItem key={n} value={String(n)}>
-                              {n}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : widget === "backend" ? (
-                      <Select
-                        value={String(values[path] ?? "")}
-                        onValueChange={(v) => setValue(path, v)}
-                        disabled={!canEdit}
-                      >
-                        <SelectTrigger className="w-28 h-8 bg-card border-border text-foreground font-mono text-xs">
-                          <SelectValue placeholder="unset" />
-                        </SelectTrigger>
-                        <SelectContent className="bg-card border-border text-foreground font-mono text-xs">
-                          {/* A saved nmap/hybrid (migration 0085 leaves it) is shown, flagged,
-                              rather than as an empty box: scans are refused until it is replaced. */}
-                          {[
-                            ...(values[path] && !SERVICE_BACKENDS.includes(String(values[path]))
-                              ? [String(values[path])]
-                              : []),
-                            ...SERVICE_BACKENDS,
-                          ].map((b) => (
-                            <SelectItem key={b} value={b}>
-                              {SERVICE_BACKENDS.includes(b) ? b : `${b} (removed — choose pulse)`}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : widget === "list" ? (
-                      <Input
-                        className="w-48 h-8 bg-card border-border text-foreground font-mono text-xs placeholder:text-muted-foreground"
-                        value={asList(values[path]).join(", ")}
-                        disabled={!canEdit}
-                        placeholder="comma,separated"
-                        onChange={(e) =>
-                          setValue(
-                            path,
-                            e.target.value
-                              .split(",")
-                              .map((s) => s.trim())
-                              .filter(Boolean),
-                          )
+                        {t.locale === "ru" ? configLabel(t.locale, path) : leaf}
+                        {isOverridden(path) ? (
+                          <span className="ml-1 text-amber-600 dark:text-amber-400 font-bold">
+                            •
+                          </span>
+                        ) : null}
+                      </Label>
+                      <SystemTechnicalDetails
+                        data={
+                          widget === "secret"
+                            ? { path, secret: true }
+                            : { path, default: data.defaults[path], effective: values[path] }
                         }
                       />
-                    ) : widget === "secret" ? (
-                      <Input
-                        type="password"
-                        className="w-56 h-8 bg-card border-border text-foreground font-mono text-xs placeholder:text-muted-foreground"
-                        value={String(values[path] ?? "")}
-                        disabled={!canEdit}
-                        autoComplete="off"
-                        placeholder="not set"
-                        onChange={(e) => setValue(path, e.target.value)}
-                      />
-                    ) : widget === "text" ? (
-                      <Input
-                        className="w-56 h-8 bg-card border-border text-foreground font-mono text-xs"
-                        value={String(values[path] ?? "")}
-                        disabled={!canEdit}
-                        onChange={(e) => setValue(path, e.target.value)}
-                      />
-                    ) : (
-                      <Input
-                        type="number"
-                        className="w-24 h-8 bg-card border-border text-foreground font-mono text-xs"
-                        value={Number(values[path] ?? 0)}
-                        disabled={!canEdit}
-                        onChange={(e) => setValue(path, Number(e.target.value))}
-                      />
-                    )}
+                    </div>
+                    <WidgetContainer className="min-w-0 max-w-full">
+                      {codeInput ? (
+                        <summary className="cursor-pointer text-xs text-muted-foreground">
+                          {systemText(t.locale, "Configure value")}
+                        </summary>
+                      ) : null}
+                      {widget === "bool" ? (
+                        <Checkbox
+                          id={`config-${path}`}
+                          checked={Boolean(values[path])}
+                          disabled={!canEdit}
+                          onCheckedChange={(c) => setValue(path, Boolean(c))}
+                          className="border-border data-[state=checked]:bg-sky-500 data-[state=checked]:border-sky-500"
+                        />
+                      ) : widget === "topports" ? (
+                        <Select
+                          value={String(values[path] ?? "")}
+                          onValueChange={(v) => setValue(path, Number(v))}
+                          disabled={!canEdit}
+                        >
+                          <SelectTrigger
+                            id={`config-${path}`}
+                            className="w-24 h-8 bg-card border-border text-foreground font-mono text-xs"
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent className="bg-card border-border text-foreground font-mono text-xs">
+                            {TOP_PORTS.map((n) => (
+                              <SelectItem key={n} value={String(n)}>
+                                {n}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : widget === "backend" ? (
+                        <Select
+                          value={String(values[path] ?? "")}
+                          onValueChange={(v) => setValue(path, v)}
+                          disabled={!canEdit}
+                        >
+                          <SelectTrigger
+                            id={`config-${path}`}
+                            className="w-28 h-8 bg-card border-border text-foreground font-mono text-xs"
+                          >
+                            <SelectValue placeholder={systemText(t.locale, "unset")} />
+                          </SelectTrigger>
+                          <SelectContent className="bg-card border-border text-foreground font-mono text-xs">
+                            {/* A saved nmap/hybrid (migration 0085 leaves it) is shown, flagged,
+                              rather than as an empty box: scans are refused until it is replaced. */}
+                            {[
+                              ...(values[path] && !SERVICE_BACKENDS.includes(String(values[path]))
+                                ? [String(values[path])]
+                                : []),
+                              ...SERVICE_BACKENDS,
+                            ].map((b) => (
+                              <SelectItem key={b} value={b}>
+                                {SERVICE_BACKENDS.includes(b)
+                                  ? t.locale === "ru"
+                                    ? "Сканер Pulse"
+                                    : b
+                                  : t.locale === "ru"
+                                    ? `${b} (${systemText(t.locale, "Removed — choose Pulse")})`
+                                    : `${b} (removed — choose pulse)`}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : widget === "list" ? (
+                        <Input
+                          id={`config-${path}`}
+                          className="w-48 max-w-full h-8 bg-card border-border text-foreground font-mono text-xs placeholder:text-muted-foreground"
+                          value={asList(values[path]).join(", ")}
+                          disabled={!canEdit}
+                          placeholder={systemText(t.locale, "comma,separated")}
+                          onChange={(e) =>
+                            setValue(
+                              path,
+                              e.target.value
+                                .split(",")
+                                .map((s) => s.trim())
+                                .filter(Boolean),
+                            )
+                          }
+                        />
+                      ) : widget === "secret" ? (
+                        <Input
+                          id={`config-${path}`}
+                          type="password"
+                          className="w-56 max-w-full h-8 bg-card border-border text-foreground font-mono text-xs placeholder:text-muted-foreground"
+                          value={String(values[path] ?? "")}
+                          disabled={!canEdit}
+                          autoComplete="off"
+                          placeholder={systemText(t.locale, "not set")}
+                          onChange={(e) => setValue(path, e.target.value)}
+                        />
+                      ) : widget === "text" ? (
+                        <Input
+                          id={`config-${path}`}
+                          className="w-56 max-w-full h-8 bg-card border-border text-foreground font-mono text-xs"
+                          value={String(values[path] ?? "")}
+                          disabled={!canEdit}
+                          onChange={(e) => setValue(path, e.target.value)}
+                        />
+                      ) : (
+                        <Input
+                          id={`config-${path}`}
+                          type="number"
+                          className="w-24 h-8 bg-card border-border text-foreground font-mono text-xs"
+                          value={Number(values[path] ?? 0)}
+                          disabled={!canEdit}
+                          onChange={(e) => setValue(path, Number(e.target.value))}
+                        />
+                      )}
+                    </WidgetContainer>
                   </div>
                 );
               })}
@@ -236,12 +308,19 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
       </div>
 
       {canEdit ? (
-        <div className="mt-6 flex gap-2 pt-4 border-t border-border">
+        <div className="mt-6 flex flex-wrap gap-2 pt-4 border-t border-border">
           <Button onClick={save} disabled={update.isPending} className="font-semibold text-xs">
-            {update.isPending ? "Saving…" : "Save Overrides"}
+            {update.isPending
+              ? systemText(t.locale, "Saving…")
+              : systemText(t.locale, "Save Overrides")}
           </Button>
-          <Button variant="outline" onClick={resetToDefaults} disabled={update.isPending || overrideCount === 0} className="border-border bg-muted text-foreground hover:bg-muted text-xs">
-            Reset to Defaults
+          <Button
+            variant="outline"
+            onClick={resetToDefaults}
+            disabled={update.isPending || overrideCount === 0}
+            className="border-border bg-muted text-foreground hover:bg-muted text-xs"
+          >
+            {systemText(t.locale, "Reset to Defaults")}
           </Button>
         </div>
       ) : null}

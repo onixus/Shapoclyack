@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { assetText } from "@/lib/asset-presentation";
 import { toast } from "sonner";
 import {
   fetchAsset,
@@ -63,6 +64,7 @@ export function useAssetContextEvents(assetId: string | null, tenantId = "defaul
 }
 
 export function useUpdateAsset(assetId: string, tenantId = "default") {
+  const t = useT();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: UpdateAssetBody) => updateAsset(assetId, body),
@@ -70,10 +72,10 @@ export function useUpdateAsset(assetId: string, tenantId = "default") {
       queryClient.setQueryData(queryKeys.asset(assetId, tenantId), updated);
       await queryClient.invalidateQueries({ queryKey: ["assets"] });
       await queryClient.invalidateQueries({ queryKey: ["asset", assetId] });
-      toast.success("Asset updated");
+      toast.success(assetText(t.locale, "Asset updated"));
     },
     onError: (err) => {
-      toast.error("Update failed", {
+      toast.error(assetText(t.locale, "Update failed"), {
         description: err instanceof Error ? err.message : undefined,
       });
     },

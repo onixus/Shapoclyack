@@ -1,0 +1,158 @@
+[
+  {
+    "origin": "recorded",
+    "detail": "glibc-based OpenSSH server race → potential RCE; upgrade to fixed releases."
+  },
+  {
+    "origin": "recorded",
+    "detail": "Legacy NetBIOS/SMB often co-exposed with vulnerable SMBv1 stacks."
+  },
+  {
+    "origin": "recorded",
+    "detail": "Unauthenticated RCE in Remote Desktop Services on unpatched Windows."
+  },
+  {
+    "origin": "recorded",
+    "detail": "Exposed MySQL is high risk; ensure auth, TLS, no public bind, current version."
+  },
+  {
+    "origin": "recorded",
+    "detail": "Internet-facing Elasticsearch without auth is critical risk."
+  },
+  {
+    "origin": "recorded",
+    "detail": "Exposure only: a file-sharing service (NetBIOS session) answers on port 139. Message signing, SMBv1 and the dialect list were not checked."
+  },
+  {
+    "origin": "recorded",
+    "detail": "Exposure only: RDP answers on port 3389. Network-level authentication, encryption and password policy were not checked."
+  },
+  {
+    "origin": "shapo_ssh_hostkey.rhai",
+    "detail": "Ed25519 host-key fingerprint from a signature-verified curve25519 key exchange. This proves key possession on this connection, not known-host trust, host identity or absence of weak algorithms."
+  },
+  {
+    "origin": "recorded",
+    "detail": "RPC portmapper often enables further NFS/mountd attacks."
+  },
+  {
+    "origin": "recorded",
+    "detail": "Public NFS can leak or allow write to critical shares."
+  },
+  {
+    "origin": "recorded",
+    "detail": "SMBv1 remote code execution (WannaCry/NotPetya class). Patch or disable SMBv1."
+  },
+  {
+    "origin": "recorded",
+    "detail": "Superuser + COPY PROGRAM can lead to RCE; don't expose PG publicly."
+  },
+  {
+    "origin": "recorded",
+    "detail": "Internet VNC is routinely brute-forced; tunnel or firewall."
+  },
+  {
+    "origin": "recorded",
+    "detail": "Exposure only: a file-sharing service (SMB) answers on port 445. Message signing, SMBv1 and the dialect list were not checked."
+  },
+  {
+    "origin": "recorded",
+    "detail": "Exposure only: VNC answers on port 5900. Network-level authentication, encryption and password policy were not checked."
+  },
+  {
+    "origin": "shapo_cleartext_services.rhai",
+    "detail": "Telnet sends the login and every command in cleartext and has no TLS mode."
+  },
+  {
+    "origin": "recorded",
+    "detail": "RMI registries on the internet are frequently abused for deserialization RCE."
+  },
+  {
+    "origin": "recorded",
+    "detail": "Credentials and sessions in cleartext; replace with SSH."
+  },
+  {
+    "origin": "recorded",
+    "detail": "r-services are obsolete and dangerous on modern networks."
+  },
+  {
+    "origin": "shapo_ftp_anonymous.rhai",
+    "detail": "The FTP server accepted the user anonymous. Files may be readable, and possibly writable, without credentials; the listing is not checked."
+  },
+  {
+    "origin": "shapo_snmp_info.rhai",
+    "detail": "sysDescr.0 and sysName.0 returned by one SNMPv2c public-community GET. Read-only protocol observation, not a vulnerability or authenticated asset identity."
+  },
+  {
+    "origin": "shapo_rdp_negotiation.rhai",
+    "detail": "The X.224 connection confirm accepts standard RDP security when no enhanced-security protocol was offered. NLA is therefore not mandatory for negotiation. Login, encryption strength and password policy were not tested."
+  },
+  {
+    "origin": "shapo_vnc_security.rhai",
+    "detail": "The RFB security advertisement includes type1 (None). No security type was selected and no desktop session was opened, so completed unauthenticated access was not tested."
+  },
+  {
+    "origin": "shapo_vnc_security.rhai",
+    "detail": "The listed security types are the peer's negotiation advertisement; authentication completion and desktop access were not tested."
+  },
+  {
+    "origin": "shapo_ssh_banner.rhai",
+    "detail": "The server identifies as SSH protocol 1.5, a protocol with known cryptographic weaknesses that no current client should speak."
+  },
+  {
+    "origin": "shapo_ssh_banner.rhai",
+    "detail": "The server identifies as SSH-1.99, meaning it still accepts protocol 1 connections."
+  },
+  {
+    "origin": "shapo_ssh_algorithms.rhai",
+    "detail": "The SSH server advertises key-exchange, host-key, cipher or MAC algorithms that current guidance has dropped or deprecated."
+  },
+  {
+    "origin": "shapo_smb_protocols.rhai",
+    "detail": "At least one observed SMB negotiation does not require message signing. Dialects and partial assessment errors are retained; relay exploitability was not tested."
+  },
+  {
+    "origin": "shapo_smb_protocols.rhai",
+    "detail": "Only explicitly selected dialects are listed. MS17-010 is a separate assessment; this inventory gives no vulnerability or patch attestation."
+  },
+  {
+    "origin": "shapo_http_trace.rhai",
+    "detail": "The server answers TRACE with 200 and echoes the request, headers included. That reflects what a browser sends (cookies, authorisation headers) back to a script that can issue TRACE (cross-site tracing). Disable it: Apache TraceEnable off, nginx and most others refuse it by default. Plain HTTP only: HTTPS listeners are not checked."
+  },
+  {
+    "origin": "shapo_rdp_ntlm_info.rhai",
+    "detail": "The peer disclosed host/domain/build fields in an NTLM type2 challenge after X.224 and TLS negotiation. This is unauthenticated inventory; no credentials, NTLM type3 or desktop-session messages were sent."
+  },
+  {
+    "origin": "shapo_cleartext_services.rhai",
+    "detail": "The FTP server does not advertise AUTH TLS, so logins and files travel in cleartext."
+  },
+  {
+    "origin": "shapo_cleartext_services.rhai",
+    "detail": "The POP3 server does not advertise STLS, so mailbox passwords and mail travel in cleartext."
+  },
+  {
+    "origin": "shapo_cleartext_services.rhai",
+    "detail": "The IMAP server does not advertise STARTTLS, so mailbox passwords and mail travel in cleartext."
+  },
+  {
+    "origin": "shapo_cleartext_services.rhai",
+    "detail": "The SMTP server offers authentication but no STARTTLS, so credentials travel in cleartext."
+  },
+  {
+    "origin": "shapo_cleartext_services.rhai",
+    "detail": "The SMTP server does not advertise STARTTLS, so mail it relays or receives travels in cleartext."
+  },
+  {
+    "origin": "shapo_smb1.rhai",
+    "detail": "The server selected NT LM 0.12 in response to an SMB1-only NEGOTIATE. Disable the obsolete protocol. Authentication and known SMB exploits were not tested."
+  },
+  {
+    "origin": "shapo_ms17_010.rhai",
+    "detail": "An anonymous IPC$ PeekNamedPipe transaction on FID0 returned STATUS_INSUFF_SERVER_RESOURCES. This is the MS17-010 diagnostic indication; exploitability and patch installation were not authenticated or tested."
+  },
+  {
+    "origin": "shapo_smb_signing.rhai",
+    "detail": "The SMB2 NEGOTIATE response does not require message signing. Session authentication and relay exploitability were not tested."
+  }
+]

@@ -1,5 +1,6 @@
 "use client";
 
+import { SystemTechnicalDetails } from "@/components/system-technical-details";
 import { useState } from "react";
 import { Check, Copy, PackageCheck, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -42,7 +43,11 @@ function CopyButton({ value, label }: { value: string; label: string }) {
         );
       }}
     >
-      {copied ? <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" /> : <Copy className="h-3 w-3" />}
+      {copied ? (
+        <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+      ) : (
+        <Copy className="h-3 w-3" />
+      )}
       {label}
     </Button>
   );
@@ -74,7 +79,9 @@ export function PatchGapPanel({ tenantId = "default" }: { tenantId?: string }) {
             {t("patchGap.packages")}
           </span>
           <span>
-            <span className="font-semibold text-emerald-600 dark:text-emerald-400">{data.cves_closed_by_upgrade}</span>{" "}
+            <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+              {data.cves_closed_by_upgrade}
+            </span>{" "}
             {t("patchGap.cvesClosed")}
           </span>
           <span>
@@ -87,8 +94,7 @@ export function PatchGapPanel({ tenantId = "default" }: { tenantId?: string }) {
               title={t("patchGap.unfixedHint")}
             >
               <ShieldAlert className="h-3 w-3" />
-              <span className="font-semibold">{data.unfixed_findings}</span>{" "}
-              {t("patchGap.unfixed")}
+              <span className="font-semibold">{data.unfixed_findings}</span> {t("patchGap.unfixed")}
             </span>
           ) : null}
         </div>
@@ -104,12 +110,12 @@ export function PatchGapPanel({ tenantId = "default" }: { tenantId?: string }) {
             key={device.device_id}
             className="flex flex-wrap items-center justify-between gap-3 py-2 text-xs"
           >
-            <span className="font-mono text-foreground">
-              {device.hostname || device.device_id}
-            </span>
+            <span className="font-mono text-foreground">{device.hostname || device.device_id}</span>
             <span className="flex items-center gap-4 text-muted-foreground">
               <span className={SEVERITY_TONE[device.worst_severity] ?? SEVERITY_TONE.unknown}>
-                {t.label(device.worst_severity)}
+                {t.locale === "ru" && device.worst_severity === "negligible"
+                  ? "Незначительная"
+                  : t.label(device.worst_severity)}
               </span>
               <span>{t("patchGap.packagesOn", { count: device.packages_to_upgrade })}</span>
               <span className="text-emerald-600 dark:text-emerald-400">
@@ -120,6 +126,7 @@ export function PatchGapPanel({ tenantId = "default" }: { tenantId?: string }) {
         ))}
       </ul>
 
+      {t.locale === "ru" && <SystemTechnicalDetails data={data} />}
       {data.truncated ? (
         <p className="mt-2 text-xs text-muted-foreground">{t("patchGap.truncated")}</p>
       ) : null}
@@ -128,11 +135,7 @@ export function PatchGapPanel({ tenantId = "default" }: { tenantId?: string }) {
 }
 
 /** One device's outstanding upgrades, with the command that applies them. */
-export function DevicePatchGapCard({
-  gap,
-}: {
-  gap: import("@/lib/api").DevicePatchGap;
-}) {
+export function DevicePatchGapCard({ gap }: { gap: import("@/lib/api").DevicePatchGap }) {
   const t = useT();
   if (gap.packages_to_upgrade === 0 && gap.unfixed_findings === 0) return null;
 
@@ -148,7 +151,7 @@ export function DevicePatchGapCard({
         ) : null}
       </div>
 
-      {gap.combined_upgrade_command ? (
+      {gap.combined_upgrade_command && t.locale !== "ru" ? (
         <pre className="mt-3 overflow-x-auto rounded-lg border border-border bg-muted p-3 font-mono text-xs text-foreground">
           {gap.combined_upgrade_command}
         </pre>
@@ -163,7 +166,9 @@ export function DevicePatchGapCard({
               </span>
               <span className="flex items-center gap-3 text-muted-foreground">
                 <span className={SEVERITY_TONE[item.worst_severity] ?? SEVERITY_TONE.unknown}>
-                  {t.label(item.worst_severity)}
+                  {t.locale === "ru" && item.worst_severity === "negligible"
+                    ? "Незначительная"
+                    : t.label(item.worst_severity)}
                 </span>
                 <span className="text-emerald-600 dark:text-emerald-400">
                   {t("patchGap.closes", { count: item.cve_count })}
@@ -175,18 +180,24 @@ export function DevicePatchGapCard({
               {/* No target means the published fixes could not be ordered; naming
                   one would promise a fix that may not close every CVE below. */}
               {item.target_version ? (
-                <span className="text-emerald-600 dark:text-emerald-400">{item.target_version}</span>
+                <span className="text-emerald-600 dark:text-emerald-400">
+                  {item.target_version}
+                </span>
               ) : (
                 <span className="text-sev-medium">{t("patchGap.targetUnresolved")}</span>
               )}
             </p>
-            <p className="mt-1 truncate font-mono text-xs text-muted-foreground" title={item.cve_ids.join(", ")}>
+            <p
+              className="mt-1 truncate font-mono text-xs text-muted-foreground"
+              title={item.cve_ids.join(", ")}
+            >
               {item.cve_ids.join(", ")}
             </p>
           </li>
         ))}
       </ul>
 
+      {t.locale === "ru" && <SystemTechnicalDetails data={gap} />}
       {gap.unfixed_findings > 0 ? (
         <p className="mt-3 flex items-start gap-1.5 text-xs leading-relaxed text-amber-600 dark:text-amber-400/90">
           <ShieldAlert className="mt-0.5 h-3 w-3 shrink-0" />

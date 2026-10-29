@@ -1,12 +1,9 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useT, translate, type Locale } from "@/lib/i18n";
 import { toast } from "sonner";
-import {
-  fetchMaintenanceCalendar,
-  setChangeFreeze,
-  type MaintenanceWindow,
-} from "@/lib/api";
+import { fetchMaintenanceCalendar, setChangeFreeze, type MaintenanceWindow } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
 /** The tenant's maintenance calendar and the verdict a scan started right now
@@ -27,15 +24,16 @@ export function useMaintenanceCalendar(enabled: boolean, tenantId?: string) {
 }
 
 export function useSetChangeFreeze(tenantId?: string) {
+  const t = useT();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: { change_freeze: boolean; note?: string }) =>
       setChangeFreeze(body, tenantId),
     onSuccess: async (state) => {
-      toast.success(state.change_freeze ? "Change freeze on" : "Change freeze lifted", {
+      toast.success(state.change_freeze ? t("scanCopy.freezeOn") : t("scanCopy.freezeOff"), {
         description: state.change_freeze
-          ? `No scan will start in ${state.tenant_id} until it is lifted`
-          : `Scanning in ${state.tenant_id} follows the maintenance calendar again`,
+          ? t("scanCopy.freezeDescription", { tenant: state.tenant_id })
+          : t("scanCopy.calendarAgain", { tenant: state.tenant_id }),
       });
       // Invalidated rather than patched: the freeze changes the *admission*
       // too, and that verdict is the server's to compute.
@@ -44,7 +42,7 @@ export function useSetChangeFreeze(tenantId?: string) {
       });
     },
     onError: (err) => {
-      toast.error("Failed to change the freeze", {
+      toast.error(t("scanCopy.freezeFailed"), {
         description: err instanceof Error ? err.message : undefined,
       });
     },
@@ -60,20 +58,22 @@ export function useSetChangeFreeze(tenantId?: string) {
  * it is read in, because the whole point is that the window is not in the
  * server's timezone.
  */
-export function windowCadence(window: MaintenanceWindow): string {
+export function windowCadence(window: MaintenanceWindow, locale: Locale = "en"): string {
   const localTime = window.dtstart_local.split("T")[1] ?? window.dtstart_local;
   const hours = Math.floor(window.duration_minutes / 60);
   const minutes = window.duration_minutes % 60;
   const length = hours > 0 ? `${hours}h${minutes ? ` ${minutes}m` : ""}` : `${minutes}m`;
-  return `${window.rrule} at ${localTime} ${window.timezone}, ${length}`;
+  return locale === "ru"
+    ? `Начало: ${localTime} ${window.timezone}, длительность: ${hours > 0 ? `${hours} ч ${minutes} мин` : `${minutes} мин`}`
+    : `${window.rrule} at ${localTime} ${window.timezone}, ${length}`;
 }
 
 /** Who the window applies to. An asset group has no first-class entity on the
  * platform, so it is named and then defined by the targets it covers — both
  * are shown, because the name alone tells a reader nothing about whether their
  * scan is inside it. */
-export function windowScope(window: MaintenanceWindow): string {
-  if (window.scope_kind !== "asset_group") return "whole tenant";
+export function windowScope(window: MaintenanceWindow, locale: Locale = "en"): string {
+  if (window.scope_kind !== "asset_group") return translate(locale, "scanCopy.wholeTenant");
   const targets = window.scope_targets.join(", ");
-  return `${window.asset_group ?? "group"}: ${targets || "(no targets — matches nothing)"}`;
+  return `${window.asset_group ?? translate(locale, "scanCopy.group")}: ${targets || translate(locale, "scanCopy.noTargets")}`;
 }

@@ -1,5 +1,7 @@
+import userEvent from "@testing-library/user-event";
+import { useAppearanceStore } from "@/lib/appearance";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SchedulesPage from "@/app/(dashboard)/schedules/page";
 import * as apiModule from "@/lib/api";
@@ -73,6 +75,31 @@ describe("SchedulesPage", () => {
       offset: 0,
       limit: 15,
       has_more: false,
+    });
+  });
+
+  it("localizes the schedule form and retains the exact creation payload", async () => {
+    useAppearanceStore.setState({ locale: "ru" });
+    vi.spyOn(apiModule, "fetchMaintenanceCalendar").mockRejectedValue(new Error("Not configured"));
+    const create = vi.spyOn(apiModule, "createSchedule").mockResolvedValue(SCHEDULE);
+    renderPage(member("scan-operator", ["config.read", "scan.cancel"]));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Создать расписание" }));
+    expect(screen.getByRole("dialog")).toHaveTextContent("Инвентаризация");
+    expect(screen.getByRole("dialog")).toHaveTextContent("Сбалансированный");
+    const details = screen.getByRole("dialog").querySelector("details")!;
+    expect(details).not.toHaveAttribute("open");
+    expect(details.textContent).toContain("balanced");
+    expect(details.textContent).toContain("0 * * * *");
+    await user.type(screen.getByLabelText("Название"), "Плановая проверка");
+    await user.click(screen.getByRole("dialog").querySelector('button[type="submit"]')!);
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(create.mock.calls[0][0]).toMatchObject({
+      name: "Плановая проверка",
+      mode: "balanced",
+      intent: "inventory",
+      cron: "0 * * * *",
+      interval_seconds: null,
     });
   });
 

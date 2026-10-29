@@ -1,5 +1,9 @@
 "use client";
+import { EndpointDeviceCard as EndpointCard } from "@/components/endpoint/endpoint-device-card";
+import { assetText, assetCode, assetContextEventText } from "@/lib/asset-presentation";
+import { SystemTechnicalDetails } from "@/components/system-technical-details";
 
+import { vulnerabilityName } from "@/lib/vulnerability-presentation";
 import Link from "next/link";
 import { useT } from "@/lib/i18n";
 import { useAbsoluteTime } from "@/lib/i18n/datetime";
@@ -63,7 +67,6 @@ import {
   ASSET_ENVIRONMENTS,
   ASSET_EXPOSURE_LEVELS,
   assetRiskLabel,
-  describeContextEvent,
 } from "@/lib/asset-context";
 import {
   ASSET_CONTEXT_SOURCE,
@@ -72,26 +75,27 @@ import {
   ASSET_ENVIRONMENT,
   ASSET_EXPOSURE,
   ASSET_STATUS,
-  ENDPOINT_RECONCILIATION_STATUS,
   RISK_LEVEL_STATUS,
   SEVERITY_STATUS,
   SOFTWARE_CHANGE_STATUS,
   VULN_LIFECYCLE_STATUS,
 } from "@/lib/config/statuses";
 import { formatLocation, normalizeSeverity, pickLatestRun } from "@/lib/run-data";
-import {
-  findingLabel,
-  requiredAction,
-  vulnDetailHref,
-  vulnListHref,
-} from "@/lib/vuln-lifecycle";
+import { requiredAction, vulnDetailHref, vulnListHref } from "@/lib/vuln-lifecycle";
 
 const CRIT_UNSET = "unset";
 const CONTEXT_UNSET = "unset";
 
 export default function AssetDetailPage() {
+  const t = useT();
   return (
-    <Suspense fallback={<p className="text-sm text-muted-foreground">Loading asset posture details…</p>}>
+    <Suspense
+      fallback={
+        <p className="text-sm text-muted-foreground">
+          {assetText(t.locale, "Loading asset posture details…")}
+        </p>
+      }
+    >
       <AssetDetailInner />
     </Suspense>
   );
@@ -100,7 +104,12 @@ export default function AssetDetailPage() {
 function BackToAssets() {
   const t = useT();
   return (
-    <Button asChild variant="ghost" size="sm" className="gap-2 px-0 text-muted-foreground hover:text-foreground hover:bg-transparent">
+    <Button
+      asChild
+      variant="ghost"
+      size="sm"
+      className="gap-2 px-0 text-muted-foreground hover:text-foreground hover:bg-transparent"
+    >
       <Link href="/assets">
         <ArrowLeft className="h-4 w-4 text-sky-600 dark:text-sky-400" />
         {t("asset.back")}
@@ -153,7 +162,10 @@ function AssetDetailInner() {
     return (
       <div className="space-y-4">
         <BackToAssets />
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
+        <Alert
+          variant="destructive"
+          className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+        >
           <AlertDescription>{t("asset.missingParam")}</AlertDescription>
         </Alert>
       </div>
@@ -165,7 +177,10 @@ function AssetDetailInner() {
       return (
         <div className="space-y-4">
           <BackToAssets />
-          <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
+          <Alert
+            variant="destructive"
+            className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+          >
             <AlertDescription>{(detailQuery.error as Error).message}</AlertDescription>
           </Alert>
         </div>
@@ -184,7 +199,8 @@ function AssetDetailInner() {
   const primaryIp =
     asset.identifiers.find((i) => i.identifier_type === "ip")?.identifier_value ?? null;
   const headingName = primaryFqdn || primaryIp || asset.asset_id;
-  const estateLevel = risk?.estate_risk && risk.estate_risk in RISK_LEVEL_STATUS ? risk.estate_risk : null;
+  const estateLevel =
+    risk?.estate_risk && risk.estate_risk in RISK_LEVEL_STATUS ? risk.estate_risk : null;
   const unassigned = risk?.unassigned ?? 0;
   const breached = risk?.breached ?? 0;
   const untriaged = risk?.untriaged ?? 0;
@@ -196,7 +212,7 @@ function AssetDetailInner() {
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <div className="flex flex-wrap items-center gap-3">
-              <h1 className="text-2xl font-extrabold font-mono tracking-tight text-foreground">
+              <h1 className="text-2xl break-all font-extrabold font-mono tracking-tight text-foreground">
                 {headingName}
               </h1>
               <StatusBadge value={asset.status} map={ASSET_STATUS} />
@@ -215,7 +231,7 @@ function AssetDetailInner() {
               ) : null}
               {estateLevel ? <StatusBadge value={estateLevel} map={RISK_LEVEL_STATUS} /> : null}
             </div>
-            <p className="mt-1 text-xs text-muted-foreground">
+            <div className="mt-1 text-xs text-muted-foreground">
               {asset.business_service || t("asset.noBusinessService")}
               {" · "}
               {asset.owner_email || t("asset.noOwner")}
@@ -226,8 +242,19 @@ function AssetDetailInner() {
                 </>
               ) : null}
               {" · "}
-              <span className="font-mono">{asset.asset_id}</span>
-            </p>
+              <SystemTechnicalDetails
+                data={{
+                  asset_id: asset.asset_id,
+                  status: asset.status,
+                  environment: asset.environment,
+                  data_classification: asset.data_classification,
+                  exposure_level: asset.exposure_level,
+                  asset_criticality: asset.asset_criticality,
+                  context_source: asset.context_source,
+                  identifiers: asset.identifiers,
+                }}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -266,9 +293,7 @@ function AssetDetailInner() {
           <AlertDescription className="text-xs">
             {t("asset.alert.requiredNow", {
               what: [
-                breached > 0
-                  ? t("asset.alert.breached", { count: breached.toLocaleString() })
-                  : "",
+                breached > 0 ? t("asset.alert.breached", { count: breached.toLocaleString() }) : "",
                 unassigned > 0
                   ? t("asset.alert.unassigned", { count: unassigned.toLocaleString() })
                   : "",
@@ -282,7 +307,7 @@ function AssetDetailInner() {
       ) : null}
 
       <div className="grid gap-6 lg:grid-cols-3">
-        <div className="space-y-6 lg:col-span-1">
+        <div className="space-y-6 lg:col-span-1 min-w-0">
           <OverviewCard asset={asset} />
           {devices.length > 0 ? (
             devices.map((d) => <EndpointCard key={d.device_id} device={d} />)
@@ -292,22 +317,37 @@ function AssetDetailInner() {
           {canOperate ? <EditCard asset={asset} /> : null}
         </div>
 
-        <div className="lg:col-span-2 space-y-4">
+        <div className="lg:col-span-2 space-y-4 min-w-0">
           <Tabs defaultValue="findings">
-            <TabsList className="bg-card border border-border">
-              <TabsTrigger value="findings" className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300">
+            <TabsList className="bg-card border border-border h-auto flex-wrap justify-start">
+              <TabsTrigger
+                value="findings"
+                className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300"
+              >
                 {t("asset.tab.findings", { count: trackedOpen })}
               </TabsTrigger>
-              <TabsTrigger value="services" className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300">
+              <TabsTrigger
+                value="services"
+                className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300"
+              >
                 {t("asset.tab.services", { count: serviceCount })}
               </TabsTrigger>
-              <TabsTrigger value="software" className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300">
+              <TabsTrigger
+                value="software"
+                className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300"
+              >
                 {t("asset.tab.software", { count: software.length })}
               </TabsTrigger>
-              <TabsTrigger value="evidence" className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300">
+              <TabsTrigger
+                value="evidence"
+                className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300"
+              >
                 {t("asset.tab.evidence")}
               </TabsTrigger>
-              <TabsTrigger value="history" className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300">
+              <TabsTrigger
+                value="history"
+                className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300"
+              >
                 {t("asset.tab.history")}
               </TabsTrigger>
             </TabsList>
@@ -340,10 +380,7 @@ function AssetDetailInner() {
                     canOperate={canOperate}
                   />
                   {/* And then what to run about it (ROADMAP Track E M2). */}
-                  <DevicePatchGapSection
-                    deviceId={device.device_id}
-                    tenantId={tenantId}
-                  />
+                  <DevicePatchGapSection deviceId={device.device_id} tenantId={tenantId} />
                   <SoftwareTab
                     device={device}
                     software={software}
@@ -353,24 +390,29 @@ function AssetDetailInner() {
                 </>
               ) : (
                 <EmptyNote>
-                  No Lariska agent is correlated to this asset yet — software inventory appears
-                  after the endpoint links here.
+                  {assetText(
+                    t.locale,
+                    "No Lariska agent is correlated to this asset yet — software inventory appears after the endpoint links here.",
+                  )}
                 </EmptyNote>
               )}
             </TabsContent>
 
             <TabsContent value="evidence" className="space-y-4 pt-3">
               <p className="text-xs text-muted-foreground">
-                Last scan correlation
+                {assetText(t.locale, "Last scan correlation")}
                 {latest ? (
                   <>
                     {" "}
-                    from run <code className="font-mono text-sky-600 dark:text-sky-400">{latest.run_id}</code>
+                    {assetText(t.locale, "from run")}{" "}
+                    <code className="font-mono text-sky-600 dark:text-sky-400">
+                      {latest.run_id}
+                    </code>
                   </>
                 ) : (
-                  " — no run on disk"
+                  assetText(t.locale, " — no run on disk")
                 )}
-                . Tracked findings above are the working set.
+                {assetText(t.locale, ". Tracked findings above are the working set.")}
               </p>
               {!ip ? (
                 <EmptyNote>{t("asset.empty.noIpIdentifier")}</EmptyNote>
@@ -379,13 +421,13 @@ function AssetDetailInner() {
               ) : vulns.length === 0 ? (
                 <EmptyNote>{t("asset.empty.noScanFindings")}</EmptyNote>
               ) : (
-                <div className="overflow-hidden rounded-xl border border-border bg-card">
+                <div className="overflow-x-auto rounded-xl border border-border bg-card">
                   <table className="w-full text-left text-xs">
                     <thead className="border-b border-border bg-muted text-muted-foreground font-semibold text-xs">
                       <tr>
-                        <th className="px-3.5 py-3">CVE / Script ID</th>
-                        <th className="px-3.5 py-3">Port</th>
-                        <th className="px-3.5 py-3">CVSS Score</th>
+                        <th className="px-3.5 py-3">{assetText(t.locale, "CVE / Script ID")}</th>
+                        <th className="px-3.5 py-3">{assetText(t.locale, "Port")}</th>
+                        <th className="px-3.5 py-3">{assetText(t.locale, "CVSS Score")}</th>
                         <th className="px-3.5 py-3">{t("col.severity")}</th>
                       </tr>
                     </thead>
@@ -396,7 +438,17 @@ function AssetDetailInner() {
                           className="hover:bg-muted transition-colors"
                         >
                           <td className="px-3.5 py-3 font-mono font-semibold text-sky-600 dark:text-sky-400">
-                            {v.cve || v.script_id || "—"}
+                            {vulnerabilityName(
+                              { cve: v.cve, script_id: v.script_id, title: "" },
+                              t.locale,
+                            )}
+                            <SystemTechnicalDetails
+                              data={{
+                                script_id: v.script_id,
+                                severity: v.severity,
+                                finding_class: v.finding_class,
+                              }}
+                            />
                           </td>
                           <td className="px-3.5 py-3 font-mono text-foreground">{v.port || "—"}</td>
                           <td className="px-3.5 py-3">
@@ -421,9 +473,15 @@ function AssetDetailInner() {
                   key: `${row.port}/${row.protocol || "tcp"}`,
                   title: `:${row.port}${row.protocol ? `/${row.protocol}` : ""}`,
                   subtitle: row.vulnerability_count
-                    ? `${row.vulnerability_count} vulnerability findings`
-                    : "clean",
-                  meta: <span className="font-semibold text-foreground">{row.host_count} hosts</span>,
+                    ? assetText(t.locale, "{count} vulnerability findings", {
+                        count: row.vulnerability_count,
+                      })
+                    : assetText(t.locale, "clean"),
+                  meta: (
+                    <span className="font-semibold text-foreground">
+                      {assetText(t.locale, "{count} hosts", { count: row.host_count })}
+                    </span>
+                  ),
                 }))}
                 activeKey={null}
                 onSelect={() => {}}
@@ -431,7 +489,10 @@ function AssetDetailInner() {
               />
               {hostRow ? (
                 <div className="grid grid-cols-2 gap-4 rounded-xl border border-border bg-card p-5 text-xs">
-                  <Field label={t("asset.field.hostname")} value={hostRow.hostname || hostRow.names[0] || "—"} />
+                  <Field
+                    label={t("asset.field.hostname")}
+                    value={hostRow.hostname || hostRow.names[0] || "—"}
+                  />
                   <Field label={t("asset.field.geoip")} value={formatLocation(hostRow) || "—"} />
                   <Field
                     label={t("asset.field.detectedOs")}
@@ -441,12 +502,13 @@ function AssetDetailInner() {
                         : "—"
                     }
                   />
-                  <Field label={t("asset.field.totalFindings")} value={String(hostRow.vulnerability_count)} />
+                  <Field
+                    label={t("asset.field.totalFindings")}
+                    value={String(hostRow.vulnerability_count)}
+                  />
                 </div>
               ) : (
-                <EmptyNote>
-                  {ip ? t("asset.empty.notAlive") : t("asset.empty.noIp")}
-                </EmptyNote>
+                <EmptyNote>{ip ? t("asset.empty.notAlive") : t("asset.empty.noIp")}</EmptyNote>
               )}
             </TabsContent>
 
@@ -480,9 +542,12 @@ function TrackedFindingsPanel({
   if (findings.length === 0) {
     return (
       <EmptyNote>
-        No open tracked findings on this asset. Closed history lives in the{" "}
-        <Link href={vulnListHref({ assetId })} className="text-sky-600 dark:text-sky-400 underline underline-offset-2">
-          Vulnerability Center
+        {assetText(t.locale, "No open tracked findings on this asset. Closed history lives in the")}{" "}
+        <Link
+          href={vulnListHref({ assetId })}
+          className="text-sky-600 dark:text-sky-400 underline underline-offset-2"
+        >
+          {assetText(t.locale, "Vulnerability Center")}
         </Link>
         .
       </EmptyNote>
@@ -495,15 +560,21 @@ function TrackedFindingsPanel({
         {total > findings.length
           ? ` ${t("asset.findings.showing", { shown: findings.length, total })}`
           : ""}{" "}
-        <Link href={vulnListHref({ assetId })} className="text-sky-600 dark:text-sky-400 underline underline-offset-2">
+        <Link
+          href={vulnListHref({ assetId })}
+          className="text-sky-600 dark:text-sky-400 underline underline-offset-2"
+        >
           {t("asset.findings.openInCenter")}
         </Link>
         {" · "}
-        <Link href="/remediation" className="text-sky-600 dark:text-sky-400 underline underline-offset-2">
+        <Link
+          href="/remediation"
+          className="text-sky-600 dark:text-sky-400 underline underline-offset-2"
+        >
           {t("asset.findings.remediationBoard")}
         </Link>
       </p>
-      <div className="overflow-hidden rounded-xl border border-border bg-card">
+      <div className="overflow-x-auto rounded-xl border border-border bg-card">
         <table className="w-full text-left text-xs">
           <thead className="border-b border-border bg-muted text-muted-foreground font-semibold text-xs">
             <tr>
@@ -523,8 +594,16 @@ function TrackedFindingsPanel({
                     href={vulnDetailHref(vuln.vuln_id, tenantId)}
                     className="font-mono font-semibold text-sky-600 dark:text-sky-400 hover:underline"
                   >
-                    {findingLabel(vuln)}
+                    {vulnerabilityName(vuln, t.locale)}
                   </Link>
+                  <SystemTechnicalDetails
+                    data={{
+                      title: vuln.title,
+                      script_id: vuln.script_id,
+                      state: vuln.state,
+                      severity: vuln.severity,
+                    }}
+                  />
                   <p className="mt-0.5 text-xs text-muted-foreground">
                     {vuln.port ? t("vulns.port", { port: vuln.port }) : t("asset.noPort")}
                     {vuln.assignee ? ` · ${vuln.assignee}` : ` · ${t("asset.unassignedShort")}`}
@@ -539,7 +618,9 @@ function TrackedFindingsPanel({
                 <td className="px-3.5 py-3">
                   <SlaIndicator slaState={vuln.sla_state} dueAt={vuln.due_at} />
                 </td>
-                <td className="px-3.5 py-3 font-semibold text-foreground">{t.label(requiredAction(vuln))}</td>
+                <td className="px-3.5 py-3 font-semibold text-foreground">
+                  {t.label(requiredAction(vuln))}
+                </td>
                 <td className="px-3.5 py-3 text-right">
                   <Button
                     asChild
@@ -564,15 +645,28 @@ function OverviewCard({ asset }: { asset: AssetDetail }) {
   const when = useAbsoluteTime();
   return (
     <div className="space-y-4 rounded-xl border border-border bg-card p-5 text-xs">
-      <p className="text-sm font-bold uppercase tracking-wider text-foreground border-b border-border pb-2">{t("asset.businessContext")}</p>
+      <p className="text-sm font-bold uppercase tracking-wider text-foreground border-b border-border pb-2">
+        {t("asset.businessContext")}
+      </p>
       <div className="grid grid-cols-2 gap-3">
         <Field label={t("asset.field.firstDiscovered")} value={when(asset.first_seen)} />
         <Field label={t("asset.field.lastTelemetry")} value={when(asset.last_seen)} />
-        <Field label={t("asset.field.ownerEmail")} value={asset.owner_email || t("common.unassigned")} />
-        <Field label={t("asset.field.businessUnit")} value={asset.business_unit || t("common.unassigned")} />
-        <Field label={t("asset.field.businessService")} value={asset.business_service || t("common.unassigned")} />
+        <Field
+          label={t("asset.field.ownerEmail")}
+          value={asset.owner_email || t("common.unassigned")}
+        />
+        <Field
+          label={t("asset.field.businessUnit")}
+          value={asset.business_unit || t("common.unassigned")}
+        />
+        <Field
+          label={t("asset.field.businessService")}
+          value={asset.business_service || t("common.unassigned")}
+        />
         <div>
-          <p className="text-xs font-medium text-muted-foreground">{t("asset.field.environment")}</p>
+          <p className="text-xs font-medium text-muted-foreground">
+            {t("asset.field.environment")}
+          </p>
           <div className="mt-0.5">
             {asset.environment ? (
               <StatusBadge value={asset.environment} map={ASSET_ENVIRONMENT} />
@@ -582,7 +676,9 @@ function OverviewCard({ asset }: { asset: AssetDetail }) {
           </div>
         </div>
         <div>
-          <p className="text-xs font-medium text-muted-foreground">{t("asset.field.dataClassification")}</p>
+          <p className="text-xs font-medium text-muted-foreground">
+            {t("asset.field.dataClassification")}
+          </p>
           <div className="mt-0.5">
             {asset.data_classification ? (
               <StatusBadge value={asset.data_classification} map={ASSET_DATA_CLASSIFICATION} />
@@ -610,7 +706,9 @@ function OverviewCard({ asset }: { asset: AssetDetail }) {
             // the console already translates.
             source: t.label(
               ASSET_CONTEXT_SOURCE[asset.context_source as keyof typeof ASSET_CONTEXT_SOURCE]
-                ?.label ?? asset.context_source ?? "",
+                ?.label ??
+                asset.context_source ??
+                "",
             ),
           })}
         </p>
@@ -623,12 +721,17 @@ function OverviewCard({ asset }: { asset: AssetDetail }) {
           {asset.identifiers.map((identifier) => (
             <li
               key={`${identifier.identifier_type}:${identifier.identifier_value}`}
-              className="flex items-center justify-between rounded-lg bg-muted p-2 border border-border"
+              className="flex flex-wrap gap-2 items-center justify-between rounded-lg bg-muted p-2 border border-border"
             >
-              <Badge variant="secondary" className="uppercase font-semibold text-overline bg-muted text-sky-600 dark:text-sky-400">
-                {identifier.identifier_type}
+              <Badge
+                variant="secondary"
+                className="uppercase font-semibold text-overline bg-muted text-sky-600 dark:text-sky-400"
+              >
+                {assetCode(t.locale, identifier.identifier_type, "Other identifier")}
               </Badge>
-              <span className="font-mono font-bold text-foreground">{identifier.identifier_value}</span>
+              <span className="font-mono font-bold text-foreground">
+                {identifier.identifier_value}
+              </span>
             </li>
           ))}
         </ul>
@@ -638,7 +741,11 @@ function OverviewCard({ asset }: { asset: AssetDetail }) {
           <p className="mb-1.5 text-xs font-semibold text-muted-foreground">{t("asset.tags")}</p>
           <div className="flex flex-wrap gap-1.5">
             {Object.entries(asset.tags).map(([key, value]) => (
-              <Badge key={key} variant="outline" className="border-border bg-muted text-foreground text-xs">
+              <Badge
+                key={key}
+                variant="outline"
+                className="border-border bg-muted text-foreground text-xs"
+              >
                 {key}={value}
               </Badge>
             ))}
@@ -661,50 +768,16 @@ function NoEndpointCard({ loading }: { loading: boolean }) {
       ) : (
         <>
           <p className="leading-relaxed text-muted-foreground">{t("asset.endpointNone")}</p>
-          <Button asChild variant="outline" size="sm" className="h-7 border-border text-xs text-sky-600 dark:text-sky-400">
+          <Button
+            asChild
+            variant="outline"
+            size="sm"
+            className="h-7 border-border text-xs text-sky-600 dark:text-sky-400"
+          >
             <Link href="/endpoints">{t("asset.endpointBrowse")}</Link>
           </Button>
         </>
       )}
-    </div>
-  );
-}
-
-function EndpointCard({ device }: { device: EndpointDeviceInfo }) {
-  const t = useT();
-  const when = useAbsoluteTime();
-  // Server-derived against OCTO_ENDPOINT_STALE_HOURS (Agent_plan.md S9) — the
-  // threshold is enforced in the API, not recomputed here.
-  const isStale = device.status === "stale" && device.last_inventory_at != null;
-
-  return (
-    <div className="space-y-4 rounded-xl border border-border bg-card p-5 text-xs">
-      <div className="flex items-center justify-between border-b border-border pb-2">
-        <div>
-          <p className="text-sm font-bold uppercase tracking-wider text-foreground">{t("asset.endpointTitle")}</p>
-          <p className="mt-0.5 font-mono text-xs text-muted-foreground">{device.hostname}</p>
-        </div>
-        <StatusBadge value={device.reconciliation_status} map={ENDPOINT_RECONCILIATION_STATUS} />
-      </div>
-      {device.reconciliation_status === "conflict" ? (
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
-          <AlertDescription>{t("asset.endpointConflict")}</AlertDescription>
-        </Alert>
-      ) : null}
-      {isStale ? (
-        <Alert className="border-amber-500/40 bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-200">
-          <AlertDescription>{t("asset.endpointStale")}</AlertDescription>
-        </Alert>
-      ) : null}
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="OS" value={[device.os_name, device.os_version].filter(Boolean).join(" ") || "—"} />
-        <Field label={t("asset.field.architecture")} value={device.os_arch || "—"} />
-        <Field label={t("asset.field.agentVersion")} value={device.agent_version || "—"} />
-        <Field
-          label={t("asset.field.lastInventory")}
-          value={when(device.last_inventory_at, t("common.never"))}
-        />
-      </div>
     </div>
   );
 }
@@ -724,7 +797,9 @@ function SoftwareTab({
   const [query, setQuery] = useState("");
   const [sortKey, setSortKey] = useState<"name" | "version" | "publisher" | "source">("name");
   const changesQuery = useEndpointDeviceChanges(device.device_id, tenantId);
-  const recentChanges = (changesQuery.data || []).filter((c) => c.snapshot_id === device.latest_snapshot_id);
+  const recentChanges = (changesQuery.data || []).filter(
+    (c) => c.snapshot_id === device.latest_snapshot_id,
+  );
 
   const filtered = software
     .filter((item) => !query.trim() || item.name.toLowerCase().includes(query.trim().toLowerCase()))
@@ -736,9 +811,14 @@ function SoftwareTab({
       <SourceCompleteness sources={device.sources} />
       {recentChanges.length > 0 ? (
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs font-semibold text-muted-foreground">Since previous snapshot:</span>
+          <span className="text-xs font-semibold text-muted-foreground">
+            {assetText(t.locale, "Since previous snapshot:")}
+          </span>
           {recentChanges.map((change, idx) => (
-            <span key={`${change.event_type}-${change.display_name}-${idx}`} className="inline-flex items-center gap-1">
+            <span
+              key={`${change.event_type}-${change.display_name}-${idx}`}
+              className="inline-flex items-center gap-1"
+            >
               <StatusBadge value={change.event_type} map={SOFTWARE_CHANGE_STATUS} />
               <span className="font-mono text-foreground">{change.display_name}</span>
             </span>
@@ -758,17 +838,17 @@ function SoftwareTab({
       ) : filtered.length === 0 ? (
         <EmptyNote>{t("asset.noSoftware")}</EmptyNote>
       ) : (
-        <div className="overflow-hidden rounded-xl border border-border bg-card">
+        <div className="overflow-x-auto rounded-xl border border-border bg-card">
           <table className="w-full text-left text-xs">
             <thead className="border-b border-border bg-muted text-muted-foreground font-semibold text-xs">
               <tr>
                 {(["name", "version", "publisher", "source"] as const).map((col) => (
                   <th
-                    key={col}
+                    key={assetText(t.locale, col)}
                     className="cursor-pointer px-3.5 py-3 hover:text-sky-600 dark:text-sky-300"
                     onClick={() => setSortKey(col)}
                   >
-                    {col}
+                    {assetText(t.locale, col)}
                   </th>
                 ))}
                 <th className="px-3.5 py-3">{t("asset.field.architecture")}</th>
@@ -776,18 +856,38 @@ function SoftwareTab({
             </thead>
             <tbody className="divide-y divide-border">
               {filtered.map((item, idx) => (
-                <tr key={item.installation_identity || `${item.name}-${item.version}-${idx}`} className="hover:bg-muted transition-colors">
+                <tr
+                  key={item.installation_identity || `${item.name}-${item.version}-${idx}`}
+                  className="hover:bg-muted transition-colors"
+                >
                   <td className="px-3.5 py-3 font-semibold text-foreground">
                     {item.name}
                     {item.installation_identity && (
-                      <p className="mt-1 font-mono text-xs font-normal text-muted-foreground" title={item.installation_identity}>
-                        {[item.scope, item.package_id, item.installation_identity.slice(0, 12)].filter(Boolean).join(" · ")}
+                      <p
+                        className="mt-1 font-mono text-xs font-normal text-muted-foreground"
+                        title={item.installation_identity}
+                      >
+                        {t.locale === "ru"
+                          ? assetCode(t.locale, item.scope || "")
+                          : [item.scope, item.package_id, item.installation_identity.slice(0, 12)]
+                              .filter(Boolean)
+                              .join(" · ")}
                       </p>
                     )}
                   </td>
                   <td className="px-3.5 py-3 font-mono text-foreground">{item.version || "—"}</td>
                   <td className="px-3.5 py-3 text-foreground">{item.publisher || "—"}</td>
-                  <td className="px-3.5 py-3 text-foreground">{item.source}</td>
+                  <td className="px-3.5 py-3 text-foreground">
+                    {assetCode(t.locale, item.source)}
+                    <SystemTechnicalDetails
+                      data={{
+                        source: item.source,
+                        scope: item.scope,
+                        package_id: item.package_id,
+                        installation_identity: item.installation_identity,
+                      }}
+                    />
+                  </td>
                   <td className="px-3.5 py-3 text-foreground">{item.architecture || "—"}</td>
                 </tr>
               ))}
@@ -847,10 +947,14 @@ function EditCard({ asset }: { asset: AssetDetail }) {
 
   return (
     <div className="space-y-4 rounded-xl border border-border bg-card p-5 text-xs">
-      <p className="text-sm font-bold uppercase tracking-wider text-foreground border-b border-border pb-2">{t("asset.postureConfigurator")}</p>
+      <p className="text-sm font-bold uppercase tracking-wider text-foreground border-b border-border pb-2">
+        {t("asset.postureConfigurator")}
+      </p>
 
       <div className="space-y-1.5">
-        <Label htmlFor="owner" className="text-foreground font-semibold">{t("asset.field.ownerEmail")}</Label>
+        <Label htmlFor="owner" className="text-foreground font-semibold">
+          {t("asset.field.ownerEmail")}
+        </Label>
         <Input
           id="owner"
           value={owner}
@@ -861,23 +965,27 @@ function EditCard({ asset }: { asset: AssetDetail }) {
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="unit" className="text-foreground font-semibold">{t("asset.field.businessUnit")}</Label>
+        <Label htmlFor="unit" className="text-foreground font-semibold">
+          {t("asset.field.businessUnit")}
+        </Label>
         <Input
           id="unit"
           value={unit}
           onChange={(e) => setUnit(e.target.value)}
-          placeholder="e.g. Core Infrastructure"
+          placeholder={assetText(t.locale, "e.g. Core Infrastructure")}
           className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
         />
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="service" className="text-foreground font-semibold">{t("asset.field.businessService")}</Label>
+        <Label htmlFor="service" className="text-foreground font-semibold">
+          {t("asset.field.businessService")}
+        </Label>
         <Input
           id="service"
           value={service}
           onChange={(e) => setService(e.target.value)}
-          placeholder="e.g. payments-api"
+          placeholder={assetText(t.locale, "e.g. payments-api")}
           className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
         />
       </div>
@@ -892,7 +1000,7 @@ function EditCard({ asset }: { asset: AssetDetail }) {
             <SelectItem value={CONTEXT_UNSET}>{t("common.unsetValue")}</SelectItem>
             {ASSET_ENVIRONMENTS.map((value) => (
               <SelectItem key={value} value={value}>
-                {ASSET_ENVIRONMENT[value].label}
+                {t.label(ASSET_ENVIRONMENT[value].label)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -900,7 +1008,9 @@ function EditCard({ asset }: { asset: AssetDetail }) {
       </div>
 
       <div className="space-y-1.5">
-        <Label className="text-foreground font-semibold">{t("asset.field.dataClassification")}</Label>
+        <Label className="text-foreground font-semibold">
+          {t("asset.field.dataClassification")}
+        </Label>
         <Select value={classification} onValueChange={setClassification}>
           <SelectTrigger className="bg-muted border-border text-foreground">
             <SelectValue />
@@ -909,7 +1019,7 @@ function EditCard({ asset }: { asset: AssetDetail }) {
             <SelectItem value={CONTEXT_UNSET}>{t("common.unsetValue")}</SelectItem>
             {ASSET_DATA_CLASSIFICATIONS.map((value) => (
               <SelectItem key={value} value={value}>
-                {ASSET_DATA_CLASSIFICATION[value].label}
+                {t.label(ASSET_DATA_CLASSIFICATION[value].label)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -926,13 +1036,16 @@ function EditCard({ asset }: { asset: AssetDetail }) {
             <SelectItem value={CONTEXT_UNSET}>{t("common.unsetValue")}</SelectItem>
             {ASSET_EXPOSURE_LEVELS.map((value) => (
               <SelectItem key={value} value={value}>
-                {ASSET_EXPOSURE[value].label}
+                {t.label(ASSET_EXPOSURE[value].label)}
               </SelectItem>
             ))}
           </SelectContent>
         </Select>
         <p className="text-xs text-muted-foreground">
-          A decision about how this asset is treated — not inferred from scan IPs.
+          {assetText(
+            t.locale,
+            "A decision about how this asset is treated — not inferred from scan IPs.",
+          )}
         </p>
       </div>
 
@@ -946,14 +1059,15 @@ function EditCard({ asset }: { asset: AssetDetail }) {
             <SelectItem value={CRIT_UNSET}>{t("asset.edit.critUnset")}</SelectItem>
             {[0, 1, 2, 3, 4].map((n) => (
               <SelectItem key={n} value={String(n)}>
-                L{n} — {ASSET_CRITICALITY[n].label}
+                {t.locale === "ru" ? `Уровень ${n}` : `L${n}`} —{" "}
+                {t.label(ASSET_CRITICALITY[n].label)}
               </SelectItem>
             ))}
           </SelectContent>
         </Select>
       </div>
 
-      <div className="flex items-center justify-between pt-3 border-t border-border">
+      <div className="flex flex-wrap gap-2 items-center justify-between pt-3 border-t border-border">
         <Button onClick={save} disabled={update.isPending} size="sm" className="font-semibold">
           {update.isPending ? t("asset.edit.saving") : t("asset.edit.save")}
         </Button>
@@ -961,20 +1075,28 @@ function EditCard({ asset }: { asset: AssetDetail }) {
         {!decommissioned ? (
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button variant="outline" size="sm" className="border-rose-500/40 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:bg-rose-950/60">
-                Decommission
+              <Button
+                variant="outline"
+                size="sm"
+                className="border-rose-500/40 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:bg-rose-950/60"
+              >
+                {assetText(t.locale, "Decommission")}
               </Button>
             </AlertDialogTrigger>
             <AlertDialogContent className="bg-card border-border text-foreground">
               <AlertDialogHeader>
-                <AlertDialogTitle className="text-foreground">{t("asset.decommissionTitle")}</AlertDialogTitle>
+                <AlertDialogTitle className="text-foreground">
+                  {t("asset.decommissionTitle")}
+                </AlertDialogTitle>
                 <AlertDialogDescription className="text-muted-foreground text-xs">
                   {t("asset.decommissionBody")}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
-                <AlertDialogCancel className="border-border bg-muted text-foreground hover:bg-muted">{t("common.cancel")}</AlertDialogCancel>
-                <AlertDialogAction 
+                <AlertDialogCancel className="border-border bg-muted text-foreground hover:bg-muted">
+                  {t("common.cancel")}
+                </AlertDialogCancel>
+                <AlertDialogAction
                   onClick={() => update.mutate({ status: "decommissioned" })}
                   className="bg-rose-600 text-foreground hover:bg-rose-500"
                 >
@@ -984,7 +1106,9 @@ function EditCard({ asset }: { asset: AssetDetail }) {
             </AlertDialogContent>
           </AlertDialog>
         ) : (
-          <Badge variant="secondary" className="bg-muted text-muted-foreground">{t.label("decommissioned")}</Badge>
+          <Badge variant="secondary" className="bg-muted text-muted-foreground">
+            {t.label("decommissioned")}
+          </Badge>
         )}
       </div>
     </div>
@@ -1017,13 +1141,26 @@ function ContextHistoryCard({ assetId, tenantId }: { assetId: string; tenantId: 
 }
 
 function ContextHistoryItem({ event }: { event: AssetContextEvent }) {
+  const t = useT();
   return (
     <li className="relative border-l border-border pl-4 before:absolute before:-left-1 before:top-1.5 before:h-2 before:w-2 before:rounded-full before:bg-sky-500/70">
-      <p className="font-semibold text-foreground">{describeContextEvent(event)}</p>
+      <p className="font-semibold text-foreground">{assetContextEventText(t.locale, event)}</p>
+      <SystemTechnicalDetails
+        data={{
+          field: event.field,
+          old_value: event.old_value,
+          new_value: event.new_value,
+          source: event.source,
+        }}
+      />
       <p className="mt-0.5 text-xs text-muted-foreground">
         {event.occurred_at ? new Date(event.occurred_at).toLocaleString() : "—"}
         {" · "}
-        {event.actor ? <span className="font-mono text-foreground">{event.actor}</span> : <span>platform</span>}
+        {event.actor ? (
+          <span className="font-mono text-foreground">{event.actor}</span>
+        ) : (
+          <span>{assetText(t.locale, "platform")}</span>
+        )}
         {event.source ? (
           <>
             {" · "}
@@ -1039,7 +1176,7 @@ function Field({ label, value }: { label: string; value: string }) {
   return (
     <div>
       <p className="text-xs font-medium text-muted-foreground">{label}</p>
-      <p className="text-xs font-semibold text-foreground mt-0.5">{value}</p>
+      <p className="text-xs break-words font-semibold text-foreground mt-0.5">{value}</p>
     </div>
   );
 }
@@ -1051,4 +1188,3 @@ function EmptyNote({ children }: { children: React.ReactNode }) {
     </div>
   );
 }
-

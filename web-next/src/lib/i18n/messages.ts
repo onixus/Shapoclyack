@@ -1,10 +1,121 @@
 /** UI copy. English is the source of `MsgKey`; Russian must cover every key. */
 
 export const en = {
+  "scanCopy.queued": "Scan job queued",
+  "scanCopy.startFailed": "Failed to start scan",
+  "scanCopy.stopping": "Stopping the scan",
+  "scanCopy.cancelled": "Job cancelled",
+  "scanCopy.cancelFailed": "Could not cancel job",
+  "scanCopy.priority": "Priority changed",
+  "scanCopy.priorityFailed": "Could not change the priority",
+  "scanCopy.requeued": "Publication requeued",
+  "scanCopy.requeueHint": "The next reconciler tick publishes it.",
+  "scanCopy.requeueFailed": "Could not requeue the publication",
+  "scanCopy.discarded": "Publication discarded",
+  "scanCopy.discardHint":
+    "The run stays unpublished; its extracted tree is kept until a day after the upload was accepted.",
+  "scanCopy.discardFailed": "Could not discard the publication",
+  "scanCopy.job": "Job {id}",
+  "scanCopy.waitingAgent": "Job {id} — waiting for the agent to confirm",
+  "scanCopy.jobPriority": "Job {id} — priority {priority}",
+  "scanCopy.technical": "Technical details",
+  "scanCopy.id": "Identifier",
+  "scanCopy.intent": "Scan intent",
+  "scanCopy.mode": "Speed profile",
+  "scanCopy.execution": "Execution",
+  "scanCopy.backend": "Service scanner",
+  "scanCopy.unknown": "Other value",
+  "scanCopy.test": "Test",
+  "scanCopy.local": "local",
+  "scanCopy.agent": "agent",
+  "scanCopy.inventory": "inventory",
+  "scanCopy.vuln": "vuln",
+  "scanCopy.full": "full",
+  "scanCopy.delta": "delta",
+  "scanCopy.org_profile": "org_profile",
+  "scanCopy.legacy": "legacy",
+  "scanCopy.safe": "safe",
+  "scanCopy.balanced": "balanced",
+  "scanCopy.fast": "fast",
+  "scanCopy.ranges": "ranges",
+  "scanCopy.domains": "domains",
+  "scanCopy.ips": "ips",
+  "scanCopy.targets": "targets",
+  "scanCopy.create": "Create Schedule",
+  "scanCopy.edit": "Edit Schedule",
+  "scanCopy.editAction": "Edit schedule",
+  "scanCopy.deleteAction": "Delete schedule",
+  "scanCopy.name": "Name",
+  "scanCopy.namePlaceholder": "Nightly external sweep",
+  "scanCopy.notify": "Notify",
+  "scanCopy.deltaDiscovery": "Delta discovery",
+  "scanCopy.tcp": "TCP ports override",
+  "scanCopy.udp": "UDP ports override",
+  "scanCopy.backendHint": "Full probe uses the configured service scanner",
+  "scanCopy.saving": "Saving…",
+  "scanCopy.save": "Save Changes",
+  "scanCopy.creating": "Creating…",
+  "scanCopy.delete": "Delete",
+  "scanCopy.deleteConfirm": 'Delete schedule "{name}"?',
+  "scanCopy.defaults": "server defaults",
+  "scanCopy.rangeCount": "{count} range(s)",
+  "scanCopy.domainCount": "{count} domain(s)",
+  "scanCopy.cron": "Cron expression",
+  "scanCopy.interval": "Interval (seconds)",
+  "scanCopy.calendar": "By cron expression",
+  "scanCopy.every": "every {seconds}s",
+  "scanCopy.calendarLabel": "Maintenance calendar",
+  "scanCopy.kind": "Kind",
+  "scanCopy.now": "Now",
+  "scanCopy.disabled": "(disabled)",
+  "scanCopy.openUntil": "open until {time}",
+  "scanCopy.next": "next {time}",
+  "scanCopy.freezeNote": "Change freeze note",
+  "scanCopy.freezePlaceholder": "Why (shown in the refusal)",
+  "scanCopy.freeze": "Freeze changes",
+  "scanCopy.unfreeze": "Lift change freeze",
+  "scanCopy.freezeDescription": "No scan will start in {tenant} until an admin lifts it",
+  "scanCopy.setBy": " (set by {actor})",
+  "scanCopy.resumeAt": " Scans resume at {time}.",
+  "scanCopy.paused": "Scanning is paused by the maintenance calendar",
+  "scanCopy.created": "Schedule created",
+  "scanCopy.updated": "Schedule updated",
+  "scanCopy.deleted": "Schedule deleted",
+  "scanCopy.createFailed": "Failed to create schedule",
+  "scanCopy.updateFailed": "Failed to update schedule",
+  "scanCopy.deleteFailed": "Failed to delete schedule",
+  "scanCopy.freezeOn": "Change freeze on",
+  "scanCopy.freezeOff": "Change freeze lifted",
+  "scanCopy.freezeFailed": "Failed to change the freeze",
+  "scanCopy.calendarAgain": "Scanning in {tenant} follows the maintenance calendar again",
+  "scanCopy.wholeTenant": "whole tenant",
+  "scanCopy.group": "group",
+  "scanCopy.noTargets": "(no targets — matches nothing)",
+  "riskOverview.copy0": "Open Vulns",
+  "riskOverview.copy1": "Critical & High",
+  "riskOverview.copy2": "SLA Breached",
+  "riskOverview.copy3": "Assets",
+  "riskOverview.copy4": "Hosts",
+  "riskOverview.copy5": "Vulns",
+  "riskOverview.copy6": "Loading tracked findings…",
+  "riskOverview.copy7": "Risk",
+  "riskOverview.copy8": "Technical data",
+  "riskOverview.copy9": "Original title",
+  "riskOverview.copy10": "Detector ID",
+  "riskOverview.copy11": "Asset ID",
+  "riskOverview.copy12": "Risk code",
+  "riskOverview.copy13": "Asset details",
+  "riskOverview.copy14":
+    "Internet-facing exposure is not counted yet; missing data does not mean zero exposure.",
+  "riskOverview.copy15": "Recording…",
+  "riskOverview.copy16": "Capture Snapshot",
+  "riskOverview.copy17": "Latest scan",
+
   "nav.operator": "AI operator",
   "nav.hint.operator": "Evidence, analysis and confirmed scan actions",
   "assetConnector.title": "ServiceNow CMDB connector",
-  "assetConnector.ldap": "LDAP/AD computer sync is unavailable until directory integration #317 is implemented. The AD file source label does not enable synchronization.",
+  "assetConnector.ldap":
+    "LDAP/AD computer sync is unavailable until directory integration #317 is implemented. The AD file source label does not enable synchronization.",
   "assetConnector.url": "ServiceNow HTTPS origin",
   "assetConnector.table": "Table",
   "assetConnector.token": "Bearer token (leave blank to keep the saved credential)",
@@ -15,10 +126,11 @@ export const en = {
   "assetConnector.preview": "Preview source",
   "assetConnector.apply": "Apply after preview",
   "assetConnector.applied": "Applied",
-  "assetConnector.saved": "Connector saved. Preview fetches current source data; Apply fetches it again.",
-  "assetConnector.error": "Could not configure or run connector. Check endpoint, credential, mapping and source limits.",
+  "assetConnector.saved":
+    "Connector saved. Preview fetches current source data; Apply fetches it again.",
+  "assetConnector.error":
+    "Could not configure or run connector. Check endpoint, credential, mapping and source limits.",
   "integrations.event.service_token_expiring": "Service token expiring",
-
 
   "a11y.skipContent": "Skip to main content",
   "savedViews.title": "Saved views",
@@ -32,10 +144,13 @@ export const en = {
   "savedViews.applied": "View applied. Selection cleared.",
   "savedViews.failed": "Could not update saved views. Try again.",
   "savedViews.limit": "You already have 50 saved views. Delete one before saving another.",
-  "savedViews.duplicate": "You already have a view with this name on this page. Choose another name.",
+  "savedViews.duplicate":
+    "You already have a view with this name on this page. Choose another name.",
   "savedViews.invalid": "These filters cannot be saved. Reset the filters and try again.",
-  "savedViews.gone": "This view no longer exists; it was probably deleted elsewhere. The list has been refreshed.",
-  "savedViews.incompatible": "This view uses an incompatible filter schema. Delete it and save current filters.",
+  "savedViews.gone":
+    "This view no longer exists; it was probably deleted elsewhere. The list has been refreshed.",
+  "savedViews.incompatible":
+    "This view uses an incompatible filter schema. Delete it and save current filters.",
 
   "nav.dashboard": "Dashboard",
   "nav.vulnerabilities": "Vulnerabilities",
@@ -100,9 +215,11 @@ export const en = {
   "auth.redirecting": "Redirecting to login…",
   "session.expiringSoon": "Your session ends in {minutes} min because the console has been idle.",
   "session.staySignedIn": "Stay signed in",
-  "session.expired": "Your session has ended. Sign in again before you carry on — unsaved work here will not be sent.",
+  "session.expired":
+    "Your session has ended. Sign in again before you carry on — unsaved work here will not be sent.",
   "session.signInAgain": "Sign in again",
-  "session.logoutUncertain": "The server did not confirm the sign-out — this session may still be active. End every session from the account menu.",
+  "session.logoutUncertain":
+    "The server did not confirm the sign-out — this session may still be active. End every session from the account menu.",
 
   "tenant.label": "Tenant:",
   "tenant.actIn": "Act in tenant",
@@ -245,7 +362,8 @@ export const en = {
   "page.risk.centerLink": "Vulnerability Center",
   "page.risk.launch": "Launch Scan",
   "page.risk.emptyTitle": "No tracked findings yet",
-  "page.risk.emptyBody": "Findings become tracked work after a scan observes them against an asset. Launch a scan to populate the estate view.",
+  "page.risk.emptyBody":
+    "Findings become tracked work after a scan observes them against an asset. Launch a scan to populate the estate view.",
   "page.risk.emptyCta": "Start First Scan Job",
   "page.risk.kpiEstate": "Estate risk",
   "page.risk.kpiEstateHint": "worst open NIST verdict",
@@ -259,10 +377,13 @@ export const en = {
   "page.risk.kpiUnowned": "Assets without owner",
   "page.risk.kpiUnownedHint": "{count} assets in inventory",
   "page.orgProfile.title": "Organization Profile",
-  "page.orgProfile.subtitle": "Domain attribution, related domains and the control matrix of one run.",
+  "page.orgProfile.subtitle":
+    "Domain attribution, related domains and the control matrix of one run.",
   "page.orgProfile.runPicker": "Run",
-  "page.orgProfile.noRuns": "No runs available yet — start a scan with the org_profile intent first.",
-  "page.orgProfile.disclaimer": "Attribution is probabilistic. Confirming authorization to scan a promoted domain is the operator's responsibility.",
+  "page.orgProfile.noRuns":
+    "No runs available yet — start a scan with the org_profile intent first.",
+  "page.orgProfile.disclaimer":
+    "Attribution is probabilistic. Confirming authorization to scan a promoted domain is the operator's responsibility.",
   "page.risk.kpiPosture": "Org posture",
   "page.risk.kpiPostureHint": "{failing} of {total} controls failing · {notChecked} not checked",
   "page.risk.kpiPostureNoData": "org_profile stage not evaluated for this run",
@@ -286,7 +407,8 @@ export const en = {
   "page.risk.viewAssets": "View assets",
   "page.risk.assetsCount": "{count} assets",
   "page.risk.scanActivity": "Scan activity",
-  "page.risk.scanActivityHint": "Hosts and raw findings per recent run — scan volume, not estate risk over time. Historical risk snapshots are not stored yet.",
+  "page.risk.scanActivityHint":
+    "Hosts and raw findings per recent run — scan volume, not estate risk over time. Historical risk snapshots are not stored yet.",
   "page.risk.latest": "latest {id}",
   "chart.hosts": "Hosts",
   "chart.vulns": "Vulns",
@@ -298,87 +420,126 @@ export const en = {
   "hint.heartbeatTimedOut": "Heartbeat timed out",
   "hint.ofClosuresWithDeadline": "Of closures that had a deadline",
   "hint.fromSlaStart": "From SLA start to closure",
-  "hint.overriddenVerdicts": "Verdicts the scanner overrode because the assessment got worse — the number that says whether one was hiding something",
-  "hint.noiseQueueTime": "How long noise sat in the queue before someone ruled on it. Triage speed, not fix speed — it is deliberately not part of MTTR",
+  "hint.overriddenVerdicts":
+    "Verdicts the scanner overrode because the assessment got worse — the number that says whether one was hiding something",
+  "hint.noiseQueueTime":
+    "How long noise sat in the queue before someone ruled on it. Triage speed, not fix speed — it is deliberately not part of MTTR",
   "hint.contextSet": "Service, environment or classification set",
   "hint.coverageShare": "Coverage: share of active assets seen by a recent run",
   "hint.dualSource": "Assets also reporting an endpoint inventory",
   "hint.targetVersion": "Target: v{version}",
-  "hint.stillOpen": "{open} still open ({accepted} risk-accepted). Remediation only — {noise} closed as noise are counted under Noise, not here",
+  "hint.stillOpen":
+    "{open} still open ({accepted} risk-accepted). Remediation only — {noise} closed as noise are counted under Noise, not here",
   "hint.verifiedMechanically": "{verified} of {closed} closures were verified mechanically",
   "hint.suppressionsLapsed": "{count} have expired and are waiting for a second look",
   "hint.unownedAssets": "{unowned} of {active} active assets have nobody to hand a finding to",
   "hint.distinct": "{count} distinct",
 
   "prose.estateRiskVulnerabilityTrend144": "Estate Risk & Vulnerability Trend (#144)",
-  "prose.historicalTimelineOfActiveVulnerabilitie": "Historical timeline of active vulnerabilities, high/critical items, and SLA breaches.",
+  "prose.historicalTimelineOfActiveVulnerabilitie":
+    "Historical timeline of active vulnerabilities, high/critical items, and SLA breaches.",
   "prose.captureInitialSnapshot": "Capture Initial Snapshot",
   "prose.wordlistFileOneEntryPer": "Wordlist file (one entry per line)",
   "prose.nameOptionalDefaultsToFilename": "Name (optional — defaults to filename)",
-  "prose.noWordlistsUploadedYetUpload": "No wordlists uploaded yet. Upload one above to use it in a scan.",
-  "prose.scansAlreadyRunningAreUnaffected": "Scans already running are unaffected — they copied the list at start. New scans can no longer select it.",
-  "prose.noFindingsWereClosedIn": "No findings were closed in this window, so there is nobody to attribute a closure to.",
-  "prose.whetherThePlatformIsProducing": "Whether the platform is producing outcomes rather than data: what got fixed, how fast, how much of it a scan confirmed, and how much of the estate has an owner. All of it is computed here, from this tenant&apos;s own tables; nothing is sent anywhere.",
+  "prose.noWordlistsUploadedYetUpload":
+    "No wordlists uploaded yet. Upload one above to use it in a scan.",
+  "prose.scansAlreadyRunningAreUnaffected":
+    "Scans already running are unaffected — they copied the list at start. New scans can no longer select it.",
+  "prose.noFindingsWereClosedIn":
+    "No findings were closed in this window, so there is nobody to attribute a closure to.",
+  "prose.whetherThePlatformIsProducing":
+    "Whether the platform is producing outcomes rather than data: what got fixed, how fast, how much of it a scan confirmed, and how much of the estate has an owner. All of it is computed here, from this tenant&apos;s own tables; nothing is sent anywhere.",
   "prose.noisiestDetectors": "Noisiest detectors",
-  "prose.theNetworkScannerAgainstThe": "The network scanner against the endpoint software matcher. The two are wrong for unrelated reasons and are tuned in unrelated places, so the quiet one is listed as well — it is what makes the other number mean something.",
+  "prose.theNetworkScannerAgainstThe":
+    "The network scanner against the endpoint software matcher. The two are wrong for unrelated reasons and are tuned in unrelated places, so the quiet one is listed as well — it is what makes the other number mean something.",
   "prose.closedAndVerifiedPerAnalyst": "Closed and verified, per analyst",
-  "prose.theQuarterlyControlQuestionDid": "The quarterly control question: did this go up? If it did not, the new functionality produced data rather than outcomes.",
+  "prose.theQuarterlyControlQuestionDid":
+    "The quarterly control question: did this go up? If it did not, the new functionality produced data rather than outcomes.",
   "prose.medianTimeToFixBy": "Median time to fix, by severity",
   "prose.timeToFirstValue": "Time to first value",
   "prose.enrichmentOverlays": "Enrichment overlays",
-  "prose.recurringScansRunThroughThe": "Recurring scans run through the existing job dispatcher on the configured cadence.",
+  "prose.recurringScansRunThroughThe":
+    "Recurring scans run through the existing job dispatcher on the configured cadence.",
   "prose.portsOnlyNoServiceoscveProbe": "Ports only (no service/OS/CVE probe)",
-  "prose.thisStopsFutureAutomaticRuns": "This stops future automatic runs. Past runs and reports are unaffected. This cannot be undone.",
+  "prose.thisStopsFutureAutomaticRuns":
+    "This stops future automatic runs. Past runs and reports are unaffected. This cannot be undone.",
   "prose.compliancePosture": "Compliance posture",
-  "prose.controlsAssessedFromThisTenants": "Controls assessed from this tenant&apos;s own findings, asset context and endpoint inventory.",
+  "prose.controlsAssessedFromThisTenants":
+    "Controls assessed from this tenant&apos;s own findings, asset context and endpoint inventory.",
   "prose.assessedControlsPassing": "Assessed controls passing",
-  "prose.createsATenantEnvironmentAnd": "Creates a tenant environment and issues a one-time provisioning key for sensors and endpoint agents.",
+  "prose.createsATenantEnvironmentAnd":
+    "Creates a tenant environment and issues a one-time provisioning key for sensors and endpoint agents.",
   "prose.copyProvisioningKey": "Copy Provisioning Key",
-  "prose.worstOpenNistRiskFirst": "Worst open NIST risk first. Declared internet is operator-set exposure, not a scan measurement.",
+  "prose.worstOpenNistRiskFirst":
+    "Worst open NIST risk first. Declared internet is operator-set exposure, not a scan measurement.",
   "prose.backToRunsCatalog": "Back to Runs Catalog",
   "prose.backToVulnerabilityCenter": "Back to Vulnerability Center",
-  "prose.viewerRoleLifecycleAssignmentAnd": "Viewer role: lifecycle, assignment and risk-acceptance actions are hidden.",
-  "prose.dispatchATargetedRescanAgainst": "Dispatch a targeted re-scan against this asset to verify remediation.",
-  "prose.recordsWhereTheWorkLives": "Records where the work lives. Transitions are pushed to the ticket immediately; the ticket&apos;s own status is read back on a cadence, and Sync reads it now.",
-  "prose.noExceptionBothExpiryAnd": "No exception. Both expiry and reason are required, and a second person has to approve.",
+  "prose.viewerRoleLifecycleAssignmentAnd":
+    "Viewer role: lifecycle, assignment and risk-acceptance actions are hidden.",
+  "prose.dispatchATargetedRescanAgainst":
+    "Dispatch a targeted re-scan against this asset to verify remediation.",
+  "prose.recordsWhereTheWorkLives":
+    "Records where the work lives. Transitions are pushed to the ticket immediately; the ticket&apos;s own status is read back on a cadence, and Sync reads it now.",
+  "prose.noExceptionBothExpiryAnd":
+    "No exception. Both expiry and reason are required, and a second person has to approve.",
   "prose.vulnerabilityCenter": "Vulnerability Center",
   "prose.loadingRemediationKanbanBoard": "Loading Remediation Kanban Board…",
   "prose.remediationAuditTrail": "Remediation Audit Trail",
-  "prose.chronologicalLogOfAllState": "Chronological log of all state transitions, comments, assignments, and ticket links.",
+  "prose.chronologicalLogOfAllState":
+    "Chronological log of all state transitions, comments, assignments, and ticket links.",
   "prose.targetHostService": "Target Host & Service",
   "prose.remediationActions": "Remediation Actions",
-  "prose.viewerModeWorkflowTransitionsAnd": "Viewer mode: Workflow transitions and assignments require Operator permissions.",
+  "prose.viewerModeWorkflowTransitionsAnd":
+    "Viewer mode: Workflow transitions and assignments require Operator permissions.",
   "prose.provisioningKeyShownOnce": "Provisioning key shown once",
-  "prose.theKeyBelowIsEmbedded": "The key below is embedded in these snippets and cannot be retrieved again. Copy the command now; revoke the key from Tenants if it leaks.",
+  "prose.theKeyBelowIsEmbedded":
+    "The key below is embedded in these snippets and cannot be retrieved again. Copy the command now; revoke the key from Tenants if it leaks.",
   "prose.noProvisioningKeyYet": "No provisioning key yet",
-  "prose.mintingOneTakesCredentialManage": "Minting one takes the tenant.credential.manage permission in this tenant, which its admin and a token-admin hold: the key registers sensors and endpoint agents into the tenant, the same credential the tenant key administration page hands out.",
+  "prose.mintingOneTakesCredentialManage":
+    "Minting one takes the tenant.credential.manage permission in this tenant, which its admin and a token-admin hold: the key registers sensors and endpoint agents into the tenant, the same credential the tenant key administration page hands out.",
   "prose.deployScanningAgent": "Deploy Sensor",
-  "prose.installAndRegisterANew": "Install and register a new sensor (scanning node) to execute remote vulnerability scans.",
+  "prose.installAndRegisterANew":
+    "Install and register a new sensor (scanning node) to execute remote vulnerability scans.",
   "prose.agentPushDeploymentViaSsh": "Sensor Push Deployment via SSH",
-  "prose.thePlatformConnectsToThe": "The platform connects to the target machine over SSH, automatically provisions security tokens, configures the systemd service, and verifies registration. Credentials are processed in-memory and never saved.",
+  "prose.thePlatformConnectsToThe":
+    "The platform connects to the target machine over SSH, automatically provisions security tokens, configures the systemd service, and verifies registration. Credentials are processed in-memory and never saved.",
   "prose.expectedSshHostKeyFingerprint": "Expected SSH host key fingerprint",
   "prose.alreadyPinnedForThisTenant": "Already pinned for this tenant — no fingerprint needed.",
   "prose.itMatchesUseIt": "It matches — use it",
-  "prose.requiredTheFirstTimeThis": "Required the first time this tenant deploys to a host. Your SSH credentials and a new provisioning key travel over this connection, so the deployment is refused until the target&apos;s identity is known. Afterwards the pinned key is checked instead.",
-  "prose.deployAsDockerContainerInstead": "Deploy as Docker container instead of native systemd service",
-  "prose.thePushTakesAdminAndCredential": "The push takes the tenant admin rank and the tenant.credential.manage permission: it mints a provisioning key and installs software as root on the target.",
-  "prose.runThisCommandOnAny": "Run this command on any Linux machine (Ubuntu/Debian/RHEL/Alpine). It automatically sets up Python virtualenv, installs dependencies, writes systemd unit, and enables auto-start on boot.",
-  "prose.runsTheScanningAgentIn": "Runs the sensor in an isolated container with host network access for direct vulnerability scanning.",
-  "prose.deployContinuousScannerAgentsInto": "Deploy continuous sensors into your Kubernetes cluster to assess internal services.",
-  "prose.kubernetesSecretAfterApply": "The manifest holds no key, so it can be committed. Apply it first: it creates the namespace, labelled to admit the NET_RAW and NET_ADMIN the sensor needs. Then run this to store the key in the Secret it reads; the pod waits for it.",
-  "prose.markingRecordsTheIntentFor": "Marking records the intent for operators. The upgrade itself runs on the host — the sensor receives no command from here.",
+  "prose.requiredTheFirstTimeThis":
+    "Required the first time this tenant deploys to a host. Your SSH credentials and a new provisioning key travel over this connection, so the deployment is refused until the target&apos;s identity is known. Afterwards the pinned key is checked instead.",
+  "prose.deployAsDockerContainerInstead":
+    "Deploy as Docker container instead of native systemd service",
+  "prose.thePushTakesAdminAndCredential":
+    "The push takes the tenant admin rank and the tenant.credential.manage permission: it mints a provisioning key and installs software as root on the target.",
+  "prose.runThisCommandOnAny":
+    "Run this command on any Linux machine (Ubuntu/Debian/RHEL/Alpine). It automatically sets up Python virtualenv, installs dependencies, writes systemd unit, and enables auto-start on boot.",
+  "prose.runsTheScanningAgentIn":
+    "Runs the sensor in an isolated container with host network access for direct vulnerability scanning.",
+  "prose.deployContinuousScannerAgentsInto":
+    "Deploy continuous sensors into your Kubernetes cluster to assess internal services.",
+  "prose.kubernetesSecretAfterApply":
+    "The manifest holds no key, so it can be committed. Apply it first: it creates the namespace, labelled to admit the NET_RAW and NET_ADMIN the sensor needs. Then run this to store the key in the Secret it reads; the pod waits for it.",
+  "prose.markingRecordsTheIntentFor":
+    "Marking records the intent for operators. The upgrade itself runs on the host — the sensor receives no command from here.",
   "prose.liveSystemTelemetry": "Live System Telemetry",
-  "prose.activeThisAgentMayClaim": "Active — this sensor may claim jobs and upload results. Disabling or quarantining it survives a restart; only an operator undoes it.",
+  "prose.activeThisAgentMayClaim":
+    "Active — this sensor may claim jobs and upload results. Disabling or quarantining it survives a restart; only an operator undoes it.",
   "prose.alsoRevokeItsProvisioningKey": "Also revoke its provisioning key",
-  "prose.noCveMatchesRecordedFor": "No CVE matches recorded for this endpoint yet. Run the matcher to compare its installed packages against the vendor advisories on disk.",
+  "prose.noCveMatchesRecordedFor":
+    "No CVE matches recorded for this endpoint yet. Run the matcher to compare its installed packages against the vendor advisories on disk.",
   "prose.noTelemetryArtifactsProducedFor": "No telemetry artifacts produced for this run.",
-  "prose.leadershipAndExecutiveSummaryGenerated": "Leadership and executive summary generated by the scan engine.",
-  "prose.industrystandardStaticDynamicSecurityTel": "Industry-standard static & dynamic security telemetry for GitHub, GitLab, and DefectDojo.",
+  "prose.leadershipAndExecutiveSummaryGenerated":
+    "Leadership and executive summary generated by the scan engine.",
+  "prose.industrystandardStaticDynamicSecurityTel":
+    "Industry-standard static & dynamic security telemetry for GitHub, GitLab, and DefectDojo.",
   "prose.viewSarifFindings": "View SARIF Findings",
   "prose.onlyThePdfReportIs": "Only the PDF report is available for this run.",
   "prose.evaluatingSecurityControlsMatrix": "Evaluating security controls matrix…",
-  "prose.controlsMatrixTelemetryIsNot": "Controls matrix telemetry is not available for this run (stage unconfigured or artifacts absent).",
-  "prose.evaluatedAcross6FoundationalExternal": "Evaluated across 6 foundational external attack surface controls according to NIST SP 800-30 Rev. 1.",
+  "prose.controlsMatrixTelemetryIsNot":
+    "Controls matrix telemetry is not available for this run (stage unconfigured or artifacts absent).",
+  "prose.evaluatedAcross6FoundationalExternal":
+    "Evaluated across 6 foundational external attack surface controls according to NIST SP 800-30 Rev. 1.",
   "prose.assigneeBlankLeavesItAs": "Assignee (blank leaves it as it is)",
   "prose.unassignEverySelectedFindingInstead": "Unassign every selected finding instead",
   "prose.ownerTeamBlankLeavesIt": "Owner team (blank leaves it as it is)",
@@ -386,14 +547,18 @@ export const en = {
   "prose.suppressReopeningForDays1365": "Suppress re-opening for (days, 1–365)",
   "prose.withdrawFromScope": "Withdraw from Scope",
   "prose.loadingOrganizationProfileAndRelated": "Loading organization profile and related domains…",
-  "prose.organizationProfileTelemetryIsNot": "Organization profile telemetry is not available for this run.",
-  "prose.everyOrdinaryScanOfThis": "Every ordinary scan of this tenant carries these domains in addition to its own targets.",
-  "prose.nothingPromotedYetPromoteA": "Nothing promoted yet. Promote a discovered domain below to add it to every later scan.",
+  "prose.organizationProfileTelemetryIsNot":
+    "Organization profile telemetry is not available for this run.",
+  "prose.everyOrdinaryScanOfThis":
+    "Every ordinary scan of this tenant carries these domains in addition to its own targets.",
+  "prose.nothingPromotedYetPromoteA":
+    "Nothing promoted yet. Promote a discovered domain below to add it to every later scan.",
   "prose.noRelatedDomainCandidatesMatch": "No related domain candidates match the selected filter.",
   "prose.downloadSarifjson": "Download sarif.json",
   "prose.noSarifFindingsMatchCurrent": "No SARIF findings match current filters.",
   "prose.noRulesMetadataDefinedIn": "No rules metadata defined in SARIF driver.",
-  "prose.appliedToEveryRenderedReport": "Applied to every rendered report for this tenant. Admin only.",
+  "prose.appliedToEveryRenderedReport":
+    "Applied to every rendered report for this tenant. Admin only.",
 
   "ui.acceptedRisk": "Accepted risk",
   "ui.adoption": "Adoption",
@@ -537,9 +702,11 @@ export const en = {
   "asset.back": "Back to Assets",
   "asset.loadingView": "Loading the asset security view…",
   "asset.endpointTitle": "Endpoint (Lariska)",
-  "asset.endpointConflict": "A platform identifier on this device is already claimed by another endpoint in this tenant. Not auto-merged — review manually.",
+  "asset.endpointConflict":
+    "A platform identifier on this device is already claimed by another endpoint in this tenant. Not auto-merged — review manually.",
   "asset.endpointChecking": "Checking for a linked agent…",
-  "asset.endpointNone": "No Lariska agent is correlated to this network asset yet. Install the endpoint agent with a tenant provisioning key; inventory links here by hostname / platform identifiers.",
+  "asset.endpointNone":
+    "No Lariska agent is correlated to this network asset yet. Install the endpoint agent with a tenant provisioning key; inventory links here by hostname / platform identifiers.",
   "asset.endpointBrowse": "Browse endpoints",
   "asset.missingParam": "Missing assetId query parameter.",
   "asset.businessContext": "Business context",
@@ -547,14 +714,17 @@ export const en = {
   "asset.noSoftware": "No installed software recorded for this endpoint.",
   "asset.postureConfigurator": "Asset posture configurator",
   "asset.decommissionTitle": "Decommission this asset?",
-  "asset.decommissionBody": "Marks the asset as decommissioned. Decommissioning is logged into Postgres state.",
+  "asset.decommissionBody":
+    "Marks the asset as decommissioned. Decommissioning is logged into Postgres state.",
   "asset.decommissionConfirm": "Decommission asset",
   "asset.contextHistory": "Context history",
   "asset.contextLoading": "Loading context changes…",
   "asset.contextEmpty": "No business-context changes recorded yet.",
   "asset.contextTrail": "Asset context audit trail",
-  "asset.contextWrittenBy": "Context last written by {source} — exposure is an operator decision, not a scan measurement.",
-  "asset.endpointStale": "No inventory received within the configured staleness window — this endpoint may be offline.",
+  "asset.contextWrittenBy":
+    "Context last written by {source} — exposure is an operator decision, not a scan measurement.",
+  "asset.endpointStale":
+    "No inventory received within the configured staleness window — this endpoint may be offline.",
   "asset.criticalityUnset": "Criticality unset",
   "asset.noBusinessService": "No business service",
   "asset.noOwner": "No owner",
@@ -564,7 +734,8 @@ export const en = {
   "asset.kpi.unassigned": "Unassigned",
   "asset.kpi.unassignedHint": "Needs a remediation owner",
   "asset.kpi.breachedHint": "Act on these first",
-  "asset.alert.requiredNow": "Required now: {what}. Box owner is {owner} — assign or move the findings below.",
+  "asset.alert.requiredNow":
+    "Required now: {what}. Box owner is {owner} — assign or move the findings below.",
   "asset.alert.breached": "{count} SLA-breached findings",
   "asset.alert.unassigned": "{count} without a remediation owner",
   "asset.alert.and": " and ",
@@ -572,7 +743,8 @@ export const en = {
   "asset.tab.software": "Software ({count})",
   "asset.tab.evidence": "Scan evidence",
   "asset.tab.history": "History",
-  "asset.findings.intro": "Working set of tracked findings — lifecycle, owner and the next required action.",
+  "asset.findings.intro":
+    "Working set of tracked findings — lifecycle, owner and the next required action.",
   "asset.findings.showing": "Showing {shown} of {total}.",
   "asset.findings.openInCenter": "Open in Vulnerability Center",
   "asset.findings.remediationBoard": "Remediation board",
@@ -603,7 +775,8 @@ export const en = {
   "asset.empty.notAlive": "This asset was not detected as alive in the latest scan run.",
   "asset.empty.noIpIdentifier": "No IP identifier — cannot correlate scan findings.",
   "asset.empty.correlating": "Correlating findings from the scan stream…",
-  "asset.empty.noScanFindings": "No vulnerability findings detected for this asset in the latest scan run.",
+  "asset.empty.noScanFindings":
+    "No vulnerability findings detected for this asset in the latest scan run.",
   "asset.empty.loadingSoftware": "Loading installed software…",
   "asset.software.search": "Search installed software…",
   "asset.edit.criticality": "Asset criticality (0–4)",
@@ -669,7 +842,8 @@ export const en = {
   "agents.clientCerts.locked": "{count} locked by a revocation, waiting for an enrolment reset",
   "agents.clientCerts.lockedIds": "Locked: {ids}",
   "agents.clientCerts.conflicts": "{count} refused while another host holds their certificate",
-  "agents.clientCerts.hint": "Mode: {mode}. A sensor renews its own enrolled certificate; cert-manager renews a mounted one. A sensor stops presenting a certificate that has expired: an enrolled one enrols again by itself, and a mounted one leaves the sensor without a certificate — fine under optional, refused under required until it is renewed. See Sensor client certificates in the operations guide.",
+  "agents.clientCerts.hint":
+    "Mode: {mode}. A sensor renews its own enrolled certificate; cert-manager renews a mounted one. A sensor stops presenting a certificate that has expired: an enrolled one enrols again by itself, and a mounted one leaves the sensor without a certificate — fine under optional, refused under required until it is renewed. See Sensor client certificates in the operations guide.",
   "adoption.closed": "Closed",
   "adoption.confirmedByScan": "Confirmed by a scan",
   "adoption.closedWithinSla": "Closed within SLA",
@@ -705,7 +879,8 @@ export const en = {
   "empty.remediation": "No remediation activity yet.",
   "empty.tenants": "No tenant organizations provisioned.",
   "empty.tenantsInScope": "No tenants in scope.",
-  "empty.trackedFindings": "No tracked findings match these filters. Findings appear here after a scan observes them against an asset.",
+  "empty.trackedFindings":
+    "No tracked findings match these filters. Findings appear here after a scan observes them against an asset.",
   "loading.exposure": "Loading declared exposure…",
   "loading.schedules": "Retrieving scan schedules…",
   "loading.tenantPosture": "Comparing tenant posture…",
@@ -725,12 +900,15 @@ export const en = {
   "graph.aria.surface": "Attack surface graph: hostnames to IPs to ports to services",
 
   "page.vulns.title": "Vulnerabilities",
-  "page.vulns.subtitle": "Tracked findings across the estate. Lifecycle, owner and SLA live on the finding, not on the last scan.",
+  "page.vulns.subtitle":
+    "Tracked findings across the estate. Lifecycle, owner and SLA live on the finding, not on the last scan.",
   "page.remediation.title": "Remediation",
-  "page.remediation.subtitle": "Move findings from detection to verified closure. Drag a card onto a legal column.",
+  "page.remediation.subtitle":
+    "Move findings from detection to verified closure. Drag a card onto a legal column.",
   "assetImport.button": "Import…",
   "assetImport.title": "Import assets from CMDB / AD",
-  "assetImport.description": "CSV or JSON export. Rows are matched by asset_id, ip or fqdn; empty cells leave fields untouched. Preview first — nothing is written until you apply.",
+  "assetImport.description":
+    "CSV or JSON export. Rows are matched by asset_id, ip or fqdn; empty cells leave fields untouched. Preview first — nothing is written until you apply.",
   "assetImport.file": "File",
   "assetImport.fileInfo": "{name} · {format} · {encoding}",
   "assetImport.source": "Source",
@@ -756,13 +934,15 @@ export const en = {
   "assetImport.preview": "Preview",
   "assetImport.apply": "Apply",
   "page.assets.title": "Assets",
-  "page.assets.subtitle": "Cross-run inventory. Owner, service and exposure are operator-set — scan evidence is secondary.",
+  "page.assets.subtitle":
+    "Cross-run inventory. Owner, service and exposure are operator-set — scan evidence is secondary.",
   "page.assets.identifiers": "{count} identifiers",
   "page.assets.identifierOne": "{count} identifier",
   "page.assets.identifiersFew": "{count} identifiers",
   "page.assets.meta": "{count} assets tracked",
   "page.assets.loading": "Retrieving asset inventory database…",
-  "page.assets.empty": "No assets registered yet. Run a discovery scan to populate the asset catalog.",
+  "page.assets.empty":
+    "No assets registered yet. Run a discovery scan to populate the asset catalog.",
   "page.assets.selectAll": "Select every asset on this page",
   "page.assets.searchPlaceholder": "Filter by IP, hostname, owner",
   "page.assets.filterAllStatuses": "All statuses",
@@ -774,22 +954,27 @@ export const en = {
   "page.exposure.title": "Exposure",
   "page.exposure.subtitle": "Operator-declared internet exposure. This is not a scan measurement.",
   "page.threats.title": "Threat intel",
-  "page.threats.subtitle": "Open tracked findings on the CISA Known Exploited Vulnerabilities catalog.",
+  "page.threats.subtitle":
+    "Open tracked findings on the CISA Known Exploited Vulnerabilities catalog.",
   "page.threats.meta": "{count} open KEV findings",
   "page.threats.kevFallback": "KEV",
   "page.threats.port": "port {port}",
   "page.tenants.title": "Tenants",
   "page.tenants.subtitle": "MSSP customer posture. Provisioning is admin-only.",
   "page.agents.title": "Sensor Fleet",
-  "page.agents.subtitle": "Remote scanning nodes claiming jobs. Stale is derived from last_seen, not a stored flag.",
-  "page.agents.listTakesOperator": "The sensor list takes the operator role in this tenant. You can still deploy a sensor: the dialog above mints the provisioning key it registers with.",
+  "page.agents.subtitle":
+    "Remote scanning nodes claiming jobs. Stale is derived from last_seen, not a stored flag.",
+  "page.agents.listTakesOperator":
+    "The sensor list takes the operator role in this tenant. You can still deploy a sensor: the dialog above mints the provisioning key it registers with.",
   "page.jobs.title": "Scan Jobs Orchestrator",
   "page.jobs.subtitle": "Queue, claim and complete scans. Local execution runs beside the API.",
   "page.jobs.orchestration": "Scan Job Orchestration",
   "page.schedules.title": "Continuous Scan Schedules",
-  "page.schedules.subtitle": "Tenant-scoped recurring scans. The dispatcher runs on one API replica.",
+  "page.schedules.subtitle":
+    "Tenant-scoped recurring scans. The dispatcher runs on one API replica.",
   "page.wordlists.title": "Brute-force Wordlists",
-  "page.wordlists.subtitle": "Tenant-uploaded lists for service brute-force stages. Off unless attached to a job.",
+  "page.wordlists.subtitle":
+    "Tenant-uploaded lists for service brute-force stages. Off unless attached to a job.",
   "page.runs.title": "Pipeline Execution Runs",
   "page.runs.subtitle": "Tenant-scoped scan history and artifacts.",
   "endpoint.sources.degraded": "Degraded inventory sources",
@@ -801,25 +986,31 @@ export const en = {
   "page.endpoints.title": "Endpoints",
   "page.endpoints.subtitle": "Agent-reported device and software inventory. Not a scan finding.",
   "page.attack.title": "Attack Surface Graph",
-  "page.attack.subtitle": "One scan's hostnames, IPs, ports and services. This is not an attack path.",
+  "page.attack.subtitle":
+    "One scan's hostnames, IPs, ports and services. This is not an attack path.",
   "page.attack.empty": "Start a scan job to render the network topology map.",
   "page.geo.title": "Geo Map",
-  "page.geo.subtitle": "External hosts by GeoIP position, coloured by their worst finding in this run.",
+  "page.geo.subtitle":
+    "External hosts by GeoIP position, coloured by their worst finding in this run.",
   "page.geo.selectRun": "Select a scan run",
   "page.reports.title": "Executive Security Reports",
   "page.reports.subtitle": "PDF and artifact discovery from completed runs.",
   "page.system.title": "System Telemetry & Config",
   "page.system.subtitle": "Versions, dependencies, stage timings and runtime. Edits need admin.",
   "page.system.enrichment.stub":
-    "Present and loadable, but below the size a real feed publishes — the build shipped a seed, or a refresh came back truncated. Matching answers \"unknown\" outside what it covers.",
-  "page.exposure.alert": "Drawing an internet-facing count from public addresses would launder a heuristic as a fact. Mark exposure on the asset card; this list is that decision.",
-  "page.threats.alert": "KEV membership is copied from the last observation onto the tracked finding, so it survives run pruning. Attack-path chaining is not modelled.",
+    'Present and loadable, but below the size a real feed publishes — the build shipped a seed, or a refresh came back truncated. Matching answers "unknown" outside what it covers.',
+  "page.exposure.alert":
+    "Drawing an internet-facing count from public addresses would launder a heuristic as a fact. Mark exposure on the asset card; this list is that decision.",
+  "page.threats.alert":
+    "KEV membership is copied from the last observation onto the tracked finding, so it survives run pruning. Attack-path chaining is not modelled.",
   "page.jobs.denied": "Operator or admin role privileges required to launch and monitor scan jobs.",
   "page.schedules.denied": "Operator or admin role privileges required to manage scan schedules.",
   "page.tenants.denied": "Operator or admin role required to manage tenant organizations.",
   "page.wordlists.denied": "Operator or admin role privileges required to manage wordlists.",
-  "page.attack.topologyHint": "One scan's hostname → IP → port → service graph — not an attack path and not an internet-exposure map.",
-  "page.attack.ownerHint": "What this owner exposes in one scan — operator-set unit/owner, else registrable domain. Not an attack path.",
+  "page.attack.topologyHint":
+    "One scan's hostname → IP → port → service graph — not an attack path and not an internet-exposure map.",
+  "page.attack.ownerHint":
+    "What this owner exposes in one scan — operator-set unit/owner, else registrable domain. Not an attack path.",
   "page.geo.noRuns": "No scan runs available",
   "page.geo.noRunsBody": "Start a scan job to place its hosts on the map.",
   "page.geo.countries": "Countries",
@@ -833,7 +1024,8 @@ export const en = {
   "page.geo.noGeo": "No host in this run carries a GeoIP position.",
   "page.geo.selectLocation": "Select a location on the map.",
   "page.geo.unlocatedTitle": "Unlocated hosts ({count})",
-  "page.geo.unlocatedHint": "No GeoIP record and no country to fall back on — private addresses, or an installation with no GeoIP database configured. Listed rather than dropped, so the map never reads as the whole estate.",
+  "page.geo.unlocatedHint":
+    "No GeoIP record and no country to fall back on — private addresses, or an installation with no GeoIP database configured. Listed rather than dropped, so the map never reads as the whole estate.",
   "page.reports.noPdf": "No PDF report available for this run.",
   "page.reports.runArtifacts": "Per-run artifacts",
   "page.endpoints.recent": "Recent software changes",
@@ -845,7 +1037,8 @@ export const en = {
   "page.endpoints.showStaleOnly": "Show stale only",
   "page.endpoints.filter": "Filter",
   "page.endpoints.filterAllStatuses": "All statuses",
-  "page.endpoints.note": "Each row is a Lariska-managed host. {linked} means inventory is attached to a network-scan asset (by hostname / identifiers). Open the asset to see Pulse vulns, ports, and installed software together.",
+  "page.endpoints.note":
+    "Each row is a Lariska-managed host. {linked} means inventory is attached to a network-scan asset (by hostname / identifiers). Open the asset to see Pulse vulns, ports, and installed software together.",
   "page.endpoints.searchPlaceholder": "Search by hostname or ID",
   "page.endpoints.openAsset": "Open asset",
   "page.endpoints.lariskaHint": "Lariska agents · software inventory correlated to network assets",
@@ -878,9 +1071,12 @@ export const en = {
   "patchGap.cvesClosed": "CVEs closed by upgrading",
   "patchGap.devices": "devices affected",
   "patchGap.unfixed": "with no fix published",
-  "patchGap.unfixedHint": "Vendor says affected, no fixed version published yet. No upgrade closes these.",
-  "patchGap.unfixedDetail": "{count} findings have no published fix. Upgrading will not close them.",
-  "patchGap.hint": "One line per host: the packages that are behind a published fix, and how many CVEs the upgrade closes. Packages already carrying a backported fix are not listed.",
+  "patchGap.unfixedHint":
+    "Vendor says affected, no fixed version published yet. No upgrade closes these.",
+  "patchGap.unfixedDetail":
+    "{count} findings have no published fix. Upgrading will not close them.",
+  "patchGap.hint":
+    "One line per host: the packages that are behind a published fix, and how many CVEs the upgrade closes. Packages already carrying a backported fix are not listed.",
   "patchGap.packagesOn": "{count} packages",
   "patchGap.closes": "closes {count}",
   "patchGap.truncated": "Only the worst devices are listed; the totals cover the whole tenant.",
@@ -1056,7 +1252,8 @@ export const en = {
   // Per-tenant usage metering and quotas.
   "nav.usage": "Usage",
   "page.usage.title": "Usage",
-  "page.usage.subtitle": "What this tenant has consumed against its quota this period. Counted here, from this tenant’s own tables; an absent ceiling is unlimited, not a large number.",
+  "page.usage.subtitle":
+    "What this tenant has consumed against its quota this period. Counted here, from this tenant’s own tables; an absent ceiling is unlimited, not a large number.",
   "page.usage.period": "Period",
   "page.usage.enforcement": "Enforcement",
   "page.usage.enforcedOn": "On — work past a ceiling is refused",
@@ -1074,10 +1271,12 @@ export const en = {
   "page.usage.overLimit": "Over limit",
   "page.usage.nearLimit": "Near limit",
   "page.usage.history": "Scan volume, last 12 months",
-  "page.usage.historyHint": "Scans per calendar month, the same count the monthly quota is checked against.",
+  "page.usage.historyHint":
+    "Scans per calendar month, the same count the monthly quota is checked against.",
   "page.usage.historyEmpty": "No scans recorded in this window.",
   "page.usage.fleet": "Tenants against their quotas",
-  "page.usage.fleetHint": "Platform-admin view. Whoever is closest to a ceiling is listed first; an empty box means unlimited.",
+  "page.usage.fleetHint":
+    "Platform-admin view. Whoever is closest to a ceiling is listed first; an empty box means unlimited.",
   "page.usage.fleetEmpty": "No tenants are being metered.",
   "page.usage.col.tenant": "Tenant",
   "page.usage.col.assets": "Assets",
@@ -1092,17 +1291,21 @@ export const en = {
   "page.usage.close": "Close",
   "page.usage.cancel": "Cancel",
   "page.usage.inheritPlaceholder": "Inherited",
-  "page.usage.editorInherited": "This tenant has no quota of its own — the boxes are empty because it follows the platform default. Saving pins whatever you type to this tenant.",
-  "page.usage.editorTenant": "Set for this tenant. An empty box means unlimited for this tenant, not inherited — use reset for that.",
+  "page.usage.editorInherited":
+    "This tenant has no quota of its own — the boxes are empty because it follows the platform default. Saving pins whatever you type to this tenant.",
+  "page.usage.editorTenant":
+    "Set for this tenant. An empty box means unlimited for this tenant, not inherited — use reset for that.",
   "page.usage.reset": "Reset to platform default",
   "page.usage.resetting": "Resetting…",
   "page.usage.resetConfirmTitle": "Reset {tenant} to the platform default?",
-  "page.usage.resetConfirmBody": "Drops this tenant’s own quota row, note included. It then follows the platform default and moves with it.",
+  "page.usage.resetConfirmBody":
+    "Drops this tenant’s own quota row, note included. It then follows the platform default and moves with it.",
   "page.usage.loading": "Loading…",
 
   "scanScope.action": "Scan scope",
   "scanScope.dialogTitle": "Scan scope — {tenant}",
-  "scanScope.dialogDescription": "What this tenant may be pointed at. Approving replaces the whole scope, so the editor starts from what is approved now.",
+  "scanScope.dialogDescription":
+    "What this tenant may be pointed at. Approving replaces the whole scope, so the editor starts from what is approved now.",
   "scanScope.current": "Approved now",
   "scanScope.loading": "Loading the approved scope…",
   "scanScope.loadFailed": "Failed to load the scan scope",
@@ -1114,22 +1317,28 @@ export const en = {
   "scanScope.col.approvedBy": "Approved by",
   "scanScope.col.approvedAt": "Approved at",
   "scanScope.editor": "Scope to approve",
-  "scanScope.ruleDeny": "Deny beats allow, and it beats it by overlap: a range is refused if it touches a denied one at all.",
-  "scanScope.ruleAllow": "Allow is containment: a range half of which is unapproved is not half-approved.",
-  "scanScope.ruleEmpty": "No entries means no scanning. The literal * is the explicit any-value wildcard.",
+  "scanScope.ruleDeny":
+    "Deny beats allow, and it beats it by overlap: a range is refused if it touches a denied one at all.",
+  "scanScope.ruleAllow":
+    "Allow is containment: a range half of which is unapproved is not half-approved.",
+  "scanScope.ruleEmpty":
+    "No entries means no scanning. The literal * is the explicit any-value wildcard.",
   "scanScope.valuePlaceholder": "10.0.0.0/24, example.test or *",
   "scanScope.notePlaceholder": "why this is in scope",
   "scanScope.addRow": "Add entry",
   "scanScope.removeRow": "Remove entry",
   "scanScope.approve": "Approve scope",
   "scanScope.approving": "Approving…",
-  "scanScope.emptyWarning": "You are about to approve an empty scope: this tenant will not be able to scan anything.",
+  "scanScope.emptyWarning":
+    "You are about to approve an empty scope: this tenant will not be able to scan anything.",
   "scanScope.errValueRequired": "Row {row}: a value is required.",
   "scanScope.warnCidr": "Does not look like an IP address, a CIDR, or * — sent anyway.",
   "scanScope.warnDomain": "A domain does not usually contain spaces — sent anyway.",
-  "scanScope.serverAuthority": "The notes under a row are warnings, not gates: only an empty value stops the request. The API decides what is accepted, and its refusal is shown with its own text.",
+  "scanScope.serverAuthority":
+    "The notes under a row are warnings, not gates: only an empty value stops the request. The API decides what is accepted, and its refusal is shown with its own text.",
   "scanScope.promoted": "Promoted related domains",
-  "scanScope.promotedHint": "Added by this tenant's operators underneath the scope, and carried by every scan they start. Read-only here; the operator withdraws them from Org Profile.",
+  "scanScope.promotedHint":
+    "Added by this tenant's operators underneath the scope, and carried by every scan they start. Read-only here; the operator withdraws them from Org Profile.",
   "scanScope.promotedEmpty": "No related domains promoted.",
   "scanScope.promotedFailed": "Failed to load promoted domains",
   "scanScope.col.domain": "Domain",
@@ -1138,12 +1347,15 @@ export const en = {
   "scanScope.denied": "Approving a tenant's scanning scope requires admin privilege.",
   // --- data retention, legal hold, personal data requests (#332) ---
   "retention.title": "Data retention",
-  "retention.subtitle": "How long each kind of data of {tenant} is kept, and whether it is on legal hold.",
-  "retention.denied": "Reading the retention policy needs the tenant.retention.read permission in this tenant.",
+  "retention.subtitle":
+    "How long each kind of data of {tenant} is kept, and whether it is on legal hold.",
+  "retention.denied":
+    "Reading the retention policy needs the tenant.retention.read permission in this tenant.",
   "retention.loading": "Loading the retention policy…",
   "retention.loadFailed": "Failed to load the retention policy",
   "retention.windows": "Retention windows",
-  "retention.windowsHint": "An empty box inherits the platform default. A value must sit within the platform's bounds; the audit floor exists so that the trail cannot be shortened below what compliance needs. Shortening a window deletes on the next sweep.",
+  "retention.windowsHint":
+    "An empty box inherits the platform default. A value must sit within the platform's bounds; the audit floor exists so that the trail cannot be shortened below what compliance needs. Shortening a window deletes on the next sweep.",
   "retention.col.category": "Data",
   "retention.col.default": "Platform default",
   "retention.col.bounds": "Allowed",
@@ -1173,7 +1385,8 @@ export const en = {
   "retention.category.auditEvents": "Audit trail",
   "retention.hold.title": "Legal hold",
   "retention.hold.active": "On legal hold since {since}",
-  "retention.hold.activeHint": "No retention sweep deletes this tenant's data, and the tenant cannot be deleted, until the hold is released.",
+  "retention.hold.activeHint":
+    "No retention sweep deletes this tenant's data, and the tenant cannot be deleted, until the hold is released.",
   "retention.hold.reasonShown": "{reason} — placed by {who}",
   "retention.hold.none": "Not on legal hold.",
   "retention.hold.reason": "Reason for the hold",
@@ -1182,27 +1395,35 @@ export const en = {
   "retention.hold.update": "Update reason",
   "retention.hold.release": "Release hold",
   "retention.hold.releaseTitle": "Release the legal hold on {tenant}?",
-  "retention.hold.releaseHint": "The retention sweeps resume on their next run and delete everything the hold kept past its window. This cannot be undone.",
-  "retention.hold.platformOnly": "Placing and releasing a legal hold is for platform administrators.",
+  "retention.hold.releaseHint":
+    "The retention sweeps resume on their next run and delete everything the hold kept past its window. This cannot be undone.",
+  "retention.hold.platformOnly":
+    "Placing and releasing a legal hold is for platform administrators.",
   "lifecycle.action": "Lifecycle",
   "lifecycle.dialogTitle": "Lifecycle of {tenant}",
-  "lifecycle.dialogDescription": "Suspend, resume or delete this tenant. Every change needs a recent second factor and is recorded in the platform audit trail.",
+  "lifecycle.dialogDescription":
+    "Suspend, resume or delete this tenant. Every change needs a recent second factor and is recorded in the platform audit trail.",
   "lifecycle.loading": "Loading the tenant's lifecycle…",
   "lifecycle.loadFailed": "Failed to load the tenant's lifecycle",
   "lifecycle.reasonShown": "{reason} — {who}, {when}",
   "lifecycle.hold": "On legal hold since {since}",
-  "lifecycle.holdBlocks": "While the hold is in force the tenant cannot be deleted, and a purge in progress stops.",
+  "lifecycle.holdBlocks":
+    "While the hold is in force the tenant cannot be deleted, and a purge in progress stops.",
   "lifecycle.reason": "Reason for the suspension",
   "lifecycle.reasonPlaceholder": "ticket or contract reference, and why",
   "lifecycle.revoke": "Revoke the tenant's provisioning keys and service tokens",
-  "lifecycle.suspendHint": "Members with no other active tenant are signed out, queued scans are cancelled and running ones stopped, schedules and notifications pause. Revoked credentials stay revoked after a resume.",
+  "lifecycle.suspendHint":
+    "Members with no other active tenant are signed out, queued scans are cancelled and running ones stopped, schedules and notifications pause. Revoked credentials stay revoked after a resume.",
   "lifecycle.suspend": "Suspend tenant",
   "lifecycle.resume": "Resume tenant",
-  "lifecycle.resumeHint": "Schedules resume at their next occurrence; missed runs are not replayed. Mint new keys and tokens for anything that was revoked.",
+  "lifecycle.resumeHint":
+    "Schedules resume at their next occurrence; missed runs are not replayed. Mint new keys and tokens for anything that was revoked.",
   "lifecycle.requestDeletion": "Request deletion",
-  "lifecycle.requestHint": "Step one of two: the tenant is suspended now, and its purge can be approved after {days} day(s).",
+  "lifecycle.requestHint":
+    "Step one of two: the tenant is suspended now, and its purge can be approved after {days} day(s).",
   "lifecycle.deleteTitle": "Request the deletion of {tenant}?",
-  "lifecycle.deleteHint": "The tenant is suspended now. For {days} day(s) the request can be cancelled with nothing lost; after that a platform admin can approve the purge, which cannot be undone.",
+  "lifecycle.deleteHint":
+    "The tenant is suspended now. For {days} day(s) the request can be cancelled with nothing lost; after that a platform admin can approve the purge, which cannot be undone.",
   "lifecycle.deletionReason": "Reason for the deletion",
   "lifecycle.typeToConfirm": "Type {tenant} to confirm",
   "lifecycle.pending": "Deletion requested by {who}; the purge can be approved after {after}.",
@@ -1210,7 +1431,8 @@ export const en = {
   "lifecycle.cancel": "Cancel deletion",
   "lifecycle.approve": "Approve purge",
   "lifecycle.approveTitle": "Start the purge of {tenant}?",
-  "lifecycle.approveHint": "Every store is emptied of this tenant: rows, run archives, reports, analytics and broker subjects. The audit trail is kept. This cannot be undone or cancelled.",
+  "lifecycle.approveHint":
+    "Every store is emptied of this tenant: rows, run archives, reports, analytics and broker subjects. The audit trail is kept. This cannot be undone or cancelled.",
   "lifecycle.purging": "Purge approved by {who} and in progress.",
   "lifecycle.blocked": "The purge was stopped by a legal hold. Retry once the hold is released.",
   "lifecycle.retry": "Retry now",
@@ -1223,7 +1445,8 @@ export const en = {
   "lifecycle.col.detail": "Removed / last error",
   "lifecycle.step.nothing": "—",
   "deletions.title": "Deleted and deleting tenants",
-  "deletions.hint": "The deletion journal: every request, its state, and for a completed purge what was removed from each store. Re-apply the completed ones after restoring a backup taken before them.",
+  "deletions.hint":
+    "The deletion journal: every request, its state, and for a completed purge what was removed from each store. Re-apply the completed ones after restoring a backup taken before them.",
   "deletions.empty": "No tenant has been deleted.",
   "deletions.loadFailed": "Failed to load the deletion journal",
   "deletions.col.tenant": "Tenant",
@@ -1236,9 +1459,11 @@ export const en = {
   "deletions.skipped": "skipped: {stores}",
   "deletions.more": "Show earlier deletions",
   "retention.storedOutOfBounds": "outside the bounds",
-  "retention.storedOutOfBoundsHint": "This tenant saved {days} days, which the platform's bounds ({min}–{max}) no longer allow. The sweeps apply the nearest bound until a value within them is saved.",
+  "retention.storedOutOfBoundsHint":
+    "This tenant saved {days} days, which the platform's bounds ({min}–{max}) no longer allow. The sweeps apply the nearest bound until a value within them is saved.",
   "retention.register.title": "Holds in force",
-  "retention.register.hint": "Every tenant on legal hold, oldest first. The register an auditor asks for; visible to platform administrators only.",
+  "retention.register.hint":
+    "Every tenant on legal hold, oldest first. The register an auditor asks for; visible to platform administrators only.",
   "retention.register.empty": "No tenant is on legal hold.",
   "retention.register.loadFailed": "Failed to load the register of holds",
   "retention.register.col.tenant": "Tenant",
@@ -1246,13 +1471,15 @@ export const en = {
   "retention.register.col.by": "Placed by",
   "retention.register.col.reason": "Reason",
   "retention.dsar.title": "Personal data requests",
-  "retention.dsar.hint": "Export or erase one console account's personal data. Erasure keeps the username as a pseudonym — the audit trail is append-only and still names it — and removes the address (from notification channels and report schedules too), the identity-provider link, second factors, sessions, memberships and the service tokens the account created.",
+  "retention.dsar.hint":
+    "Export or erase one console account's personal data. Erasure keeps the username as a pseudonym — the audit trail is append-only and still names it — and removes the address (from notification channels and report schedules too), the identity-provider link, second factors, sessions, memberships and the service tokens the account created.",
   "retention.dsar.username": "Username",
   "retention.dsar.export": "Export data (JSON)",
   "retention.dsar.erase": "Erase account",
   "retention.dsar.notSelf": "You cannot erase the account you are signed in as.",
   "retention.dsar.eraseTitle": "Erase {username}?",
-  "retention.dsar.eraseHint": "Irreversible. The account is disabled for good and everything that ties the username to a person is deleted. Type the username to confirm.",
+  "retention.dsar.eraseHint":
+    "Irreversible. The account is disabled for good and everything that ties the username to a person is deleted. Type the username to confirm.",
   "retention.dsar.confirmLabel": "Type {username} to confirm",
   "retention.dsar.erased": "{username} was erased.",
   "retention.dsar.alreadyErased": "{username} had already been erased.",
@@ -1333,24 +1560,33 @@ export const en = {
   "surface.hint.mixed": "This job carried both public and private targets.",
   "surface.hint.unknown": "Started before surfaces were recorded, or on server default targets.",
   "page.scans.all.title": "Scan jobs",
-  "page.scans.all.subtitle": "Every scan job of the selected tenant, whichever side of the perimeter it looked at.",
+  "page.scans.all.subtitle":
+    "Every scan job of the selected tenant, whichever side of the perimeter it looked at.",
   "page.scans.external.title": "External scans",
-  "page.scans.external.subtitle": "What the internet sees: domains, public ranges, mail and DNS posture.",
+  "page.scans.external.subtitle":
+    "What the internet sees: domains, public ranges, mail and DNS posture.",
   "page.scans.internal.title": "Internal scans",
-  "page.scans.internal.subtitle": "What lives inside the perimeter: private ranges reached through sensors or the local executor.",
-  "page.scans.denied": "Operator or admin role privileges required to launch and monitor scan jobs.",
+  "page.scans.internal.subtitle":
+    "What lives inside the perimeter: private ranges reached through sensors or the local executor.",
+  "page.scans.denied":
+    "Operator or admin role privileges required to launch and monitor scan jobs.",
   "page.scans.launch": "New scan",
   "page.scans.hideLauncher": "Hide launcher",
   "page.scans.recentRuns": "Recent runs",
-  "page.scans.recentRunsHint": "Latest completed runs on this surface — open one for findings, entities and artifacts.",
+  "page.scans.recentRunsHint":
+    "Latest completed runs on this surface — open one for findings, entities and artifacts.",
   "page.scans.allRuns": "All runs",
   "page.scans.jobsHeading": "Jobs",
-  "page.scans.jobsHint": "Queue, execution and result of each job. Click a row for its full record.",
+  "page.scans.jobsHint":
+    "Queue, execution and result of each job. Click a row for its full record.",
   "page.scans.scopeHint": "Only targets inside the tenant's approved scan scope are accepted.",
   "page.scans.manageScope": "Manage scope",
-  "page.scans.mode.agent": "Jobs are handed to sensors, with the scan intent and the configurator's overrides. Custom wordlists need the local executor and are refused.",
-  "page.scans.mode.local": "Jobs run beside the API. Private ranges are reachable only from this network.",
-  "page.scans.noSensor": "No sensor of this tenant is online and up to date. Scans are accepted and wait in the queue until one is — a sensor only takes its own tenant's jobs, and stops when its provisioning key expires.",
+  "page.scans.mode.agent":
+    "Jobs are handed to sensors, with the scan intent and the configurator's overrides. Custom wordlists need the local executor and are refused.",
+  "page.scans.mode.local":
+    "Jobs run beside the API. Private ranges are reachable only from this network.",
+  "page.scans.noSensor":
+    "No sensor of this tenant is online and up to date. Scans are accepted and wait in the queue until one is — a sensor only takes its own tenant's jobs, and stops when its provisioning key expires.",
   "page.scans.noSensorLink": "Open Sensor Fleet",
   "kpi.scans.running": "Running now",
   "kpi.scans.queued": "Queued",
@@ -1368,13 +1604,15 @@ export const en = {
   "kpi.scans.noneYet": "none yet",
   "kpi.scans.nothingRunning": "idle",
   "kpi.scans.openFindings": "Open findings on this surface",
-  "kpi.scans.openFindingsHint": "By the observed network exposure of the finding's host — open the Vulnerability Center",
+  "kpi.scans.openFindingsHint":
+    "By the observed network exposure of the finding's host — open the Vulnerability Center",
   "launcher.title.external": "Launch external scan",
   "launcher.title.internal": "Launch internal scan",
   "launcher.title.all": "Launch scan",
   "launcher.step": "Targets · options · confirm",
   "launcher.intent": "Scan intent",
-  "launcher.intentHint": "Intent chooses stages (what to run). Speed profile chooses rate (how hard).",
+  "launcher.intentHint":
+    "Intent chooses stages (what to run). Speed profile chooses rate (how hard).",
   "launcher.intent.inventory": "inventory — ports only, fast recheck",
   "launcher.intent.vuln": "vuln — probe + nuclei critical/high",
   "launcher.intent.full": "full — assessment-grade pipeline",
@@ -1383,8 +1621,10 @@ export const en = {
   "launcher.intent.legacy": "legacy — manual flags only",
   "launcher.agentGroup": "Sensor group",
   "launcher.agentGroup.any": "any sensor of this tenant",
-  "launcher.agentGroupHint": "Which sensors may execute this scan. The approved scope can require one for these targets, and the server refuses a group it does not permit.",
-  "launcher.agentGroupEmpty": "{group} has no sensor online — the scan will wait in the queue until one registers.",
+  "launcher.agentGroupHint":
+    "Which sensors may execute this scan. The approved scope can require one for these targets, and the server refuses a group it does not permit.",
+  "launcher.agentGroupEmpty":
+    "{group} has no sensor online — the scan will wait in the queue until one registers.",
   "launcher.mode": "Speed profile",
   "launcher.mode.safe": "safe (500 pps · low load)",
   "launcher.mode.balanced": "balanced (2,000 pps · standard)",
@@ -1397,13 +1637,16 @@ export const en = {
   "launcher.domains": "Domains / FQDNs",
   "launcher.domainsHint": "One per line. Promoted related domains are added automatically.",
   "launcher.ranges": "IP ranges (CIDR)",
-  "launcher.rangesHint": "One per line. Private space (10/8, 172.16/12, 192.168/16) is an internal scan.",
-  "launcher.rangesPublicHint": "Public address space only — private ranges belong to an internal scan.",
+  "launcher.rangesHint":
+    "One per line. Private space (10/8, 172.16/12, 192.168/16) is an internal scan.",
+  "launcher.rangesPublicHint":
+    "Public address space only — private ranges belong to an internal scan.",
   "launcher.ports": "TCP ports override",
   "launcher.portsUdp": "UDP ports override",
   "launcher.wordlist": "Brute-force wordlist",
   "launcher.wordlistNone": "None — no dictionary brute force",
-  "launcher.wordlistHint": "Subdomain or bucket discovery with a tenant wordlist. Local execution only.",
+  "launcher.wordlistHint":
+    "Subdomain or bucket discovery with a tenant wordlist. Local execution only.",
   "launcher.manageWordlists": "Manage wordlists",
   "launcher.optional": "optional",
   "launcher.section.targets": "Targets",
@@ -1425,12 +1668,14 @@ export const en = {
   "launcher.notifyHint": "Send alerts by the tenant's rules.",
   "launcher.defectdojoHint": "Upload the findings when the scan finishes.",
   "launcher.fillAll": "Everything in scope",
-  "launcher.fillAllHint": "Fill the targets with everything the tenant's approved scan scope allows on this page.",
+  "launcher.fillAllHint":
+    "Fill the targets with everything the tenant's approved scan scope allows on this page.",
   "launcher.fillField": "From scope",
   "launcher.fillDomains": "Fill domains from the approved scan scope",
   "launcher.fillRanges": "Fill ranges from the approved scan scope",
   "launcher.filling": "Reading scope…",
-  "launcher.filled": "From the scope: {domains} domains · {ranges} ranges. Check them and start the scan.",
+  "launcher.filled":
+    "From the scope: {domains} domains · {ranges} ranges. Check them and start the scan.",
   "launcher.fillNothing": "The approved scope has nothing to scan here.",
   "launcher.fillNotApproved": "This tenant has no approved scan scope yet, so no scan can start.",
   "launcher.fillOtherSurface": "{count} more ranges belong on {page}.",
@@ -1442,28 +1687,34 @@ export const en = {
   "launcher.defaultsHint": "Empty targets fall back to the server's default input files.",
   "launcher.detected": "Targets suggest: {surface}",
   "launcher.detectedNone": "No targets typed yet",
-  "launcher.mismatch": "These targets look {detected}, but this is the {chosen} launcher. The job will still be recorded as {chosen} because it starts here — switch launcher if that is not intended.",
+  "launcher.mismatch":
+    "These targets look {detected}, but this is the {chosen} launcher. The job will still be recorded as {chosen} because it starts here — switch launcher if that is not intended.",
   "launcher.start": "Start scan",
   "launcher.starting": "Starting…",
   "launcher.confirmTitle": "Start {surface} scan — {intent} / {mode}?",
   "launcher.confirmTitleAny": "Start scan — {intent} / {mode}?",
-  "launcher.confirmNoTargets": "No custom targets — the scanner uses the server's configured target inputs.",
+  "launcher.confirmNoTargets":
+    "No custom targets — the scanner uses the server's configured target inputs.",
   "launcher.confirmTargets": "{domains} domains · {ranges} ranges. Execution starts immediately.",
   "launcher.confirm": "Confirm & launch",
   "jobs.cancel": "Cancel job",
   "jobs.cancelTitle": "Cancel job {id}?",
   "jobs.cancelBody": "The job has not started, so it is simply never handed out.",
-  "jobs.cancelBodyRunning": "The sensor running this scan is asked to stop it on its next heartbeat. The job stays in cancelling until the sensor confirms, and whatever the scan produced before it stopped is kept. A scan running inside the API itself cannot be stopped this way.",
+  "jobs.cancelBodyRunning":
+    "The sensor running this scan is asked to stop it on its next heartbeat. The job stays in cancelling until the sensor confirms, and whatever the scan produced before it stopped is kept. A scan running inside the API itself cannot be stopped this way.",
   "jobs.stopping": "Stopping: waiting for the sensor to confirm",
   "jobs.cancelConfirm": "Cancel job",
   "jobs.keepJob": "Keep",
   "col.priority": "Priority",
-  "jobs.priorityHint": "Queue priority: higher is handed out first, equal priority oldest first. 0 is the default.",
+  "jobs.priorityHint":
+    "Queue priority: higher is handed out first, equal priority oldest first. 0 is the default.",
   "jobs.priorityEdit": "Change priority",
   "jobs.priorityTitle": "Priority of job {id}",
-  "jobs.priorityBody": "Higher is handed out first; scans of equal priority go oldest first. 0 is the default, and a negative value lets other scans of this tenant go ahead.",
+  "jobs.priorityBody":
+    "Higher is handed out first; scans of equal priority go oldest first. 0 is the default, and a negative value lets other scans of this tenant go ahead.",
   "jobs.priorityLabel": "Priority ({min} to {max})",
-  "jobs.priorityRaiseNeeded": "Without the scan.priority.raise permission in this tenant you can only lower a scan of your own; raising one, or moving somebody else's, needs it.",
+  "jobs.priorityRaiseNeeded":
+    "Without the scan.priority.raise permission in this tenant you can only lower a scan of your own; raising one, or moving somebody else's, needs it.",
   "jobs.details": "Job details",
   "jobs.detailsHint": "Status, options and targets of this job as the API recorded them.",
   "jobs.timeline": "Timeline",
@@ -1550,7 +1801,8 @@ export const en = {
   "empty.jobs": "No scan jobs on this surface yet.",
   "loading.jobs": "Retrieving scan jobs…",
   "dash.ops.title": "Scan operations",
-  "dash.ops.subtitle": "Are both surfaces being watched? Last completed run, what is running, and where to launch the next one.",
+  "dash.ops.subtitle":
+    "Are both surfaces being watched? Last completed run, what is running, and where to launch the next one.",
   "dash.ops.lastRun": "Last run",
   "dash.ops.running": "Running",
   "dash.ops.findings": "Findings in last run",
@@ -1559,18 +1811,22 @@ export const en = {
   "dash.ops.launch": "Launch",
   "dash.ops.open": "Open",
   "dash.ops.exposureSplit": "Open findings by network exposure",
-  "dash.ops.exposureHint": "As observed by the scanner — external means reachable from the internet, unknown means the observation did not say.",
+  "dash.ops.exposureHint":
+    "As observed by the scanner — external means reachable from the internet, unknown means the observation did not say.",
   "runs.surfaceFilter": "Surface",
   "runs.subtitle.external": "Runs of internet-facing scans.",
   "runs.subtitle.internal": "Runs of private-network scans.",
   // --- integrations ---
   "page.integrations.title": "Integrations",
-  "page.integrations.subtitle": "Outbound delivery of asset and finding events, and the transport that opens tickets in your tracker and syncs their status back",
+  "page.integrations.subtitle":
+    "Outbound delivery of asset and finding events, and the transport that opens tickets in your tracker and syncs their status back",
   "integrations.tab.subscriptions": "Subscriptions",
   "integrations.tab.deliveries": "Deliveries",
   "integrations.disabled.title": "Integrations are disabled on this installation",
-  "integrations.disabled.body": "OCTO_WEBHOOKS_ENABLED is off, so the API registers no /api/webhooks routes: there are no subscriptions, no deliveries and no ticket transports. An operator has to switch the setting on and restart the API.",
-  "integrations.readOnly": "Read-only view. Creating, editing and testing an integration is a tenant administrator's right, because a subscription sends this tenant's exposure data to an address of the creator's choosing.",
+  "integrations.disabled.body":
+    "OCTO_WEBHOOKS_ENABLED is off, so the API registers no /api/webhooks routes: there are no subscriptions, no deliveries and no ticket transports. An operator has to switch the setting on and restart the API.",
+  "integrations.readOnly":
+    "Read-only view. Creating, editing and testing an integration is a tenant administrator's right, because a subscription sends this tenant's exposure data to an address of the creator's choosing.",
   "integrations.kpi.total": "Subscriptions",
   "integrations.kpi.totalHint": "Configured for this tenant",
   "integrations.kpi.enabled": "Enabled",
@@ -1581,9 +1837,11 @@ export const en = {
   "integrations.kpi.failingHint": "Check the endpoint or its credentials",
   "integrations.create": "New integration",
   "integrations.create.title": "New integration",
-  "integrations.create.description": "Pick the transport first — it decides what the rest of the form asks for.",
+  "integrations.create.description":
+    "Pick the transport first — it decides what the rest of the form asks for.",
   "integrations.edit.title": "Edit integration",
-  "integrations.edit.description": "The signing secret and the tracker token are write-only; they are not part of this form.",
+  "integrations.edit.description":
+    "The signing secret and the tracker token are write-only; they are not part of this form.",
   "integrations.save": "Save",
   "integrations.cancel": "Cancel",
   "integrations.submit": "Create integration",
@@ -1591,15 +1849,20 @@ export const en = {
   "integrations.field.name": "Name",
   "integrations.field.url": "Endpoint URL",
   "integrations.field.urlTicket": "Instance base URL",
-  "integrations.field.urlHint": "Must resolve to a public address unless the deployment allows private targets. Redirects are never followed.",
+  "integrations.field.urlHint":
+    "Must resolve to a public address unless the deployment allows private targets. Redirects are never followed.",
   "integrations.field.secret": "Signing secret (optional)",
-  "integrations.field.secretHint": "Leave empty and one is generated and shown once. Payloads are signed with HMAC over {timestamp}.{body}.",
+  "integrations.field.secretHint":
+    "Leave empty and one is generated and shown once. Payloads are signed with HMAC over {timestamp}.{body}.",
   "integrations.field.secretTicket": "API token",
-  "integrations.field.secretTicketHint": "Sent as the Authorization header on every create-issue call. Required unless you set that header yourself.",
+  "integrations.field.secretTicketHint":
+    "Sent as the Authorization header on every create-issue call. Required unless you set that header yourself.",
   "integrations.field.eventKinds": "Event kinds",
-  "integrations.field.eventKindsHint": "Nothing selected means every asset event. The audit trail is opt-in — tick it.",
+  "integrations.field.eventKindsHint":
+    "Nothing selected means every asset event. The audit trail is opt-in — tick it.",
   "integrations.field.minSeverity": "Minimum severity",
-  "integrations.field.minSeverityHint": "Only filters the kinds that carry a severity (new CVE). Everything else is delivered regardless.",
+  "integrations.field.minSeverityHint":
+    "Only filters the kinds that carry a severity (new CVE). Everything else is delivered regardless.",
   "integrations.field.enabled": "Enabled",
   "integrations.field.projectKey": "Project key",
   "integrations.field.issueType": "Issue type",
@@ -1608,12 +1871,18 @@ export const en = {
   "integrations.field.repository": "Repository (owner/repo)",
   "integrations.field.gitlabProject": "Project (group/project or id)",
   "integrations.severity.any": "Any severity",
-  "integrations.transport.webhook.about": "Signed HTTP POST of the event JSON to your endpoint. Retried on 5xx and timeouts, dead-lettered on 4xx.",
-  "integrations.transport.jira.about": "Opens a Jira issue when a matching event arrives and syncs the issue's status back onto the finding.",
-  "integrations.transport.servicenow.about": "Creates a record in a ServiceNow table (incident by default) and follows its state back onto the finding.",
-  "integrations.transport.defectdojo.about": "Pushes the finding into a DefectDojo test and reconciles its active/verified state back.",
-  "integrations.transport.github.about": "Opens a GitHub issue in the repository and closes or reopens the finding with it. URL is the API root, e.g. https://api.github.com.",
-  "integrations.transport.gitlab.about": "Opens a GitLab issue in the project and closes or reopens the finding with it. URL is the instance root.",
+  "integrations.transport.webhook.about":
+    "Signed HTTP POST of the event JSON to your endpoint. Retried on 5xx and timeouts, dead-lettered on 4xx.",
+  "integrations.transport.jira.about":
+    "Opens a Jira issue when a matching event arrives and syncs the issue's status back onto the finding.",
+  "integrations.transport.servicenow.about":
+    "Creates a record in a ServiceNow table (incident by default) and follows its state back onto the finding.",
+  "integrations.transport.defectdojo.about":
+    "Pushes the finding into a DefectDojo test and reconciles its active/verified state back.",
+  "integrations.transport.github.about":
+    "Opens a GitHub issue in the repository and closes or reopens the finding with it. URL is the API root, e.g. https://api.github.com.",
+  "integrations.transport.gitlab.about":
+    "Opens a GitLab issue in the project and closes or reopens the finding with it. URL is the instance root.",
   "integrations.event.new_asset": "New asset",
   "integrations.event.new_open_port": "New open port",
   "integrations.event.new_cve": "New CVE",
@@ -1636,24 +1905,30 @@ export const en = {
   "integrations.action.rotate": "Rotate secret",
   "integrations.action.edit": "Edit",
   "integrations.action.delete": "Delete",
-  "integrations.rotate.unavailable": "Rotation generates an HMAC signing key. A tracker token is replaced by recreating the subscription.",
+  "integrations.rotate.unavailable":
+    "Rotation generates an HMAC signing key. A tracker token is replaced by recreating the subscription.",
   "integrations.secret.title": "Copy this secret now — it is shown only once",
-  "integrations.secret.body": "The API stores it write-only. If it is lost, rotate again and update the receiver.",
+  "integrations.secret.body":
+    "The API stores it write-only. If it is lost, rotate again and update the receiver.",
   "integrations.secret.copy": "Copy",
   "integrations.secret.copied": "Copied",
   "integrations.secret.done": "I have copied it",
   "integrations.delete.title": "Delete this integration?",
-  "integrations.delete.body": "{name} stops receiving events immediately, and its delivery history goes with it — the audit trail is what was sent to this endpoint, and the endpoint is gone.",
+  "integrations.delete.body":
+    "{name} stops receiving events immediately, and its delivery history goes with it — the audit trail is what was sent to this endpoint, and the endpoint is gone.",
   "integrations.delete.confirm": "Delete integration",
-  "integrations.empty": "No integrations yet. Create one to send asset and finding events out of the platform.",
+  "integrations.empty":
+    "No integrations yet. Create one to send asset and finding events out of the platform.",
   "integrations.loading": "Loading integrations…",
   "integrations.search": "Search by name or URL…",
   "integrations.meta": "{count} integrations",
-  "integrations.deliveries.empty": "No deliveries recorded. Send a test from a subscription to check the wire.",
+  "integrations.deliveries.empty":
+    "No deliveries recorded. Send a test from a subscription to check the wire.",
   "integrations.deliveries.loading": "Loading deliveries…",
   "integrations.deliveries.search": "Search deliveries…",
   "integrations.deliveries.meta": "{count} deliveries",
-  "integrations.deliveries.about": "The queue, the dead-letter queue and the audit trail in one list. A dead delivery has spent its retry budget; retrying puts it back in the queue with the payload it already carries.",
+  "integrations.deliveries.about":
+    "The queue, the dead-letter queue and the audit trail in one list. A dead delivery has spent its retry budget; retrying puts it back in the queue with the payload it already carries.",
   "integrations.deliveries.filter": "Status",
   "integrations.deliveries.filter.all": "All statuses",
   "integrations.deliveries.retry": "Retry",
@@ -1672,7 +1947,8 @@ export const en = {
   "col.queued": "Queued",
   // --- users & access ---
   "page.users.title": "Users & access",
-  "page.users.subtitle": "Console accounts, tenant membership, provisioning keys and the sign-in trail.",
+  "page.users.subtitle":
+    "Console accounts, tenant membership, provisioning keys and the sign-in trail.",
   "users.tab.users": "Users",
   "users.tab.membership": "Tenant membership",
   "users.tab.keys": "Provisioning keys",
@@ -1711,37 +1987,45 @@ export const en = {
   "users.action.cancel": "Cancel",
   "users.action.revoke": "Revoke",
   "users.create.title": "Create a console account",
-  "users.create.description": "The API decides what a username and a password may be; whatever it refuses with is shown here.",
+  "users.create.description":
+    "The API decides what a username and a password may be; whatever it refuses with is shown here.",
   "users.create.username": "Username",
   "users.create.password": "Initial password",
   "users.create.email": "Email (optional)",
-  "users.create.emailHint": "Creation takes no address, so an email given here is set in a second call right after the account exists.",
+  "users.create.emailHint":
+    "Creation takes no address, so an email given here is set in a second call right after the account exists.",
   "users.create.role": "Role",
   "users.create.submit": "Create account",
   "users.create.submitting": "Creating…",
   "users.reset.title": "Reset the password of {username}",
-  "users.reset.description": "The current password is not needed — this reset exists for the account that cannot sign in.",
+  "users.reset.description":
+    "The current password is not needed — this reset exists for the account that cannot sign in.",
   "users.reset.password": "New password",
   "users.reset.submit": "Reset password",
   "users.email.title": "Email of {username}",
   "users.email.address": "Email address",
   "users.email.verified": "Treat this address as verified",
-  "users.email.verifiedHint": "Only a verified address can be linked to an SSO identity, so it is an administrative decision rather than the provider's.",
+  "users.email.verifiedHint":
+    "Only a verified address can be linked to an SSO identity, so it is an administrative decision rather than the provider's.",
   "users.email.submit": "Save email",
   "users.delete.title": "Delete the account {username}?",
-  "users.delete.description": "Their tenant memberships go with the account. Disabling revokes access and keeps both the memberships and the history.",
-  "users.delete.selfHint": "The account you are signed in as cannot be deleted — the API refuses it too.",
+  "users.delete.description":
+    "Their tenant memberships go with the account. Disabling revokes access and keeps both the memberships and the history.",
+  "users.delete.selfHint":
+    "The account you are signed in as cannot be deleted — the API refuses it too.",
   "users.tenantPicker": "Tenant",
   "users.tenantPicker.placeholder": "Pick a tenant",
   "users.tenantPicker.none": "No tenants available.",
-  "users.membership.note": "A platform admin reaches every tenant whatever these rows say; membership is what scopes everyone else.",
+  "users.membership.note":
+    "A platform admin reaches every tenant whatever these rows say; membership is what scopes everyone else.",
   "users.membership.username": "User",
   "users.membership.role": "Role in tenant",
   "users.membership.granted": "Granted",
   "users.membership.grantedBy": "Granted by",
   "users.membership.grantTitle": "Grant or change access",
   "users.membership.grantHint": "Granting an existing member again is how their role is changed.",
-  "users.membership.catalogueFailed": "The role catalogue could not be read, so only the role already granted is offered.",
+  "users.membership.catalogueFailed":
+    "The role catalogue could not be read, so only the role already granted is offered.",
   "users.membership.grant": "Grant access",
   "users.membership.empty": "Nobody is granted access to this tenant.",
   "users.membership.loading": "Loading members…",
@@ -1754,7 +2038,8 @@ export const en = {
   "users.keys.status": "Status",
   "users.keys.empty": "This tenant has no provisioning keys.",
   "users.keys.loading": "Loading provisioning keys…",
-  "users.keys.createHint": "A key is issued when a sensor is deployed, and its plaintext is shown once, there.",
+  "users.keys.createHint":
+    "A key is issued when a sensor is deployed, and its plaintext is shown once, there.",
   "users.keys.createLink": "Go to Sensors",
   "audit.note":
     "Administrative changes — accounts, memberships, credentials, scan scope, configuration — newest first. The rows are append-only: the API can add to this trail and nothing can edit it.",
@@ -1793,9 +2078,11 @@ export const en = {
   "users.audit.loading": "Loading the sign-in trail…",
   "users.audit.empty": "Nothing recorded yet.",
   "users.audit.meta": "{total} events",
-  "users.audit.note": "Sign-ins, refusals outside a tenant's approved scope, and host-key trust changes — one trail, newest first.",
+  "users.audit.note":
+    "Sign-ins, refusals outside a tenant's approved scope, and host-key trust changes — one trail, newest first.",
   "users.account.title": "Change your password",
-  "users.account.description": "Signed in as {username} ({role}). The current password is asked for again: holding a token is a weaker claim than knowing it.",
+  "users.account.description":
+    "Signed in as {username} ({role}). The current password is asked for again: holding a token is a weaker claim than knowing it.",
   "users.account.current": "Current password",
   "users.account.new": "New password",
   "users.account.confirm": "Confirm new password",
@@ -1810,19 +2097,22 @@ export const en = {
   "vuln.exposure.external": "External — reachable from the internet",
   "vuln.exposure.internal": "Internal — private address space",
   "vuln.exposure.unknown": "Unknown — not observed",
-  "schedules.surfaceAuto": "Derive from targets (domains / public → external, private ranges → internal)",
+  "schedules.surfaceAuto":
+    "Derive from targets (domains / public → external, private ranges → internal)",
   // --- users memberships column, webhook secret on edit ---
   "users.col.tenants": "Tenants",
   "users.tenantsNone": "no memberships",
   "users.tenantsAdmin": "platform admin — every tenant",
-  "integrations.field.secretEditHint": "Leave empty to keep the current credential; a new value replaces it and is never shown again.",
+  "integrations.field.secretEditHint":
+    "Leave empty to keep the current credential; a new value replaces it and is never shown again.",
   // --- multi-factor authentication, break-glass login (#315) ---
   "nav.security": "Security",
   "nav.hint.security": "Your second factor and recovery codes",
   "header.security": "Security & MFA",
 
   "mfa.title": "Two-factor authentication",
-  "mfa.description": "A six-digit code from an authenticator app, on top of your password. The enrolment link is rendered in this browser — no QR service is called with your secret.",
+  "mfa.description":
+    "A six-digit code from an authenticator app, on top of your password. The enrolment link is rendered in this browser — no QR service is called with your secret.",
   "mfa.state.on": "On",
   "mfa.state.off": "Off",
   "mfa.state.pending": "Setup unfinished",
@@ -1832,19 +2122,24 @@ export const en = {
   "mfa.reason.global": "your account role {role}",
   "mfa.reason.tenant": "role {role} in tenant {tenant}",
   "mfa.reason.permissions": "{reason}: {permissions}",
-  "mfa.optional": "Optional for your account, and worth doing anyway: without it your password is the only thing between an attacker and this console.",
+  "mfa.optional":
+    "Optional for your account, and worth doing anyway: without it your password is the only thing between an attacker and this console.",
   "mfa.recoveryRemaining": "{count} of 10 recovery codes left.",
-  "mfa.recoveryNoneLeft": "No recovery codes left. Turn the factor off and set it up again to be issued ten more.",
-  "mfa.stepupHint": "Issuing or revoking a credential, changing what a tenant may scan, and administering another account all ask for a code again once your last one is more than {minutes} minutes old.",
+  "mfa.recoveryNoneLeft":
+    "No recovery codes left. Turn the factor off and set it up again to be issued ten more.",
+  "mfa.stepupHint":
+    "Issuing or revoking a credential, changing what a tenant may scan, and administering another account all ask for a code again once your last one is more than {minutes} minutes old.",
   "mfa.stepup.title": "Enter a code to carry on",
-  "mfa.stepup.description": "This operation needs a second factor proved recently, and yours has gone stale. Enter a code and then repeat what you were doing — the request was refused, not queued.",
+  "mfa.stepup.description":
+    "This operation needs a second factor proved recently, and yours has gone stale. Enter a code and then repeat what you were doing — the request was refused, not queued.",
   "mfa.stepup.done": "Verified. Repeat the action you were doing.",
   "mfa.loading": "Loading…",
   "mfa.action.setUp": "Set up an authenticator",
   "mfa.action.resume": "Finish the unfinished setup",
   "mfa.action.starting": "Starting…",
   "mfa.setup.title": "Add this account to your authenticator",
-  "mfa.setup.hint": "Paste the link into Google Authenticator, FreeOTP, Aegis or 1Password — or type the secret in by hand — then enter the six digits it shows.",
+  "mfa.setup.hint":
+    "Paste the link into Google Authenticator, FreeOTP, Aegis or 1Password — or type the secret in by hand — then enter the six digits it shows.",
   "mfa.setup.uri": "otpauth link",
   "mfa.setup.secret": "Secret, for manual entry",
   "mfa.setup.params": "{algorithm}, {digits} digits, a new one every {period} s",
@@ -1855,33 +2150,42 @@ export const en = {
   "mfa.copy": "Copy",
   "mfa.copied": "Copied",
   "mfa.recovery.title": "Save these ten recovery codes now",
-  "mfa.recovery.description": "Each one signs you in once when your phone is not to hand, and is spent afterwards. This is the only time they are shown: lose them, and an administrator has to reset your second factor.",
+  "mfa.recovery.description":
+    "Each one signs you in once when your phone is not to hand, and is spent afterwards. This is the only time they are shown: lose them, and an administrator has to reset your second factor.",
   "mfa.recovery.copyAll": "Copy all ten",
   "mfa.recovery.done": "I have saved them",
   "mfa.disable.title": "Turn it off",
-  "mfa.disable.description": "Your password and one live code — a stolen session holds neither of them.",
+  "mfa.disable.description":
+    "Your password and one live code — a stolen session holds neither of them.",
   "mfa.disable.password": "Password",
   "mfa.disable.code": "Code from the app, or a recovery code",
   "mfa.disable.submit": "Turn off",
   "mfa.disable.submitting": "Turning off…",
   "mfa.banner.title": "Set up two-factor authentication to carry on",
-  "mfa.banner.body": "This installation requires a second factor for your role or for what you may do in a tenant. Until you enrol, this session reaches the security page and nothing else.",
+  "mfa.banner.body":
+    "This installation requires a second factor for your role or for what you may do in a tenant. Until you enrol, this session reaches the security page and nothing else.",
   "mfa.banner.action": "Set it up",
   "mfa.banner.keyTitle": "Sign in with a security key to carry on",
-  "mfa.banner.keyBody": "This installation requires a security key or passkey for your role or for what you may do in a tenant, and this session was verified with a code. Register a key on the security page, then verify with it.",
+  "mfa.banner.keyBody":
+    "This installation requires a security key or passkey for your role or for what you may do in a tenant, and this session was verified with a code. Register a key on the security page, then verify with it.",
 
   "mfa.keys.title": "Security keys and passkeys",
-  "mfa.keys.description": "A hardware key or a passkey signs for this console's address only, so a look-alike login page cannot relay it the way it can relay a code. Added on top of the authenticator app, which stays as the fallback.",
-  "mfa.keys.requiredByPolicy": "This installation requires a security key of your account: a session verified with a code reaches this page and nothing else.",
-  "mfa.keys.stepupByPolicy": "Issuing credentials and administering accounts asks for your key, not a code.",
+  "mfa.keys.description":
+    "A hardware key or a passkey signs for this console's address only, so a look-alike login page cannot relay it the way it can relay a code. Added on top of the authenticator app, which stays as the fallback.",
+  "mfa.keys.requiredByPolicy":
+    "This installation requires a security key of your account: a session verified with a code reaches this page and nothing else.",
+  "mfa.keys.stepupByPolicy":
+    "Issuing credentials and administering accounts asks for your key, not a code.",
   "mfa.keys.needsTotp": "Set up an authenticator app first — a key is added on top of it.",
-  "mfa.keys.unsupported": "This browser cannot use security keys here. It needs a secure (https) page and WebAuthn support.",
+  "mfa.keys.unsupported":
+    "This browser cannot use security keys here. It needs a secure (https) page and WebAuthn support.",
   "mfa.keys.none": "No security keys registered.",
   "mfa.keys.name": "Name for the new key",
   "mfa.keys.namePlaceholder": "e.g. YubiKey on the keyring",
   "mfa.keys.add": "Add a security key",
   "mfa.keys.adding": "Waiting for the key…",
-  "mfa.keys.addHint": "Adding a key asks for a recent verification: if a code prompt appears, verify and press the button again.",
+  "mfa.keys.addHint":
+    "Adding a key asks for a recent verification: if a code prompt appears, verify and press the button again.",
   "mfa.keys.remove": "Remove",
   "mfa.keys.added": "Added {when}",
   "mfa.keys.lastUsed": "last used {when}",
@@ -1892,11 +2196,14 @@ export const en = {
   "mfa.keys.verifying": "Waiting for the key…",
   "mfa.keys.verified": "Verified with your security key.",
   "mfa.stepup.useKey": "Use a security key",
-  "mfa.keys.cancelled": "The security key prompt was cancelled or timed out. Try again when the key is to hand.",
+  "mfa.keys.cancelled":
+    "The security key prompt was cancelled or timed out. Try again when the key is to hand.",
 
   "login.mfa.title": "Enter your code",
-  "login.mfa.subtitle": "{username} has two-factor authentication on. Open your authenticator and type the six digits it shows.",
-  "login.mfa.subtitleAnon": "This account has two-factor authentication on. Open your authenticator and type the six digits it shows.",
+  "login.mfa.subtitle":
+    "{username} has two-factor authentication on. Open your authenticator and type the six digits it shows.",
+  "login.mfa.subtitleAnon":
+    "This account has two-factor authentication on. Open your authenticator and type the six digits it shows.",
   "login.mfa.code": "Six-digit code",
   "login.mfa.recovery": "Recovery code",
   "login.mfa.useRecovery": "Use a recovery code instead",
@@ -1907,11 +2214,13 @@ export const en = {
   "login.mfa.useKey": "Use a security key",
   "login.mfa.usingKey": "Waiting for the key…",
   "login.localDisabled": "Password sign-in is off on this installation — use SSO.",
-  "login.localBreakGlass": "Password sign-in here is reserved for break-glass accounts, and every such sign-in is recorded. Everyone else signs in with SSO.",
+  "login.localBreakGlass":
+    "Password sign-in here is reserved for break-glass accounts, and every such sign-in is recorded. Everyone else signs in with SSO.",
 
   "users.action.resetMfa": "Reset MFA",
   "users.resetMfa.title": "Reset two-factor authentication for {username}?",
-  "users.resetMfa.description": "Clears their authenticator secret and their recovery codes, and ends every session they have open. Until they enrol again their password alone signs them in. Recorded in the audit trail as user.mfa_reset.",
+  "users.resetMfa.description":
+    "Clears their authenticator secret and their recovery codes, and ends every session they have open. Until they enrol again their password alone signs them in. Recorded in the audit trail as user.mfa_reset.",
   "users.resetMfa.confirm": "Reset MFA",
 
   // --- tenant roles and members (#318) ---
@@ -1920,10 +2229,12 @@ export const en = {
   "access.subtitle": "Who may act in {tenant}, and the roles this tenant defined for itself.",
   "access.denied": "Seeing this tenant's members needs the tenant.member.read permission here.",
   "roles.title": "Tenant roles",
-  "roles.note": "A role is a name, a rank and an explicit set of permissions. Nobody can define or grant a role above their own, and the platform's authorities cannot be put in one.",
+  "roles.note":
+    "A role is a name, a rank and an explicit set of permissions. Nobody can define or grant a role above their own, and the platform's authorities cannot be put in one.",
   "roles.new": "New role",
   "roles.loading": "Loading roles…",
-  "roles.empty": "This tenant has defined no roles of its own; the built-in roles are offered on the members list below.",
+  "roles.empty":
+    "This tenant has defined no roles of its own; the built-in roles are offered on the members list below.",
   "roles.col.role": "Role",
   "roles.col.rank": "Rank",
   "roles.col.permissions": "Permissions",
@@ -1933,23 +2244,28 @@ export const en = {
   "roles.rank.3": "Administer",
   "roles.edit": "Edit {role}",
   "roles.delete": "Delete {role}",
-  "roles.sod.rank": "An approval can only be held at read rank: an approver who can also write acts on their own approval.",
+  "roles.sod.rank":
+    "An approval can only be held at read rank: an approver who can also write acts on their own approval.",
   "roles.sod.members": "An approval cannot be combined with granting memberships.",
   "roles.dialog.createTitle": "New tenant role",
   "roles.dialog.editTitle": "Edit tenant role",
   "roles.dialog.createHint": "Only the ranks and permissions you hold yourself are offered.",
-  "roles.dialog.editHint": "{count} member(s) hold this role: a change applies to them from their next request, and a new name moves them with it.",
+  "roles.dialog.editHint":
+    "{count} member(s) hold this role: a change applies to them from their next request, and a new name moves them with it.",
   "roles.dialog.name": "Name",
   "roles.dialog.description": "Description",
   "roles.dialog.rank": "Rank",
-  "roles.dialog.rankHint": "Read passes no write in the API, write runs scans and works findings, administer passes every tenant administrator gate.",
+  "roles.dialog.rankHint":
+    "Read passes no write in the API, write runs scans and works findings, administer passes every tenant administrator gate.",
   "roles.dialog.permissions": "Permissions",
   "roles.dialog.noPermissions": "You hold no permission a tenant role can carry.",
   "roles.dialog.cancel": "Cancel",
   "roles.dialog.save": "Save",
   "roles.deleteDialog.title": "Delete role {role}?",
-  "roles.deleteDialog.held": "{count} member(s) hold this role. Choose the role they are regranted; nobody loses access silently.",
-  "roles.deleteDialog.unheld": "Nobody holds this role. It is removed from the tenant, and the deletion is recorded in the audit trail.",
+  "roles.deleteDialog.held":
+    "{count} member(s) hold this role. Choose the role they are regranted; nobody loses access silently.",
+  "roles.deleteDialog.unheld":
+    "Nobody holds this role. It is removed from the tenant, and the deletion is recorded in the audit trail.",
   "roles.deleteDialog.reassign": "Regrant its members as",
   "roles.deleteDialog.confirm": "Delete role",
 
@@ -1961,7 +2277,8 @@ export const en = {
   "problems.meta": "{count} problems",
   "problems.loading": "Retrieving aggregated problems…",
   "problems.empty": "No problems match these filters.",
-  "problems.aggregates": "{problems} problems · {instances} instances on {assets} assets · {breached} past SLA · {kev} on KEV · as of {asOf}",
+  "problems.aggregates":
+    "{problems} problems · {instances} instances on {assets} assets · {breached} past SLA · {kev} on KEV · as of {asOf}",
   "problems.col.problem": "Problem",
   "problems.col.instances": "Instances / assets",
   "problems.col.severity": "Worst severity",
@@ -1980,11 +2297,14 @@ export const en = {
   "problems.action.instances": "Show instances",
   "problems.drill.chip": "Problem {key}",
   "problems.drill.clear": "Show all instances",
-  "problems.drill.drift": "The list showed {expected} instances; there are {actual} now ({changed} changed since).",
-  "problems.drill.driftNoChange": "The list showed {expected} instances; there are {actual} now (findings entered or left the selection).",
+  "problems.drill.drift":
+    "The list showed {expected} instances; there are {actual} now ({changed} changed since).",
+  "problems.drill.driftNoChange":
+    "The list showed {expected} instances; there are {actual} now (findings entered or left the selection).",
   "campaign.create": "Create campaign…",
   "campaign.dialog.title": "New remediation campaign",
-  "campaign.dialog.description": "The composition is frozen at creation: findings that match later are not added.",
+  "campaign.dialog.description":
+    "The composition is frozen at creation: findings that match later are not added.",
   "campaign.field.name": "Name",
   "campaign.field.action": "Common action",
   "campaign.field.owner": "Owner",
@@ -1999,7 +2319,8 @@ export const en = {
   "campaign.dialog.submit": "Create campaign",
   "campaign.cancel": "Cancel",
   "campaign.page.title": "Remediation campaigns",
-  "campaign.page.subtitle": "A frozen set of findings with one owner and one target. Progress is counted per category and is never summed into “fixed”.",
+  "campaign.page.subtitle":
+    "A frozen set of findings with one owner and one target. Progress is counted per category and is never summed into “fixed”.",
   "campaign.list.empty": "No campaigns yet. Select problems in Vulnerabilities and create one.",
   "campaign.loading": "Retrieving campaigns…",
   "campaign.col.name": "Campaign",
@@ -2027,7 +2348,8 @@ export const en = {
   "campaign.cat.hint.unavailable": "Unreachable, unsupported detector or partial coverage",
   "campaign.progress.unresolved": "{count} still need work",
   "campaign.progress.recurred": "{count} came back after joining",
-  "campaign.progress.note": "Categories are exclusive. Only “Verified by a scan” was re-checked by a verification run.",
+  "campaign.progress.note":
+    "Categories are exclusive. Only “Verified by a scan” was re-checked by a verification run.",
   "campaign.detail.back": "All campaigns",
   "campaign.detail.action": "Common action",
   "campaign.detail.noAction": "No action described.",
@@ -2054,16 +2376,129 @@ export const en = {
   "campaign.notFound": "Campaign not found",
   "campaign.members.selectAll": "Select every finding on this page",
   "problems.selectAll": "Select every problem on this page",
-  "campaign.members.excludeCount": "{count} findings will be excluded; the history keeps who did it and why.",
+  "campaign.members.excludeCount":
+    "{count} findings will be excluded; the history keeps who did it and why.",
 } as const;
 
 export type MsgKey = keyof typeof en;
 
 export const ru: Record<MsgKey, string> = {
+  "scanCopy.queued": "Задание сканирования в очереди",
+  "scanCopy.startFailed": "Не удалось запустить скан",
+  "scanCopy.stopping": "Остановка скана",
+  "scanCopy.cancelled": "Задание отменено",
+  "scanCopy.cancelFailed": "Не удалось отменить задание",
+  "scanCopy.priority": "Приоритет изменён",
+  "scanCopy.priorityFailed": "Не удалось изменить приоритет",
+  "scanCopy.requeued": "Публикация возвращена в очередь",
+  "scanCopy.requeueHint": "Публикация произойдёт при следующей обработке очереди.",
+  "scanCopy.requeueFailed": "Не удалось вернуть публикацию в очередь",
+  "scanCopy.discarded": "Публикация отклонена",
+  "scanCopy.discardHint":
+    "Скан не опубликован. Распакованные данные хранятся до истечения суток с принятия загрузки.",
+  "scanCopy.discardFailed": "Не удалось отклонить публикацию",
+  "scanCopy.job": "Задание {id}",
+  "scanCopy.waitingAgent": "Задание {id} — ожидается подтверждение агента",
+  "scanCopy.jobPriority": "Задание {id} — приоритет {priority}",
+  "scanCopy.technical": "Технические данные",
+  "scanCopy.id": "Идентификатор",
+  "scanCopy.intent": "Тип проверки",
+  "scanCopy.mode": "Профиль скорости",
+  "scanCopy.execution": "Выполнение",
+  "scanCopy.backend": "Сканер сервисов",
+  "scanCopy.unknown": "Другой вариант",
+  "scanCopy.test": "Тестовый",
+  "scanCopy.local": "Локально",
+  "scanCopy.agent": "На агенте",
+  "scanCopy.inventory": "Инвентаризация",
+  "scanCopy.vuln": "Проверка уязвимостей",
+  "scanCopy.full": "Полная проверка",
+  "scanCopy.delta": "Проверка изменений",
+  "scanCopy.org_profile": "Профиль организации",
+  "scanCopy.legacy": "Ручная настройка",
+  "scanCopy.safe": "Безопасный",
+  "scanCopy.balanced": "Сбалансированный",
+  "scanCopy.fast": "Быстрый",
+  "scanCopy.ranges": "Диапазоны",
+  "scanCopy.domains": "Домены",
+  "scanCopy.ips": "IP-адреса",
+  "scanCopy.targets": "Цели",
+  "scanCopy.create": "Создать расписание",
+  "scanCopy.edit": "Изменить расписание",
+  "scanCopy.editAction": "Изменить расписание",
+  "scanCopy.deleteAction": "Удалить расписание",
+  "scanCopy.name": "Название",
+  "scanCopy.namePlaceholder": "Ежедневная внешняя проверка",
+  "scanCopy.notify": "Отправлять уведомления",
+  "scanCopy.deltaDiscovery": "Обнаруживать изменения",
+  "scanCopy.tcp": "Задать TCP-порты",
+  "scanCopy.udp": "Задать UDP-порты",
+  "scanCopy.backendHint": "Полная проверка использует настроенный сканер сервисов",
+  "scanCopy.saving": "Сохранение…",
+  "scanCopy.save": "Сохранить изменения",
+  "scanCopy.creating": "Создание…",
+  "scanCopy.delete": "Удалить",
+  "scanCopy.deleteConfirm": "Удалить расписание «{name}»?",
+  "scanCopy.defaults": "Цели сервера по умолчанию",
+  "scanCopy.rangeCount": "Диапазонов: {count}",
+  "scanCopy.domainCount": "Доменов: {count}",
+  "scanCopy.cron": "Выражение cron",
+  "scanCopy.interval": "Интервал (секунды)",
+  "scanCopy.calendar": "По календарному выражению",
+  "scanCopy.every": "Каждые {seconds} с",
+  "scanCopy.calendarLabel": "Календарь обслуживания",
+  "scanCopy.kind": "Тип",
+  "scanCopy.now": "Сейчас",
+  "scanCopy.disabled": "(отключено)",
+  "scanCopy.openUntil": "Действует до {time}",
+  "scanCopy.next": "Следующее: {time}",
+  "scanCopy.freezeNote": "Причина приостановки",
+  "scanCopy.freezePlaceholder": "Причина, которую увидит оператор",
+  "scanCopy.freeze": "Приостановить изменения",
+  "scanCopy.unfreeze": "Возобновить изменения",
+  "scanCopy.freezeDescription":
+    "Сканы арендатора {tenant} не начнутся, пока администратор не снимет приостановку",
+  "scanCopy.setBy": " (установил: {actor})",
+  "scanCopy.resumeAt": " Сканы возобновятся {time}.",
+  "scanCopy.paused": "Сканирование приостановлено календарём обслуживания",
+  "scanCopy.created": "Расписание создано",
+  "scanCopy.updated": "Расписание обновлено",
+  "scanCopy.deleted": "Расписание удалено",
+  "scanCopy.createFailed": "Не удалось создать расписание",
+  "scanCopy.updateFailed": "Не удалось обновить расписание",
+  "scanCopy.deleteFailed": "Не удалось удалить расписание",
+  "scanCopy.freezeOn": "Изменения приостановлены",
+  "scanCopy.freezeOff": "Изменения возобновлены",
+  "scanCopy.freezeFailed": "Не удалось изменить приостановку",
+  "scanCopy.calendarAgain": "Сканы арендатора {tenant} снова следуют календарю обслуживания",
+  "scanCopy.wholeTenant": "Весь арендатор",
+  "scanCopy.group": "Группа",
+  "scanCopy.noTargets": "(целей нет — правило ни к чему не применяется)",
+  "riskOverview.copy0": "Открытые находки",
+  "riskOverview.copy1": "Критические и высокие",
+  "riskOverview.copy2": "Нарушения SLA",
+  "riskOverview.copy3": "Активы",
+  "riskOverview.copy4": "Хосты",
+  "riskOverview.copy5": "Находки",
+  "riskOverview.copy6": "Загрузка находок…",
+  "riskOverview.copy7": "Риск",
+  "riskOverview.copy8": "Технические данные",
+  "riskOverview.copy9": "Исходное название",
+  "riskOverview.copy10": "ID проверки",
+  "riskOverview.copy11": "ID актива",
+  "riskOverview.copy12": "Код риска",
+  "riskOverview.copy13": "Карточка актива",
+  "riskOverview.copy14":
+    "Внешняя доступность активов пока не подсчитана. Отсутствие данных не означает, что доступных извне активов нет.",
+  "riskOverview.copy15": "Сохранение…",
+  "riskOverview.copy16": "Сохранить снимок риска",
+  "riskOverview.copy17": "Последний скан",
+
   "nav.operator": "ИИ-оператор",
   "nav.hint.operator": "Доказательства, анализ и подтверждённые действия со сканами",
   "assetConnector.title": "Коннектор ServiceNow CMDB",
-  "assetConnector.ldap": "Синхронизация компьютеров LDAP/AD недоступна до реализации интеграции каталогов #317. Метка источника AD в файле не включает синхронизацию.",
+  "assetConnector.ldap":
+    "Синхронизация компьютеров LDAP/AD недоступна до реализации интеграции каталогов #317. Метка источника AD в файле не включает синхронизацию.",
   "assetConnector.url": "HTTPS адрес ServiceNow",
   "assetConnector.table": "Таблица",
   "assetConnector.token": "Bearer токен (пустое поле сохраняет текущий)",
@@ -2074,10 +2509,11 @@ export const ru: Record<MsgKey, string> = {
   "assetConnector.preview": "Предпросмотр источника",
   "assetConnector.apply": "Применить после просмотра",
   "assetConnector.applied": "Применено",
-  "assetConnector.saved": "Коннектор сохранён. Применение повторно загружает актуальные данные источника.",
-  "assetConnector.error": "Не удалось настроить или запустить коннектор. Проверьте адрес, токен, поля и ограничения источника.",
+  "assetConnector.saved":
+    "Коннектор сохранён. Применение повторно загружает актуальные данные источника.",
+  "assetConnector.error":
+    "Не удалось настроить или запустить коннектор. Проверьте адрес, токен, поля и ограничения источника.",
   "integrations.event.service_token_expiring": "Истекает сервисный токен",
-
 
   "a11y.skipContent": "Перейти к основному содержимому",
   "savedViews.title": "Сохранённые представления",
@@ -2090,11 +2526,15 @@ export const ru: Record<MsgKey, string> = {
   "savedViews.updated": "Представления обновлены.",
   "savedViews.applied": "Представление применено. Выделение очищено.",
   "savedViews.failed": "Не удалось обновить представления. Повторите попытку.",
-  "savedViews.limit": "У вас уже 50 сохранённых представлений. Удалите одно, прежде чем сохранять новое.",
-  "savedViews.duplicate": "Представление с таким названием на этой странице уже есть. Выберите другое название.",
+  "savedViews.limit":
+    "У вас уже 50 сохранённых представлений. Удалите одно, прежде чем сохранять новое.",
+  "savedViews.duplicate":
+    "Представление с таким названием на этой странице уже есть. Выберите другое название.",
   "savedViews.invalid": "Эти фильтры нельзя сохранить. Сбросьте фильтры и повторите попытку.",
-  "savedViews.gone": "Этого представления больше нет: возможно, его удалили в другом месте. Список обновлён.",
-  "savedViews.incompatible": "Схема фильтров представления несовместима. Удалите его и сохраните текущие фильтры.",
+  "savedViews.gone":
+    "Этого представления больше нет: возможно, его удалили в другом месте. Список обновлён.",
+  "savedViews.incompatible":
+    "Схема фильтров представления несовместима. Удалите его и сохраните текущие фильтры.",
 
   "nav.dashboard": "Обзор",
   "nav.vulnerabilities": "Уязвимости",
@@ -2159,9 +2599,11 @@ export const ru: Record<MsgKey, string> = {
   "auth.redirecting": "Переход на страницу входа…",
   "session.expiringSoon": "Сессия завершится через {minutes} мин: консолью давно не пользовались.",
   "session.staySignedIn": "Остаться в системе",
-  "session.expired": "Сессия истекла. Войдите заново — несохранённое на этой странице отправить не удастся.",
+  "session.expired":
+    "Сессия истекла. Войдите заново — несохранённое на этой странице отправить не удастся.",
   "session.signInAgain": "Войти заново",
-  "session.logoutUncertain": "Сервер не подтвердил выход — сессия могла остаться активной. Завершите все сессии в меню аккаунта.",
+  "session.logoutUncertain":
+    "Сервер не подтвердил выход — сессия могла остаться активной. Завершите все сессии в меню аккаунта.",
 
   "tenant.label": "Арендатор:",
   "tenant.actIn": "Работать от имени",
@@ -2300,15 +2742,17 @@ export const ru: Record<MsgKey, string> = {
 
   "page.risk.title": "Обзор риска",
   "page.risk.badge": "Ландшафт",
-  "page.risk.subtitle": "Текущий киберриск по отслеживаемым находкам — не сырой список последнего скана.",
+  "page.risk.subtitle":
+    "Текущий киберриск по отслеживаемым находкам — не сырой список последнего скана.",
   "page.risk.centerLink": "Центр уязвимостей",
   "page.risk.launch": "Запустить скан",
   "page.risk.emptyTitle": "Отслеживаемых находок пока нет",
-  "page.risk.emptyBody": "Находка становится работой после того, как скан наблюдает её на активе. Запустите скан, чтобы заполнить обзор.",
+  "page.risk.emptyBody":
+    "Находка становится работой после того, как скан наблюдает её на активе. Запустите скан, чтобы заполнить обзор.",
   "page.risk.emptyCta": "Первое задание сканирования",
   "page.risk.kpiEstate": "Риск ландшафта",
   "page.risk.kpiEstateHint": "худший открытый вердикт NIST",
-  "page.risk.kpiCritHigh": "Critical / high (открытые)",
+  "page.risk.kpiCritHigh": "Критические / высокие (открытые)",
   "page.risk.kpiCritHighHint": "критических: {critical} · высоких: {high}",
   "page.risk.kpiSla": "Нарушения SLA",
   "page.risk.kpiSlaWorst": "худшая открытая: {severity}",
@@ -2318,12 +2762,15 @@ export const ru: Record<MsgKey, string> = {
   "page.risk.kpiUnowned": "Активы без владельца",
   "page.risk.kpiUnownedHint": "{count} активов в инвентаре",
   "page.orgProfile.title": "Профиль организации",
-  "page.orgProfile.subtitle": "Атрибуция домена, связанные домены и матрица контролей одного прогона.",
+  "page.orgProfile.subtitle":
+    "Атрибуция домена, связанные домены и матрица контролей одного прогона.",
   "page.orgProfile.runPicker": "Прогон",
   "page.orgProfile.noRuns": "Прогонов пока нет — запустите сканирование с интентом org_profile.",
-  "page.orgProfile.disclaimer": "Атрибуция вероятностная. Ответственность за авторизацию сканирования продвинутого домена лежит на операторе.",
+  "page.orgProfile.disclaimer":
+    "Атрибуция вероятностная. Ответственность за авторизацию сканирования продвинутого домена лежит на операторе.",
   "page.risk.kpiPosture": "Профиль организации",
-  "page.risk.kpiPostureHint": "{failing} из {total} контролей не пройдены · {notChecked} без проверки",
+  "page.risk.kpiPostureHint":
+    "{failing} из {total} контролей не пройдены · {notChecked} без проверки",
   "page.risk.kpiPostureNoData": "стадия org_profile не выполнялась в этом прогоне",
   "page.risk.kpiPostureNoRun": "прогонов ещё нет",
   "page.risk.noRiskLevels": "Нет открытых находок с уровнем риска.",
@@ -2345,7 +2792,8 @@ export const ru: Record<MsgKey, string> = {
   "page.risk.viewAssets": "К активам",
   "page.risk.assetsCount": "{count} активов",
   "page.risk.scanActivity": "Активность сканов",
-  "page.risk.scanActivityHint": "Хосты и сырые находки по недавним прогонам — объём скана, не риск ландшафта во времени. Снимки риска пока не хранятся.",
+  "page.risk.scanActivityHint":
+    "Хосты и сырые находки по недавним прогонам — объём скана, не риск ландшафта во времени. Снимки риска пока не хранятся.",
   "page.risk.latest": "последний {id}",
   "chart.hosts": "Хосты",
   "chart.vulns": "Уязвимости",
@@ -2357,102 +2805,145 @@ export const ru: Record<MsgKey, string> = {
   "hint.heartbeatTimedOut": "heartbeat не пришёл вовремя",
   "hint.ofClosuresWithDeadline": "из закрытий, у которых был срок",
   "hint.fromSlaStart": "от начала SLA до закрытия",
-  "hint.overriddenVerdicts": "вердикты, которые сканер пересмотрел, потому что оценка ухудшилась, — число, говорящее, не прятал ли один из них что-то",
-  "hint.noiseQueueTime": "сколько шум пролежал в очереди до вердикта. Скорость разбора, а не исправления — в MTTR это намеренно не входит",
+  "hint.overriddenVerdicts":
+    "вердикты, которые сканер пересмотрел, потому что оценка ухудшилась, — число, говорящее, не прятал ли один из них что-то",
+  "hint.noiseQueueTime":
+    "сколько шум пролежал в очереди до вердикта. Скорость разбора, а не исправления — в MTTR это намеренно не входит",
   "hint.contextSet": "задан сервис, среда или классификация",
   "hint.coverageShare": "покрытие: доля активных активов, которые видел недавний прогон",
   "hint.dualSource": "активы, которые дополнительно отдают инвентарь конечной точки",
   "hint.targetVersion": "цель: v{version}",
-  "hint.stillOpen": "ещё открыто: {open} (принят риск: {accepted}). Только устранение — {noise} закрытых как шум учтены в разделе «Шум», не здесь",
+  "hint.stillOpen":
+    "ещё открыто: {open} (принят риск: {accepted}). Только устранение — {noise} закрытых как шум учтены в разделе «Шум», не здесь",
   "hint.verifiedMechanically": "машинно подтверждено {verified} из {closed} закрытий",
   "hint.suppressionsLapsed": "истекло и ждёт повторного взгляда: {count}",
   "hint.unownedAssets": "у {unowned} из {active} активных активов некому передать находку",
   "hint.distinct": "различных: {count}",
 
   "prose.estateRiskVulnerabilityTrend144": "Риск ландшафта и динамика уязвимостей",
-  "prose.historicalTimelineOfActiveVulnerabilitie": "Историческая динамика активных уязвимостей, высоких и критических находок и нарушений SLA.",
+  "prose.historicalTimelineOfActiveVulnerabilitie":
+    "Историческая динамика активных уязвимостей, высоких и критических находок и нарушений SLA.",
   "prose.captureInitialSnapshot": "Снять первый снимок",
   "prose.wordlistFileOneEntryPer": "Файл словаря (по одной записи в строке)",
   "prose.nameOptionalDefaultsToFilename": "Имя (необязательно — по умолчанию имя файла)",
-  "prose.noWordlistsUploadedYetUpload": "Словари ещё не загружены. Загрузите файл выше, чтобы использовать его в скане.",
-  "prose.scansAlreadyRunningAreUnaffected": "Уже идущие сканы это не затронет — они скопировали список на старте. Новые сканы выбрать его уже не смогут.",
-  "prose.noFindingsWereClosedIn": "В этом окне находок не закрывали, поэтому закрытия некому приписать.",
-  "prose.whetherThePlatformIsProducing": "Даёт ли платформа результат, а не данные: что исправлено, как быстро, сколько из этого подтвердил скан и у какой доли ландшафта есть владелец. Всё считается здесь, по собственным таблицам тенанта; никуда ничего не отправляется.",
+  "prose.noWordlistsUploadedYetUpload":
+    "Словари ещё не загружены. Загрузите файл выше, чтобы использовать его в скане.",
+  "prose.scansAlreadyRunningAreUnaffected":
+    "Уже идущие сканы это не затронет — они скопировали список на старте. Новые сканы выбрать его уже не смогут.",
+  "prose.noFindingsWereClosedIn":
+    "В этом окне находок не закрывали, поэтому закрытия некому приписать.",
+  "prose.whetherThePlatformIsProducing":
+    "Даёт ли платформа результат, а не данные: что исправлено, как быстро, сколько из этого подтвердил скан и у какой доли ландшафта есть владелец. Всё считается здесь, по собственным таблицам тенанта; никуда ничего не отправляется.",
   "prose.noisiestDetectors": "Самые шумные детекторы",
-  "prose.theNetworkScannerAgainstThe": "Сетевой сканер против сопоставителя ПО на конечных точках. Они ошибаются по разным причинам и настраиваются в разных местах, поэтому тихий показан тоже — именно он придаёт смысл второму числу.",
+  "prose.theNetworkScannerAgainstThe":
+    "Сетевой сканер против сопоставителя ПО на конечных точках. Они ошибаются по разным причинам и настраиваются в разных местах, поэтому тихий показан тоже — именно он придаёт смысл второму числу.",
   "prose.closedAndVerifiedPerAnalyst": "Закрыто и подтверждено, по аналитикам",
-  "prose.theQuarterlyControlQuestionDid": "Квартальный контрольный вопрос: выросло ли это? Если нет — новая функциональность дала данные, а не результат.",
+  "prose.theQuarterlyControlQuestionDid":
+    "Квартальный контрольный вопрос: выросло ли это? Если нет — новая функциональность дала данные, а не результат.",
   "prose.medianTimeToFixBy": "Медианное время до исправления, по серьёзности",
   "prose.timeToFirstValue": "Время до первой пользы",
   "prose.enrichmentOverlays": "Наложения обогащения",
-  "prose.recurringScansRunThroughThe": "Повторяющиеся сканы идут через обычный диспетчер заданий с заданной периодичностью.",
+  "prose.recurringScansRunThroughThe":
+    "Повторяющиеся сканы идут через обычный диспетчер заданий с заданной периодичностью.",
   "prose.portsOnlyNoServiceoscveProbe": "Только порты (без определения сервисов, ОС и CVE)",
-  "prose.thisStopsFutureAutomaticRuns": "Это остановит будущие автоматические прогоны. Прошлых прогонов и отчётов не коснётся. Отменить нельзя.",
+  "prose.thisStopsFutureAutomaticRuns":
+    "Это остановит будущие автоматические прогоны. Прошлых прогонов и отчётов не коснётся. Отменить нельзя.",
   "prose.compliancePosture": "Состояние соответствия",
-  "prose.controlsAssessedFromThisTenants": "Контроли оценены по собственным находкам тенанта, контексту активов и инвентарю конечных точек.",
+  "prose.controlsAssessedFromThisTenants":
+    "Контроли оценены по собственным находкам тенанта, контексту активов и инвентарю конечных точек.",
   "prose.assessedControlsPassing": "Пройдено из оценённых контролей",
-  "prose.createsATenantEnvironmentAnd": "Создаёт окружение тенанта и выпускает одноразовый ключ провижининга для сенсоров и агентов на конечных точках.",
+  "prose.createsATenantEnvironmentAnd":
+    "Создаёт окружение тенанта и выпускает одноразовый ключ провижининга для сенсоров и агентов на конечных точках.",
   "prose.copyProvisioningKey": "Скопировать ключ провижининга",
-  "prose.worstOpenNistRiskFirst": "Сначала худший открытый риск NIST. Заявленный «интернет» — это экспозиция, заданная оператором, а не измерение скана.",
+  "prose.worstOpenNistRiskFirst":
+    "Сначала худший открытый риск NIST. Заявленный «интернет» — это экспозиция, заданная оператором, а не измерение скана.",
   "prose.backToRunsCatalog": "К каталогу прогонов",
   "prose.backToVulnerabilityCenter": "К центру уязвимостей",
-  "prose.viewerRoleLifecycleAssignmentAnd": "Роль наблюдателя: действия по жизненному циклу, назначению и принятию риска скрыты.",
-  "prose.dispatchATargetedRescanAgainst": "Запустить точечный повторный скан этого актива, чтобы подтвердить устранение.",
-  "prose.recordsWhereTheWorkLives": "Фиксирует, где ведётся работа. Переходы уходят в тикет сразу; собственный статус тикета вычитывается по расписанию, а «Синхронизировать» читает его прямо сейчас.",
-  "prose.noExceptionBothExpiryAnd": "Без исключений. Нужны и срок, и причина, и подтверждение второго человека.",
+  "prose.viewerRoleLifecycleAssignmentAnd":
+    "Роль наблюдателя: действия по жизненному циклу, назначению и принятию риска скрыты.",
+  "prose.dispatchATargetedRescanAgainst":
+    "Запустить точечный повторный скан этого актива, чтобы подтвердить устранение.",
+  "prose.recordsWhereTheWorkLives":
+    "Фиксирует, где ведётся работа. Переходы уходят в тикет сразу; собственный статус тикета вычитывается по расписанию, а «Синхронизировать» читает его прямо сейчас.",
+  "prose.noExceptionBothExpiryAnd":
+    "Без исключений. Нужны и срок, и причина, и подтверждение второго человека.",
   "prose.vulnerabilityCenter": "Центр уязвимостей",
   "prose.loadingRemediationKanbanBoard": "Загружаем доску устранения…",
   "prose.remediationAuditTrail": "Журнал устранения",
-  "prose.chronologicalLogOfAllState": "Хронологический журнал всех смен состояния, комментариев, назначений и ссылок на тикеты.",
+  "prose.chronologicalLogOfAllState":
+    "Хронологический журнал всех смен состояния, комментариев, назначений и ссылок на тикеты.",
   "prose.targetHostService": "Целевой хост и сервис",
   "prose.remediationActions": "Действия по устранению",
-  "prose.viewerModeWorkflowTransitionsAnd": "Режим наблюдателя: переходы по процессу и назначения требуют прав оператора.",
+  "prose.viewerModeWorkflowTransitionsAnd":
+    "Режим наблюдателя: переходы по процессу и назначения требуют прав оператора.",
   "prose.provisioningKeyShownOnce": "Ключ провижининга показывается один раз",
-  "prose.theKeyBelowIsEmbedded": "Ключ ниже встроен в эти команды и повторно получить его нельзя. Скопируйте команду сейчас; если ключ утечёт — отзовите его на странице тенантов.",
+  "prose.theKeyBelowIsEmbedded":
+    "Ключ ниже встроен в эти команды и повторно получить его нельзя. Скопируйте команду сейчас; если ключ утечёт — отзовите его на странице тенантов.",
   "prose.noProvisioningKeyYet": "Ключа провижининга пока нет",
-  "prose.mintingOneTakesCredentialManage": "Выпуск требует разрешения tenant.credential.manage в этом тенанте — оно есть у его администратора и у token-admin: этим ключом сенсоры и агенты на конечных точках регистрируются в тенанте, и это та же учётная запись, что выдаёт страница управления ключами.",
+  "prose.mintingOneTakesCredentialManage":
+    "Выпуск требует разрешения tenant.credential.manage в этом тенанте — оно есть у его администратора и у token-admin: этим ключом сенсоры и агенты на конечных точках регистрируются в тенанте, и это та же учётная запись, что выдаёт страница управления ключами.",
   "prose.deployScanningAgent": "Развернуть сенсор",
-  "prose.installAndRegisterANew": "Установить и зарегистрировать новый сенсор (сканирующий узел) для удалённых сканов уязвимостей.",
+  "prose.installAndRegisterANew":
+    "Установить и зарегистрировать новый сенсор (сканирующий узел) для удалённых сканов уязвимостей.",
   "prose.agentPushDeploymentViaSsh": "Установка сенсора по SSH",
-  "prose.thePlatformConnectsToThe": "Платформа подключается к целевой машине по SSH, выпускает токены, настраивает службу systemd и проверяет регистрацию. Учётные данные обрабатываются в памяти и не сохраняются.",
+  "prose.thePlatformConnectsToThe":
+    "Платформа подключается к целевой машине по SSH, выпускает токены, настраивает службу systemd и проверяет регистрацию. Учётные данные обрабатываются в памяти и не сохраняются.",
   "prose.expectedSshHostKeyFingerprint": "Ожидаемый отпечаток host-ключа SSH",
   "prose.alreadyPinnedForThisTenant": "Для этого тенанта уже закреплён — отпечаток не нужен.",
   "prose.itMatchesUseIt": "Совпадает — использовать",
-  "prose.requiredTheFirstTimeThis": "Нужен при первой установке этого тенанта на хост. По этому соединению идут ваши учётные данные SSH и новый ключ провижининга, поэтому установка отклоняется, пока личность цели не известна. Дальше проверяется уже закреплённый ключ.",
+  "prose.requiredTheFirstTimeThis":
+    "Нужен при первой установке этого тенанта на хост. По этому соединению идут ваши учётные данные SSH и новый ключ провижининга, поэтому установка отклоняется, пока личность цели не известна. Дальше проверяется уже закреплённый ключ.",
   "prose.deployAsDockerContainerInstead": "Развернуть как контейнер Docker вместо службы systemd",
-  "prose.thePushTakesAdminAndCredential": "Установка требует и ранга администратора тенанта, и разрешения tenant.credential.manage: она выпускает ключ провижининга и ставит ПО на цели от root.",
-  "prose.runThisCommandOnAny": "Выполните эту команду на любой машине Linux (Ubuntu/Debian/RHEL/Alpine). Она сама создаёт виртуальное окружение Python, ставит зависимости, пишет unit systemd и включает автозапуск.",
-  "prose.runsTheScanningAgentIn": "Запускает сенсор в изолированном контейнере с доступом к сети хоста для прямого сканирования.",
-  "prose.deployContinuousScannerAgentsInto": "Разверните постоянные сенсоры в кластере Kubernetes, чтобы оценивать внутренние сервисы.",
-  "prose.kubernetesSecretAfterApply": "В манифесте нет ключа, его можно коммитить. Сначала примените его: он создаёт пространство имён с метками, допускающими нужные сенсору NET_RAW и NET_ADMIN. Затем выполните эту команду — она кладёт ключ в Secret, из которого его читает под; до этого под ждёт.",
-  "prose.markingRecordsTheIntentFor": "Отметка фиксирует намерение для операторов. Само обновление выполняется на хосте — сенсор отсюда команды не получает.",
+  "prose.thePushTakesAdminAndCredential":
+    "Установка требует и ранга администратора тенанта, и разрешения tenant.credential.manage: она выпускает ключ провижининга и ставит ПО на цели от root.",
+  "prose.runThisCommandOnAny":
+    "Выполните эту команду на любой машине Linux (Ubuntu/Debian/RHEL/Alpine). Она сама создаёт виртуальное окружение Python, ставит зависимости, пишет unit systemd и включает автозапуск.",
+  "prose.runsTheScanningAgentIn":
+    "Запускает сенсор в изолированном контейнере с доступом к сети хоста для прямого сканирования.",
+  "prose.deployContinuousScannerAgentsInto":
+    "Разверните постоянные сенсоры в кластере Kubernetes, чтобы оценивать внутренние сервисы.",
+  "prose.kubernetesSecretAfterApply":
+    "В манифесте нет ключа, его можно коммитить. Сначала примените его: он создаёт пространство имён с метками, допускающими нужные сенсору NET_RAW и NET_ADMIN. Затем выполните эту команду — она кладёт ключ в Secret, из которого его читает под; до этого под ждёт.",
+  "prose.markingRecordsTheIntentFor":
+    "Отметка фиксирует намерение для операторов. Само обновление выполняется на хосте — сенсор отсюда команды не получает.",
   "prose.liveSystemTelemetry": "Телеметрия в реальном времени",
-  "prose.activeThisAgentMayClaim": "Активен — этот сенсор может брать задания и выгружать результаты. Выключение или карантин переживают перезапуск; снять их может только оператор.",
+  "prose.activeThisAgentMayClaim":
+    "Активен — этот сенсор может брать задания и выгружать результаты. Выключение или карантин переживают перезапуск; снять их может только оператор.",
   "prose.alsoRevokeItsProvisioningKey": "Заодно отозвать его ключ провижининга",
-  "prose.noCveMatchesRecordedFor": "Сопоставлений CVE для этой конечной точки пока нет. Запустите сопоставление, чтобы сверить установленные пакеты с бюллетенями вендоров на диске.",
+  "prose.noCveMatchesRecordedFor":
+    "Сопоставлений CVE для этой конечной точки пока нет. Запустите сопоставление, чтобы сверить установленные пакеты с бюллетенями вендоров на диске.",
   "prose.noTelemetryArtifactsProducedFor": "Артефактов телеметрии в этом прогоне не создано.",
-  "prose.leadershipAndExecutiveSummaryGenerated": "Сводка для руководства, сформированная движком сканирования.",
-  "prose.industrystandardStaticDynamicSecurityTel": "Отраслевой формат статической и динамической телеметрии безопасности для GitHub, GitLab и DefectDojo.",
+  "prose.leadershipAndExecutiveSummaryGenerated":
+    "Сводка для руководства, сформированная движком сканирования.",
+  "prose.industrystandardStaticDynamicSecurityTel":
+    "Отраслевой формат статической и динамической телеметрии безопасности для GitHub, GitLab и DefectDojo.",
   "prose.viewSarifFindings": "Смотреть находки SARIF",
   "prose.onlyThePdfReportIs": "Для этого прогона доступен только PDF-отчёт.",
   "prose.evaluatingSecurityControlsMatrix": "Оцениваем матрицу контролей безопасности…",
-  "prose.controlsMatrixTelemetryIsNot": "Телеметрия матрицы контролей для этого прогона недоступна (стадия не настроена или артефактов нет).",
-  "prose.evaluatedAcross6FoundationalExternal": "Оценка по шести базовым контролям внешней поверхности атаки согласно NIST SP 800-30 Rev. 1.",
+  "prose.controlsMatrixTelemetryIsNot":
+    "Телеметрия матрицы контролей для этого прогона недоступна (стадия не настроена или артефактов нет).",
+  "prose.evaluatedAcross6FoundationalExternal":
+    "Оценка по шести базовым контролям внешней поверхности атаки согласно NIST SP 800-30 Rev. 1.",
   "prose.assigneeBlankLeavesItAs": "Исполнитель (пусто — оставить как есть)",
-  "prose.unassignEverySelectedFindingInstead": "Вместо этого снять исполнителя со всех выбранных находок",
+  "prose.unassignEverySelectedFindingInstead":
+    "Вместо этого снять исполнителя со всех выбранных находок",
   "prose.ownerTeamBlankLeavesIt": "Команда-владелец (пусто — оставить как есть)",
   "prose.clearTheOwningTeamOn": "Вместо этого очистить команду-владельца у всех выбранных находок",
   "prose.suppressReopeningForDays1365": "Не переоткрывать в течение (дней, 1–365)",
   "prose.withdrawFromScope": "Убрать из области",
   "prose.loadingOrganizationProfileAndRelated": "Загружаем профиль организации и связанные домены…",
-  "prose.organizationProfileTelemetryIsNot": "Телеметрия профиля организации для этого прогона недоступна.",
-  "prose.everyOrdinaryScanOfThis": "Каждый обычный скан этого тенанта берёт эти домены вдобавок к собственным целям.",
-  "prose.nothingPromotedYetPromoteA": "Пока ничего не продвинуто. Продвиньте найденный домен ниже, чтобы он попадал в каждый следующий скан.",
+  "prose.organizationProfileTelemetryIsNot":
+    "Телеметрия профиля организации для этого прогона недоступна.",
+  "prose.everyOrdinaryScanOfThis":
+    "Каждый обычный скан этого тенанта берёт эти домены вдобавок к собственным целям.",
+  "prose.nothingPromotedYetPromoteA":
+    "Пока ничего не продвинуто. Продвиньте найденный домен ниже, чтобы он попадал в каждый следующий скан.",
   "prose.noRelatedDomainCandidatesMatch": "Под выбранный фильтр кандидатов в связанные домены нет.",
   "prose.downloadSarifjson": "Скачать sarif.json",
   "prose.noSarifFindingsMatchCurrent": "Под текущие фильтры находок SARIF нет.",
   "prose.noRulesMetadataDefinedIn": "В драйвере SARIF не описаны метаданные правил.",
-  "prose.appliedToEveryRenderedReport": "Применяется ко всем формируемым отчётам этого тенанта. Только для администратора.",
+  "prose.appliedToEveryRenderedReport":
+    "Применяется ко всем формируемым отчётам этого тенанта. Только для администратора.",
 
   "ui.acceptedRisk": "Принятый риск",
   "ui.adoption": "Внедрение",
@@ -2518,7 +3009,7 @@ export const ru: Record<MsgKey, string> = {
   "ui.jobExecutionMode": "Режим выполнения заданий",
   "ui.kubernetesDeploymentManifest": "Манифест Kubernetes",
   "ui.kubernetesSecretCommand": "Secret с ключом провижининга",
-  "ui.lastRetentionSweep": "Последняя чистка по retention",
+  "ui.lastRetentionSweep": "Последняя очистка по сроку хранения",
   "ui.lastUsed": "Последнее использование",
   "ui.lowRisk": "Низкий риск",
   "ui.matchedCves": "Сопоставленные CVE",
@@ -2552,15 +3043,15 @@ export const ru: Record<MsgKey, string> = {
   "ui.recurrence": "Повторение",
   "ui.report": "Отчёт",
   "ui.resolutionNoteContext": "Примечание к решению",
-  "ui.retentionJob": "Задание retention",
+  "ui.retentionJob": "Автоматическая очистка по сроку хранения",
   "ui.scanIntent": "Назначение скана",
   "ui.scannerConfigurationTuner": "Настройка сканера",
   "ui.scanningIsPausedByTheMaintenance": "Сканирование приостановлено календарём обслуживания",
   "ui.scopes": "Области доступа",
-  "ui.serviceProbeBackend": "Бэкенд определения сервисов",
+  "ui.serviceProbeBackend": "Сканер определения сервисов",
   "ui.setAssetContext": "Задать контекст актива",
   "ui.severity": "Серьёзность",
-  "ui.softwareRowsChangeEvents": "Строк ПО / событий изменений",
+  "ui.softwareRowsChangeEvents": "Срок хранения данных ПО / истории изменений",
   "ui.source": "Источник",
   "ui.falsePositives": "Ложные",
   "ui.rate": "Доля",
@@ -2596,9 +3087,11 @@ export const ru: Record<MsgKey, string> = {
   "asset.back": "К списку активов",
   "asset.loadingView": "Загружаем карточку безопасности актива…",
   "asset.endpointTitle": "Конечная точка (Lariska)",
-  "asset.endpointConflict": "Платформенный идентификатор этого устройства уже занят другой конечной точкой в этом тенанте. Автоматически не объединено — разберите вручную.",
+  "asset.endpointConflict":
+    "Платформенный идентификатор этого устройства уже занят другой конечной точкой в этом тенанте. Автоматически не объединено — разберите вручную.",
   "asset.endpointChecking": "Проверяем, есть ли связанный агент…",
-  "asset.endpointNone": "С этим сетевым активом пока не сопоставлен ни один агент Lariska. Установите endpoint-агента с ключом провижининга тенанта; инвентарь свяжется здесь по имени хоста или платформенным идентификаторам.",
+  "asset.endpointNone":
+    "С этим сетевым активом пока не сопоставлен ни один агент Lariska. Установите агент устройства с ключом регистрации арендатора; инвентарь свяжется здесь по имени хоста или платформенным идентификаторам.",
   "asset.endpointBrowse": "К конечным точкам",
   "asset.missingParam": "В запросе не хватает параметра assetId.",
   "asset.businessContext": "Бизнес-контекст",
@@ -2606,14 +3099,17 @@ export const ru: Record<MsgKey, string> = {
   "asset.noSoftware": "Установленного ПО для этой конечной точки не записано.",
   "asset.postureConfigurator": "Настройка профиля актива",
   "asset.decommissionTitle": "Вывести актив из эксплуатации?",
-  "asset.decommissionBody": "Актив будет помечен как выведенный. Вывод фиксируется в состоянии Postgres.",
+  "asset.decommissionBody":
+    "Актив будет помечен как выведенный. Вывод фиксируется в состоянии Postgres.",
   "asset.decommissionConfirm": "Вывести актив",
   "asset.contextHistory": "История контекста",
   "asset.contextLoading": "Загружаем изменения контекста…",
   "asset.contextEmpty": "Изменений бизнес-контекста пока не записано.",
   "asset.contextTrail": "Журнал изменений контекста актива",
-  "asset.contextWrittenBy": "Контекст последний раз записал {source} — экспозиция это решение оператора, а не измерение скана.",
-  "asset.endpointStale": "Инвентарь не приходил дольше настроенного окна устаревания — конечная точка может быть офлайн.",
+  "asset.contextWrittenBy":
+    "Контекст последний раз записал {source} — экспозиция это решение оператора, а не измерение скана.",
+  "asset.endpointStale":
+    "Инвентарь не приходил дольше настроенного окна устаревания — конечная точка может быть офлайн.",
   "asset.criticalityUnset": "Критичность не задана",
   "asset.noBusinessService": "Сервис не задан",
   "asset.noOwner": "Владелец не назначен",
@@ -2623,7 +3119,8 @@ export const ru: Record<MsgKey, string> = {
   "asset.kpi.unassigned": "Без исполнителя",
   "asset.kpi.unassignedHint": "нужен ответственный за устранение",
   "asset.kpi.breachedHint": "начните с них",
-  "asset.alert.requiredNow": "Требуется сейчас: {what}. Владелец актива — {owner}; назначьте его или передайте находки ниже.",
+  "asset.alert.requiredNow":
+    "Требуется сейчас: {what}. Владелец актива — {owner}; назначьте его или передайте находки ниже.",
   "asset.alert.breached": "находок с нарушенным SLA: {count}",
   "asset.alert.unassigned": "без исполнителя: {count}",
   "asset.alert.and": " и ",
@@ -2631,7 +3128,8 @@ export const ru: Record<MsgKey, string> = {
   "asset.tab.software": "ПО ({count})",
   "asset.tab.evidence": "Свидетельства скана",
   "asset.tab.history": "История",
-  "asset.findings.intro": "Рабочий набор отслеживаемых находок — жизненный цикл, владелец и следующее требуемое действие.",
+  "asset.findings.intro":
+    "Рабочий набор отслеживаемых находок — жизненный цикл, владелец и следующее требуемое действие.",
   "asset.findings.showing": "Показано {shown} из {total}.",
   "asset.findings.openInCenter": "Открыть в центре уязвимостей",
   "asset.findings.remediationBoard": "Доска устранения",
@@ -2662,7 +3160,8 @@ export const ru: Record<MsgKey, string> = {
   "asset.empty.notAlive": "В последнем прогоне этот актив не был определён как живой.",
   "asset.empty.noIpIdentifier": "Нет IP-идентификатора — сопоставить находки скана нельзя.",
   "asset.empty.correlating": "Сопоставляем находки из потока сканов…",
-  "asset.empty.noScanFindings": "Находок уязвимостей для этого актива в последнем прогоне не обнаружено.",
+  "asset.empty.noScanFindings":
+    "Находок уязвимостей для этого актива в последнем прогоне не обнаружено.",
   "asset.empty.loadingSoftware": "Загружаем установленное ПО…",
   "asset.software.search": "Поиск по установленному ПО…",
   "asset.edit.criticality": "Критичность актива (0–4)",
@@ -2728,7 +3227,8 @@ export const ru: Record<MsgKey, string> = {
   "agents.clientCerts.locked": "заблокированы отзывом до сброса регистрации: {count}",
   "agents.clientCerts.lockedIds": "Заблокированы: {ids}",
   "agents.clientCerts.conflicts": "отклонены, пока их сертификат у другого хоста: {count}",
-  "agents.clientCerts.hint": "Режим: {mode}. Сенсор сам продлевает выпущенный ему сертификат, смонтированный продлевает cert-manager. Истёкший сертификат сенсор больше не предъявляет: выпущенный ему он перевыпускает сам, а со смонтированным остаётся без сертификата — в режиме optional это не мешает, в required сенсор отклоняется, пока сертификат не продлят. См. раздел Sensor client certificates в руководстве по эксплуатации.",
+  "agents.clientCerts.hint":
+    "Режим: {mode}. Сенсор сам продлевает выпущенный ему сертификат, смонтированный продлевает cert-manager. Истёкший сертификат сенсор больше не предъявляет: выпущенный ему он перевыпускает сам, а со смонтированным остаётся без сертификата — в режиме optional это не мешает, в required сенсор отклоняется, пока сертификат не продлят. См. раздел Sensor client certificates в руководстве по эксплуатации.",
   "adoption.closed": "Закрыто",
   "adoption.confirmedByScan": "Подтверждено сканом",
   "adoption.closedWithinSla": "Закрыто в срок SLA",
@@ -2764,7 +3264,8 @@ export const ru: Record<MsgKey, string> = {
   "empty.remediation": "Активности по устранению пока нет.",
   "empty.tenants": "Тенанты не заведены.",
   "empty.tenantsInScope": "Тенантов в области видимости нет.",
-  "empty.trackedFindings": "Под эти фильтры отслеживаемых находок нет. Находки появляются здесь после того, как скан увидит их на активе.",
+  "empty.trackedFindings":
+    "Под эти фильтры отслеживаемых находок нет. Находки появляются здесь после того, как скан увидит их на активе.",
   "loading.exposure": "Загружаем заявленную экспозицию…",
   "loading.schedules": "Загружаем расписания сканов…",
   "loading.tenantPosture": "Сравниваем состояние тенантов…",
@@ -2784,12 +3285,15 @@ export const ru: Record<MsgKey, string> = {
   "graph.aria.surface": "Граф поверхности атаки: имена хостов → IP → порты → сервисы",
 
   "page.vulns.title": "Уязвимости",
-  "page.vulns.subtitle": "Отслеживаемые находки по ландшафту. Жизненный цикл, владелец и SLA живут на находке, не на последнем скане.",
+  "page.vulns.subtitle":
+    "Отслеживаемые находки по ландшафту. Жизненный цикл, владелец и SLA живут на находке, не на последнем скане.",
   "page.remediation.title": "Устранение",
-  "page.remediation.subtitle": "От обнаружения до подтверждённого закрытия. Перетащите карточку на допустимую колонку.",
+  "page.remediation.subtitle":
+    "От обнаружения до подтверждённого закрытия. Перетащите карточку на допустимую колонку.",
   "assetImport.button": "Импорт…",
   "assetImport.title": "Импорт активов из CMDB / AD",
-  "assetImport.description": "Выгрузка CSV или JSON. Строки сопоставляются по asset_id, ip или fqdn; пустые ячейки поля не меняют. Сначала предпросмотр — ничего не записывается, пока вы не примените.",
+  "assetImport.description":
+    "Выгрузка CSV или JSON. Строки сопоставляются по asset_id, ip или fqdn; пустые ячейки поля не меняют. Сначала предпросмотр — ничего не записывается, пока вы не примените.",
   "assetImport.file": "Файл",
   "assetImport.fileInfo": "{name} · {format} · {encoding}",
   "assetImport.source": "Источник",
@@ -2815,7 +3319,8 @@ export const ru: Record<MsgKey, string> = {
   "assetImport.preview": "Предпросмотр",
   "assetImport.apply": "Применить",
   "page.assets.title": "Активы",
-  "page.assets.subtitle": "Инвентарь между прогонами. Владелец, сервис и экспозиция задаёт оператор — свидетельство скана вторично.",
+  "page.assets.subtitle":
+    "Инвентарь между прогонами. Владелец, сервис и экспозиция задаёт оператор — свидетельство скана вторично.",
   "page.assets.identifiers": "{count} идентификаторов",
   "page.assets.identifierOne": "{count} идентификатор",
   "page.assets.identifiersFew": "{count} идентификатора",
@@ -2840,15 +3345,20 @@ export const ru: Record<MsgKey, string> = {
   "page.tenants.title": "Арендаторы",
   "page.tenants.subtitle": "Поза заказчиков MSSP. Провижининг — только администратор.",
   "page.agents.title": "Флот сенсоров",
-  "page.agents.subtitle": "Удалённые сканирующие узлы, забирающие задания. «Stale» считается по last_seen, это не хранимый флаг.",
-  "page.agents.listTakesOperator": "Список сенсоров доступен с ролью оператора в этом тенанте. Развернуть сенсор можно и без неё: диалог выше выпускает ключ провижининга, с которым он регистрируется.",
+  "page.agents.subtitle":
+    "Удалённые сканирующие узлы, забирающие задания. «Stale» считается по last_seen, это не хранимый флаг.",
+  "page.agents.listTakesOperator":
+    "Список сенсоров доступен с ролью оператора в этом тенанте. Развернуть сенсор можно и без неё: диалог выше выпускает ключ провижининга, с которым он регистрируется.",
   "page.jobs.title": "Оркестратор заданий сканирования",
-  "page.jobs.subtitle": "Очередь, выдача и завершение сканов. Локальное исполнение идёт рядом с API.",
+  "page.jobs.subtitle":
+    "Очередь, выдача и завершение сканов. Локальное исполнение идёт рядом с API.",
   "page.jobs.orchestration": "Оркестрация заданий сканирования",
   "page.schedules.title": "Расписания непрерывного сканирования",
-  "page.schedules.subtitle": "Повторяющиеся сканы арендатора. Диспетчер работает на одной реплике API.",
+  "page.schedules.subtitle":
+    "Повторяющиеся сканы арендатора. Диспетчер работает на одной реплике API.",
   "page.wordlists.title": "Словари brute-force",
-  "page.wordlists.subtitle": "Списки арендатора для стадий перебора. Выключены, пока не привязаны к заданию.",
+  "page.wordlists.subtitle":
+    "Списки арендатора для стадий перебора. Выключены, пока не привязаны к заданию.",
   "page.runs.title": "Прогоны конвейера",
   "page.runs.subtitle": "История сканов арендатора и артефакты.",
   "endpoint.sources.degraded": "Источники с неполным сбором",
@@ -2868,17 +3378,22 @@ export const ru: Record<MsgKey, string> = {
   "page.reports.title": "Отчёты",
   "page.reports.subtitle": "PDF и артефакты завершённых прогонов.",
   "page.system.title": "Телеметрия и конфигурация",
-  "page.system.subtitle": "Версии, зависимости, тайминги стадий и runtime. Правки — администратор.",
+  "page.system.subtitle":
+    "Версии, зависимости, время выполнения стадий и состояние сервисов. Изменять настройки может администратор.",
   "page.system.enrichment.stub":
     "Файл на месте и читается, но меньше того, что публикует настоящий фид: в сборке сид либо обновление вернуло обрезанный документ. Вне покрытия сопоставление отвечает «неизвестно».",
-  "page.exposure.alert": "Считать интернет-facing по публичным адресам — выдать эвристику за факт. Отметьте экспозицию на карточке актива; этот список — то решение.",
-  "page.threats.alert": "Членство в KEV копируется с последнего наблюдения на отслеживаемую находку и переживает обрезку прогонов. Цепочки атаки не моделируются.",
+  "page.exposure.alert":
+    "Считать интернет-facing по публичным адресам — выдать эвристику за факт. Отметьте экспозицию на карточке актива; этот список — то решение.",
+  "page.threats.alert":
+    "Членство в KEV копируется с последнего наблюдения на отслеживаемую находку и переживает обрезку прогонов. Цепочки атаки не моделируются.",
   "page.jobs.denied": "Запускать и смотреть задания сканирования могут оператор или администратор.",
   "page.schedules.denied": "Управлять расписаниями могут оператор или администратор.",
   "page.tenants.denied": "Управлять арендаторами могут оператор или администратор.",
   "page.wordlists.denied": "Управлять словарями могут оператор или администратор.",
-  "page.attack.topologyHint": "Граф одного скана: имя → IP → порт → сервис — не путь атаки и не карта интернет-экспозиции.",
-  "page.attack.ownerHint": "Что этот владелец открывает в одном скане — unit/owner оператора, иначе регистрируемый домен. Это не путь атаки.",
+  "page.attack.topologyHint":
+    "Граф одного скана: имя → IP → порт → сервис — не путь атаки и не карта интернет-экспозиции.",
+  "page.attack.ownerHint":
+    "Что этот владелец открывает в одном скане — unit/owner оператора, иначе регистрируемый домен. Это не путь атаки.",
   "page.geo.noRuns": "Нет прогонов",
   "page.geo.noRunsBody": "Запустите задание сканирования, чтобы разместить хосты на карте.",
   "page.geo.countries": "Страны",
@@ -2892,7 +3407,8 @@ export const ru: Record<MsgKey, string> = {
   "page.geo.noGeo": "Ни один хост этого прогона не имеет позиции GeoIP.",
   "page.geo.selectLocation": "Выберите точку на карте.",
   "page.geo.unlocatedTitle": "Хосты без координат ({count})",
-  "page.geo.unlocatedHint": "Нет записи GeoIP и нет страны для запасного варианта — частные адреса или установка без базы GeoIP. Перечислены, а не отброшены, чтобы карта не читалась как весь ландшафт.",
+  "page.geo.unlocatedHint":
+    "Нет записи GeoIP и нет страны для запасного варианта — частные адреса или установка без базы GeoIP. Перечислены, а не отброшены, чтобы карта не читалась как весь ландшафт.",
   "page.reports.noPdf": "Для этого прогона нет PDF-отчёта.",
   "page.reports.runArtifacts": "Артефакты прогонов",
   "page.endpoints.recent": "Недавние изменения ПО",
@@ -2904,7 +3420,8 @@ export const ru: Record<MsgKey, string> = {
   "page.endpoints.showStaleOnly": "Только устаревшие",
   "page.endpoints.filter": "Фильтр",
   "page.endpoints.filterAllStatuses": "Любой статус",
-  "page.endpoints.note": "Каждая строка — хост под управлением Lariska. {linked} означает, что инвентарь привязан к активу сетевого скана (по имени хоста или идентификаторам). Откройте актив, чтобы увидеть уязвимости Pulse, порты и установленное ПО вместе.",
+  "page.endpoints.note":
+    "Каждая строка — хост под управлением Lariska. {linked} означает, что инвентарь привязан к активу сетевого скана (по имени хоста или идентификаторам). Откройте актив, чтобы увидеть уязвимости Pulse, порты и установленное ПО вместе.",
   "page.endpoints.searchPlaceholder": "Поиск по имени хоста или ID",
   "page.endpoints.openAsset": "Открыть актив",
   "page.endpoints.lariskaHint": "Агенты Lariska · инвентарь ПО, сопоставленный с сетевыми активами",
@@ -2936,9 +3453,12 @@ export const ru: Record<MsgKey, string> = {
   "patchGap.cvesClosed": "CVE закроется обновлением",
   "patchGap.devices": "устройств затронуто",
   "patchGap.unfixed": "без выпущенного исправления",
-  "patchGap.unfixedHint": "Вендор подтверждает уязвимость, но исправленной версии ещё нет. Обновление их не закроет.",
-  "patchGap.unfixedDetail": "У {count} находок нет выпущенного исправления — обновление их не закроет.",
-  "patchGap.hint": "Строка на хост: пакеты, отставшие от выпущенного исправления, и сколько CVE закроет обновление. Пакеты с уже применённым бэкпортом в список не попадают.",
+  "patchGap.unfixedHint":
+    "Вендор подтверждает уязвимость, но исправленной версии ещё нет. Обновление их не закроет.",
+  "patchGap.unfixedDetail":
+    "У {count} находок нет выпущенного исправления — обновление их не закроет.",
+  "patchGap.hint":
+    "Строка на хост: пакеты, отставшие от выпущенного исправления, и сколько CVE закроет обновление. Пакеты с уже применённым бэкпортом в список не попадают.",
   "patchGap.packagesOn": "пакетов: {count}",
   "patchGap.closes": "закроет {count}",
   "patchGap.truncated": "Показаны только худшие устройства; итоги посчитаны по всему тенанту.",
@@ -3037,8 +3557,7 @@ export const ru: Record<MsgKey, string> = {
   "retro.queued.one": "В очередь поставлен {count} сервис; воркер перепроверит его в фоне.",
   "retro.queued.few": "В очередь поставлено {count} сервиса; воркер перепроверит их в фоне.",
   "retro.queued.many": "В очередь поставлено {count} сервисов; воркер перепроверит их в фоне.",
-  "retro.disabled":
-    "Ретро-сопоставление выключено на этой инсталляции (OCTO_RETRO_MATCH_ENABLED).",
+  "retro.disabled": "Ретро-сопоставление выключено на этой инсталляции (OCTO_RETRO_MATCH_ENABLED).",
   "retro.workerStopped":
     "Ретро-воркер не запущен на этом экземпляре API — очередь ждёт, пока он появится.",
   "retro.noDataset": "Набор диапазонов CPE из NVD не загружен, сопоставлять не с чем.",
@@ -3106,7 +3625,8 @@ export const ru: Record<MsgKey, string> = {
   // Per-tenant usage metering and quotas.
   "nav.usage": "Потребление",
   "page.usage.title": "Потребление",
-  "page.usage.subtitle": "Сколько арендатор израсходовал от своей квоты за период. Считается здесь, по таблицам этого арендатора; отсутствие потолка — это «без ограничений», а не большое число.",
+  "page.usage.subtitle":
+    "Сколько арендатор израсходовал от своей квоты за период. Считается здесь, по таблицам этого арендатора; отсутствие потолка — это «без ограничений», а не большое число.",
   "page.usage.period": "Период",
   "page.usage.enforcement": "Применение",
   "page.usage.enforcedOn": "Включено — работа сверх потолка отклоняется",
@@ -3124,10 +3644,12 @@ export const ru: Record<MsgKey, string> = {
   "page.usage.overLimit": "Сверх лимита",
   "page.usage.nearLimit": "Близко к лимиту",
   "page.usage.history": "Объём сканов за 12 месяцев",
-  "page.usage.historyHint": "Сканы по календарным месяцам — тот же счёт, по которому проверяется месячная квота.",
+  "page.usage.historyHint":
+    "Сканы по календарным месяцам — тот же счёт, по которому проверяется месячная квота.",
   "page.usage.historyEmpty": "За это окно сканов не было.",
   "page.usage.fleet": "Арендаторы против своих квот",
-  "page.usage.fleetHint": "Вид администратора платформы. Сначала те, кто ближе всего к потолку; пустое поле — без ограничений.",
+  "page.usage.fleetHint":
+    "Вид администратора платформы. Сначала те, кто ближе всего к потолку; пустое поле — без ограничений.",
   "page.usage.fleetEmpty": "Ни один арендатор не учитывается.",
   "page.usage.col.tenant": "Арендатор",
   "page.usage.col.assets": "Активы",
@@ -3142,17 +3664,21 @@ export const ru: Record<MsgKey, string> = {
   "page.usage.close": "Закрыть",
   "page.usage.cancel": "Отмена",
   "page.usage.inheritPlaceholder": "Унаследовано",
-  "page.usage.editorInherited": "У арендатора нет своей квоты — поля пусты, потому что он следует умолчанию платформы. Сохранение закрепит введённые значения за этим арендатором.",
-  "page.usage.editorTenant": "Задано для этого арендатора. Пустое поле означает «без ограничений» для него, а не наследование — для этого используйте сброс.",
+  "page.usage.editorInherited":
+    "У арендатора нет своей квоты — поля пусты, потому что он следует умолчанию платформы. Сохранение закрепит введённые значения за этим арендатором.",
+  "page.usage.editorTenant":
+    "Задано для этого арендатора. Пустое поле означает «без ограничений» для него, а не наследование — для этого используйте сброс.",
   "page.usage.reset": "Вернуть умолчание платформы",
   "page.usage.resetting": "Сброс…",
   "page.usage.resetConfirmTitle": "Вернуть {tenant} к умолчанию платформы?",
-  "page.usage.resetConfirmBody": "Собственная строка квоты арендатора будет удалена вместе с примечанием. Дальше он следует умолчанию платформы и меняется вместе с ним.",
+  "page.usage.resetConfirmBody":
+    "Собственная строка квоты арендатора будет удалена вместе с примечанием. Дальше он следует умолчанию платформы и меняется вместе с ним.",
   "page.usage.loading": "Загрузка…",
 
   "scanScope.action": "Область сканирования",
   "scanScope.dialogTitle": "Область сканирования — {tenant}",
-  "scanScope.dialogDescription": "На что арендатору разрешено направлять платформу. Утверждение заменяет всю область целиком, поэтому редактор начинается с того, что утверждено сейчас.",
+  "scanScope.dialogDescription":
+    "На что арендатору разрешено направлять платформу. Утверждение заменяет всю область целиком, поэтому редактор начинается с того, что утверждено сейчас.",
   "scanScope.current": "Утверждено сейчас",
   "scanScope.loading": "Загрузка утверждённой области…",
   "scanScope.loadFailed": "Не удалось загрузить область сканирования",
@@ -3164,22 +3690,28 @@ export const ru: Record<MsgKey, string> = {
   "scanScope.col.approvedBy": "Утвердил",
   "scanScope.col.approvedAt": "Утверждено",
   "scanScope.editor": "Область к утверждению",
-  "scanScope.ruleDeny": "Запрет сильнее разрешения и срабатывает по пересечению: диапазон отклоняется, если он вообще задевает запрещённый.",
-  "scanScope.ruleAllow": "Разрешение — это вложенность: диапазон, половина которого не утверждена, не утверждён наполовину.",
-  "scanScope.ruleEmpty": "Пустой список означает запрет на сканирование. Литерал * — явный подстановочный знак «любое значение».",
+  "scanScope.ruleDeny":
+    "Запрет сильнее разрешения и срабатывает по пересечению: диапазон отклоняется, если он вообще задевает запрещённый.",
+  "scanScope.ruleAllow":
+    "Разрешение — это вложенность: диапазон, половина которого не утверждена, не утверждён наполовину.",
+  "scanScope.ruleEmpty":
+    "Пустой список означает запрет на сканирование. Литерал * — явный подстановочный знак «любое значение».",
   "scanScope.valuePlaceholder": "10.0.0.0/24, example.test или *",
   "scanScope.notePlaceholder": "почему это в области",
   "scanScope.addRow": "Добавить запись",
   "scanScope.removeRow": "Удалить запись",
   "scanScope.approve": "Утвердить область",
   "scanScope.approving": "Утверждение…",
-  "scanScope.emptyWarning": "Вы утверждаете пустую область: арендатор не сможет сканировать ничего.",
+  "scanScope.emptyWarning":
+    "Вы утверждаете пустую область: арендатор не сможет сканировать ничего.",
   "scanScope.errValueRequired": "Строка {row}: значение обязательно.",
   "scanScope.warnCidr": "Не похоже на IP-адрес, CIDR или * — будет отправлено как есть.",
   "scanScope.warnDomain": "В домене обычно не бывает пробелов — будет отправлено как есть.",
-  "scanScope.serverAuthority": "Пометки под строкой — предупреждения, а не запрет: отправку останавливает только пустое значение. Что принять, решает API, и его отказ показывается его же текстом.",
+  "scanScope.serverAuthority":
+    "Пометки под строкой — предупреждения, а не запрет: отправку останавливает только пустое значение. Что принять, решает API, и его отказ показывается его же текстом.",
   "scanScope.promoted": "Продвинутые связанные домены",
-  "scanScope.promotedHint": "Добавлены операторами арендатора под этой областью и передаются с каждым запущенным ими сканом. Здесь только чтение; отзывает их оператор в профиле организации.",
+  "scanScope.promotedHint":
+    "Добавлены операторами арендатора под этой областью и передаются с каждым запущенным ими сканом. Здесь только чтение; отзывает их оператор в профиле организации.",
   "scanScope.promotedEmpty": "Связанные домены не продвигались.",
   "scanScope.promotedFailed": "Не удалось загрузить продвинутые домены",
   "scanScope.col.domain": "Домен",
@@ -3188,12 +3720,15 @@ export const ru: Record<MsgKey, string> = {
   "scanScope.denied": "Утверждать область сканирования арендатора может только администратор.",
   // --- data retention, legal hold, personal data requests (#332) ---
   "retention.title": "Хранение данных",
-  "retention.subtitle": "Сколько хранятся данные каждого вида для {tenant} и наложено ли юридическое удержание.",
-  "retention.denied": "Для просмотра политики хранения нужно разрешение tenant.retention.read в этом арендаторе.",
+  "retention.subtitle":
+    "Сколько хранятся данные каждого вида для {tenant} и наложено ли юридическое удержание.",
+  "retention.denied":
+    "Для просмотра политики хранения нужно разрешение tenant.retention.read в этом арендаторе.",
   "retention.loading": "Загрузка политики хранения…",
   "retention.loadFailed": "Не удалось загрузить политику хранения",
   "retention.windows": "Сроки хранения",
-  "retention.windowsHint": "Пустое поле наследует значение платформы. Значение должно укладываться в границы платформы; нижняя граница журнала аудита не позволяет сократить его ниже требований соответствия. Сокращённый срок удаляет данные при следующей очистке.",
+  "retention.windowsHint":
+    "Пустое поле наследует значение платформы. Значение должно укладываться в границы платформы; нижняя граница журнала аудита не позволяет сократить его ниже требований соответствия. Сокращённый срок удаляет данные при следующей очистке.",
   "retention.col.category": "Данные",
   "retention.col.default": "По умолчанию",
   "retention.col.bounds": "Допустимо",
@@ -3223,7 +3758,8 @@ export const ru: Record<MsgKey, string> = {
   "retention.category.auditEvents": "Журнал аудита",
   "retention.hold.title": "Юридическое удержание",
   "retention.hold.active": "Удержание действует с {since}",
-  "retention.hold.activeHint": "Пока удержание не снято, ни одна очистка не удаляет данные арендатора, а сам арендатор не может быть удалён.",
+  "retention.hold.activeHint":
+    "Пока удержание не снято, ни одна очистка не удаляет данные арендатора, а сам арендатор не может быть удалён.",
   "retention.hold.reasonShown": "{reason} — наложил {who}",
   "retention.hold.none": "Удержание не наложено.",
   "retention.hold.reason": "Основание удержания",
@@ -3232,35 +3768,45 @@ export const ru: Record<MsgKey, string> = {
   "retention.hold.update": "Изменить основание",
   "retention.hold.release": "Снять удержание",
   "retention.hold.releaseTitle": "Снять юридическое удержание с {tenant}?",
-  "retention.hold.releaseHint": "Очистки возобновятся при следующем запуске и удалят всё, что удержание сохранило сверх срока. Отменить это нельзя.",
-  "retention.hold.platformOnly": "Накладывать и снимать удержание могут только администраторы платформы.",
+  "retention.hold.releaseHint":
+    "Очистки возобновятся при следующем запуске и удалят всё, что удержание сохранило сверх срока. Отменить это нельзя.",
+  "retention.hold.platformOnly":
+    "Накладывать и снимать удержание могут только администраторы платформы.",
   "lifecycle.action": "Жизненный цикл",
   "lifecycle.dialogTitle": "Жизненный цикл: {tenant}",
-  "lifecycle.dialogDescription": "Приостановка, возобновление и удаление арендатора. Каждое изменение требует недавнего второго фактора и записывается в журнал аудита платформы.",
+  "lifecycle.dialogDescription":
+    "Приостановка, возобновление и удаление арендатора. Каждое изменение требует недавнего второго фактора и записывается в журнал аудита платформы.",
   "lifecycle.loading": "Загрузка жизненного цикла…",
   "lifecycle.loadFailed": "Не удалось загрузить жизненный цикл арендатора",
   "lifecycle.reasonShown": "{reason} — {who}, {when}",
   "lifecycle.hold": "Юридическое удержание с {since}",
-  "lifecycle.holdBlocks": "Пока действует удержание, арендатора нельзя удалить, а начатая очистка останавливается.",
+  "lifecycle.holdBlocks":
+    "Пока действует удержание, арендатора нельзя удалить, а начатая очистка останавливается.",
   "lifecycle.reason": "Причина приостановки",
   "lifecycle.reasonPlaceholder": "номер заявки или договора и причина",
   "lifecycle.revoke": "Отозвать ключи регистрации и сервисные токены арендатора",
-  "lifecycle.suspendHint": "Участники без другого активного арендатора выходят из системы, сканирования в очереди отменяются, идущие останавливаются, расписания и уведомления приостанавливаются. Отозванные учётные данные после возобновления не восстанавливаются.",
+  "lifecycle.suspendHint":
+    "Участники без другого активного арендатора выходят из системы, сканирования в очереди отменяются, идущие останавливаются, расписания и уведомления приостанавливаются. Отозванные учётные данные после возобновления не восстанавливаются.",
   "lifecycle.suspend": "Приостановить",
   "lifecycle.resume": "Возобновить",
-  "lifecycle.resumeHint": "Расписания продолжатся со следующего срабатывания, пропущенные запуски не повторяются. Для отозванного выпустите новые ключи и токены.",
+  "lifecycle.resumeHint":
+    "Расписания продолжатся со следующего срабатывания, пропущенные запуски не повторяются. Для отозванного выпустите новые ключи и токены.",
   "lifecycle.requestDeletion": "Запросить удаление",
-  "lifecycle.requestHint": "Шаг первый из двух: арендатор приостанавливается сразу, очистку можно одобрить через {days} дн.",
+  "lifecycle.requestHint":
+    "Шаг первый из двух: арендатор приостанавливается сразу, очистку можно одобрить через {days} дн.",
   "lifecycle.deleteTitle": "Запросить удаление {tenant}?",
-  "lifecycle.deleteHint": "Арендатор приостанавливается сразу. {days} дн. запрос можно отменить без потерь, затем администратор платформы может одобрить очистку, которую нельзя отменить.",
+  "lifecycle.deleteHint":
+    "Арендатор приостанавливается сразу. {days} дн. запрос можно отменить без потерь, затем администратор платформы может одобрить очистку, которую нельзя отменить.",
   "lifecycle.deletionReason": "Причина удаления",
   "lifecycle.typeToConfirm": "Введите {tenant} для подтверждения",
   "lifecycle.pending": "Удаление запросил {who}; очистку можно одобрить после {after}.",
-  "lifecycle.twoPerson": "Очистку должен одобрить другой администратор платформы, не автор запроса.",
+  "lifecycle.twoPerson":
+    "Очистку должен одобрить другой администратор платформы, не автор запроса.",
   "lifecycle.cancel": "Отменить удаление",
   "lifecycle.approve": "Одобрить очистку",
   "lifecycle.approveTitle": "Начать очистку {tenant}?",
-  "lifecycle.approveHint": "Из всех хранилищ удаляются данные арендатора: строки, архивы запусков, отчёты, аналитика и темы брокера. Журнал аудита сохраняется. Отменить это нельзя.",
+  "lifecycle.approveHint":
+    "Из всех хранилищ удаляются данные арендатора: строки, архивы запусков, отчёты, аналитика и темы брокера. Журнал аудита сохраняется. Отменить это нельзя.",
   "lifecycle.purging": "Очистка одобрена ({who}) и выполняется.",
   "lifecycle.blocked": "Очистка остановлена юридическим удержанием. Повторите после его снятия.",
   "lifecycle.retry": "Повторить сейчас",
@@ -3273,7 +3819,8 @@ export const ru: Record<MsgKey, string> = {
   "lifecycle.col.detail": "Удалено / последняя ошибка",
   "lifecycle.step.nothing": "—",
   "deletions.title": "Удалённые и удаляемые арендаторы",
-  "deletions.hint": "Журнал удалений: каждый запрос, его состояние, а для завершённой очистки — что удалено из каждого хранилища. После восстановления из бэкапа, сделанного раньше, завершённые удаления нужно применить заново.",
+  "deletions.hint":
+    "Журнал удалений: каждый запрос, его состояние, а для завершённой очистки — что удалено из каждого хранилища. После восстановления из бэкапа, сделанного раньше, завершённые удаления нужно применить заново.",
   "deletions.empty": "Ни один арендатор не удалялся.",
   "deletions.loadFailed": "Не удалось загрузить журнал удалений",
   "deletions.col.tenant": "Арендатор",
@@ -3286,9 +3833,11 @@ export const ru: Record<MsgKey, string> = {
   "deletions.skipped": "пропущено: {stores}",
   "deletions.more": "Показать более ранние удаления",
   "retention.storedOutOfBounds": "вне допустимых границ",
-  "retention.storedOutOfBoundsHint": "Арендатор сохранил {days} дн., а границы платформы ({min}–{max}) это больше не допускают. Пока не сохранено значение в границах, очистка применяет ближайшую границу.",
+  "retention.storedOutOfBoundsHint":
+    "Арендатор сохранил {days} дн., а границы платформы ({min}–{max}) это больше не допускают. Пока не сохранено значение в границах, очистка применяет ближайшую границу.",
   "retention.register.title": "Действующие удержания",
-  "retention.register.hint": "Все арендаторы на юридическом удержании, от самого раннего. Реестр, который запрашивает аудитор; виден только администраторам платформы.",
+  "retention.register.hint":
+    "Все арендаторы на юридическом удержании, от самого раннего. Реестр, который запрашивает аудитор; виден только администраторам платформы.",
   "retention.register.empty": "Ни один арендатор не находится на удержании.",
   "retention.register.loadFailed": "Не удалось загрузить реестр удержаний",
   "retention.register.col.tenant": "Арендатор",
@@ -3296,13 +3845,15 @@ export const ru: Record<MsgKey, string> = {
   "retention.register.col.by": "Кто наложил",
   "retention.register.col.reason": "Причина",
   "retention.dsar.title": "Запросы субъектов персональных данных",
-  "retention.dsar.hint": "Выгрузка или удаление персональных данных одной учётной записи консоли. Удаление сохраняет имя пользователя как псевдоним — журнал аудита неизменяем и продолжает на него ссылаться — и удаляет адрес (в том числе из каналов уведомлений и расписаний отчётов), связь с поставщиком удостоверений, вторые факторы, сеансы, членства и созданные ею сервисные токены.",
+  "retention.dsar.hint":
+    "Выгрузка или удаление персональных данных одной учётной записи консоли. Удаление сохраняет имя пользователя как псевдоним — журнал аудита неизменяем и продолжает на него ссылаться — и удаляет адрес (в том числе из каналов уведомлений и расписаний отчётов), связь с поставщиком удостоверений, вторые факторы, сеансы, членства и созданные ею сервисные токены.",
   "retention.dsar.username": "Имя пользователя",
   "retention.dsar.export": "Выгрузить данные (JSON)",
   "retention.dsar.erase": "Удалить данные учётной записи",
   "retention.dsar.notSelf": "Нельзя удалить учётную запись, под которой вы вошли.",
   "retention.dsar.eraseTitle": "Удалить данные {username}?",
-  "retention.dsar.eraseHint": "Необратимо. Учётная запись отключается навсегда, всё, что связывает имя пользователя с человеком, удаляется. Для подтверждения введите имя пользователя.",
+  "retention.dsar.eraseHint":
+    "Необратимо. Учётная запись отключается навсегда, всё, что связывает имя пользователя с человеком, удаляется. Для подтверждения введите имя пользователя.",
   "retention.dsar.confirmLabel": "Введите {username} для подтверждения",
   "retention.dsar.erased": "Данные {username} удалены.",
   "retention.dsar.alreadyErased": "Данные {username} уже были удалены.",
@@ -3385,22 +3936,30 @@ export const ru: Record<MsgKey, string> = {
   "page.scans.all.title": "Задания сканирования",
   "page.scans.all.subtitle": "Все задания выбранного тенанта независимо от стороны периметра.",
   "page.scans.external.title": "Внешние сканы",
-  "page.scans.external.subtitle": "Что видит интернет: домены, публичные диапазоны, почтовая и DNS-поза.",
+  "page.scans.external.subtitle":
+    "Что видит интернет: домены, публичные диапазоны, почтовая и DNS-поза.",
   "page.scans.internal.title": "Внутренние сканы",
-  "page.scans.internal.subtitle": "Что внутри периметра: частные диапазоны через сенсоры или локальный исполнитель.",
-  "page.scans.denied": "Запускать и смотреть задания сканирования могут оператор или администратор.",
+  "page.scans.internal.subtitle":
+    "Что внутри периметра: частные диапазоны через сенсоры или локальный исполнитель.",
+  "page.scans.denied":
+    "Запускать и смотреть задания сканирования могут оператор или администратор.",
   "page.scans.launch": "Новый скан",
   "page.scans.hideLauncher": "Скрыть форму",
   "page.scans.recentRuns": "Последние прогоны",
-  "page.scans.recentRunsHint": "Последние завершённые прогоны на этой поверхности — откройте для находок, сущностей и артефактов.",
+  "page.scans.recentRunsHint":
+    "Последние завершённые прогоны на этой поверхности — откройте для находок, сущностей и артефактов.",
   "page.scans.allRuns": "Все прогоны",
   "page.scans.jobsHeading": "Задания",
-  "page.scans.jobsHint": "Очередь, исполнение и результат каждого задания. Клик по строке — полная запись.",
+  "page.scans.jobsHint":
+    "Очередь, исполнение и результат каждого задания. Клик по строке — полная запись.",
   "page.scans.scopeHint": "Принимаются только цели из утверждённой области сканирования тенанта.",
   "page.scans.manageScope": "Область сканирования",
-  "page.scans.mode.agent": "Задания раздаются сенсорам вместе с целью сканирования и переопределениями конфигуратора. Свои словари требуют локального исполнителя и отклоняются.",
-  "page.scans.mode.local": "Задания выполняются рядом с API. Частные диапазоны доступны только из этой сети.",
-  "page.scans.noSensor": "У этого тенанта нет актуальных сенсоров онлайн. Сканы принимаются и ждут в очереди, пока такой не появится: сенсор берёт задания только своего тенанта и останавливается, когда истекает его ключ регистрации.",
+  "page.scans.mode.agent":
+    "Задания раздаются сенсорам вместе с целью сканирования и переопределениями конфигуратора. Свои словари требуют локального исполнителя и отклоняются.",
+  "page.scans.mode.local":
+    "Задания выполняются рядом с API. Частные диапазоны доступны только из этой сети.",
+  "page.scans.noSensor":
+    "У этого тенанта нет актуальных сенсоров онлайн. Сканы принимаются и ждут в очереди, пока такой не появится: сенсор берёт задания только своего тенанта и останавливается, когда истекает его ключ регистрации.",
   "page.scans.noSensorLink": "Открыть флот сенсоров",
   "kpi.scans.running": "Выполняется",
   "kpi.scans.queued": "В очереди",
@@ -3418,42 +3977,51 @@ export const ru: Record<MsgKey, string> = {
   "kpi.scans.noneYet": "пока нет",
   "kpi.scans.nothingRunning": "простой",
   "kpi.scans.openFindings": "Открытых находок на поверхности",
-  "kpi.scans.openFindingsHint": "По наблюдаемой сетевой экспозиции хоста — открыть Центр уязвимостей",
+  "kpi.scans.openFindingsHint":
+    "По наблюдаемой сетевой экспозиции хоста — открыть Центр уязвимостей",
   "launcher.title.external": "Запуск внешнего скана",
   "launcher.title.internal": "Запуск внутреннего скана",
   "launcher.title.all": "Запуск скана",
   "launcher.step": "Цели · опции · подтверждение",
   "launcher.intent": "Намерение скана",
-  "launcher.intentHint": "Намерение выбирает стадии (что делать). Профиль скорости — темп (как сильно).",
-  "launcher.intent.inventory": "inventory — только порты, быстрая перепроверка",
-  "launcher.intent.vuln": "vuln — пробы + nuclei critical/high",
-  "launcher.intent.full": "full — полный конвейер оценки",
-  "launcher.intent.delta": "delta — full + инкрементальное обнаружение",
-  "launcher.intent.org_profile": "org profile — почта, DNS, веб-поза и связанные домены",
-  "launcher.intent.legacy": "legacy — только ручные флаги",
+  "launcher.intentHint":
+    "Намерение выбирает стадии (что делать). Профиль скорости — темп (как сильно).",
+  "launcher.intent.inventory": "Инвентаризация — только порты, быстрая перепроверка",
+  "launcher.intent.vuln":
+    "Уязвимости — сервисы и проверки Nuclei высокой и критической серьёзности",
+  "launcher.intent.full": "Полная проверка — весь конвейер оценки",
+  "launcher.intent.delta": "Изменения — полная проверка с инкрементальным обнаружением",
+  "launcher.intent.org_profile": "Профиль организации — почта, DNS, веб-защита и связанные домены",
+  "launcher.intent.legacy": "Ручная настройка — только выбранные параметры",
   "launcher.agentGroup": "Группа сенсоров",
   "launcher.agentGroup.any": "любой сенсор тенанта",
-  "launcher.agentGroupHint": "Какие сенсоры могут выполнить этот скан. Утверждённый scope может требовать конкретную группу для этих целей, и сервер откажет в неразрешённой.",
-  "launcher.agentGroupEmpty": "В группе {group} нет сенсоров онлайн — задание будет ждать в очереди, пока один не зарегистрируется.",
+  "launcher.agentGroupHint":
+    "Какие сенсоры могут выполнить этот скан. Утверждённый scope может требовать конкретную группу для этих целей, и сервер откажет в неразрешённой.",
+  "launcher.agentGroupEmpty":
+    "В группе {group} нет сенсоров онлайн — задание будет ждать в очереди, пока один не зарегистрируется.",
   "launcher.mode": "Профиль скорости",
-  "launcher.mode.safe": "safe (500 pps · щадящий)",
-  "launcher.mode.balanced": "balanced (2 000 pps · стандарт)",
-  "launcher.mode.fast": "fast (5 000 pps · агрессивный)",
-  "launcher.delta": "Дельта-обнаружение (инкрементально)",
+  "launcher.mode.safe": "Безопасный (500 пакетов/с · щадящий)",
+  "launcher.mode.balanced": "Сбалансированный (2 000 пакетов/с · стандартный)",
+  "launcher.mode.fast": "Быстрый (5 000 пакетов/с · интенсивный)",
+  "launcher.delta": "Обнаруживать изменения с прошлого скана",
   "launcher.portsOnly": "Только порты (без проб сервисов/ОС/CVE)",
   "launcher.notify": "Оповещения",
   "launcher.defectdojo": "Экспорт в DefectDojo",
   "launcher.backend": "Полная проба использует бэкенд {backend}",
   "launcher.domains": "Домены / FQDN",
-  "launcher.domainsHint": "По одному в строке. Продвинутые связанные домены добавляются автоматически.",
+  "launcher.domainsHint":
+    "По одному в строке. Продвинутые связанные домены добавляются автоматически.",
   "launcher.ranges": "IP-диапазоны (CIDR)",
-  "launcher.rangesHint": "По одному в строке. Частные сети (10/8, 172.16/12, 192.168/16) — это внутренний скан.",
-  "launcher.rangesPublicHint": "Только публичные адреса — частные диапазоны относятся к внутреннему скану.",
+  "launcher.rangesHint":
+    "По одному в строке. Частные сети (10/8, 172.16/12, 192.168/16) — это внутренний скан.",
+  "launcher.rangesPublicHint":
+    "Только публичные адреса — частные диапазоны относятся к внутреннему скану.",
   "launcher.ports": "TCP-порты (переопределить)",
   "launcher.portsUdp": "UDP-порты (переопределить)",
   "launcher.wordlist": "Словарь для перебора",
   "launcher.wordlistNone": "Нет — без словарного перебора",
-  "launcher.wordlistHint": "Поиск поддоменов или бакетов по словарю тенанта. Только локальное исполнение.",
+  "launcher.wordlistHint":
+    "Поиск поддоменов или бакетов по словарю тенанта. Только локальное исполнение.",
   "launcher.manageWordlists": "Словари",
   "launcher.optional": "необязательно",
   "launcher.section.targets": "Цели",
@@ -3475,14 +4043,17 @@ export const ru: Record<MsgKey, string> = {
   "launcher.notifyHint": "Отправить алерты по правилам тенанта.",
   "launcher.defectdojoHint": "Выгрузить находки после завершения скана.",
   "launcher.fillAll": "Всё из области",
-  "launcher.fillAllHint": "Заполнить цели всем, что утверждённая область сканирования тенанта разрешает на этой странице.",
+  "launcher.fillAllHint":
+    "Заполнить цели всем, что утверждённая область сканирования тенанта разрешает на этой странице.",
   "launcher.fillField": "Из области",
   "launcher.fillDomains": "Заполнить домены из утверждённой области сканирования",
   "launcher.fillRanges": "Заполнить диапазоны из утверждённой области сканирования",
   "launcher.filling": "Читаем область…",
-  "launcher.filled": "Из области: {domains} доменов · {ranges} диапазонов. Проверьте и запустите скан.",
+  "launcher.filled":
+    "Из области: {domains} доменов · {ranges} диапазонов. Проверьте и запустите скан.",
   "launcher.fillNothing": "В утверждённой области нет целей для этого поля.",
-  "launcher.fillNotApproved": "У тенанта ещё нет утверждённой области сканирования — скан не запустится.",
+  "launcher.fillNotApproved":
+    "У тенанта ещё нет утверждённой области сканирования — скан не запустится.",
   "launcher.fillOtherSurface": "Ещё диапазонов из области: {count} — они для страницы «{page}».",
   "launcher.fillSkipped": "Не подставлено: {items}.",
   "launcher.fillReason.wildcard": "любые адреса",
@@ -3492,7 +4063,8 @@ export const ru: Record<MsgKey, string> = {
   "launcher.defaultsHint": "Пустые цели — берутся входные файлы сервера по умолчанию.",
   "launcher.detected": "Цели указывают на: {surface}",
   "launcher.detectedNone": "Цели ещё не введены",
-  "launcher.mismatch": "Цели указывают на «{detected}», а это форма «{chosen}». Задание всё равно будет записано как {chosen}, раз оно запущено отсюда — переключите форму, если это не задумано.",
+  "launcher.mismatch":
+    "Цели указывают на «{detected}», а это форма «{chosen}». Задание всё равно будет записано как {chosen}, раз оно запущено отсюда — переключите форму, если это не задумано.",
   "launcher.start": "Запустить скан",
   "launcher.starting": "Запуск…",
   "launcher.confirmTitle": "Запустить {surface} скан — {intent} / {mode}?",
@@ -3503,17 +4075,21 @@ export const ru: Record<MsgKey, string> = {
   "jobs.cancel": "Отменить задание",
   "jobs.cancelTitle": "Отменить задание {id}?",
   "jobs.cancelBody": "Задание ещё не началось — его просто не выдадут сенсору.",
-  "jobs.cancelBodyRunning": "Сенсор, который выполняет этот скан, получит команду остановиться со следующим heartbeat. Задание останется в состоянии cancelling, пока сенсор не подтвердит остановку; всё, что скан успел собрать, сохраняется. Скан, идущий внутри самого API, так остановить нельзя.",
+  "jobs.cancelBodyRunning":
+    "Сенсор, который выполняет этот скан, получит команду остановиться со следующим heartbeat. Задание останется в состоянии cancelling, пока сенсор не подтвердит остановку; всё, что скан успел собрать, сохраняется. Скан, идущий внутри самого API, так остановить нельзя.",
   "jobs.stopping": "Останавливается: ждём подтверждения сенсора",
   "jobs.cancelConfirm": "Отменить задание",
   "jobs.keepJob": "Оставить",
   "col.priority": "Приоритет",
-  "jobs.priorityHint": "Приоритет в очереди: больше — выдаётся раньше, при равном — сначала старшие. По умолчанию 0.",
+  "jobs.priorityHint":
+    "Приоритет в очереди: больше — выдаётся раньше, при равном — сначала старшие. По умолчанию 0.",
   "jobs.priorityEdit": "Изменить приоритет",
   "jobs.priorityTitle": "Приоритет задания {id}",
-  "jobs.priorityBody": "Задание с бо́льшим приоритетом выдаётся раньше; при равном — сначала более старое. По умолчанию 0, отрицательное значение пропускает вперёд другие сканы тенанта.",
+  "jobs.priorityBody":
+    "Задание с бо́льшим приоритетом выдаётся раньше; при равном — сначала более старое. По умолчанию 0, отрицательное значение пропускает вперёд другие сканы тенанта.",
   "jobs.priorityLabel": "Приоритет (от {min} до {max})",
-  "jobs.priorityRaiseNeeded": "Без права scan.priority.raise в этом тенанте можно только понизить свой скан; поднять скан или передвинуть чужой можно только с ним.",
+  "jobs.priorityRaiseNeeded":
+    "Без права scan.priority.raise в этом тенанте можно только понизить свой скан; поднять скан или передвинуть чужой можно только с ним.",
   "jobs.details": "Детали задания",
   "jobs.detailsHint": "Статус, опции и цели задания так, как их записал API.",
   "jobs.timeline": "Хронология",
@@ -3600,7 +4176,8 @@ export const ru: Record<MsgKey, string> = {
   "empty.jobs": "На этой поверхности заданий ещё нет.",
   "loading.jobs": "Загрузка заданий…",
   "dash.ops.title": "Операции сканирования",
-  "dash.ops.subtitle": "Обе поверхности под наблюдением? Последний завершённый прогон, что идёт сейчас и откуда запустить следующий.",
+  "dash.ops.subtitle":
+    "Обе поверхности под наблюдением? Последний завершённый прогон, что идёт сейчас и откуда запустить следующий.",
   "dash.ops.lastRun": "Последний прогон",
   "dash.ops.running": "Выполняется",
   "dash.ops.findings": "Находок в последнем прогоне",
@@ -3609,18 +4186,22 @@ export const ru: Record<MsgKey, string> = {
   "dash.ops.launch": "Запустить",
   "dash.ops.open": "Открыть",
   "dash.ops.exposureSplit": "Открытые находки по сетевой экспозиции",
-  "dash.ops.exposureHint": "Как наблюдал сканер: external — достижимо из интернета, unknown — наблюдение не сказало.",
+  "dash.ops.exposureHint":
+    "По наблюдениям сканера: внешняя доступность означает достижимость из интернета; неизвестная — отсутствие сведений о доступности.",
   "runs.surfaceFilter": "Поверхность",
   "runs.subtitle.external": "Прогоны сканов, смотрящих из интернета.",
   "runs.subtitle.internal": "Прогоны сканов частной сети.",
   // --- integrations ---
   "page.integrations.title": "Интеграции",
-  "page.integrations.subtitle": "Исходящая доставка событий об активах и находках и транспорт, который заводит тикеты в трекере и подтягивает их статус обратно",
+  "page.integrations.subtitle":
+    "Исходящая доставка событий об активах и находках и транспорт, который заводит тикеты в трекере и подтягивает их статус обратно",
   "integrations.tab.subscriptions": "Подписки",
   "integrations.tab.deliveries": "Доставки",
   "integrations.disabled.title": "Интеграции выключены в этой инсталляции",
-  "integrations.disabled.body": "OCTO_WEBHOOKS_ENABLED выключен, поэтому API не регистрирует маршруты /api/webhooks: нет ни подписок, ни доставок, ни транспортов тикет-систем. Чтобы это заработало, оператор должен включить настройку и перезапустить API.",
-  "integrations.readOnly": "Режим просмотра. Создавать, менять и проверять интеграции может только администратор тенанта: подписка отправляет данные о поверхности атаки на адрес, который выбирает её создатель.",
+  "integrations.disabled.body":
+    "OCTO_WEBHOOKS_ENABLED выключен, поэтому API не регистрирует маршруты /api/webhooks: нет ни подписок, ни доставок, ни транспортов тикет-систем. Чтобы это заработало, оператор должен включить настройку и перезапустить API.",
+  "integrations.readOnly":
+    "Режим просмотра. Создавать, менять и проверять интеграции может только администратор тенанта: подписка отправляет данные о поверхности атаки на адрес, который выбирает её создатель.",
   "integrations.kpi.total": "Подписок",
   "integrations.kpi.totalHint": "Настроено для этого тенанта",
   "integrations.kpi.enabled": "Включено",
@@ -3631,9 +4212,11 @@ export const ru: Record<MsgKey, string> = {
   "integrations.kpi.failingHint": "Проверьте адрес получателя и доступы",
   "integrations.create": "Новая интеграция",
   "integrations.create.title": "Новая интеграция",
-  "integrations.create.description": "Сначала выберите транспорт — от него зависит, что спросит остальная форма.",
+  "integrations.create.description":
+    "Сначала выберите транспорт — от него зависит, что спросит остальная форма.",
   "integrations.edit.title": "Изменить интеграцию",
-  "integrations.edit.description": "Ключ подписи и токен трекера доступны только на запись, поэтому в этой форме их нет.",
+  "integrations.edit.description":
+    "Ключ подписи и токен трекера доступны только на запись, поэтому в этой форме их нет.",
   "integrations.save": "Сохранить",
   "integrations.cancel": "Отмена",
   "integrations.submit": "Создать интеграцию",
@@ -3641,15 +4224,20 @@ export const ru: Record<MsgKey, string> = {
   "integrations.field.name": "Название",
   "integrations.field.url": "URL получателя",
   "integrations.field.urlTicket": "Базовый URL инстанса",
-  "integrations.field.urlHint": "Адрес должен резолвиться в публичный, если в инсталляции не разрешены приватные цели. Редиректы не выполняются.",
+  "integrations.field.urlHint":
+    "Адрес должен резолвиться в публичный, если в инсталляции не разрешены приватные цели. Редиректы не выполняются.",
   "integrations.field.secret": "Ключ подписи (необязательно)",
-  "integrations.field.secretHint": "Оставьте пустым — ключ сгенерируется и покажется один раз. Payload подписывается HMAC по {timestamp}.{body}.",
+  "integrations.field.secretHint":
+    "Оставьте пустым — ключ сгенерируется и покажется один раз. Payload подписывается HMAC по {timestamp}.{body}.",
   "integrations.field.secretTicket": "API-токен",
-  "integrations.field.secretTicketHint": "Уходит в заголовке Authorization при каждом создании тикета. Обязателен, если вы не задали этот заголовок сами.",
+  "integrations.field.secretTicketHint":
+    "Уходит в заголовке Authorization при каждом создании тикета. Обязателен, если вы не задали этот заголовок сами.",
   "integrations.field.eventKinds": "Типы событий",
-  "integrations.field.eventKindsHint": "Ничего не выбрано — приходят все события активов. Аудит-трейл только по явному выбору.",
+  "integrations.field.eventKindsHint":
+    "Ничего не выбрано — приходят все события активов. Аудит-трейл только по явному выбору.",
   "integrations.field.minSeverity": "Минимальная критичность",
-  "integrations.field.minSeverityHint": "Фильтрует только те типы, у которых есть критичность (новая CVE). Остальные доставляются в любом случае.",
+  "integrations.field.minSeverityHint":
+    "Фильтрует только те типы, у которых есть критичность (новая CVE). Остальные доставляются в любом случае.",
   "integrations.field.enabled": "Включена",
   "integrations.field.projectKey": "Ключ проекта",
   "integrations.field.issueType": "Тип задачи",
@@ -3658,12 +4246,18 @@ export const ru: Record<MsgKey, string> = {
   "integrations.field.repository": "Репозиторий (owner/repo)",
   "integrations.field.gitlabProject": "Проект (group/project или id)",
   "integrations.severity.any": "Любая критичность",
-  "integrations.transport.webhook.about": "Подписанный HTTP POST с JSON события на ваш адрес. Повторы при 5xx и таймаутах, при 4xx уходит в dead-letter.",
-  "integrations.transport.jira.about": "Заводит задачу в Jira по подходящему событию и подтягивает её статус обратно в находку.",
-  "integrations.transport.servicenow.about": "Создаёт запись в таблице ServiceNow (по умолчанию incident) и отражает её состояние в находке.",
-  "integrations.transport.defectdojo.about": "Отправляет находку в тест DefectDojo и сверяет её состояние active/verified обратно.",
-  "integrations.transport.github.about": "Создаёт issue в репозитории GitHub и закрывает или переоткрывает находку вместе с ним. URL — корень API, например https://api.github.com.",
-  "integrations.transport.gitlab.about": "Создаёт issue в проекте GitLab и закрывает или переоткрывает находку вместе с ним. URL — корень инстанса.",
+  "integrations.transport.webhook.about":
+    "Подписанный HTTP POST с JSON события на ваш адрес. Повторы при 5xx и таймаутах, при 4xx уходит в dead-letter.",
+  "integrations.transport.jira.about":
+    "Заводит задачу в Jira по подходящему событию и подтягивает её статус обратно в находку.",
+  "integrations.transport.servicenow.about":
+    "Создаёт запись в таблице ServiceNow (по умолчанию incident) и отражает её состояние в находке.",
+  "integrations.transport.defectdojo.about":
+    "Отправляет находку в тест DefectDojo и сверяет её состояние active/verified обратно.",
+  "integrations.transport.github.about":
+    "Создаёт issue в репозитории GitHub и закрывает или переоткрывает находку вместе с ним. URL — корень API, например https://api.github.com.",
+  "integrations.transport.gitlab.about":
+    "Создаёт issue в проекте GitLab и закрывает или переоткрывает находку вместе с ним. URL — корень инстанса.",
   "integrations.event.new_asset": "Новый актив",
   "integrations.event.new_open_port": "Новый открытый порт",
   "integrations.event.new_cve": "Новая CVE",
@@ -3686,24 +4280,30 @@ export const ru: Record<MsgKey, string> = {
   "integrations.action.rotate": "Сменить ключ",
   "integrations.action.edit": "Изменить",
   "integrations.action.delete": "Удалить",
-  "integrations.rotate.unavailable": "Смена генерирует ключ подписи HMAC. Токен трекера меняется пересозданием подписки.",
+  "integrations.rotate.unavailable":
+    "Смена генерирует ключ подписи HMAC. Токен трекера меняется пересозданием подписки.",
   "integrations.secret.title": "Скопируйте ключ сейчас — он показывается один раз",
-  "integrations.secret.body": "API хранит его только на запись. Потеряете — сгенерируйте новый и обновите получателя.",
+  "integrations.secret.body":
+    "API хранит его только на запись. Потеряете — сгенерируйте новый и обновите получателя.",
   "integrations.secret.copy": "Скопировать",
   "integrations.secret.copied": "Скопировано",
   "integrations.secret.done": "Я скопировал",
   "integrations.delete.title": "Удалить эту интеграцию?",
-  "integrations.delete.body": "{name} сразу перестанет получать события, а вместе с ней исчезнет и история доставок: журнал отвечает на вопрос «что мы слали на этот адрес», а адреса больше нет.",
+  "integrations.delete.body":
+    "{name} сразу перестанет получать события, а вместе с ней исчезнет и история доставок: журнал отвечает на вопрос «что мы слали на этот адрес», а адреса больше нет.",
   "integrations.delete.confirm": "Удалить интеграцию",
-  "integrations.empty": "Интеграций пока нет. Создайте первую, чтобы события об активах и находках уходили наружу.",
+  "integrations.empty":
+    "Интеграций пока нет. Создайте первую, чтобы события об активах и находках уходили наружу.",
   "integrations.loading": "Загружаем интеграции…",
   "integrations.search": "Поиск по названию или URL…",
   "integrations.meta": "интеграций: {count}",
-  "integrations.deliveries.empty": "Доставок пока нет. Отправьте тест из подписки, чтобы проверить канал.",
+  "integrations.deliveries.empty":
+    "Доставок пока нет. Отправьте тест из подписки, чтобы проверить канал.",
   "integrations.deliveries.loading": "Загружаем доставки…",
   "integrations.deliveries.search": "Поиск по доставкам…",
   "integrations.deliveries.meta": "доставок: {count}",
-  "integrations.deliveries.about": "Очередь, dead-letter и журнал в одном списке. У недоставленной запись исчерпан лимит повторов; повтор возвращает её в очередь с тем же payload.",
+  "integrations.deliveries.about":
+    "Очередь, dead-letter и журнал в одном списке. У недоставленной запись исчерпан лимит повторов; повтор возвращает её в очередь с тем же payload.",
   "integrations.deliveries.filter": "Статус",
   "integrations.deliveries.filter.all": "Все статусы",
   "integrations.deliveries.retry": "Повторить",
@@ -3722,7 +4322,8 @@ export const ru: Record<MsgKey, string> = {
   "col.queued": "В очереди с",
   // --- users & access ---
   "page.users.title": "Пользователи и доступ",
-  "page.users.subtitle": "Учётные записи консоли, доступ к тенантам, ключи подключения и журнал входов.",
+  "page.users.subtitle":
+    "Учётные записи консоли, доступ к тенантам, ключи подключения и журнал входов.",
   "users.tab.users": "Пользователи",
   "users.tab.membership": "Доступ к тенанту",
   "users.tab.keys": "Ключи подключения",
@@ -3761,37 +4362,44 @@ export const ru: Record<MsgKey, string> = {
   "users.action.cancel": "Отмена",
   "users.action.revoke": "Отозвать",
   "users.create.title": "Создание учётной записи",
-  "users.create.description": "Требования к имени и паролю задаёт API; его отказ показывается здесь как есть.",
+  "users.create.description":
+    "Требования к имени и паролю задаёт API; его отказ показывается здесь как есть.",
   "users.create.username": "Имя пользователя",
   "users.create.password": "Начальный пароль",
   "users.create.email": "Почта (необязательно)",
-  "users.create.emailHint": "При создании адрес не принимается, поэтому указанная здесь почта задаётся вторым запросом сразу после создания.",
+  "users.create.emailHint":
+    "При создании адрес не принимается, поэтому указанная здесь почта задаётся вторым запросом сразу после создания.",
   "users.create.role": "Роль",
   "users.create.submit": "Создать запись",
   "users.create.submitting": "Создаём…",
   "users.reset.title": "Сброс пароля для {username}",
-  "users.reset.description": "Текущий пароль не нужен — сброс существует ровно для того, кто не может войти.",
+  "users.reset.description":
+    "Текущий пароль не нужен — сброс существует ровно для того, кто не может войти.",
   "users.reset.password": "Новый пароль",
   "users.reset.submit": "Сбросить пароль",
   "users.email.title": "Почта пользователя {username}",
   "users.email.address": "Адрес почты",
   "users.email.verified": "Считать адрес подтверждённым",
-  "users.email.verifiedHint": "Связать запись с SSO можно только по подтверждённому адресу, поэтому подтверждает его администратор, а не провайдер.",
+  "users.email.verifiedHint":
+    "Связать запись с SSO можно только по подтверждённому адресу, поэтому подтверждает его администратор, а не провайдер.",
   "users.email.submit": "Сохранить почту",
   "users.delete.title": "Удалить учётную запись {username}?",
-  "users.delete.description": "Вместе с записью пропадут её доступы к тенантам. Отключение забирает доступ, но сохраняет и доступы, и историю.",
+  "users.delete.description":
+    "Вместе с записью пропадут её доступы к тенантам. Отключение забирает доступ, но сохраняет и доступы, и историю.",
   "users.delete.selfHint": "Запись, под которой вы вошли, удалить нельзя — API тоже её не удалит.",
   "users.tenantPicker": "Тенант",
   "users.tenantPicker.placeholder": "Выберите тенант",
   "users.tenantPicker.none": "Тенантов нет.",
-  "users.membership.note": "Администратор платформы видит любой тенант независимо от этих строк; для остальных доступ задаётся именно ими.",
+  "users.membership.note":
+    "Администратор платформы видит любой тенант независимо от этих строк; для остальных доступ задаётся именно ими.",
   "users.membership.username": "Пользователь",
   "users.membership.role": "Роль в тенанте",
   "users.membership.granted": "Выдан",
   "users.membership.grantedBy": "Кем выдан",
   "users.membership.grantTitle": "Выдать или изменить доступ",
   "users.membership.grantHint": "Повторная выдача доступа существующему участнику меняет его роль.",
-  "users.membership.catalogueFailed": "Каталог ролей не прочитан, поэтому доступна только уже выданная роль.",
+  "users.membership.catalogueFailed":
+    "Каталог ролей не прочитан, поэтому доступна только уже выданная роль.",
   "users.membership.grant": "Выдать доступ",
   "users.membership.empty": "Доступ к этому тенанту никому не выдан.",
   "users.membership.loading": "Загрузка участников…",
@@ -3804,7 +4412,8 @@ export const ru: Record<MsgKey, string> = {
   "users.keys.status": "Состояние",
   "users.keys.empty": "У этого тенанта нет ключей подключения.",
   "users.keys.loading": "Загрузка ключей подключения…",
-  "users.keys.createHint": "Ключ выдаётся при развёртывании сенсора, и его секрет показывается один раз — там же.",
+  "users.keys.createHint":
+    "Ключ выдаётся при развёртывании сенсора, и его секрет показывается один раз — там же.",
   "users.keys.createLink": "Перейти к сенсорам",
   "audit.note":
     "Административные изменения — учётные записи, членства, учётные данные, область сканирования, конфигурация — новые сверху. Записи только добавляются: API может дописать в журнал, но ничто не может его отредактировать.",
@@ -3843,9 +4452,11 @@ export const ru: Record<MsgKey, string> = {
   "users.audit.loading": "Загрузка журнала входов…",
   "users.audit.empty": "Записей пока нет.",
   "users.audit.meta": "Событий: {total}",
-  "users.audit.note": "Входы, отказы за пределами согласованной области сканирования и смена доверия к ключам хостов — один журнал, новые сверху.",
+  "users.audit.note":
+    "Входы, отказы за пределами согласованной области сканирования и смена доверия к ключам хостов — один журнал, новые сверху.",
   "users.account.title": "Смена своего пароля",
-  "users.account.description": "Вы вошли как {username} ({role}). Текущий пароль спрашивается снова: держать токен — более слабое основание, чем знать пароль.",
+  "users.account.description":
+    "Вы вошли как {username} ({role}). Текущий пароль спрашивается снова: держать токен — более слабое основание, чем знать пароль.",
   "users.account.current": "Текущий пароль",
   "users.account.new": "Новый пароль",
   "users.account.confirm": "Повторите новый пароль",
@@ -3860,19 +4471,22 @@ export const ru: Record<MsgKey, string> = {
   "vuln.exposure.external": "Внешняя — достижимо из интернета",
   "vuln.exposure.internal": "Внутренняя — частное адресное пространство",
   "vuln.exposure.unknown": "Неизвестна — не наблюдалась",
-  "schedules.surfaceAuto": "Определить по целям (домены / публичные → внешний, частные диапазоны → внутренний)",
+  "schedules.surfaceAuto":
+    "Определить по целям (домены / публичные → внешний, частные диапазоны → внутренний)",
   // --- users memberships column, webhook secret on edit ---
   "users.col.tenants": "Тенанты",
   "users.tenantsNone": "нет членств",
   "users.tenantsAdmin": "админ платформы — все тенанты",
-  "integrations.field.secretEditHint": "Оставьте пустым, чтобы сохранить текущий секрет; новое значение заменит его и больше не покажется.",
+  "integrations.field.secretEditHint":
+    "Оставьте пустым, чтобы сохранить текущий секрет; новое значение заменит его и больше не покажется.",
   // --- многофакторная аутентификация, break-glass вход (#315) ---
   "nav.security": "Безопасность",
   "nav.hint.security": "Второй фактор и коды восстановления",
   "header.security": "Безопасность и MFA",
 
   "mfa.title": "Двухфакторная аутентификация",
-  "mfa.description": "Шестизначный код из приложения-аутентификатора в дополнение к паролю. Ссылка для подключения формируется в этом браузере — секрет не уходит ни в какой сторонний сервис QR.",
+  "mfa.description":
+    "Шестизначный код из приложения-аутентификатора в дополнение к паролю. Ссылка для подключения формируется в этом браузере — секрет не уходит ни в какой сторонний сервис QR.",
   "mfa.state.on": "Включена",
   "mfa.state.off": "Выключена",
   "mfa.state.pending": "Настройка не завершена",
@@ -3882,19 +4496,24 @@ export const ru: Record<MsgKey, string> = {
   "mfa.reason.global": "роль учётной записи {role}",
   "mfa.reason.tenant": "роль {role} в тенанте {tenant}",
   "mfa.reason.permissions": "{reason}: {permissions}",
-  "mfa.optional": "Для вашей учётной записи необязательна, но включить стоит: без неё пароль — единственное, что отделяет злоумышленника от консоли.",
+  "mfa.optional":
+    "Для вашей учётной записи необязательна, но включить стоит: без неё пароль — единственное, что отделяет злоумышленника от консоли.",
   "mfa.recoveryRemaining": "Осталось {count} из 10 кодов восстановления.",
-  "mfa.recoveryNoneLeft": "Коды восстановления закончились. Выключите фактор и настройте заново, чтобы получить десять новых.",
-  "mfa.stepupHint": "Выпуск и отзыв учётных данных, изменение области сканирования тенанта и администрирование чужой учётной записи снова попросят код, если с последнего прошло больше {minutes} мин.",
+  "mfa.recoveryNoneLeft":
+    "Коды восстановления закончились. Выключите фактор и настройте заново, чтобы получить десять новых.",
+  "mfa.stepupHint":
+    "Выпуск и отзыв учётных данных, изменение области сканирования тенанта и администрирование чужой учётной записи снова попросят код, если с последнего прошло больше {minutes} мин.",
   "mfa.stepup.title": "Введите код, чтобы продолжить",
-  "mfa.stepup.description": "Для этой операции нужен недавно подтверждённый второй фактор, а ваш устарел. Введите код и повторите действие — запрос был отклонён, а не поставлен в очередь.",
+  "mfa.stepup.description":
+    "Для этой операции нужен недавно подтверждённый второй фактор, а ваш устарел. Введите код и повторите действие — запрос был отклонён, а не поставлен в очередь.",
   "mfa.stepup.done": "Подтверждено. Повторите действие.",
   "mfa.loading": "Загрузка…",
   "mfa.action.setUp": "Настроить аутентификатор",
   "mfa.action.resume": "Завершить незаконченную настройку",
   "mfa.action.starting": "Начинаем…",
   "mfa.setup.title": "Добавьте эту учётную запись в аутентификатор",
-  "mfa.setup.hint": "Вставьте ссылку в Google Authenticator, FreeOTP, Aegis или 1Password — либо введите секрет вручную — и укажите шесть цифр, которые он покажет.",
+  "mfa.setup.hint":
+    "Вставьте ссылку в Google Authenticator, FreeOTP, Aegis или 1Password — либо введите секрет вручную — и укажите шесть цифр, которые он покажет.",
   "mfa.setup.uri": "Ссылка otpauth",
   "mfa.setup.secret": "Секрет для ручного ввода",
   "mfa.setup.params": "{algorithm}, {digits} цифр, новый каждые {period} с",
@@ -3905,33 +4524,43 @@ export const ru: Record<MsgKey, string> = {
   "mfa.copy": "Скопировать",
   "mfa.copied": "Скопировано",
   "mfa.recovery.title": "Сохраните эти десять кодов восстановления",
-  "mfa.recovery.description": "Каждый код одноразово пускает вас в консоль, когда телефона нет под рукой, и после этого сгорает. Показываются они только сейчас: если потеряете — второй фактор сможет сбросить только администратор.",
+  "mfa.recovery.description":
+    "Каждый код одноразово пускает вас в консоль, когда телефона нет под рукой, и после этого сгорает. Показываются они только сейчас: если потеряете — второй фактор сможет сбросить только администратор.",
   "mfa.recovery.copyAll": "Скопировать все десять",
   "mfa.recovery.done": "Я их сохранил",
   "mfa.disable.title": "Выключить",
-  "mfa.disable.description": "Нужны пароль и один живой код: у того, кто украл сессию, нет ни того, ни другого.",
+  "mfa.disable.description":
+    "Нужны пароль и один живой код: у того, кто украл сессию, нет ни того, ни другого.",
   "mfa.disable.password": "Пароль",
   "mfa.disable.code": "Код из приложения или код восстановления",
   "mfa.disable.submit": "Выключить",
   "mfa.disable.submitting": "Выключаем…",
   "mfa.banner.title": "Настройте двухфакторную аутентификацию, чтобы продолжить",
-  "mfa.banner.body": "На этой установке второй фактор обязателен для вашей роли или для ваших прав в тенанте. Пока вы его не настроите, эта сессия открывает только страницу безопасности.",
+  "mfa.banner.body":
+    "На этой установке второй фактор обязателен для вашей роли или для ваших прав в тенанте. Пока вы его не настроите, эта сессия открывает только страницу безопасности.",
   "mfa.banner.action": "Настроить",
   "mfa.banner.keyTitle": "Чтобы продолжить, войдите с ключом безопасности",
-  "mfa.banner.keyBody": "Для вашей роли или ваших прав в тенанте на этой установке обязателен ключ безопасности или passkey, а эта сессия подтверждена кодом. Зарегистрируйте ключ на странице безопасности и подтвердите вход им.",
+  "mfa.banner.keyBody":
+    "Для вашей роли или ваших прав в тенанте на этой установке обязателен ключ безопасности или passkey, а эта сессия подтверждена кодом. Зарегистрируйте ключ на странице безопасности и подтвердите вход им.",
 
   "mfa.keys.title": "Ключи безопасности и passkeys",
-  "mfa.keys.description": "Аппаратный ключ или passkey подписывает вход только для адреса этой консоли, поэтому поддельная страница входа не сможет переслать его так, как пересылает код. Добавляется поверх приложения-аутентификатора, которое остаётся запасным способом.",
-  "mfa.keys.requiredByPolicy": "На этой установке для вашей учётной записи обязателен ключ безопасности: сессия, подтверждённая кодом, открывает только эту страницу.",
-  "mfa.keys.stepupByPolicy": "Выпуск учётных данных и администрирование учётных записей требуют ключ, а не код.",
-  "mfa.keys.needsTotp": "Сначала настройте приложение-аутентификатор — ключ добавляется поверх него.",
-  "mfa.keys.unsupported": "Этот браузер не может использовать ключи безопасности здесь: нужна защищённая (https) страница и поддержка WebAuthn.",
+  "mfa.keys.description":
+    "Аппаратный ключ или passkey подписывает вход только для адреса этой консоли, поэтому поддельная страница входа не сможет переслать его так, как пересылает код. Добавляется поверх приложения-аутентификатора, которое остаётся запасным способом.",
+  "mfa.keys.requiredByPolicy":
+    "На этой установке для вашей учётной записи обязателен ключ безопасности: сессия, подтверждённая кодом, открывает только эту страницу.",
+  "mfa.keys.stepupByPolicy":
+    "Выпуск учётных данных и администрирование учётных записей требуют ключ, а не код.",
+  "mfa.keys.needsTotp":
+    "Сначала настройте приложение-аутентификатор — ключ добавляется поверх него.",
+  "mfa.keys.unsupported":
+    "Этот браузер не может использовать ключи безопасности здесь: нужна защищённая (https) страница и поддержка WebAuthn.",
   "mfa.keys.none": "Ключи безопасности не зарегистрированы.",
   "mfa.keys.name": "Название нового ключа",
   "mfa.keys.namePlaceholder": "например, YubiKey на связке",
   "mfa.keys.add": "Добавить ключ безопасности",
   "mfa.keys.adding": "Ждём ключ…",
-  "mfa.keys.addHint": "Для добавления ключа нужно недавнее подтверждение: если появится запрос кода, подтвердите и нажмите кнопку ещё раз.",
+  "mfa.keys.addHint":
+    "Для добавления ключа нужно недавнее подтверждение: если появится запрос кода, подтвердите и нажмите кнопку ещё раз.",
   "mfa.keys.remove": "Удалить",
   "mfa.keys.added": "Добавлен {when}",
   "mfa.keys.lastUsed": "последний вход {when}",
@@ -3942,11 +4571,14 @@ export const ru: Record<MsgKey, string> = {
   "mfa.keys.verifying": "Ждём ключ…",
   "mfa.keys.verified": "Подтверждено ключом безопасности.",
   "mfa.stepup.useKey": "Использовать ключ безопасности",
-  "mfa.keys.cancelled": "Запрос ключа безопасности отменён или истёк. Попробуйте снова, когда ключ будет под рукой.",
+  "mfa.keys.cancelled":
+    "Запрос ключа безопасности отменён или истёк. Попробуйте снова, когда ключ будет под рукой.",
 
   "login.mfa.title": "Введите код",
-  "login.mfa.subtitle": "У {username} включена двухфакторная аутентификация. Откройте аутентификатор и введите шесть цифр.",
-  "login.mfa.subtitleAnon": "У этой учётной записи включена двухфакторная аутентификация. Откройте аутентификатор и введите шесть цифр.",
+  "login.mfa.subtitle":
+    "У {username} включена двухфакторная аутентификация. Откройте аутентификатор и введите шесть цифр.",
+  "login.mfa.subtitleAnon":
+    "У этой учётной записи включена двухфакторная аутентификация. Откройте аутентификатор и введите шесть цифр.",
   "login.mfa.code": "Шестизначный код",
   "login.mfa.recovery": "Код восстановления",
   "login.mfa.useRecovery": "Ввести код восстановления",
@@ -3957,11 +4589,13 @@ export const ru: Record<MsgKey, string> = {
   "login.mfa.useKey": "Использовать ключ безопасности",
   "login.mfa.usingKey": "Ждём ключ…",
   "login.localDisabled": "Вход по паролю на этой установке отключён — используйте SSO.",
-  "login.localBreakGlass": "Вход по паролю здесь оставлен только для аварийных (break-glass) учётных записей, и каждый такой вход фиксируется. Остальные входят через SSO.",
+  "login.localBreakGlass":
+    "Вход по паролю здесь оставлен только для аварийных (break-glass) учётных записей, и каждый такой вход фиксируется. Остальные входят через SSO.",
 
   "users.action.resetMfa": "Сбросить MFA",
   "users.resetMfa.title": "Сбросить двухфакторную аутентификацию для {username}?",
-  "users.resetMfa.description": "Удалит секрет аутентификатора и коды восстановления и завершит все открытые сессии этой учётной записи. До повторной настройки вход будет по одному паролю. Записывается в журнал аудита как user.mfa_reset.",
+  "users.resetMfa.description":
+    "Удалит секрет аутентификатора и коды восстановления и завершит все открытые сессии этой учётной записи. До повторной настройки вход будет по одному паролю. Записывается в журнал аудита как user.mfa_reset.",
   "users.resetMfa.confirm": "Сбросить MFA",
 
   // --- tenant roles and members (#318) ---
@@ -3970,7 +4604,8 @@ export const ru: Record<MsgKey, string> = {
   "access.subtitle": "Кто может действовать в {tenant} и какие роли этот тенант завёл для себя.",
   "access.denied": "Чтобы видеть участников этого тенанта, нужно право tenant.member.read в нём.",
   "roles.title": "Роли тенанта",
-  "roles.note": "Роль — это имя, ранг и явный набор прав. Никто не может завести или выдать роль выше собственной, а полномочия платформы в роль тенанта не попадают.",
+  "roles.note":
+    "Роль — это имя, ранг и явный набор прав. Никто не может завести или выдать роль выше собственной, а полномочия платформы в роль тенанта не попадают.",
   "roles.new": "Новая роль",
   "roles.loading": "Загрузка ролей…",
   "roles.empty": "Своих ролей у тенанта нет; встроенные роли доступны в списке участников ниже.",
@@ -3983,23 +4618,28 @@ export const ru: Record<MsgKey, string> = {
   "roles.rank.3": "Администрирование",
   "roles.edit": "Изменить {role}",
   "roles.delete": "Удалить {role}",
-  "roles.sod.rank": "Право утверждения допускается только с рангом «чтение»: утверждающий, который может писать, действует по собственному утверждению.",
+  "roles.sod.rank":
+    "Право утверждения допускается только с рангом «чтение»: утверждающий, который может писать, действует по собственному утверждению.",
   "roles.sod.members": "Право утверждения нельзя совмещать с выдачей членства.",
   "roles.dialog.createTitle": "Новая роль тенанта",
   "roles.dialog.editTitle": "Изменение роли тенанта",
   "roles.dialog.createHint": "Предлагаются только те ранги и права, которые есть у вас самих.",
-  "roles.dialog.editHint": "Роль есть у участников: {count}. Изменение действует для них со следующего запроса, а при переименовании они переходят на новое имя.",
+  "roles.dialog.editHint":
+    "Роль есть у участников: {count}. Изменение действует для них со следующего запроса, а при переименовании они переходят на новое имя.",
   "roles.dialog.name": "Имя",
   "roles.dialog.description": "Описание",
   "roles.dialog.rank": "Ранг",
-  "roles.dialog.rankHint": "Чтение не проходит ни одной проверки записи в API, запись запускает сканирования и работает с находками, администрирование проходит все проверки администратора тенанта.",
+  "roles.dialog.rankHint":
+    "Чтение не проходит ни одной проверки записи в API, запись запускает сканирования и работает с находками, администрирование проходит все проверки администратора тенанта.",
   "roles.dialog.permissions": "Права",
   "roles.dialog.noPermissions": "У вас нет прав, которые может нести роль тенанта.",
   "roles.dialog.cancel": "Отмена",
   "roles.dialog.save": "Сохранить",
   "roles.deleteDialog.title": "Удалить роль {role}?",
-  "roles.deleteDialog.held": "Роль есть у участников: {count}. Выберите роль, которую они получат взамен, — молча доступ никто не теряет.",
-  "roles.deleteDialog.unheld": "Роль ни у кого нет. Она будет удалена из тенанта, удаление попадёт в журнал аудита.",
+  "roles.deleteDialog.held":
+    "Роль есть у участников: {count}. Выберите роль, которую они получат взамен, — молча доступ никто не теряет.",
+  "roles.deleteDialog.unheld":
+    "Роль ни у кого нет. Она будет удалена из тенанта, удаление попадёт в журнал аудита.",
   "roles.deleteDialog.reassign": "Переназначить участников на",
   "roles.deleteDialog.confirm": "Удалить роль",
 
@@ -4011,7 +4651,8 @@ export const ru: Record<MsgKey, string> = {
   "problems.meta": "Проблем: {count}",
   "problems.loading": "Загрузка агрегированных проблем…",
   "problems.empty": "Нет проблем по этим фильтрам.",
-  "problems.aggregates": "Проблем: {problems} · экземпляров: {instances} на активах: {assets} · просрочено SLA: {breached} · в KEV: {kev} · на {asOf}",
+  "problems.aggregates":
+    "Проблем: {problems} · экземпляров: {instances} на активах: {assets} · просрочено SLA: {breached} · в KEV: {kev} · на {asOf}",
   "problems.col.problem": "Проблема",
   "problems.col.instances": "Экземпляры / активы",
   "problems.col.severity": "Худшая критичность",
@@ -4030,11 +4671,14 @@ export const ru: Record<MsgKey, string> = {
   "problems.action.instances": "Показать экземпляры",
   "problems.drill.chip": "Проблема {key}",
   "problems.drill.clear": "Показать все экземпляры",
-  "problems.drill.drift": "В списке было экземпляров: {expected}, сейчас: {actual} (изменилось после загрузки: {changed}).",
-  "problems.drill.driftNoChange": "В списке было экземпляров: {expected}, сейчас: {actual} (находки вошли в выборку или вышли из неё).",
+  "problems.drill.drift":
+    "В списке было экземпляров: {expected}, сейчас: {actual} (изменилось после загрузки: {changed}).",
+  "problems.drill.driftNoChange":
+    "В списке было экземпляров: {expected}, сейчас: {actual} (находки вошли в выборку или вышли из неё).",
   "campaign.create": "Создать кампанию…",
   "campaign.dialog.title": "Новая кампания устранения",
-  "campaign.dialog.description": "Состав фиксируется при создании: подходящие позже находки не добавляются.",
+  "campaign.dialog.description":
+    "Состав фиксируется при создании: подходящие позже находки не добавляются.",
   "campaign.field.name": "Название",
   "campaign.field.action": "Общее действие",
   "campaign.field.owner": "Ответственный",
@@ -4049,8 +4693,10 @@ export const ru: Record<MsgKey, string> = {
   "campaign.dialog.submit": "Создать кампанию",
   "campaign.cancel": "Отмена",
   "campaign.page.title": "Кампании устранения",
-  "campaign.page.subtitle": "Зафиксированный набор находок с одним ответственным и сроком. Прогресс считается по категориям и не складывается в «исправлено».",
-  "campaign.list.empty": "Кампаний пока нет. Выберите проблемы в «Уязвимостях» и создайте кампанию.",
+  "campaign.page.subtitle":
+    "Зафиксированный набор находок с одним ответственным и сроком. Прогресс считается по категориям и не складывается в «исправлено».",
+  "campaign.list.empty":
+    "Кампаний пока нет. Выберите проблемы в «Уязвимостях» и создайте кампанию.",
   "campaign.loading": "Загрузка кампаний…",
   "campaign.col.name": "Кампания",
   "campaign.col.status": "Статус",
@@ -4077,7 +4723,8 @@ export const ru: Record<MsgKey, string> = {
   "campaign.cat.hint.unavailable": "Недостижимо, детектор не поддержан или покрытие неполное",
   "campaign.progress.unresolved": "Ещё требуют работы: {count}",
   "campaign.progress.recurred": "Вернулись после включения: {count}",
-  "campaign.progress.note": "Категории не пересекаются. Запуском проверки перепроверено только «Подтверждено сканом».",
+  "campaign.progress.note":
+    "Категории не пересекаются. Запуском проверки перепроверено только «Подтверждено сканом».",
   "campaign.detail.back": "Все кампании",
   "campaign.detail.action": "Общее действие",
   "campaign.detail.noAction": "Действие не описано.",
@@ -4104,7 +4751,8 @@ export const ru: Record<MsgKey, string> = {
   "campaign.notFound": "Кампания не найдена",
   "campaign.members.selectAll": "Выбрать все находки на этой странице",
   "problems.selectAll": "Выбрать все проблемы на этой странице",
-  "campaign.members.excludeCount": "Будет исключено находок: {count}; в истории останутся автор и причина.",
+  "campaign.members.excludeCount":
+    "Будет исключено находок: {count}; в истории останутся автор и причина.",
 };
 
 export const STATUS_EN: Record<string, string> = {
@@ -4235,6 +4883,11 @@ export const STATUS_EN: Record<string, string> = {
 };
 
 export const STATUS_RU: Record<string, string> = {
+  blackout: "Запрет сканирования",
+  allowed: "Разрешённое окно",
+  scan: "Сканирование",
+  endpoint_software: "Инвентаризация ПО",
+  retro_match: "Сопоставление с базой уязвимостей",
   "SLA breached": "нарушен SLA",
   "Assign owner": "назначить исполнителя",
   None: "нет",
@@ -4283,8 +4936,8 @@ export const STATUS_RU: Record<string, string> = {
   medium: "средний",
   high: "высокий",
   critical: "критический",
-  production: "прод",
-  staging: "стейджинг",
+  production: "рабочая среда",
+  staging: "предварительная проверка",
   development: "разработка",
   lab: "лаборатория",
   other: "другое",
