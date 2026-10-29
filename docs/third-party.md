@@ -117,11 +117,13 @@ it must not be shadowed by an enrichment volume mounted there:
 | Pulse service probes | `scanner/pipeline/pulse_data/probes.json` (licence and provenance: `probes.json.LICENSE`) | [GenDec](https://github.com/onixus/GenDec) `src/scanner/probes.json` at tag `v1.3.0` (the database embedded in the pinned Pulse) | **MIT** (GenDec `Cargo.toml`; attribution kept in `probes.json.LICENSE`); the base is GenDec's set as its author states it (`probe_db.rs`: written by hand, `nmap-service-probes` not used; MIT from `Cargo.toml`, GenDec has no LICENSE file) — we have not verified that independently; the additions made here are written from scratch and are **not** derived from Nmap's `nmap-service-probes` (NPSL) | Upstream entries verbatim as the base; project-owned rules appended after them. Passed to Pulse as `--probe-db`. How to extend: [pulse-backend.md](pulse-backend.md#probe-database) |
 | Public Suffix List | `scanner/pipeline/public_suffix_list.dat` | [publicsuffix.org](https://publicsuffix.org/list/) | MPL-2.0; committed unmodified with its licence header, so the file is its own source form | The whole list, as published — used to derive registrable (seed) domains and to refuse AXFR against a public suffix. Refresh with `scripts/fetch-public-suffix-list.sh` |
 | Subdomain-takeover catalogue | `scanner/pipeline/takeover_fingerprints.json` | [can-i-take-over-xyz](https://github.com/EdOverflow/can-i-take-over-xyz); [nuclei-templates](https://github.com/projectdiscovery/nuclei-templates/tree/main/http/takeovers) `http/takeovers`; Microsoft's dangling-DNS guidance | **CC BY 4.0 — attribution required** (can-i-take-over-xyz); MIT (nuclei-templates) | Per service: takeover status and the short error strings a provider shows for an unclaimed resource. A selection, re-expressed as a JSON catalogue with this project's own CNAME patterns, notes and ids; no prose is copied. Edited by hand — see [configuration.md](configuration.md#subdomain-takeover-detection) |
+| Nuclei-derived Rhai checks | `shapo_rsync_modules`, `shapo_zookeeper_envi` | [nuclei-templates v9.9.4](https://github.com/projectdiscovery/nuclei-templates/tree/f4251b06c100067f230c4f54a1679de59802c7a4), authors pussycat0x and pdteam | Upstream MIT, reproduced in `scanner/pipeline/pulse_data/nuclei-templates.LICENSE`; reimplementations Apache-2.0 | Bounded probes for listable rsync modules and ZooKeeper `envi`; neither asserts access to service data |
 
 Rhai plugins for Pulse ([Pulse plugins](pulse-plugins.md)) ship in
 `scanner/pipeline/pulse_data/plugins/` for the same reason. Three are adapted from
 scripts of GenDec release v1.3.0 (MIT, per its `Cargo.toml`) and say so in their
-`SPDX-License-Identifier: MIT` header; the rest are original and Apache-2.0:
+`SPDX-License-Identifier: MIT` header. Other files are Apache-2.0; the two
+Nuclei-derived checks are separately attributed in the table above:
 
 | Plugin | Origin | Terms | What changed |
 |---|---|---|---|

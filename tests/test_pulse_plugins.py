@@ -116,12 +116,17 @@ def pulse(monkeypatch) -> Pulse:
 
 def _run(tmp_path, endpoints=("10.0.0.1:22/tcp",), **kwargs) -> Path:
     out = tmp_path / "out"
+    kwargs.setdefault("observation_receipts_enabled", False)
     pp.run_pulse_probe(list(endpoints), output_dir=out, retry_settle_seconds=0, **kwargs)
     return out
 
 
 def _raw(out: Path) -> dict:
     return json.loads((out / "pulse" / "raw.json").read_text(encoding="utf-8"))
+
+
+def _receipt(out: Path) -> dict:
+    return json.loads((out / "observation_receipt.json").read_text(encoding="utf-8"))
 
 
 # --------------------------------------------------------------------------
@@ -289,6 +294,33 @@ def _resume(out: Path, **kwargs) -> None:
     pp.run_pulse_probe(["10.0.0.1:22/tcp"], output_dir=out, done_hosts={"10.0.0.1"}, retry_settle_seconds=0, **kwargs)
 
 
+def test_native_rdp_observation_runs_for_done_host_on_partial_resume(tmp_path, plugin_dir, pulse, monkeypatch):
+    observed = []
+    monkeypatch.setattr(pp, "observe_rdp_x224", lambda host, port: (observed.append((host, port)) or ("responded", {"result": "selected", "selected_protocol": "PROTOCOL_SSL"})))
+    out = _run(tmp_path, ["10.0.0.1:22/tcp", "10.0.0.2:3389/tcp"], plugins=True,
+               observation_tenant_id="tenant", observation_run_id="run")
+    observed.clear()
+    pp.run_pulse_probe(["10.0.0.1:22/tcp", "10.0.0.2:3389/tcp"], output_dir=out,
+                       done_hosts={"10.0.0.1"}, retry_settle_seconds=0, plugins=True,
+                       observation_tenant_id="tenant", observation_run_id="run")
+    assert observed == [("10.0.0.2", 3389)]
+    receipt = _receipt(out)
+    assert [row["subject"]["host"] for row in receipt["records"]] == ["10.0.0.2"]
+
+
+def test_native_rdp_observation_runs_for_all_done_host_resume(tmp_path, plugin_dir, pulse, monkeypatch):
+    observed = []
+    monkeypatch.setattr(pp, "observe_rdp_x224", lambda host, port: (observed.append((host, port)) or ("responded", {"result": "selected", "selected_protocol": "PROTOCOL_SSL"})))
+    out = _run(tmp_path, ["10.0.0.1:22/tcp", "10.0.0.1:3389/tcp"], plugins=True,
+               observation_tenant_id="tenant", observation_run_id="run")
+    observed.clear()
+    pp.run_pulse_probe(["10.0.0.1:22/tcp", "10.0.0.1:3389/tcp"], output_dir=out,
+                       done_hosts={"10.0.0.1"}, retry_settle_seconds=0, plugins=True,
+                       observation_tenant_id="tenant", observation_run_id="run")
+    assert observed == [("10.0.0.1", 3389)]
+    assert [row["subject"]["host"] for row in _receipt(out)["records"]] == ["10.0.0.1"]
+
+
 def test_resume_reuses_a_run_made_with_the_same_plugins(tmp_path, plugin_dir, pulse):
     out = _run(tmp_path, plugins=True)
     pulse.findings = [_plugin_row()]
@@ -353,6 +385,68 @@ def test_finding_from_a_plugin_nobody_offered_is_dropped(caplog):
     assert pp.parse_pulse_json(payload, plugin_shas={})[2] == []
     # Recorded output read by tooling (no set) passes untouched.
     assert len(pp.parse_pulse_json(payload)[2]) == 2
+
+
+@pytest.mark.parametrize("receipts_enabled", [True, False])
+def test_rdp_observation_receipt_is_separate_from_findings(tmp_path, plugin_dir, pulse, monkeypatch, receipts_enabled):
+    observed = []
+    def fake_rdp(host, port):
+        observed.append((host, port))
+        return "responded", {"result": "selected", "selected_protocol": "PROTOCOL_HYBRID"}
+    monkeypatch.setattr(pp, "observe_rdp_x224", fake_rdp)
+    out = _run(tmp_path, ["10.0.0.9:3389/tcp", "10.0.0.10:3389/udp", "10.0.0.11:22/tcp"], plugins=True,
+               observation_tenant_id="tenant-9" if receipts_enabled else None,
+               observation_run_id="run-9" if receipts_enabled else None,
+               observation_receipts_enabled=receipts_enabled)
+    assert observed == ([('10.0.0.9', 3389)] if receipts_enabled else [])
+    if receipts_enabled:
+        receipt = _receipt(out)
+        assert receipt["context"] == {"tenant_id": "tenant-9", "run_id": "run-9"}
+        assert len(receipt["records"]) == 1
+        row = receipt["records"][0]
+        assert row["family"] == "rdp.x224.negotiation" and row["state"] == "responded"
+        assert row["outcome"] == {"result": "selected", "selected_protocol": "PROTOCOL_HYBRID"}
+        cves_path = out / "pulse_cves.json"
+        if cves_path.exists():
+            assert json.loads(cves_path.read_text(encoding="utf-8")) == []
+        shape_path = out / "pulse" / "findings_report_shape.json"
+        if shape_path.exists():
+            shape = json.loads(shape_path.read_text(encoding="utf-8"))
+            assert shape["vulnerabilities"] == []
+    else:
+        assert not (out / "observation_receipt.json").exists()
+    raw = _raw(out)
+    assert not raw["findings"]
+    assert not raw["cves"]
+
+
+def test_rdp_observation_stays_out_of_findings_when_pulse_crashes(tmp_path, plugin_dir, pulse, monkeypatch):
+    observed = []
+    monkeypatch.setattr(pp, "observe_rdp_x224", lambda host, port: (observed.append((host, port)) or ("responded", {"result": "selected", "selected_protocol": "PROTOCOL_SSL"})))
+    monkeypatch.setattr(pp, "MAX_CONSECUTIVE_CRASHED_CHUNKS", 1)
+
+    def crash(command, **kwargs):
+        return subprocess.CompletedProcess(command, 2, "", "fixture crash")
+
+    monkeypatch.setattr(pp, "run_command", crash)
+    with pytest.raises(pp.PulseCrashLoopError):
+        pp.run_pulse_probe(["10.0.0.9:3389/tcp"], output_dir=tmp_path / "out",
+                           chunk_hosts=1, retry_settle_seconds=0,
+                           observation_tenant_id="tenant", observation_run_id="run")
+    assert observed == []  # Pulse crash aborts before observation/finding publication
+    assert not (tmp_path / "out" / "observation_receipt.json").exists()
+
+
+def test_rdp_observation_can_be_skipped_under_packet_ceiling(tmp_path, plugin_dir, pulse, monkeypatch):
+    def must_not_probe(*args):
+        raise AssertionError("RDP probe bypassed the packet ceiling")
+
+    monkeypatch.setattr(pp, "observe_rdp_x224", must_not_probe)
+    out = _run(tmp_path, ["10.0.0.9:3389/tcp"], plugins=True,
+               observation_tenant_id="tenant-9", observation_run_id="run-9",
+               observation_receipts_enabled=True, observation_probe_enabled=False)
+    (row,) = _receipt(out)["records"]
+    assert row["state"] == "skipped" and row["outcome"] is None
 
 
 def test_run_drops_findings_when_plugins_are_off(tmp_path, plugin_dir, pulse):

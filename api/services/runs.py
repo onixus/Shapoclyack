@@ -862,6 +862,7 @@ _RESTRICTED_ARTIFACTS = frozenset(
     {
         "report_sources.json",
         "finding_evidence.json",
+        "observation_receipt.json",
         "ownership.json",
         "ownership_findings.txt",
         # org_profile.json embeds ownership.json verbatim (registrant org,
