@@ -190,6 +190,24 @@ CROSS_TENANT_ROUTES: dict[str, str] = {
     ),
     "api.routes.maintenance:get_tenant_calendar": _PLATFORM_ADMIN + " (the provider's view of one customer's calendar)",
     "api.routes.config:update_config": _PLATFORM_ADMIN + " (installation-wide scanner overrides)",
+    # The local operator's endpoint (#622): one config_overrides row (scope
+    # "operator") for the whole installation, read and written by the platform
+    # admin only; the API key is envelope-encrypted and never returned.
+    "api.routes.operator_settings:get_operator_settings": (
+        _PLATFORM_ADMIN + " (config.write): the installation's operator endpoint, secret redacted"
+    ),
+    "api.routes.operator_settings:put_operator_settings": (
+        _PLATFORM_ADMIN + " (config.write): writes the installation's operator config_overrides row"
+    ),
+    "api.routes.operator_settings:reset_operator_settings": (
+        _PLATFORM_ADMIN + " (config.write): deletes the installation's operator config_overrides row"
+    ),
+    "api.routes.operator_settings:test_operator_connection": (
+        _PLATFORM_ADMIN + " (config.write): probes the configured provider; " + _NO_DATABASE
+    ),
+    "api.routes.operator_settings:discover_operator_models": (
+        _PLATFORM_ADMIN + " (config.write): lists the provider's models; " + _NO_DATABASE
+    ),
     # Endpoint-agent builds (#510): one row per (version, platform) for the
     # whole installation, run by every tenant whose policy names the version.
     "api.routes.endpoint_inventory:upload_agent_release": (
