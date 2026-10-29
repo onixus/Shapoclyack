@@ -6,6 +6,9 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- Operator endpoint settings: saving a credential without a master key is refused, concurrent
+  edits return 409, connection tests are audited, and hosted connections are pinned to the
+  address that passed the public-endpoint check.
 - Aggregated **problems** and **remediation campaigns**
   ([#579](https://github.com/onixus/Shapoclyack/issues/579)). `GET /api/problems`
   groups tracked findings by a typed key (normalised CVE, detector template,

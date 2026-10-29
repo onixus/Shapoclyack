@@ -20,6 +20,15 @@ from api.services.local_operator.providers import InferenceProvider, OperatorPro
 from api.settings import Settings
 
 
+@pytest.fixture(autouse=True)
+def master_key():
+    """A stored credential needs a master key; the refusal test removes it."""
+    from api.services.crypto import envelope
+    envelope.configure(envelope.LocalKeyProvider(b"m" * 32))
+    yield
+    envelope.reset_for_tests()
+
+
 @pytest.fixture
 def settings(tmp_path):
     runtime.reset_cache()
@@ -245,6 +254,8 @@ def test_api_put_never_echoes_key_and_test_uses_candidate(settings, monkeypatch)
         captured["config"], captured["completion"] = config, completion
         return {"ok": True}
     monkeypatch.setattr(connection, "check", fake_check)
+    from api.services import audit as audit_service
+    monkeypatch.setattr(audit_service, "_require_settings", lambda: settings)
     candidate = {"provider": "openai_compatible", "base_url": "https://llm.example.com/v1",
                  "api_key": "sk-never", "allow_external": True, "model": "gpt-x"}
     with _client(settings) as client:
@@ -368,3 +379,100 @@ def test_cloud_readiness_and_cache_follows_configuration(settings, monkeypatch):
     runtime.endpoint_cached(effective)
     runtime.endpoint_cached(dataclasses.replace(effective, operator_model="changed"))
     assert calls == ["gpt-x", "changed"]
+
+
+# --- review follow-ups -----------------------------------------------------
+
+_HOSTED = {"provider": "openai_compatible", "base_url": "https://llm.example.com/v1",
+           "api_key": "sk-plain", "allow_external": True}
+
+
+def test_key_is_refused_without_a_master_key_instead_of_stored_as_typed(settings):
+    from api.services.crypto import envelope
+    envelope.reset_for_tests()
+    settings.operator_allow_external = True
+    assert overrides.snapshot(settings)["secret_storage_available"] is False
+    with pytest.raises(overrides.OperatorSettingsError, match="operator_master_key_required"):
+        overrides.update(settings, _HOSTED)
+    assert overrides.load(settings)[0] == {}
+    # No credential in the edit: nothing to protect, so it is still accepted.
+    overrides.update(settings, {"model": "other"})
+    assert overrides.load(settings)[0] == {"model": "other"}
+
+
+def test_concurrent_edit_is_refused_instead_of_overwriting(settings):
+    overrides.update(settings, {"model": "first"})
+    stale = {}  # what a second admin read before the first edit landed
+    with pytest.raises(overrides.OperatorSettingsError, match="operator_settings_changed_concurrently"):
+        overrides._write(settings, {"model": "second"}, stale, username="b", audit=None)
+    assert overrides.load(settings)[0] == {"model": "first"}
+
+
+def test_changed_concurrently_is_a_conflict_over_http(settings, monkeypatch):
+    settings.operator_allow_external = True
+    def conflict(*args, **kwargs):
+        raise overrides.OperatorSettingsError("operator_settings_changed_concurrently")
+    monkeypatch.setattr(overrides, "update", conflict)
+    with _client(settings) as client:
+        response = client.put("/api/operator/settings", json={"model": "x"})
+    assert response.status_code == 409 and response.json()["detail"] == "operator_settings_changed_concurrently"
+
+
+def test_connection_test_is_audited_without_url_path_or_key(settings, monkeypatch):
+    from sqlalchemy import select
+
+    from api.db import models
+    from api.db.engine import get_session
+    from api.services import audit as audit_service
+    settings.operator_allow_external = True
+    async def fake_check(config, **_):
+        return {"ok": True}
+    monkeypatch.setattr(connection, "check", fake_check)
+    monkeypatch.setattr(audit_service, "_require_settings", lambda: settings)
+    with _client(settings) as client:
+        response = client.post("/api/operator/settings/test", json={
+            **_HOSTED, "base_url": "https://llm.example.com/secret/path/v1", "model": "gpt-x"})
+    assert response.status_code == 200
+    with get_session(settings.postgres_url) as session:
+        rows = session.scalars(select(models.AuditEvent).where(models.AuditEvent.action == overrides.ACTION_TEST)).all()
+        assert len(rows) == 1
+        assert rows[0].after == {"provider": "openai_compatible", "host": "llm.example.com",
+                                 "completion": False, "credential": "set"}
+        assert "sk-plain" not in json.dumps(rows[0].after) and "secret" not in json.dumps(rows[0].after)
+
+
+def test_pinned_backend_dials_the_checked_address_not_the_name():
+    from api.services.local_operator.providers import _PinnedBackend
+
+    dialed = []
+    class Inner:
+        async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+            dialed.append((host, port))
+            return object()
+        async def sleep(self, seconds):
+            pass
+    asyncio.run(_PinnedBackend("93.184.216.34", Inner()).connect_tcp("rebind.example", 443))
+    assert dialed == [("93.184.216.34", 443)]
+    with pytest.raises(OperatorProviderError):
+        asyncio.run(_PinnedBackend("93.184.216.34", Inner()).connect_unix_socket("/tmp/s"))
+
+
+def test_real_pinned_transport_replaces_the_network_backend():
+    from api.services.local_operator.providers import _PinnedBackend, _pinned_transport
+
+    transport = _pinned_transport("93.184.216.34")
+    assert isinstance(transport._pool._network_backend, _PinnedBackend)
+    assert transport._pool._network_backend._address == "93.184.216.34"
+
+
+def test_hosted_provider_connects_to_the_address_it_validated(monkeypatch):
+    from api.services.local_operator import providers
+    seen = []
+    def pinned(address):
+        seen.append(address)
+        return _models("gpt-x")
+    monkeypatch.setattr(providers, "_pinned_transport", pinned)
+    config = OperatorConfig(enabled=True, provider="openai_compatible", base_url="https://llm.example.com/v1",
+                            model="gpt-x", api_key="k", allow_external=True)
+    models = asyncio.run(InferenceProvider(config, resolver=_public).list_models())
+    assert [m.id for m in models] == ["gpt-x"] and seen == ["93.184.216.34"]

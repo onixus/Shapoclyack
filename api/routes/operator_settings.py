@@ -66,6 +66,8 @@ class ConnectionTest(EndpointSettings):
 
 def _fail(exc: ValueError):
     code = str(exc)
+    if code == "operator_settings_changed_concurrently":
+        raise HTTPException(status_code=409, detail=code) from None
     status = 503 if code in {"operator_settings_unavailable", "operator_settings_unreadable",
                              "operator_settings_storage_unavailable"} else 422
     raise HTTPException(status_code=status, detail=code) from None
@@ -123,7 +125,7 @@ def _candidate_config(settings: Settings, changes: dict):
 
 
 @router.post("/test")
-async def test_operator_connection(body: ConnectionTest, _: PlatformAdmin, settings: OperatorSettings):
+async def test_operator_connection(body: ConnectionTest, _: PlatformAdmin, settings: OperatorSettings, audit: AuditDep):
     """Reachability, credential, model presence and (optionally) one completion.
 
     Nothing is saved. Failures are stable codes in the 200 body; only an
@@ -137,6 +139,11 @@ async def test_operator_connection(body: ConnectionTest, _: PlatformAdmin, setti
         config = await run_in_threadpool(_candidate_config, settings, _changes(body))
     except ValueError as exc:
         _fail(exc)
+    from api.services.local_operator import overrides
+
+    await run_in_threadpool(
+        overrides.audit_test, audit, config=config, completion=body.completion
+    )
     return await check(config, completion=body.completion)
 
 

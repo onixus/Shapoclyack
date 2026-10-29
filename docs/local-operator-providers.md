@@ -166,7 +166,19 @@ manifest pins, input/response byte limits and queue settings cannot be edited.
 Overrides use the existing `config_overrides` table (`operator` scope); no new
 migration is required. Stored keys use the configured envelope-encryption
 provider; configure secrets-at-rest encryption for encrypted database storage.
-Storage/decryption failures fail closed. Changes apply to the next worker task;
+Without a master key (`OCTO_MASTER_KEY`) a credential would be stored as typed,
+so saving one is refused with `operator_master_key_required` (`GET` reports
+`secret_storage_available`); edits without a credential still work. Two admins
+saving at once: the second save is refused with HTTP 409
+`operator_settings_changed_concurrently` rather than overwriting the first.
+Every connection test is audited (`operator_settings.test`: provider, host,
+whether a completion was sent, whether a credential was present; never the URL
+path or key). Hosted endpoints are checked to resolve to public addresses and the
+connection is then pinned to the checked address, so a name that re-resolves
+to a private one between check and connect is not followed; TLS still verifies
+the certificate against the hostname. A `local` endpoint may be any private IP
+literal by design, so the test is a reachability oracle for the internal network
+available only to platform `config.write`. Storage/decryption failures fail closed. Changes apply to the next worker task;
 an already running request retains its original configuration. Reset restores
 the deployment endpoint and credentials. No endpoint or credential is accepted
 on tenant task requests and there is no provider fallback.

@@ -13,6 +13,7 @@ export type SettingsSnapshot = {
   enabled: boolean;
   worker_enabled: boolean;
   external_permitted: boolean;
+  secret_storage_available?: boolean;
   effective: (EndpointSettings & { api_key_set: boolean }) | null;
   deployment: EndpointSettings;
   override: Partial<EndpointSettings> | null;

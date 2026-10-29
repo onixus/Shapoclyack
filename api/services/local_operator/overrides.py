@@ -38,6 +38,11 @@ EDITABLE = ("provider", "base_url", "model", "api_key", "allow_external", "timeo
 _PUBLIC = tuple(name for name in EDITABLE if name != "api_key")
 
 
+#: Audit action of a connection test: it sends the (candidate) credential to an
+#: admin-chosen address, so who tested what is recorded even though nothing is saved.
+ACTION_TEST = "operator_settings.test"
+
+
 class OperatorSettingsError(ValueError):
     """A stable, sanitized code for the settings API."""
 
@@ -150,7 +155,11 @@ def _audit_view(stored: dict[str, Any]) -> dict[str, Any]:
 
 def _write(settings, stored: dict[str, Any] | None, previous: dict[str, Any], *, username, audit) -> None:
     with get_session(settings.postgres_url) as session:
-        row = session.get(models.ConfigOverride, SCOPE)
+        # Locked read: two admins editing at once must not silently overwrite each other.
+        row = session.get(models.ConfigOverride, SCOPE, with_for_update=True)
+        current = dict(row.data) if row is not None and isinstance(row.data, dict) else {}
+        if current != previous:
+            raise OperatorSettingsError("operator_settings_changed_concurrently")
         if stored is None:
             if row is not None:
                 session.delete(row)
@@ -173,9 +182,23 @@ def update(settings, changes: dict[str, Any], *, username: str | None = None, au
     previous = load(settings)[0]
     stored = build(settings, previous, changes)
     if stored.get("api_key"):
+        if not envelope.encryption_enabled():
+            # Without a master key encrypt_secret stores the value as typed.
+            raise OperatorSettingsError("operator_master_key_required")
         stored["api_key"] = envelope.encrypt_secret(stored["api_key"], context=_KEY_CONTEXT)
     _write(settings, stored or None, previous, username=username, audit=audit)
     return stored
+
+
+def audit_test(audit, *, config: OperatorConfig, completion: bool) -> None:
+    """Record a connection test: provider, host and whether a completion was sent; never a URL path or key."""
+    from urllib.parse import urlsplit
+
+    audit_service.record_standalone(
+        audit, action=ACTION_TEST, resource_type="operator_settings", resource_id=SCOPE,
+        after={"provider": config.provider, "host": urlsplit(config.base_url).netloc.rpartition("@")[2],
+               "completion": completion, "credential": "set" if config.api_key else "none"},
+    )
 
 
 def reset(settings, *, username: str | None = None, audit=None) -> None:
@@ -222,6 +245,7 @@ def snapshot(settings) -> dict[str, Any]:
         "deployment": _view(deployment),
         "override": override,
         "effective": effective,
+        "secret_storage_available": envelope.encryption_enabled(),
         "valid": error is None,
         "error": error,
         "updated_at": updated_at.isoformat() if updated_at else None,

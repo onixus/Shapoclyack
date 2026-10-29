@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Iterable, Sequence
 from urllib.parse import urlsplit
 
+import httpcore
 import httpx
 
 from .config import OperatorConfig, is_public_address
@@ -92,6 +93,41 @@ async def _system_resolver(host: str, port: int) -> list[str]:
     return [info[4][0] for info in infos]
 
 
+class _PinnedBackend(httpcore.AsyncNetworkBackend):
+    """Dial the address that passed the public-endpoint check, not a fresh lookup.
+
+    TLS still verifies the certificate and SNI against the URL's hostname:
+    only the TCP destination is fixed, which closes DNS rebinding between the
+    check and the connection.
+    """
+
+    def __init__(self, address: str, inner: httpcore.AsyncNetworkBackend):
+        self._address = address
+        self._inner = inner
+
+    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        return await self._inner.connect_tcp(
+            self._address, port, timeout=timeout, local_address=local_address, socket_options=socket_options
+        )
+
+    async def connect_unix_socket(self, path, timeout=None, socket_options=None):
+        raise OperatorProviderError("operator_transport_failed")
+
+    async def sleep(self, seconds: float) -> None:
+        await self._inner.sleep(seconds)
+
+
+def _pinned_transport(address: str) -> httpx.AsyncHTTPTransport:
+    transport = httpx.AsyncHTTPTransport()
+    pool = getattr(transport, "_pool", None)
+    inner = getattr(pool, "_network_backend", None)
+    if inner is None:
+        # A future httpx without this seam must fail closed, not dial unpinned.
+        raise OperatorProviderError("operator_transport_failed")
+    pool._network_backend = _PinnedBackend(address, inner)
+    return transport
+
+
 class InferenceProvider:
     def __init__(self, config: OperatorConfig, *, transport: httpx.AsyncBaseTransport | None = None,
                  resolver: Resolver | None = None):
@@ -101,14 +137,15 @@ class InferenceProvider:
         # guarded when a resolver is injected alongside it.
         self._resolver = resolver if resolver is not None or transport is not None else _system_resolver
 
-    async def _require_public_endpoint(self) -> None:
+    async def _require_public_endpoint(self) -> str | None:
         """Refuse hosted names that resolve to private, loopback or metadata space.
 
-        The client resolves the name again when it connects, so this narrows
-        rather than closes DNS rebinding; egress policy remains the boundary.
+        Returns the address the connection must be pinned to (``None`` when the
+        endpoint is not checked), so the client cannot resolve the name again
+        to something else.
         """
         if self.config.provider == "local" or self._resolver is None:
-            return
+            return None
         url = urlsplit(self.config.base_url)
         addresses = list(await self._resolver(url.hostname, url.port or 443))
         if not addresses:
@@ -120,6 +157,13 @@ class InferenceProvider:
                 public = False
             if not public:
                 raise OperatorProviderError("operator_endpoint_not_public")
+        return str(ipaddress.ip_address(addresses[0]))
+
+    def _client(self, timeout: float, address: str | None) -> httpx.AsyncClient:
+        transport = self._transport
+        if transport is None and address is not None:
+            transport = _pinned_transport(address)
+        return httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False, transport=transport)
 
     def _headers(self) -> dict[str, str]:
         headers = {"Accept": "application/json", "Accept-Encoding": "identity"}
@@ -138,8 +182,8 @@ class InferenceProvider:
             raise OperatorProviderError("invalid_operator_base_url")
         try:
             async with asyncio.timeout(min(config.timeout_seconds, 15.0)):
-                await self._require_public_endpoint()
-                async with httpx.AsyncClient(timeout=min(config.timeout_seconds, 15.0), trust_env=False, follow_redirects=False, transport=self._transport) as client:
+                address = await self._require_public_endpoint()
+                async with self._client(min(config.timeout_seconds, 15.0), address) as client:
                     async with client.stream("GET", config.base_url.rstrip("/") + "/models", headers=self._headers()) as response:
                         if response.status_code in (401, 403):
                             raise OperatorProviderError("operator_upstream_unauthorized")
@@ -197,8 +241,8 @@ class InferenceProvider:
         try:
             # The outer deadline bounds the complete exchange, including slow-drip bodies.
             async with asyncio.timeout(config.timeout_seconds):
-                await self._require_public_endpoint()
-                async with httpx.AsyncClient(timeout=config.timeout_seconds, trust_env=False, follow_redirects=False, transport=self._transport) as client:
+                address = await self._require_public_endpoint()
+                async with self._client(config.timeout_seconds, address) as client:
                     async with client.stream("POST", config.base_url.rstrip("/") + "/chat/completions", headers=headers, json=payload) as response:
                         if response.status_code in (401, 403):
                             raise OperatorProviderError("operator_upstream_unauthorized")
