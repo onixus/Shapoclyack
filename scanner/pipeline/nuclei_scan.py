@@ -483,7 +483,7 @@ def _sweep_authorities(candidates, names):
     return targets
 
 
-def _run_authority_sweep(command, targets, output_dir, timeout):
+def _run_authority_sweep(command, targets, output_dir, timeout, expected_templates=None):
     """Isolate each authority's Host/SNI and preserve per-invocation raw evidence."""
     deadline = time.monotonic() + timeout
     codes, stderr, matches, errors = [], [], [], []
@@ -511,6 +511,10 @@ def _run_authority_sweep(command, targets, output_dir, timeout):
             result = run_command(cmd, timeout=remaining, retries=0, check=False)
             codes.append(result.returncode)
             stderr.append(result.stderr or '')
+            if expected_templates is not None:
+                loaded = _TEMPLATES_LOADED.findall(result.stderr or '')
+                if not loaded or int(loaded[-1]) != expected_templates:
+                    codes.append(1)
         except Exception as exc:  # preserve partial evidence and fail coverage
             codes.append(1)
             stderr.append(str(exc))
@@ -866,10 +870,16 @@ def _run_web_sweep(
         authorities = _sweep_authorities(candidates, forward_names(output_dir)) if plan is None and not exact_targets else []
         if authorities and any(t['host_header'] for t in authorities):
             if len(authorities) > config.max_targets:
+                truncated = True
                 result['truncated'] = True
             authorities = authorities[:config.max_targets]
             coverage['authorities'] = authorities
-            completed = _run_authority_sweep(command, authorities, output_dir, config.overall_timeout_seconds)
+            expected_per_process = coverage['templates_expected']
+            if expected_per_process is not None:
+                coverage['templates_expected'] = expected_per_process * len(authorities)
+            completed = _run_authority_sweep(
+                command, authorities, output_dir, config.overall_timeout_seconds, expected_per_process
+            )
         elif plan is None:
             completed = run_command(
                 command, timeout=config.overall_timeout_seconds, retries=0, check=False
@@ -1065,7 +1075,7 @@ def _run_web_sweep(
     stderr_text = stderr_text if isinstance(stderr_text, str) else ""
     loaded = _TEMPLATES_LOADED.findall(stderr_text)
     coverage["templates_loaded"] = (
-        (sum(map(int, loaded)) if plan else int(loaded[-1])) if loaded else None
+        (sum(map(int, loaded)) if plan or coverage.get("authorities") else int(loaded[-1])) if loaded else None
     )
     coverage["skipped_targets"] = sorted(
         set(_TARGET_SKIPPED.findall(stderr_text))
@@ -1120,6 +1130,7 @@ def _run_web_sweep(
     # successful run with its pinned catalog loaded can contribute here.
     complete = (
         coverage["ran"]
+        and not truncated
         and not coverage["skipped_targets"]
         and coverage["templates_expected"] is not None
         and coverage["templates_loaded"] == coverage["templates_expected"]
