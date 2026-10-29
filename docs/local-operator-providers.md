@@ -15,7 +15,7 @@ its accepted model identifier must match the deployment setting.
 | Environment setting | Default | Meaning |
 | --- | --- | --- |
 | `OCTO_OPERATOR_ENABLED` | `false` | Explicitly enable inference |
-| `OCTO_OPERATOR_PROVIDER` | `local` | `local`, `openrouter`, or `omnirouter` |
+| `OCTO_OPERATOR_PROVIDER` | `local` | `local`, `openrouter`, `omnirouter`, or `openai_compatible` |
 | `OCTO_OPERATOR_BASE_URL` | provider default | API base URL, excluding `/chat/completions` |
 | `OCTO_OPERATOR_MODEL` | `Qwen3.5-9B-Q4_K_M` | Model identifier; set a provider-specific model for hosted use |
 | `OCTO_OPERATOR_API_KEY` | empty | Optional local key; required for hosted inference |
@@ -58,6 +58,41 @@ adapter does not claim compatibility with non-chat-completion APIs or verify the
 identity or retention policy of a service based on its name. Its URL is trusted
 deployment configuration and must never be tenant-controlled.
 
+`openai_compatible` is the same adapter for any other hosted OpenAI-compatible
+service (a cloud vendor's endpoint, a self-hosted gateway behind a public name,
+and so on). It has no default URL: set `OCTO_OPERATOR_BASE_URL` to the API base
+that precedes `/chat/completions`, for example `https://llm.example.com/v1`, and
+enable it with an API key and `OCTO_OPERATOR_ALLOW_EXTERNAL=true` like the other
+hosted providers.
+
+All hosted providers (`openrouter`, `omnirouter`, `openai_compatible`) require
+HTTPS and a public host. Configuration refuses private, loopback, link-local,
+CGNAT and metadata IP literals, IPv6 forms that embed an IPv4 address
+(IPv4-mapped, NAT64, 6to4, Teredo), single-label names, `localhost` and
+internal suffixes such as `.local`, `.internal`, `.lan`, `.svc` and
+`.cluster.local` (`hosted_operator_requires_public_host`). A server on a private
+address is configured as `local`, which never needs egress consent. Before every
+exchange the provider also resolves the hosted name and refuses the request with
+`operator_endpoint_not_public` when any resolved address is not public. The HTTP
+client resolves the name again when it connects, so this check narrows DNS
+rebinding rather than closing it; restrict API egress with a NetworkPolicy or
+firewall to keep that boundary.
+
+A local server on another machine, such as a Windows workstation with a GPU, is
+reached through its private IP literal, for example
+`OCTO_OPERATOR_BASE_URL=http://192.168.1.50:8080/v1`. The connection is plain
+HTTP on the LAN; set a local `OCTO_OPERATOR_API_KEY` that matches the server's
+key and restrict the port to the API host. See
+[local-operator-windows.md](local-operator-windows.md).
+
+| Goal | Provider | Base URL | Consent and key |
+| --- | --- | --- | --- |
+| Model on the API host | `local` | `http://127.0.0.1:8080/v1` (default) | Key optional |
+| Model on a LAN machine | `local` | `http://<private IP>:<port>/v1` | Key recommended |
+| OpenRouter | `openrouter` | fixed, leave empty | `ALLOW_EXTERNAL=true` + key |
+| OmniRouter | `omnirouter` | the service's HTTPS base | `ALLOW_EXTERNAL=true` + key |
+| Another cloud endpoint | `openai_compatible` | its HTTPS base | `ALLOW_EXTERNAL=true` + key |
+
 ## Service contract and verification boundary
 
 `OperatorConfig.from_settings(settings)` validates deployment configuration.
@@ -72,7 +107,7 @@ Truncated, filtered, tool-call and explicit refusal responses are rejected as
 incomplete. A missing `finish_reason` is accepted for local server compatibility;
 this adapter does not independently prove semantic answer completeness.
 
-Tests use mocked HTTP transports to cover all three adapters, disabled behavior,
+Tests use mocked HTTP transports and resolvers to cover all four adapters, hosted host policy, resolved-address refusal, disabled behavior,
 explicit hosted consent, URL policy, bounded inputs/output, redirects, invalid
 responses, deadlines and sanitized transport failures. No hosted credential is
 used. These checks do not measure runtime availability, model quality, GPU memory,

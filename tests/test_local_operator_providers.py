@@ -153,3 +153,55 @@ def test_incomplete_tool_and_refusal_responses_are_rejected(finish, message_extr
 def test_invalid_choice_shape_is_sanitized(choice):
     with pytest.raises(OperatorProviderError, match="^operator_invalid_response$"):
         complete(handler=lambda _: httpx.Response(200, json={"choices": [choice]}))
+
+
+def _hosted(provider="openai_compatible", base="https://llm.example.com/v1"):
+    return OperatorConfig(enabled=True, provider=provider, base_url=base, model="m", api_key="k", allow_external=True)
+
+
+def _ok(_):
+    return httpx.Response(200, json={"choices": [{"message": {"content": "bounded answer"}}]})
+
+
+def _run(config, resolver, handler=_ok):
+    provider = InferenceProvider(config, transport=httpx.MockTransport(handler), resolver=resolver)
+    return asyncio.run(provider.complete([{"role": "user", "content": "q"}]))
+
+
+@pytest.mark.parametrize("addresses", [["10.0.0.7"], ["93.184.216.34", "169.254.169.254"], ["::1"], ["::ffff:127.0.0.1"], ["not-an-ip"]])
+def test_hosted_name_resolving_to_private_space_never_opens_transport(addresses):
+    async def resolver(host, port):
+        assert (host, port) == ("llm.example.com", 443)
+        return addresses
+    with pytest.raises(OperatorProviderError, match="^operator_endpoint_not_public$"):
+        _run(_hosted(), resolver, lambda _: pytest.fail("private resolution reached transport"))
+
+
+def test_hosted_public_resolution_proceeds_and_port_is_honoured():
+    seen = []
+    async def resolver(host, port):
+        seen.append((host, port))
+        return ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"]
+    assert _run(_hosted(base="https://llm.example.com:8443/v1"), resolver).content == "bounded answer"
+    assert seen == [("llm.example.com", 8443)]
+
+
+@pytest.mark.parametrize("failure", [[], OSError("no such host")])
+def test_hosted_resolution_failure_is_sanitized_transport_failure(failure):
+    async def resolver(host, port):
+        if isinstance(failure, Exception):
+            raise failure
+        return failure
+    with pytest.raises(OperatorProviderError, match="^operator_transport_failed$"):
+        _run(_hosted(), resolver, lambda _: pytest.fail("unresolved name reached transport"))
+
+
+def test_local_provider_skips_resolution():
+    async def resolver(host, port):
+        pytest.fail("local endpoint is an IP literal and is not resolved")
+    assert _run(OperatorConfig(enabled=True), resolver).content == "bounded answer"
+
+
+def test_default_provider_guards_hosted_endpoints_with_system_resolver():
+    from api.services.local_operator import providers
+    assert InferenceProvider(_hosted())._resolver is providers._system_resolver

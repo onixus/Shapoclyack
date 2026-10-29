@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
+import socket
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Awaitable, Callable, Iterable, Sequence
+from urllib.parse import urlsplit
 
 import httpx
 
-from .config import OperatorConfig
+from .config import OperatorConfig, is_public_address
+
+Resolver = Callable[[str, int], Awaitable[Iterable[str]]]
 
 MAX_SCHEMA_BYTES = 65536
 MAX_SCHEMA_NODES = 16384
@@ -72,10 +77,39 @@ class Completion:
     model: str
 
 
+async def _system_resolver(host: str, port: int) -> list[str]:
+    infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    return [info[4][0] for info in infos]
+
+
 class InferenceProvider:
-    def __init__(self, config: OperatorConfig, *, transport: httpx.AsyncBaseTransport | None = None):
+    def __init__(self, config: OperatorConfig, *, transport: httpx.AsyncBaseTransport | None = None,
+                 resolver: Resolver | None = None):
         self.config = config
         self._transport = transport
+        # An injected transport never reaches the network, so it is only
+        # guarded when a resolver is injected alongside it.
+        self._resolver = resolver if resolver is not None or transport is not None else _system_resolver
+
+    async def _require_public_endpoint(self) -> None:
+        """Refuse hosted names that resolve to private, loopback or metadata space.
+
+        The client resolves the name again when it connects, so this narrows
+        rather than closes DNS rebinding; egress policy remains the boundary.
+        """
+        if self.config.provider == "local" or self._resolver is None:
+            return
+        url = urlsplit(self.config.base_url)
+        addresses = list(await self._resolver(url.hostname, url.port or 443))
+        if not addresses:
+            raise OperatorProviderError("operator_transport_failed")
+        for value in addresses:
+            try:
+                public = is_public_address(ipaddress.ip_address(value))
+            except ValueError:
+                public = False
+            if not public:
+                raise OperatorProviderError("operator_endpoint_not_public")
 
     async def complete(self, messages: Sequence[dict[str, str]], *, response_schema: dict | None = None) -> Completion:
         config = self.config
@@ -101,6 +135,7 @@ class InferenceProvider:
         try:
             # The outer deadline bounds the complete exchange, including slow-drip bodies.
             async with asyncio.timeout(config.timeout_seconds):
+                await self._require_public_endpoint()
                 async with httpx.AsyncClient(timeout=config.timeout_seconds, trust_env=False, follow_redirects=False, transport=self._transport) as client:
                     async with client.stream("POST", config.base_url.rstrip("/") + "/chat/completions", headers=headers, json=payload) as response:
                         if response.status_code != 200:
@@ -123,7 +158,7 @@ class InferenceProvider:
             return Completion(content=content, provider=config.provider, model=config.model)
         except OperatorProviderError:
             raise
-        except (httpx.HTTPError, TimeoutError):
+        except (httpx.HTTPError, TimeoutError, OSError):
             raise OperatorProviderError("operator_transport_failed") from None
         except (ValueError, KeyError, IndexError, TypeError, AttributeError, RecursionError):
             raise OperatorProviderError("operator_invalid_response") from None

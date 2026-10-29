@@ -5,7 +5,8 @@ This directory is the stable entry point for Shapoclyack documentation. Use it b
 Commands assume the repository root unless a guide explicitly says otherwise.
 
 Optional AI operator: [architecture and acceptance](local-operator.md),
-[local/OpenRouter/OmniRouter providers](local-operator-providers.md), and
+[local/OpenRouter/OmniRouter/OpenAI-compatible providers](local-operator-providers.md),
+[local inference on a Windows 12 GB GPU](local-operator-windows.md), and
 [authenticated read-only MCP](mcp.md). The [durable session/queue/worker pilot](local-operator-service.md) adds one
 read-only summary flow. The operator console and runtime/GPU acceptance remain pending.
 

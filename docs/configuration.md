@@ -1734,8 +1734,8 @@ read-only MCP transport is in [mcp.md](mcp.md). Both features default to off.
 | Variable | Default | Purpose |
 |---|---|---|
 | `OCTO_OPERATOR_ENABLED` | `false` | Enable operator configuration, personal durable sessions/history and the bounded pilot task API. The separate worker requires its own flag. |
-| `OCTO_OPERATOR_PROVIDER` | `local` | `local`, `openrouter`, or `omnirouter`; no automatic provider fallback. |
-| `OCTO_OPERATOR_BASE_URL` | *(empty)* | Local defaults to `http://127.0.0.1:8080/v1`, OpenRouter to `https://openrouter.ai/api/v1`; OmniRouter requires an explicit administrator-owned URL. |
+| `OCTO_OPERATOR_PROVIDER` | `local` | `local`, `openrouter`, `omnirouter`, or `openai_compatible` (any public HTTPS OpenAI-compatible endpoint); no automatic provider fallback. |
+| `OCTO_OPERATOR_BASE_URL` | *(empty)* | Local defaults to `http://127.0.0.1:8080/v1`, OpenRouter to `https://openrouter.ai/api/v1`; OmniRouter and `openai_compatible` require an explicit administrator-owned HTTPS URL on a public host. Local accepts only private IP literals. |
 | `OCTO_OPERATOR_MODEL` | `Qwen3.5-9B-Q4_K_M` | Model alias passed to the server; this name does not verify installed weights or provenance. Select a provider model explicitly for hosted mode. |
 | `OCTO_OPERATOR_API_KEY` | *(empty)* | Deployment secret, required for hosted providers; redacted by the settings CLI. |
 | `OCTO_OPERATOR_ALLOW_EXTERNAL` | `false` | Explicitly permit hosted inference. Local mode never falls back to it. |
