@@ -36,7 +36,8 @@ args=(
   -W error::pytest.PytestUnhandledThreadExceptionWarning
 )
 if [[ -n "${JUNIT_XML}" ]]; then
-  args+=("--junitxml=${JUNIT_XML}")
+  args+=("--junitxml=${JUNIT_XML}" -p tests.ci_timing
+         "--ci-timing-jsonl=${JUNIT_XML%.xml}-timings.jsonl")
 fi
 args+=(
   --cov=api

@@ -352,7 +352,7 @@ pipeline {
                     // В finally ячейки: её падение не должно съедать отчёт,
                     // который уже написан.
                     junit allowEmptyResults: true, testResults: "junit-${PY}.xml"
-                    archiveArtifacts artifacts: "coverage-${PY}.xml", allowEmptyArchive: true
+                    archiveArtifacts artifacts: "coverage-${PY}.xml,junit-${PY}-timings.jsonl", allowEmptyArchive: true
                   }
                 }
               }
