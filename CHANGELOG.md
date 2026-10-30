@@ -32,6 +32,15 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- The legacy Nuclei web sweep binds input-forward DNS names to the discovered
+  IP ([#619](https://github.com/onixus/Shapoclyack/pull/619)): one invocation
+  per authority, always dialling the IP, the bare IP (default virtual host)
+  first, then each name with its `Host` and, over HTTPS, `-sni`. `Host` omits
+  a default port as a client does. `coverage.authority_results` records each
+  authority as `complete`, `failed` or `skipped_deadline`, and any authority
+  short of `complete` keeps the run from counting as coverage. CI archives an
+  incremental pytest timing log (`junit-<py>-timings*.jsonl`); a rerun in the
+  same workspace writes a numbered sibling instead of overwriting or failing.
 - Local scan operator, server side of the #607 review. With a runtime manifest
   configured the worker refuses every task unless the probe is `ready`
   (`operator_runtime_not_ready`); status reports `manifest_attested` /
