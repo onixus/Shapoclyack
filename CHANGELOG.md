@@ -6,6 +6,9 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- Operator endpoint settings: saving a credential without a master key is refused, concurrent
+  edits return 409, connection tests are audited, and hosted connections are pinned to the
+  address that passed the public-endpoint check.
 - Aggregated **problems** and **remediation campaigns**
   ([#579](https://github.com/onixus/Shapoclyack/issues/579)). `GET /api/problems`
   groups tracked findings by a typed key (normalised CVE, detector template,
@@ -29,6 +32,13 @@ All notable changes to Shapoclyack are documented in this file.
   key (IPv6 included) before the first write, `--thresh3` is bounded to
   1024..1048576 and a non-Linux host exits 3. See `docs/pulse-backend.md`,
   "Neighbour table limits" (#612).
+- AI operator provider `openai_compatible` (`OCTO_OPERATOR_PROVIDER`) for any
+  hosted OpenAI-compatible HTTPS endpoint, with the same opt-in and key
+  requirement as OpenRouter/OmniRouter. All hosted providers now refuse private,
+  internal and embedded-IPv4 hosts at configuration time
+  (`hosted_operator_requires_public_host`) and names resolving to non-public
+  addresses before each request (`operator_endpoint_not_public`). Windows
+  12 GB GPU deployment guide for Qwen3.5-9B: `docs/local-operator-windows.md`.
 
 ### Changed
 

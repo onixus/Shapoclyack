@@ -1,5 +1,6 @@
 "use client";
 
+import { OperatorSettings } from "@/components/operator/operator-settings";
 import { Bot } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { OperatorConsole } from "@/components/operator/operator-console";
@@ -14,6 +15,7 @@ export default function OperatorPage() {
   return (
     <div className="space-y-6">
       <PageHeader icon={Bot} title={t("nav.operator")} subtitle={t("nav.hint.operator")} />
+      {user?.is_platform_admin && <OperatorSettings key={user.username} actor={user.username} />}
       {tenant && user ? (
         <OperatorConsole
           key={`${tenant}:${user.username}`}
