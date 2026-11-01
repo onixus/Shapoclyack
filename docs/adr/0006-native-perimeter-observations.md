@@ -121,8 +121,23 @@ and is not a cross-run deduplication key.
   baseline numerator/denominator. Plugin-file count, finding count and three
   request variants alone are not valid evidence of a threefold coverage increase.
 - The accepted RDP inventory slice is an additive scoped implementation, not an
-  agreed coverage metric or proof of threefold expansion; baseline/target remain
-  undecided pending a curated family registry.
+  agreed coverage metric or proof of threefold expansion. For the operational
+  metric, the numerator is the number of applicable endpoint × check-family
+  opportunities that were enabled, actually executed and completed successfully
+  during the reporting period; the denominator is all applicable opportunities
+  under the same registry, segment, and period rules. Baseline and target compare
+  those fractions over identical scope and accounting rules; threefold means the
+  resulting fraction is at least three times the baseline, not three times the
+  script count. A zero or unavailable baseline is not a valid multiplier.
+- Receipts on a scanner are only local evidence. Since there is no authenticated
+  fleet ingestion, durable production consumer, nor fleet export available, this
+  repository cannot currently calculate that fraction or establish the baseline.
+  A local archive may be retained for later ingest, but must not be treated as
+  fleet telemetry or an accepted production run. The next implementation step
+  requires an agreed authenticated ingestion/storage design and the authoritative
+  source for endpoint applicability and scanner/check enablement. In particular,
+  chunk-level Rhai errors cannot be attributed to an individual matching endpoint;
+  they must not be converted into per-endpoint success receipts.
 - Offline parsing tests may validate existing artifacts, but cannot demonstrate
   production observation emission or endpoint completion.
 
