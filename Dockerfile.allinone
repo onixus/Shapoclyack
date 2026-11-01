@@ -59,6 +59,8 @@ ARG NAABU_VERSION=v2.6.1
 #                      latest release (v3.11.1) still asks for 0.144.0
 #   compress v1.18.7   CVE-2026-63209 (S2 dictionary integer overflow DoS);
 #                      dnsx and naabu
+#   go-jose  v4.1.6    CVE-2026-116587 (DoS via crafted RSA parameters in JWKs,
+#                      HIGH); nuclei, which asks for v4.1.4
 #
 # A pin must be >= what every tool already requires: `go get` refuses to
 # downgrade a module a tool pins higher (naabu 2.6.1 requires utls v1.8.2)
@@ -68,7 +70,7 @@ ARG NAABU_VERSION=v2.6.1
 # finding: a pin the binary does not link in costs nothing, and a tool that
 # grows the dependency later inherits the fixed version rather than a fresh
 # advisory.
-ARG GO_SECURITY_PINS="golang.org/x/crypto@v0.57.0 github.com/go-git/go-git/v5@v5.19.2 golang.org/x/mod@v0.41.0 google.golang.org/grpc@v1.83.2 github.com/refraction-networking/utls@v1.8.2 golang.org/x/net@v0.60.0 github.com/getkin/kin-openapi@v0.149.0 github.com/klauspost/compress@v1.18.7"
+ARG GO_SECURITY_PINS="golang.org/x/crypto@v0.57.0 github.com/go-git/go-git/v5@v5.19.2 golang.org/x/mod@v0.41.0 google.golang.org/grpc@v1.83.2 github.com/refraction-networking/utls@v1.8.2 golang.org/x/net@v0.60.0 github.com/getkin/kin-openapi@v0.149.0 github.com/klauspost/compress@v1.18.7 github.com/go-jose/go-jose/v4@v4.1.6"
 
 # Keep builds on the reviewed, digest-pinned patched compiler. A dependency
 # requiring a newer compiler must fail rather than download an unpinned toolchain.
