@@ -1,8 +1,16 @@
 "use client";
+import {
+  scanIntentLabel,
+  scanModeLabel,
+  scanExecutionLabel,
+  scanTargetLabel,
+} from "@/lib/scan-labels";
+import { ScanTechnicalDetails } from "@/components/scans/scan-technical-details";
 
 import Link from "next/link";
 import { useState } from "react";
 import { format, formatDistanceStrict } from "date-fns";
+import { ru } from "date-fns/locale";
 import { ArrowUpRight, ChevronDown, Cpu, TriangleAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -30,6 +38,7 @@ function stamp(iso: string | null | undefined): string | null {
 
 export function jobDuration(
   job: Pick<JobInfo, "started_at" | "finished_at" | "status">,
+  locale: "en" | "ru" = "en",
 ): string | null {
   if (!job.started_at) return null;
   const end = job.finished_at
@@ -38,7 +47,9 @@ export function jobDuration(
       ? new Date()
       : null;
   if (!end) return null;
-  return formatDistanceStrict(new Date(job.started_at), end);
+  return formatDistanceStrict(new Date(job.started_at), end, {
+    locale: locale === "ru" ? ru : undefined,
+  });
 }
 
 function Row({
@@ -115,7 +126,7 @@ export function JobDetailsDrawer({
   const counts = Object.entries(current.target_counts ?? {}).filter(
     ([, n]) => typeof n === "number" && n > 0,
   );
-  const duration = jobDuration(current);
+  const duration = jobDuration(current, t.locale);
   const command = Array.isArray((current as { command?: unknown }).command)
     ? ((current as { command?: string[] }).command ?? []).join(" ")
     : null;
@@ -211,16 +222,22 @@ export function JobDetailsDrawer({
           </h4>
           <dl className="mt-1 divide-y divide-border/60">
             <Row label={t("col.intent")}>
-              <span className="font-mono uppercase">{intent ?? "legacy"}</span>
-              <span className="text-muted-foreground"> · {current.mode}</span>
-              {intentSummary ? (
-                <p className="mt-0.5 text-muted-foreground">{intentSummary}</p>
-              ) : null}
+              <span className="font-mono uppercase">{scanIntentLabel(t.locale, intent)}</span>
+              <span className="text-muted-foreground">
+                {" "}
+                · {scanModeLabel(t.locale, current.mode)}
+              </span>
+              <ScanTechnicalDetails
+                intent={intent}
+                mode={current.mode}
+                execution={current.execution || "local"}
+                summary={intentSummary}
+              />
             </Row>
             <Row label={t("col.execution")}>
               <span className="inline-flex items-center gap-1">
                 <Cpu className="h-3 w-3 text-muted-foreground" />
-                {current.execution ?? "local"}
+                {scanExecutionLabel(t.locale, current.execution)}
                 {current.assigned_agent_id ? (
                   <>
                     <span className="text-muted-foreground">·</span>
@@ -256,7 +273,7 @@ export function JobDetailsDrawer({
                 <span className="flex flex-wrap gap-1.5">
                   {counts.map(([key, n]) => (
                     <Badge key={key} variant="secondary" className="font-mono text-xs">
-                      {key}: {n}
+                      {scanTargetLabel(t.locale, key)}: {n}
                     </Badge>
                   ))}
                 </span>

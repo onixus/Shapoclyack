@@ -1,5 +1,10 @@
 "use client";
+import { runText } from "@/lib/run-presentation";
 
+import { OriginalRunData } from "@/components/run/original-data";
+import { RiskExplanation } from "@/components/vulnerability/risk-explanation";
+import { CisaDecision } from "@/components/vulnerability/cisa-decision";
+import { vulnerabilityName, vulnerabilityText } from "@/lib/vulnerability-presentation";
 import { useState } from "react";
 import { FindingEvidencePanel } from "@/components/finding-evidence";
 import { useT } from "@/lib/i18n";
@@ -26,14 +31,23 @@ export function FindingsList({
   return (
     <div className="space-y-4">
       {truncation.isTruncated ? (
-        <Alert variant="warning" className="border-amber-500/30 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-200">
+        <Alert
+          variant="warning"
+          className="border-amber-500/30 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-200"
+        >
           <AlertDescription className="text-xs">
-            Showing {truncation.shown.toLocaleString()} of{" "}
-            {truncation.total != null
-              ? truncation.total.toLocaleString()
-              : `${VULN_FETCH_LIMIT.toLocaleString()}+`}{" "}
-            findings — the API returns at most {VULN_FETCH_LIMIT.toLocaleString()} per run. Narrow
-            by host or port (Hosts/Ports tabs) to see the rest.
+            {runText(
+              t.locale,
+              "Showing {shown} of {total} findings — the API returns at most {limit} per run. Narrow by host or port (Hosts/Ports tabs) to see the rest.",
+              {
+                shown: truncation.shown.toLocaleString(),
+                total:
+                  truncation.total != null
+                    ? truncation.total.toLocaleString()
+                    : `${VULN_FETCH_LIMIT.toLocaleString()}+`,
+                limit: VULN_FETCH_LIMIT.toLocaleString(),
+              },
+            )}
           </AlertDescription>
         </Alert>
       ) : null}
@@ -49,8 +63,13 @@ export function FindingsList({
                 <StatusBadge value={sev} map={SEVERITY_STATUS} />
                 <span className="font-mono text-xs text-muted-foreground">
                   {visible.length < items.length
-                    ? `${visible.length} of ${items.length.toLocaleString()} shown`
-                    : `${items.length.toLocaleString()} findings`}
+                    ? runText(t.locale, "{shown} of {total} shown", {
+                        shown: visible.length,
+                        total: items.length.toLocaleString(),
+                      })
+                    : runText(t.locale, "{count} findings", {
+                        count: items.length.toLocaleString(),
+                      })}
                 </span>
               </div>
             </div>
@@ -63,16 +82,28 @@ export function FindingsList({
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
                       <p className="flex flex-wrap items-center gap-2 font-mono font-bold text-foreground">
-                        {item.cve || item.script_id || "finding"}
+                        {vulnerabilityName(
+                          {
+                            cve: item.cve,
+                            script_id: item.script_id,
+                            title: (item as Vulnerability & { title?: string }).title || "",
+                          },
+                          t.locale,
+                        )}
                         {item.port ? (
-                          <span className="text-sky-600 dark:text-sky-400 font-normal">:{item.port}</span>
+                          <span className="text-sky-600 dark:text-sky-400 font-normal">
+                            :{item.port}
+                          </span>
                         ) : null}
                         {item.requires_confirmation ? (
                           <span
                             className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-overline font-semibold uppercase text-amber-600 dark:text-amber-300"
-                            title="The scanner could not confirm this finding — treat it as triage signal, not a confirmed vulnerability."
+                            title={runText(
+                              t.locale,
+                              "The scanner could not confirm this finding — treat it as triage signal, not a confirmed vulnerability.",
+                            )}
                           >
-                            unconfirmed
+                            {runText(t.locale, "unconfirmed")}
                           </span>
                         ) : null}
                         {item.in_kev ? (
@@ -82,18 +113,42 @@ export function FindingsList({
                         ) : null}
                       </p>
                       <p className="font-mono text-xs text-muted-foreground mt-0.5">
-                        {item.host || "unknown host"}
+                        {item.host || runText(t.locale, "unknown host")}
                         {formatLocation(item) ? ` · ${formatLocation(item)}` : ""}
                       </p>
                       {item.finding_type && item.finding_type !== "cve" ? (
-                        <p className="mt-1 text-muted-foreground">{item.finding_type} · {item.detector_source || "scan"}</p>
-                      ) : null}
-                      {item.remediation ? <p className="mt-1 text-foreground">Remediation: {item.remediation}</p> : null}
-                      {item.finding_evidence ? <FindingEvidencePanel evidence={item.finding_evidence} /> : null}
-                      {item.risk_explanation ? (
-                        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                          {item.risk_explanation}
+                        <p className="mt-1 text-muted-foreground">
+                          {vulnerabilityText(t.locale, item.finding_type)} ·{" "}
+                          {vulnerabilityText(t.locale, item.detector_source || "scan")}
                         </p>
+                      ) : null}
+                      {item.remediation ? (
+                        <p className="mt-1 text-foreground">
+                          {runText(t.locale, "Remediation")}:{" "}
+                          {t.locale === "ru" && !/[А-Яа-яЁё]/.test(item.remediation)
+                            ? "Исходная рекомендация сканера приведена в технических данных. Перед исправлением проверьте её применимость к этому сервису."
+                            : item.remediation}
+                        </p>
+                      ) : null}
+                      {t.locale === "ru" ? (
+                        <OriginalRunData
+                          data={{
+                            script_id: item.script_id,
+                            title: (item as Vulnerability & { title?: string }).title,
+                            finding_type: item.finding_type,
+                            detector_source: item.detector_source,
+                            severity: item.severity,
+                            remediation: item.remediation,
+                            finding_class: item.finding_class,
+                            confidence: item.confidence,
+                          }}
+                        />
+                      ) : null}
+                      {item.finding_evidence ? (
+                        <FindingEvidencePanel evidence={item.finding_evidence} />
+                      ) : null}
+                      {item.risk_explanation ? (
+                        <RiskExplanation text={item.risk_explanation} />
                       ) : null}
                     </div>
                     <div className="text-right">
@@ -102,13 +157,18 @@ export function FindingsList({
                           ? `CVSS4 ${item.cvss4}`
                           : item.cvss != null
                             ? `CVSS ${item.cvss}`
-                            : sev.toUpperCase()}
+                            : t.label(sev)}
                       </span>
                       {item.contextual_score != null ? (
                         <p className="mt-0.5 font-mono text-xs text-muted-foreground">
-                          risk {item.contextual_score.toFixed(1)}
-                          {item.cisa_decision ? ` · ${item.cisa_decision}` : ""}
+                          {runText(t.locale, "risk")} {item.contextual_score.toFixed(1)}
+                          {t.locale === "en" && item.cisa_decision
+                            ? ` · ${item.cisa_decision}`
+                            : ""}
                         </p>
+                      ) : null}
+                      {t.locale === "ru" && item.cisa_decision ? (
+                        <CisaDecision value={item.cisa_decision} />
                       ) : null}
                     </div>
                   </div>
@@ -124,7 +184,11 @@ export function FindingsList({
                   className="border-border bg-card text-foreground hover:bg-muted text-xs font-semibold"
                   onClick={() => setExpanded((prev) => ({ ...prev, [sev]: !isExpanded }))}
                 >
-                  {isExpanded ? "Show less" : `Show all ${items.length.toLocaleString()} findings`}
+                  {isExpanded
+                    ? runText(t.locale, "Show less")
+                    : runText(t.locale, "Show all {count} findings", {
+                        count: items.length.toLocaleString(),
+                      })}
                 </Button>
               </div>
             ) : null}
@@ -133,7 +197,9 @@ export function FindingsList({
       })}
 
       {totalShown === 0 ? (
-        <p className="py-8 text-center text-xs text-muted-foreground">{t("ui.noFindingsForTheCurrentFilters")}</p>
+        <p className="py-8 text-center text-xs text-muted-foreground">
+          {t("ui.noFindingsForTheCurrentFilters")}
+        </p>
       ) : null}
     </div>
   );

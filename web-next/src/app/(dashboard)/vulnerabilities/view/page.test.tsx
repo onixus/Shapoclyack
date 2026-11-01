@@ -134,6 +134,22 @@ describe("Accepted risk panel", () => {
     expect(screen.queryByText("CVE-2024-0001")).not.toBeInTheDocument();
   });
 
+  it("keeps original detector and title in collapsed technical details in Russian", async () => {
+    useAppearanceStore.setState({ locale: "ru" });
+    try {
+      renderPage(vuln({ cve: null, finding_type: "exposure", title: "EternalBlue (SMBv1 RCE)", script_id: "pulse:exposure:445:eternalblue-smbv1-rce" }));
+      expect(await screen.findByRole("heading", { name: "Доступен SMB: проверьте защиту от EternalBlue" })).toBeInTheDocument();
+      const original = screen.getByText("EternalBlue (SMBv1 RCE)");
+      const technical = original.closest("details");
+      expect(technical).not.toHaveAttribute("open");
+      expect(technical).toHaveTextContent("pulse:exposure:445:eternalblue-smbv1-rce");
+      await userEvent.click(screen.getByText("Технические данные"));
+      expect(technical).toHaveAttribute("open");
+      expect(original).toBeVisible();
+      expect(screen.getByText("Доступность сервиса")).toBeInTheDocument();
+    } finally { useAppearanceStore.setState({ locale: "en" }); }
+  });
+
   beforeEach(() => {
     vi.restoreAllMocks();
     useAuthStore.setState({ user: null, canOperate: false, hydrated: true, loading: false });

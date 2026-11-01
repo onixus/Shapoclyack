@@ -1,4 +1,5 @@
 "use client";
+import { runText } from "@/lib/run-presentation";
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -6,6 +7,8 @@ import { Suspense, useMemo } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
 import { FileText } from "lucide-react";
+import { scanModeLabel } from "@/lib/scan-labels";
+import { ScanTechnicalDetails } from "@/components/scans/scan-technical-details";
 import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/data-table";
 import { PageHeader } from "@/components/page-header";
@@ -61,12 +64,12 @@ function RunsInner() {
         accessorKey: "run_id",
         header: t("col.runId"),
         cell: ({ row }) => (
-          <Link
+          <a
             href={runDetailHref(row.original.run_id)}
-            className="font-mono text-xs font-semibold text-primary underline-offset-2 hover:underline"
+            className="inline-block whitespace-nowrap font-mono text-xs font-semibold text-primary underline-offset-2 hover:underline"
           >
             {row.original.run_id}
-          </Link>
+          </a>
         ),
       },
       {
@@ -78,10 +81,16 @@ function RunsInner() {
       {
         accessorKey: "profile",
         header: t("col.profileMode"),
-        cell: ({ getValue }) => (
-          <Badge variant="secondary" className="font-mono text-xs">
-            {String(getValue() || "—")}
-          </Badge>
+        cell: ({ getValue, row }) => (
+          <div>
+            <Badge variant="secondary" className="font-mono text-xs">
+              {getValue() ? scanModeLabel(t.locale, String(getValue())) : "—"}
+            </Badge>
+            <ScanTechnicalDetails
+              id={row.original.run_id}
+              mode={row.original.profile || undefined}
+            />
+          </div>
         ),
       },
       {
@@ -136,9 +145,14 @@ function RunsInner() {
               {unconfirmed > 0 ? (
                 <span
                   className="font-mono text-xs text-amber-600 dark:text-amber-300/80"
-                  title="Unconfirmed — reachable-service exposures and unverified keyword CVE hits, included in the total"
+                  title={runText(
+                    t.locale,
+                    "Unconfirmed — reachable-service exposures and unverified keyword CVE hits, included in the total",
+                  )}
                 >
-                  {unconfirmed.toLocaleString()} unconf.
+                  {runText(t.locale, "{count} unconfirmed", {
+                    count: unconfirmed.toLocaleString(),
+                  })}
                 </span>
               ) : null}
             </span>
@@ -156,7 +170,7 @@ function RunsInner() {
                 variant="secondary"
                 className="border-indigo-500/30 bg-indigo-500/20 text-xs text-indigo-700 dark:text-indigo-300"
               >
-                diff
+                {runText(t.locale, "diff")}
               </Badge>
             ) : null}
             {row.original.has_summary ? (
@@ -164,7 +178,7 @@ function RunsInner() {
                 variant="outline"
                 className="border-emerald-500/30 bg-emerald-500/10 text-xs text-emerald-700 dark:text-emerald-300"
               >
-                pdf
+                {runText(t.locale, "pdf")}
               </Badge>
             ) : null}
           </div>

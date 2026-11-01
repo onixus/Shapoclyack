@@ -1,4 +1,6 @@
 "use client";
+import { scanModeLabel } from "@/lib/scan-labels";
+import { ScanTechnicalDetails } from "@/components/scans/scan-technical-details";
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -104,56 +106,58 @@ function RecentRuns({ surface }: { surface: OperationsSurface }) {
         {runs.map((run) => {
           const vulns = run.potential_vulnerabilities ?? 0;
           return (
-            <Link
+            <div
               key={run.run_id}
-              href={runDetailHref(run.run_id)}
-              className="group rounded-xl border border-border bg-card p-4 transition-colors hover:border-primary/40"
+              className="min-w-0 rounded-xl border border-border bg-card p-4 transition-colors hover:border-primary/40"
             >
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate font-mono text-xs font-semibold text-primary group-hover:underline">
-                  {run.run_id}
-                </span>
-                {run.profile ? (
-                  <Badge variant="secondary" className="font-mono text-xs">
-                    {run.profile}
-                  </Badge>
-                ) : null}
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {run.started_at ? format(new Date(run.started_at), "yyyy-MM-dd HH:mm") : "—"}
-              </p>
-              <dl className="mt-3 grid grid-cols-3 gap-2 text-center">
-                <div>
-                  <dt className="text-overline uppercase text-muted-foreground">
-                    {t("col.aliveHosts")}
-                  </dt>
-                  <dd className="font-mono text-sm font-bold text-foreground">
-                    {(run.alive_hosts ?? 0).toLocaleString()}
-                  </dd>
+              <Link href={runDetailHref(run.run_id)} className="group block">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate font-mono text-xs font-semibold text-primary group-hover:underline">
+                    {run.run_id}
+                  </span>
+                  {run.profile ? (
+                    <Badge variant="secondary" className="font-mono text-xs">
+                      {scanModeLabel(t.locale, run.profile)}
+                    </Badge>
+                  ) : null}
                 </div>
-                <div>
-                  <dt className="text-overline uppercase text-muted-foreground">
-                    {t("col.openPorts")}
-                  </dt>
-                  <dd className="font-mono text-sm font-bold text-foreground">
-                    {(run.open_host_port_pairs ?? 0).toLocaleString()}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-overline uppercase text-muted-foreground">
-                    {t("col.vulns")}
-                  </dt>
-                  <dd
-                    className={cn(
-                      "font-mono text-sm font-bold",
-                      vulns > 0 ? "text-rose-600 dark:text-rose-400" : "text-foreground",
-                    )}
-                  >
-                    {vulns.toLocaleString()}
-                  </dd>
-                </div>
-              </dl>
-            </Link>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {run.started_at ? format(new Date(run.started_at), "yyyy-MM-dd HH:mm") : "—"}
+                </p>
+                <dl className="mt-3 grid grid-cols-3 gap-2 text-center">
+                  <div>
+                    <dt className="text-overline uppercase text-muted-foreground">
+                      {t("col.aliveHosts")}
+                    </dt>
+                    <dd className="font-mono text-sm font-bold text-foreground">
+                      {(run.alive_hosts ?? 0).toLocaleString()}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-overline uppercase text-muted-foreground">
+                      {t("col.openPorts")}
+                    </dt>
+                    <dd className="font-mono text-sm font-bold text-foreground">
+                      {(run.open_host_port_pairs ?? 0).toLocaleString()}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-overline uppercase text-muted-foreground">
+                      {t("col.vulns")}
+                    </dt>
+                    <dd
+                      className={cn(
+                        "font-mono text-sm font-bold",
+                        vulns > 0 ? "text-rose-600 dark:text-rose-400" : "text-foreground",
+                      )}
+                    >
+                      {vulns.toLocaleString()}
+                    </dd>
+                  </div>
+                </dl>
+              </Link>
+              <ScanTechnicalDetails id={run.run_id} mode={run.profile || undefined} />
+            </div>
           );
         })}
       </div>

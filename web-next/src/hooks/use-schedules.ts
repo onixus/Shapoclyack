@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useT } from "@/lib/i18n";
 import { toast } from "sonner";
 import {
   createSchedule,
@@ -22,15 +23,16 @@ export function useSchedules(enabled: boolean, page?: PageParams, tenantId?: str
 }
 
 export function useCreateSchedule() {
+  const t = useT();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: CreateScheduleBody) => createSchedule(body),
     onSuccess: async (schedule) => {
-      toast.success("Schedule created", { description: schedule.name });
+      toast.success(t("scanCopy.created"), { description: schedule.name });
       await queryClient.invalidateQueries({ queryKey: queryKeys.schedules });
     },
     onError: (err) => {
-      toast.error("Failed to create schedule", {
+      toast.error(t("scanCopy.createFailed"), {
         description: err instanceof Error ? err.message : undefined,
       });
     },
@@ -38,16 +40,17 @@ export function useCreateSchedule() {
 }
 
 export function useUpdateSchedule() {
+  const t = useT();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ scheduleId, body }: { scheduleId: string; body: UpdateScheduleBody }) =>
       updateSchedule(scheduleId, body),
     onSuccess: async (schedule) => {
-      toast.success("Schedule updated", { description: schedule.name });
+      toast.success(t("scanCopy.updated"), { description: schedule.name });
       await queryClient.invalidateQueries({ queryKey: queryKeys.schedules });
     },
     onError: (err) => {
-      toast.error("Failed to update schedule", {
+      toast.error(t("scanCopy.updateFailed"), {
         description: err instanceof Error ? err.message : undefined,
       });
     },
@@ -55,15 +58,16 @@ export function useUpdateSchedule() {
 }
 
 export function useDeleteSchedule() {
+  const t = useT();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (scheduleId: string) => deleteSchedule(scheduleId),
     onSuccess: async () => {
-      toast.success("Schedule deleted");
+      toast.success(t("scanCopy.deleted"));
       await queryClient.invalidateQueries({ queryKey: queryKeys.schedules });
     },
     onError: (err) => {
-      toast.error("Failed to delete schedule", {
+      toast.error(t("scanCopy.deleteFailed"), {
         description: err instanceof Error ? err.message : undefined,
       });
     },

@@ -1,4 +1,6 @@
 "use client";
+import { assetText } from "@/lib/asset-presentation";
+import { SystemTechnicalDetails } from "@/components/system-technical-details";
 
 import { useState } from "react";
 import { useT } from "@/lib/i18n";
@@ -96,7 +98,7 @@ export function AssetBulkContext({
   return (
     <>
       <Button variant="outline" size="sm" className={BUTTON_CLASS} onClick={() => setOpen(true)}>
-        Set context…
+        {assetText(t.locale, "Set context…")}
       </Button>
 
       <Dialog open={open} onOpenChange={setOpen}>
@@ -104,15 +106,18 @@ export function AssetBulkContext({
           <DialogHeader>
             <DialogTitle className="text-foreground">{t("ui.setAssetContext")}</DialogTitle>
             <DialogDescription className="text-xs text-muted-foreground">
-              {ids.length} asset{ids.length === 1 ? "" : "s"} selected. Blank fields are left
-              untouched on every one of them.
+              {assetText(
+                t.locale,
+                "{count} assets selected. Blank fields are left untouched on every one of them.",
+                { count: ids.length },
+              )}
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-3">
             <div className="space-y-1.5">
               <Label htmlFor="bulk-owner-email" className="text-xs text-foreground">
-                Owner email
+                {assetText(t.locale, "Owner email")}
               </Label>
               <Input
                 id="bulk-owner-email"
@@ -123,7 +128,7 @@ export function AssetBulkContext({
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="bulk-business-unit" className="text-xs text-foreground">
-                Business unit
+                {assetText(t.locale, "Business unit")}
               </Label>
               <Input
                 id="bulk-business-unit"
@@ -134,7 +139,7 @@ export function AssetBulkContext({
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="bulk-criticality" className="text-xs text-foreground">
-                Criticality (0–4)
+                {assetText(t.locale, "Criticality (0–4)")}
               </Label>
               <Input
                 id="bulk-criticality"
@@ -157,7 +162,7 @@ export function AssetBulkContext({
                     className="h-7 text-xs"
                     onClick={() => setEnvironment(environment === value ? "" : value)}
                   >
-                    {value}
+                    {t.label(value)}
                   </Button>
                 ))}
               </div>
@@ -174,13 +179,16 @@ export function AssetBulkContext({
                     className="h-7 text-xs"
                     onClick={() => setExposure(exposure === value ? "" : value)}
                   >
-                    {value}
+                    {t.label(value)}
                   </Button>
                 ))}
               </div>
             </div>
           </div>
 
+          <SystemTechnicalDetails
+            data={{ environment: environment || null, exposure_level: exposure || null }}
+          />
           <DialogFooter>
             <Button
               variant="ghost"
@@ -191,7 +199,9 @@ export function AssetBulkContext({
               {t("ui.cancel")}
             </Button>
             <Button size="sm" disabled={bulk.isPending || !filled} onClick={apply}>
-              {bulk.isPending ? "Applying…" : `Apply to ${ids.length}`}
+              {bulk.isPending
+                ? assetText(t.locale, "Applying…")
+                : assetText(t.locale, "Apply to {count}", { count: ids.length })}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -1,3 +1,4 @@
+import { useAppearanceStore } from "@/lib/appearance";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -127,6 +128,31 @@ describe("ScanLauncher", () => {
       agent_count: agentCount,
     };
   }
+
+  it("shows Russian profiles and preserves exact API values in confirmation", async () => {
+    useAppearanceStore.setState({ locale: "ru" });
+    const start = vi.spyOn(apiModule, "startScan").mockResolvedValue(job());
+    renderLauncher("external");
+    const user = userEvent.setup();
+    expect(screen.getByText("Инвентаризация", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("Сбалансированный", { exact: true })).toBeInTheDocument();
+    const details = screen.getByText("Технические данные").closest("details")!;
+    expect(details).not.toHaveAttribute("open");
+    await user.click(screen.getByText("Технические данные"));
+    expect(details).toHaveTextContent("inventory");
+    expect(details).toHaveTextContent("balanced");
+    await user.type(document.getElementById("scan-domains")!, "api.example.com");
+    await user.click(screen.getByRole("button", { name: /Запустить/ }));
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent("Инвентаризация");
+    const buttons = screen.getByRole("alertdialog").querySelectorAll("button");
+    await user.click(buttons[buttons.length - 1]);
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    expect(start.mock.calls[0][0]).toMatchObject({
+      mode: "balanced",
+      intent: "inventory",
+      domains: "api.example.com",
+    });
+  });
 
   it("sends the page's surface and an idempotency key with the request", async () => {
     const start = vi.spyOn(apiModule, "startScan").mockResolvedValue(job());
@@ -289,9 +315,9 @@ describe("ScanLauncher", () => {
   });
 
   it("does not offer an agent group when scans run locally", async () => {
-    const groups = vi.spyOn(apiModule, "fetchAgentGroups").mockResolvedValue([
-      group("pci-segment", 2),
-    ]);
+    const groups = vi
+      .spyOn(apiModule, "fetchAgentGroups")
+      .mockResolvedValue([group("pci-segment", 2)]);
     const start = vi.spyOn(apiModule, "startScan").mockResolvedValue(job());
     renderLauncher("external");
     const user = userEvent.setup();

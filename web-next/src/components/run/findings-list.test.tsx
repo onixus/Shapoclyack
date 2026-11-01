@@ -1,3 +1,4 @@
+import { useAppearanceStore } from "@/lib/appearance";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { FindingsList } from "@/components/run/findings-list";
@@ -44,14 +45,54 @@ function grouped(items: Vulnerability[]): Record<Severity, Vulnerability[]> {
 const NOT_TRUNCATED = { isTruncated: false, shown: 0, total: 0 };
 
 describe("FindingsList prioritisation", () => {
+  it("shows Russian exposure titles, caution and CISA decision while retaining originals", () => {
+    useAppearanceStore.setState({ locale: "ru" });
+    render(
+      <FindingsList
+        grouped={grouped([
+          vuln({
+            cve: null,
+            script_id: "pulse:exposure:22:ssh-service-exposed",
+            finding_type: "exposure",
+            detector_source: "scan",
+            requires_confirmation: true,
+            cisa_decision: "Attend",
+            remediation: "Restrict access.",
+          }),
+        ])}
+        truncation={NOT_TRUNCATED}
+      />,
+    );
+    expect(screen.getByText("Доступность сервиса · Сканирование")).toBeVisible();
+    expect(screen.getByText("Не подтверждено")).toBeVisible();
+    expect(screen.getByText("Требует внимания")).toBeVisible();
+    const technical = screen.getByText("Технические данные", { exact: true }).closest("details")!;
+    expect(technical).not.toHaveAttribute("open");
+    expect(technical).toHaveTextContent("pulse:exposure:22:ssh-service-exposed");
+    expect(technical).toHaveTextContent("Restrict access.");
+    expect(screen.queryByText("unconfirmed", { exact: true })).not.toBeInTheDocument();
+  });
+
   it("renders non-CVE remediation and classification in the run report", () => {
-    render(<FindingsList grouped={grouped([vuln({
-      cve: null, script_id: "public-backup", finding_type: "misconfiguration",
-      detector_source: "nuclei", remediation: "Remove the backup from the web root.",
-    })])} truncation={NOT_TRUNCATED} />);
+    render(
+      <FindingsList
+        grouped={grouped([
+          vuln({
+            cve: null,
+            script_id: "public-backup",
+            finding_type: "misconfiguration",
+            detector_source: "nuclei",
+            remediation: "Remove the backup from the web root.",
+          }),
+        ])}
+        truncation={NOT_TRUNCATED}
+      />,
+    );
     expect(screen.getByText("public-backup")).toBeInTheDocument();
     expect(screen.getByText("misconfiguration · nuclei")).toBeInTheDocument();
-    expect(screen.getByText("Remediation: Remove the backup from the web root.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Remediation: Remove the backup from the web root."),
+    ).toBeInTheDocument();
     expect(screen.queryByText("CVE-2021-44228")).not.toBeInTheDocument();
   });
 

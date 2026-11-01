@@ -23,7 +23,9 @@ export function JobMaintenanceWait({ job, compact = false }: { job: JobInfo; com
     retry && !Number.isNaN(retry.getTime())
       ? t("jobs.maintenanceRetry", { time: retry.toLocaleString() })
       : t("jobs.maintenanceRetryUnknown");
-  const description = [reason, detail, retryText].filter(Boolean).join(". ");
+  const description = [reason, t.locale === "ru" ? "" : detail, retryText]
+    .filter(Boolean)
+    .join(". ");
   if (compact) {
     return (
       <span role="img" aria-label={reason} title={description}>
@@ -37,7 +39,12 @@ export function JobMaintenanceWait({ job, compact = false }: { job: JobInfo; com
       className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200"
     >
       <p className="font-semibold">{reason}</p>
-      {detail ? <p className="mt-0.5">{detail}</p> : null}
+      {detail ? (
+        <details className="mt-1">
+          <summary className="cursor-pointer">{t("scanCopy.technical")}</summary>
+          <p className="mt-0.5">{detail}</p>
+        </details>
+      ) : null}
       <p className="mt-0.5">{retryText}</p>
     </div>
   );

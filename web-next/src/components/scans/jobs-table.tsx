@@ -1,4 +1,10 @@
 "use client";
+import {
+  scanIntentLabel,
+  scanModeLabel,
+  scanExecutionLabel,
+  scanTargetLabel,
+} from "@/lib/scan-labels";
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
@@ -250,15 +256,15 @@ export function JobsTable({
           return (
             <span className="flex flex-col gap-0.5">
               <span className="text-overline font-bold uppercase text-foreground">
-                {typeof intentVal === "string" && intentVal ? intentVal : "legacy"}
+                {scanIntentLabel(t.locale, intentVal)}
                 <span className="font-medium normal-case tracking-normal text-muted-foreground">
                   {" "}
-                  · {row.original.mode}
+                  · {scanModeLabel(t.locale, row.original.mode)}
                 </span>
               </span>
               {counts.length > 0 ? (
                 <span className="font-mono text-xs text-muted-foreground">
-                  {counts.map(([k, n]) => `${k} ${n}`).join(" · ")}
+                  {counts.map(([k, n]) => `${scanTargetLabel(t.locale, k)} ${n}`).join(" · ")}
                 </span>
               ) : (
                 <span className="text-xs text-muted-foreground">{t("jobs.targetsNone")}</span>
@@ -294,7 +300,7 @@ export function JobsTable({
           <span className="inline-flex flex-col text-xs text-foreground">
             <span className="inline-flex items-center gap-1 font-medium">
               <Cpu className="h-3 w-3 text-muted-foreground" />
-              {row.original.execution || "local"}
+              {scanExecutionLabel(t.locale, row.original.execution)}
             </span>
             {row.original.assigned_agent_id ? (
               <span className="font-mono text-xs text-muted-foreground">
@@ -308,15 +314,13 @@ export function JobsTable({
         accessorKey: "started_at",
         header: t("col.started"),
         cell: ({ row }) => {
-          const duration = jobDuration(row.original);
+          const duration = jobDuration(row.original, t.locale);
           return row.original.started_at ? (
             <span className="flex flex-col">
               <span className="font-mono text-xs text-foreground">
                 {format(new Date(row.original.started_at), "yyyy-MM-dd HH:mm:ss")}
               </span>
-              {duration ? (
-                <span className="text-xs text-muted-foreground">{duration}</span>
-              ) : null}
+              {duration ? <span className="text-xs text-muted-foreground">{duration}</span> : null}
             </span>
           ) : (
             <span className="text-muted-foreground">—</span>

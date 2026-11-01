@@ -1,5 +1,8 @@
 "use client";
+import { controlExplanation } from "@/lib/run-presentation";
+import { runText } from "@/lib/run-presentation";
 
+import { OriginalRunData } from "@/components/run/original-data";
 import { useState } from "react";
 import { useT } from "@/lib/i18n";
 import { useQuery } from "@tanstack/react-query";
@@ -25,33 +28,34 @@ import {
 } from "@/lib/api";
 
 function StatusBadge({ status }: { status: ControlStatus | OverallVerdict }) {
+  const t = useT();
   switch (status) {
     case "ok":
       return (
         <Badge className="bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border-emerald-500/40 gap-1 font-mono">
           <ShieldCheck className="h-3.5 w-3.5" />
-          OK
+          {runText(t.locale, "OK")}
         </Badge>
       );
     case "weak":
       return (
         <Badge className="bg-amber-500/20 text-amber-600 dark:text-amber-300 border-amber-500/40 gap-1 font-mono">
           <AlertTriangle className="h-3.5 w-3.5" />
-          WEAK
+          {runText(t.locale, "WEAK")}
         </Badge>
       );
     case "fail":
       return (
         <Badge className="bg-rose-500/20 text-rose-600 dark:text-rose-300 border-rose-500/40 gap-1 font-mono">
           <ShieldAlert className="h-3.5 w-3.5" />
-          FAIL
+          {runText(t.locale, "FAIL")}
         </Badge>
       );
     case "error":
       return (
         <Badge className="bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-800 gap-1 font-mono">
           <AlertTriangle className="h-3.5 w-3.5" />
-          ERROR
+          {runText(t.locale, "ERROR")}
         </Badge>
       );
     case "partial":
@@ -60,14 +64,17 @@ function StatusBadge({ status }: { status: ControlStatus | OverallVerdict }) {
       return (
         <Badge className="bg-sky-500/20 text-sky-600 dark:text-sky-300 border-sky-500/40 gap-1 font-mono">
           <ShieldQuestion className="h-3.5 w-3.5" />
-          PARTIAL
+          {runText(t.locale, "PARTIAL")}
         </Badge>
       );
     default:
       return (
-        <Badge variant="outline" className="text-muted-foreground border-border bg-muted gap-1 font-mono">
+        <Badge
+          variant="outline"
+          className="text-muted-foreground border-border bg-muted gap-1 font-mono"
+        >
           <ShieldQuestion className="h-3.5 w-3.5" />
-          NOT CHECKED
+          {runText(t.locale, "NOT CHECKED")}
         </Badge>
       );
   }
@@ -77,37 +84,82 @@ function RiskBadge({ risk }: { risk: string }) {
   const t = useT();
   const normalized = risk.toLowerCase();
   if (normalized.includes("very_high") || normalized.includes("critical")) {
-    return <Badge className="bg-rose-600/30 text-rose-600 dark:text-rose-300 border-rose-500/40">{t("ui.criticalVeryHigh")}</Badge>;
+    return (
+      <Badge className="bg-rose-600/30 text-rose-600 dark:text-rose-300 border-rose-500/40">
+        {t("ui.criticalVeryHigh")}
+      </Badge>
+    );
   }
   if (normalized.includes("high")) {
-    return <Badge className="bg-rose-500/20 text-rose-600 dark:text-rose-300 border-rose-500/30">{t("ui.highRisk")}</Badge>;
+    return (
+      <Badge className="bg-rose-500/20 text-rose-600 dark:text-rose-300 border-rose-500/30">
+        {t("ui.highRisk")}
+      </Badge>
+    );
   }
   if (normalized.includes("moderate") || normalized.includes("medium")) {
-    return <Badge className="bg-amber-500/20 text-amber-600 dark:text-amber-300 border-amber-500/30">{t("ui.moderateRisk")}</Badge>;
+    return (
+      <Badge className="bg-amber-500/20 text-amber-600 dark:text-amber-300 border-amber-500/30">
+        {t("ui.moderateRisk")}
+      </Badge>
+    );
   }
   // "very_low" has to be tested before "low", otherwise the substring match
   // below claims it and the very-low branch is unreachable.
   if (normalized.includes("very_low")) {
-    return <Badge className="bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border-emerald-500/30">{t("ui.veryLowRisk")}</Badge>;
+    return (
+      <Badge className="bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border-emerald-500/30">
+        {t("ui.veryLowRisk")}
+      </Badge>
+    );
   }
   if (normalized.includes("low")) {
-    return <Badge className="bg-blue-500/20 text-blue-600 dark:text-blue-300 border-blue-500/30">{t("ui.lowRisk")}</Badge>;
+    return (
+      <Badge className="bg-blue-500/20 text-blue-600 dark:text-blue-300 border-blue-500/30">
+        {t("ui.lowRisk")}
+      </Badge>
+    );
   }
-  return <Badge variant="outline" className="text-muted-foreground border-border">{t("ui.unassessed")}</Badge>;
+  return (
+    <Badge variant="outline" className="text-muted-foreground border-border">
+      {t("ui.unassessed")}
+    </Badge>
+  );
 }
 
 function SeverityPills({ counts }: { counts: Record<string, number> }) {
+  const t = useT();
   const c = counts.critical || 0;
   const h = counts.high || 0;
   const m = counts.medium || 0;
   const l = counts.low || 0;
   return (
     <div className="flex items-center gap-1.5 font-mono text-xs">
-      {c > 0 && <span className="rounded bg-rose-500/20 px-1.5 py-0.5 font-bold text-rose-600 dark:text-rose-300">C:{c}</span>}
-      {h > 0 && <span className="rounded bg-orange-500/20 px-1.5 py-0.5 font-bold text-orange-600 dark:text-orange-300">H:{h}</span>}
-      {m > 0 && <span className="rounded bg-amber-500/20 px-1.5 py-0.5 font-medium text-amber-600 dark:text-amber-300">M:{m}</span>}
-      {l > 0 && <span className="rounded bg-blue-500/20 px-1.5 py-0.5 text-blue-600 dark:text-blue-300">L:{l}</span>}
-      {c === 0 && h === 0 && m === 0 && l === 0 && <span className="text-muted-foreground">0 findings</span>}
+      {c > 0 && (
+        <span className="rounded bg-rose-500/20 px-1.5 py-0.5 font-bold text-rose-600 dark:text-rose-300">
+          {t.locale === "ru" ? t.label("critical") : "C"}:{c}
+        </span>
+      )}
+      {h > 0 && (
+        <span className="rounded bg-orange-500/20 px-1.5 py-0.5 font-bold text-orange-600 dark:text-orange-300">
+          {t.locale === "ru" ? t.label("high") : "H"}:{h}
+        </span>
+      )}
+      {m > 0 && (
+        <span className="rounded bg-amber-500/20 px-1.5 py-0.5 font-medium text-amber-600 dark:text-amber-300">
+          {t.locale === "ru" ? t.label("medium") : "M"}:{m}
+        </span>
+      )}
+      {l > 0 && (
+        <span className="rounded bg-blue-500/20 px-1.5 py-0.5 text-blue-600 dark:text-blue-300">
+          {t.locale === "ru" ? t.label("low") : "L"}:{l}
+        </span>
+      )}
+      {c === 0 && h === 0 && m === 0 && l === 0 && (
+        <span className="text-muted-foreground">
+          {runText(t.locale, "{count} findings", { count: 0 })}
+        </span>
+      )}
     </div>
   );
 }
@@ -137,13 +189,24 @@ function ControlRow({ control }: { control: ControlItem }) {
           </Button>
           <div>
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-semibold text-foreground text-sm">{control.title}</span>
-              <span className="text-xs text-muted-foreground font-mono">({control.control})</span>
-              <Badge variant="outline" className="text-xs border-border text-muted-foreground uppercase">
-                Impact: {control.impact}
+              <span className="font-semibold text-foreground text-sm">
+                {t.locale === "ru" && !/[А-Яа-яЁё]/.test(control.title)
+                  ? "Проверка безопасности"
+                  : control.title}
+              </span>
+              {t.locale !== "ru" ? (
+                <span className="text-xs text-muted-foreground font-mono">({control.control})</span>
+              ) : null}
+              <Badge
+                variant="outline"
+                className="text-xs border-border text-muted-foreground uppercase"
+              >
+                {runText(t.locale, "Impact")}: {t.label(control.impact)}
               </Badge>
             </div>
-            <p className="text-xs text-muted-foreground mt-1">{control.why || "No details reported"}</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {controlExplanation(t.locale, control.why)}
+            </p>
           </div>
         </div>
 
@@ -154,19 +217,23 @@ function ControlRow({ control }: { control: ControlItem }) {
         </div>
       </div>
 
+      <div className="px-4 pb-2">
+        {t.locale === "ru" ? <OriginalRunData data={control} /> : null}
+      </div>
       {expanded && (
         <div className="px-6 pb-4 pt-2 bg-muted space-y-3 text-xs border-t border-border">
           <div className="flex items-center gap-4 text-muted-foreground">
             <div>
-              <span className="text-muted-foreground">Coverage: </span>
+              <span className="text-muted-foreground">{runText(t.locale, "Coverage")}: </span>
               <span className="font-mono text-foreground font-medium">
-                {control.coverage?.checked ?? 0} / {control.coverage?.total ?? 0} targets
+                {control.coverage?.checked ?? 0} / {control.coverage?.total ?? 0}{" "}
+                {t.locale === "ru" ? "целей" : "targets"}
               </span>
             </div>
             {control.evidence && control.evidence.length > 0 && (
               <div className="flex items-center gap-1.5">
                 <FileText className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="text-muted-foreground">Evidence:</span>
+                <span className="text-muted-foreground">{runText(t.locale, "Evidence")}:</span>
                 <span className="font-mono text-foreground">{control.evidence.join(", ")}</span>
               </div>
             )}
@@ -174,7 +241,9 @@ function ControlRow({ control }: { control: ControlItem }) {
 
           {hasFindings ? (
             <div className="space-y-2">
-              <span className="font-semibold text-foreground block">Top Findings / Observations:</span>
+              <span className="font-semibold text-foreground block">
+                {runText(t.locale, "Top Findings / Observations")}:
+              </span>
               <div className="space-y-1.5">
                 {control.top_findings.map((f, i) => (
                   <div
@@ -182,17 +251,24 @@ function ControlRow({ control }: { control: ControlItem }) {
                     className="flex items-start gap-2 bg-card p-2 rounded border border-border font-mono text-xs"
                   >
                     <span className="font-bold text-foreground shrink-0">{f.id}</span>
-                    {f.domain && <span className="text-sky-600 dark:text-sky-400 shrink-0">[{f.domain}]</span>}
+                    {f.domain && (
+                      <span className="text-sky-600 dark:text-sky-400 shrink-0">[{f.domain}]</span>
+                    )}
                     <span className="text-muted-foreground grow">{f.detail || ""}</span>
-                    <Badge variant="outline" className="text-overline uppercase border-border py-0 px-1 shrink-0">
-                      {f.severity}
+                    <Badge
+                      variant="outline"
+                      className="text-overline uppercase border-border py-0 px-1 shrink-0"
+                    >
+                      {t.label(f.severity)}
                     </Badge>
                   </div>
                 ))}
               </div>
             </div>
           ) : (
-            <p className="text-muted-foreground italic">{t("ui.noSpecificFindingsListedForThis")}</p>
+            <p className="text-muted-foreground italic">
+              {t("ui.noSpecificFindingsListedForThis")}
+            </p>
           )}
         </div>
       )}
@@ -236,7 +312,9 @@ export function ControlsMatrix({ runId }: { runId: string }) {
           <div className="space-y-1">
             <div className="flex items-center gap-2">
               <Activity className="h-5 w-5 text-sky-600 dark:text-sky-400" />
-              <h2 className="text-base font-bold text-foreground">{t("ui.organizationSecurityPostureMatrix")}</h2>
+              <h2 className="text-base font-bold text-foreground">
+                {t("ui.organizationSecurityPostureMatrix")}
+              </h2>
             </div>
             <p className="text-xs text-muted-foreground">
               {t("prose.evaluatedAcross6FoundationalExternal")}
@@ -245,13 +323,17 @@ export function ControlsMatrix({ runId }: { runId: string }) {
 
           <div className="flex items-center gap-3">
             <div className="text-right">
-              <span className="text-overline text-muted-foreground uppercase block">{t("ui.overallVerdict")}</span>
+              <span className="text-overline text-muted-foreground uppercase block">
+                {t("ui.overallVerdict")}
+              </span>
               <div className="mt-0.5">
                 <StatusBadge status={data.overall_verdict} />
               </div>
             </div>
             <div className="text-right border-l border-border pl-3">
-              <span className="text-overline text-muted-foreground uppercase block">NIST Risk Level</span>
+              <span className="text-overline text-muted-foreground uppercase block">
+                {runText(t.locale, "NIST Risk Level")}
+              </span>
               <div className="mt-0.5">
                 <RiskBadge risk={data.overall_risk} />
               </div>
@@ -264,7 +346,7 @@ export function ControlsMatrix({ runId }: { runId: string }) {
       <Card className="border-border bg-card shadow-md">
         <CardHeader className="py-3.5 px-4 border-b border-border">
           <CardTitle className="text-xs font-bold uppercase tracking-wider text-foreground">
-            Evaluated Security Controls ({data.controls?.length || 0})
+            {runText(t.locale, "Evaluated Security Controls")} ({data.controls?.length || 0})
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">

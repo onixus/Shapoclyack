@@ -1,3 +1,4 @@
+import { systemCodeLabel } from "@/lib/system-presentation";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -64,7 +65,9 @@ function renderPage() {
 
 /** The badge cell of the enrichment row for `name`. */
 function badgeOf(name: string): HTMLElement {
-  const row = screen.getByText(name).closest("tr");
+  const row = screen
+    .getByText(systemCodeLabel(useAppearanceStore.getState().locale, name, "Other database"))
+    .closest("tr");
   expect(row).not.toBeNull();
   return within(row as HTMLElement).getByTestId("enrichment-freshness");
 }
@@ -73,6 +76,41 @@ describe("SystemPage enrichment freshness", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     useAppearanceStore.setState({ locale: "en" });
+  });
+
+  it("translates stages, profiles and tool failures without hiding original evidence", async () => {
+    useAppearanceStore.setState({ locale: "ru" });
+    const state = status([]);
+    state.tools = [
+      {
+        name: "pulse",
+        optional: true,
+        version: "not executable here: needs NET_RAW/NET_ADMIN",
+        error: null,
+      },
+    ];
+    state.scan_config = {
+      profiles: ["safe", "balanced", "fast", "test"],
+      stages: { fingerprint: true, nuclei: false },
+      service_backend: "pulse",
+    };
+    vi.spyOn(apiModule, "fetchSystemStatus").mockResolvedValue(state);
+    renderPage();
+    expect(await screen.findByText("Инструменты сканирования")).toBeVisible();
+    expect(screen.getByText("Не хватает сетевых прав для запуска")).toBeVisible();
+    for (const title of [
+      "Безопасный",
+      "Сбалансированный",
+      "Быстрый",
+      "Тестовый",
+      "Определение технологий",
+      "Сервисы и интеграции",
+    ])
+      expect(screen.getByText(title)).toBeVisible();
+    const raw = screen.getByText(/"profiles":/).closest("details")!;
+    expect(raw).not.toHaveAttribute("open");
+    expect(raw).toHaveTextContent("balanced");
+    expect(screen.getByText(/NET_RAW/).closest("details")).not.toHaveAttribute("open");
   });
 
   it("does not render a dataset the build called unusable as fresh", async () => {
@@ -114,7 +152,14 @@ describe("SystemPage enrichment freshness", () => {
     // differs, and "stub" would send them to the wrong one.
     vi.spyOn(apiModule, "fetchSystemStatus").mockResolvedValue(
       status([
-        db({ name: "geoip", present: false, usable: false, size_bytes: null, modified_at: null, age_days: null }),
+        db({
+          name: "geoip",
+          present: false,
+          usable: false,
+          size_bytes: null,
+          modified_at: null,
+          age_days: null,
+        }),
         db({ name: "cvss4", usable: false, stale: true, age_days: 90 }),
       ]),
     );
@@ -132,12 +177,11 @@ describe("SystemPage enrichment freshness", () => {
     );
     renderPage();
 
-    expect(await screen.findByText("advisories_debian")).toBeInTheDocument();
+    expect(await screen.findByText("Бюллетени безопасности Debian")).toBeInTheDocument();
     expect(badgeOf("advisories_debian")).toHaveTextContent("заглушка");
     expect(badgeOf("kev")).toHaveTextContent("актуально");
   });
 });
-
 
 describe("SystemPage NVD CPE-range dataset", () => {
   const RETRO_STATUS: RetroMatchStatus = {

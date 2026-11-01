@@ -1,3 +1,4 @@
+import { useAppearanceStore } from "@/lib/appearance";
 import axe from "axe-core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -469,5 +470,118 @@ describe("typed group input", () => {
     expect(
       normalizeGroupRules({ any: [{ field: "status", op: "eq", value: "active" }], negate: true }),
     ).toEqual({ any: [{ field: "status", op: "eq", value: "active" }], negate: true });
+  });
+});
+
+describe("Russian dynamic groups", () => {
+  beforeEach(() => useAppearanceStore.setState({ locale: "ru" }));
+  it("labels conditions and assignments in Russian without changing saved rule codes", async () => {
+    const user = userEvent.setup();
+    renderGroups();
+    await user.click(screen.getByRole("button", { name: "Создать группу" }));
+    const dialog = screen.getByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Название группы"), "Рабочие серверы");
+    expect(within(dialog).getByRole("option", { name: "И — все условия" })).toHaveValue("all");
+    expect(within(dialog).getByRole("option", { name: "входит в подсеть" })).toHaveValue("cidr");
+    await user.type(within(dialog).getByLabelText("Значение 1.1"), "10.0.0.0/8");
+    await user.selectOptions(within(dialog).getByLabelText("Среда"), "production");
+    expect(within(dialog).getByRole("option", { name: "рабочая среда" })).toHaveValue("production");
+    expect(within(dialog).getByRole("button", { name: "Сохранить группу" })).toBeDisabled();
+    await user.click(within(dialog).getByRole("button", { name: "Проверить без изменений" }));
+    await waitFor(() =>
+      expect(within(dialog).getByRole("button", { name: "Сохранить группу" })).toBeEnabled(),
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Сохранить группу" }));
+    await waitFor(() =>
+      expect(assetGroupsApi.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: "Рабочие серверы",
+          rules: { all: [{ field: "ip", op: "cidr", value: "10.0.0.0/8" }] },
+          context: { environment: "production" },
+        }),
+        undefined,
+      ),
+    );
+  });
+  it("keeps incomplete previews unsavable and preserves unknown evidence in collapsed details", async () => {
+    vi.mocked(assetGroupsApi.preview).mockResolvedValue({
+      ...PREVIEW,
+      has_more: true,
+      items: [
+        {
+          ...PREVIEW.items[0],
+          matched: false,
+          reasons: [
+            {
+              field: "os_family",
+              op: "eq",
+              value: "linux",
+              actual: null,
+              result: "unknown",
+              evidence: { state: "stale", freshness_hours: 48 },
+            },
+          ],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderGroups();
+    await user.click(screen.getByRole("button", { name: "Создать группу" }));
+    const dialog = screen.getByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Название группы"), "Проверка");
+    await user.type(within(dialog).getByLabelText("Значение 1.1"), "10.0.0.0/8");
+    await user.click(within(dialog).getByRole("button", { name: "Проверить без изменений" }));
+    expect(
+      await within(dialog).findByText(
+        "Проверка не завершена — продолжите перед сохранением или применением",
+      ),
+    ).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "Сохранить группу" })).toBeDisabled();
+    const preview = within(dialog).getByRole("region", {
+      name: "Результаты предварительной проверки",
+    });
+    const item = preview.querySelector("details")!;
+    await user.click(item.querySelector("summary")!);
+    expect(
+      within(item as HTMLElement).getByText(
+        /Подтверждённая ОС устройства равно Linux; наблюдаемое значение: Неизвестно; Неизвестно/,
+      ),
+    ).toBeVisible();
+    expect(within(item as HTMLElement).getByText(/Данные устарели/)).toBeVisible();
+    const original = Array.from(item.querySelectorAll("details")).find((d) =>
+      d.textContent?.includes('"os_family"'),
+    )!;
+    expect(original.open).toBe(false);
+    await user.click(original.querySelector("summary")!);
+    expect(original.open).toBe(true);
+    expect(original).toHaveTextContent('"result": "unknown"');
+    expect(assetGroupsApi.save).not.toHaveBeenCalled();
+  });
+  it("translates evaluation states, keeps original failures and never applies a recalculation automatically", async () => {
+    vi.mocked(assetGroupsApi.list).mockResolvedValue({
+      items: [GROUP],
+      total: 1,
+      offset: 0,
+      limit: 20,
+      has_more: false,
+    });
+    const user = userEvent.setup();
+    renderGroups();
+    await user.click(
+      await screen.findByRole("button", { name: "Участники и проверки: Production" }),
+    );
+    const region = screen.getByRole("region", { name: "Группа Production" });
+    expect(
+      await within(region).findByText(/Текущая версия правила 3: Частично выполнена/),
+    ).toBeVisible();
+    expect(within(region).getByText(/НЕ ЗАВЕРШЕНА/)).toBeVisible();
+    const original = Array.from(region.querySelectorAll("details")).find((d) =>
+      d.textContent?.includes('"status": "partial"'),
+    )!;
+    expect(original.open).toBe(false);
+    await user.click(original.querySelector("summary")!);
+    expect(original).toHaveTextContent("Remaining batch awaiting retry");
+    expect(within(region).getByRole("button", { name: "Применить пересчёт" })).toBeDisabled();
+    expect(assetGroupsApi.recalculate).not.toHaveBeenCalled();
   });
 });

@@ -83,6 +83,7 @@ export type TableSelection<TData> = {
   max?: number;
   /** Accessible name for the header checkbox. */
   selectAllLabel?: string;
+  selectRowLabel?: (id: string) => string;
 };
 
 export type ServerPagination = {
@@ -127,11 +128,14 @@ export function DataTable<TData>({
   const [searchDraft, setSearchDraft] = useState(server?.search ?? "");
 
   // Applying a saved view changes controlled search/sort without typing.
-  useEffect(() => { setSearchDraft(server?.search ?? ""); }, [server?.search, server?.searchRevision]);
+  useEffect(() => {
+    setSearchDraft(server?.search ?? "");
+  }, [server?.search, server?.searchRevision]);
   const serverSort = server?.sort;
   const serverOrder = server?.order;
   useEffect(() => {
-    if (serverOrder) setSorting(serverSort ? [{ id: serverSort, desc: serverOrder !== "asc" }] : []);
+    if (serverOrder)
+      setSorting(serverSort ? [{ id: serverSort, desc: serverOrder !== "asc" }] : []);
   }, [serverSort, serverOrder]);
 
   useEffect(() => {
@@ -200,7 +204,7 @@ export function DataTable<TData>({
         <Checkbox
           checked={checked}
           onCheckedChange={(value) => toggleRow(id, value === true)}
-          aria-label={`Select ${id}`}
+          aria-label={selection?.selectRowLabel?.(id) ?? `Select ${id}`}
           // Disabled only for rows that would exceed the ceiling, never for
           // ones already selected — otherwise the box that put you over the
           // limit could not be unticked.
@@ -244,14 +248,18 @@ export function DataTable<TData>({
 
   const rows = table.getRowModel().rows;
   const totalRows = server ? server.total : table.getFilteredRowModel().rows.length;
-  const pageCount = server ? Math.max(1, Math.ceil(server.total / server.limit)) : table.getPageCount();
+  const pageCount = server
+    ? Math.max(1, Math.ceil(server.total / server.limit))
+    : table.getPageCount();
   const pageIndex = server
     ? Math.floor(server.offset / server.limit)
     : table.getState().pagination.pageIndex;
   const canPrevious = server ? server.offset > 0 : table.getCanPreviousPage();
   const canNext = server ? server.offset + rows.length < server.total : table.getCanNextPage();
 
-  const showSearch = server ? Boolean(searchPlaceholder && server.onSearchChange) : Boolean(searchPlaceholder);
+  const showSearch = server
+    ? Boolean(searchPlaceholder && server.onSearchChange)
+    : Boolean(searchPlaceholder);
   const searchValue = server ? searchDraft : globalFilter;
   const onSearch = server ? setSearchDraft : setGlobalFilter;
   const canSortColumn = (columnId: string) =>
@@ -286,7 +294,10 @@ export function DataTable<TData>({
           <div className="flex flex-1 flex-wrap items-center gap-3">
             {showSearch ? (
               <div className="relative min-w-[240px] max-w-sm">
-                <Search aria-hidden className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Search
+                  aria-hidden
+                  className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground"
+                />
                 <Input
                   className="pl-9 h-9"
                   aria-label={searchPlaceholder || t("common.search")}
@@ -340,7 +351,10 @@ export function DataTable<TData>({
           <TableBody className="divide-y divide-border/60">
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={tableColumns.length} className="py-10 text-center text-sm text-muted-foreground">
+                <TableCell
+                  colSpan={tableColumns.length}
+                  className="py-10 text-center text-sm text-muted-foreground"
+                >
                   <div className="flex items-center justify-center gap-2">
                     <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
                     <span role="status">{resolvedLoading}</span>
@@ -408,4 +422,3 @@ export function DataTable<TData>({
     </div>
   );
 }
-

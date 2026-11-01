@@ -1,4 +1,5 @@
 "use client";
+import { runText } from "@/lib/run-presentation";
 
 import Link from "next/link";
 import { useT } from "@/lib/i18n";
@@ -17,16 +18,21 @@ import { ControlsMatrix } from "@/components/run/controls-matrix";
 import { RelatedDomainsPanel } from "@/components/run/related-domains";
 import { SeverityFilter } from "@/components/run/severity-filter";
 import { useRunReport } from "@/hooks/use-run-report";
+import { scanModeLabel } from "@/lib/scan-labels";
+import { ScanTechnicalDetails } from "@/components/scans/scan-technical-details";
 import { formatLocation } from "@/lib/run-data";
 
 export default function RunDetailPage() {
+  const t = useT();
   return (
-    <Suspense fallback={
-      <div className="flex items-center justify-center py-16 text-muted-foreground gap-2">
-        <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
-        <span className="text-sm">Loading run telemetry…</span>
-      </div>
-    }>
+    <Suspense
+      fallback={
+        <div className="flex items-center justify-center py-16 text-muted-foreground gap-2">
+          <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+          <span className="text-sm">{runText(t.locale, "Loading run telemetry\u2026")}</span>
+        </div>
+      }
+    >
       <RunDetailInner />
     </Suspense>
   );
@@ -35,7 +41,12 @@ export default function RunDetailPage() {
 function BackToRuns() {
   const t = useT();
   return (
-    <Button asChild variant="ghost" size="sm" className="gap-2 px-0 text-muted-foreground hover:text-foreground hover:bg-transparent">
+    <Button
+      asChild
+      variant="ghost"
+      size="sm"
+      className="gap-2 px-0 text-muted-foreground hover:text-foreground hover:bg-transparent"
+    >
       <Link href="/runs">
         <ArrowLeft className="h-4 w-4" />
         {t("prose.backToRunsCatalog")}
@@ -49,17 +60,24 @@ function RunDetailInner() {
   const searchParams = useSearchParams();
   const runId = (searchParams.get("runId") || "").trim();
   const requestedTab = searchParams.get("tab") || "vulns";
-  const initialTab = ["vulns", "hosts", "ports", "controls", "org-profile", "reports"].includes(requestedTab)
+  const initialTab = ["vulns", "hosts", "ports", "controls", "org-profile", "reports"].includes(
+    requestedTab,
+  )
     ? requestedTab
     : "vulns";
   const report = useRunReport(runId);
   const { filters } = report;
+  const profile =
+    report.detail?.meta?.profile ?? report.detail?.meta?.mode ?? report.summary?.profile;
 
   if (!runId) {
     return (
       <div className="space-y-4">
         <BackToRuns />
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
+        <Alert
+          variant="destructive"
+          className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+        >
           <AlertDescription>{t("ui.missingRunidQueryParameter")}</AlertDescription>
         </Alert>
       </div>
@@ -70,9 +88,14 @@ function RunDetailInner() {
     return (
       <div className="space-y-4">
         <BackToRuns />
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
+        <Alert
+          variant="destructive"
+          className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+        >
           <AlertDescription>
-            {report.error instanceof Error ? report.error.message : "Failed to load run"}
+            {report.error instanceof Error
+              ? report.error.message
+              : runText(t.locale, "Failed to load run")}
           </AlertDescription>
         </Alert>
       </div>
@@ -83,7 +106,9 @@ function RunDetailInner() {
     return (
       <div className="flex items-center justify-center py-16 text-muted-foreground gap-2">
         <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
-        <span className="text-sm">Retrieving run telemetry artifacts…</span>
+        <span className="text-sm">
+          {runText(t.locale, "Retrieving run telemetry artifacts\u2026")}
+        </span>
       </div>
     );
   }
@@ -93,25 +118,39 @@ function RunDetailInner() {
       <div className="space-y-2 border-b border-border pb-4">
         <BackToRuns />
         <h1 className="text-2xl font-extrabold tracking-tight text-foreground font-mono">
-          Run <span className="text-sky-600 dark:text-sky-400">{report.detail.run_id}</span>
+          {runText(t.locale, "Run")}{" "}
+          <span className="text-sky-600 dark:text-sky-400">{report.detail.run_id}</span>
         </h1>
         <p className="text-xs text-muted-foreground">
-          Explored hosts, open ports, and security findings for this execution.
+          {runText(
+            t.locale,
+            "Explored hosts, open ports, and security findings for this execution.",
+          )}
           {(filters.host || filters.port) && (
             <>
               {" "}
-              Active Filters
-              {filters.host ? ` · host ${filters.host}` : ""}
-              {filters.port ? ` · port ${filters.port}` : ""}
-              {report.isFilterFetching ? " · updating…" : ""}.{" "}
-              <button type="button" className="text-sky-600 dark:text-sky-400 hover:text-sky-600 dark:text-sky-300 font-semibold underline" onClick={report.clearFilters}>
-                Clear Filter
+              {runText(t.locale, "Active Filters")}
+              {filters.host ? ` · ${runText(t.locale, "host {host}", { host: filters.host })}` : ""}
+              {filters.port ? ` · ${runText(t.locale, "port {port}", { port: filters.port })}` : ""}
+              {report.isFilterFetching ? runText(t.locale, " · updating…") : ""}.{" "}
+              <button
+                type="button"
+                className="text-sky-600 dark:text-sky-400 hover:text-sky-600 dark:text-sky-300 font-semibold underline"
+                onClick={report.clearFilters}
+              >
+                {runText(t.locale, "Clear Filter")}
               </button>
             </>
           )}
         </p>
       </div>
 
+      {typeof profile === "string" ? (
+        <div className="text-sm text-foreground">
+          {t("col.profileMode")}: {scanModeLabel(t.locale, profile)}
+          <ScanTechnicalDetails mode={profile} />
+        </div>
+      ) : null}
       <RunMetrics
         summary={report.summary}
         hosts={report.hosts}
@@ -129,13 +168,43 @@ function RunDetailInner() {
       />
 
       <Tabs defaultValue={initialTab} className="space-y-4">
-        <TabsList className="bg-card border border-border p-1">
-          <TabsTrigger value="vulns" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">Findings ({report.vulns.length})</TabsTrigger>
-          <TabsTrigger value="hosts" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">Hosts ({report.hosts.length})</TabsTrigger>
-          <TabsTrigger value="ports" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">Ports ({report.ports.length})</TabsTrigger>
-          <TabsTrigger value="controls" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">{t("ui.controls")}</TabsTrigger>
-          <TabsTrigger value="org-profile" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">{t("ui.orgProfile")}</TabsTrigger>
-          <TabsTrigger value="reports" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">Artifacts ({report.detail.artifacts.length})</TabsTrigger>
+        <TabsList className="bg-card border border-border p-1 h-auto flex-wrap justify-start">
+          <TabsTrigger
+            value="vulns"
+            className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300"
+          >
+            {runText(t.locale, "Findings")} ({report.vulns.length})
+          </TabsTrigger>
+          <TabsTrigger
+            value="hosts"
+            className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300"
+          >
+            {runText(t.locale, "Hosts")} ({report.hosts.length})
+          </TabsTrigger>
+          <TabsTrigger
+            value="ports"
+            className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300"
+          >
+            {runText(t.locale, "Ports")} ({report.ports.length})
+          </TabsTrigger>
+          <TabsTrigger
+            value="controls"
+            className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300"
+          >
+            {t("ui.controls")}
+          </TabsTrigger>
+          <TabsTrigger
+            value="org-profile"
+            className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300"
+          >
+            {t("ui.orgProfile")}
+          </TabsTrigger>
+          <TabsTrigger
+            value="reports"
+            className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300"
+          >
+            {runText(t.locale, "Artifacts")} ({report.detail.artifacts.length})
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="vulns" className="space-y-4">
@@ -155,10 +224,12 @@ function RunDetailInner() {
             items={report.hosts.map((host) => ({
               key: host.host,
               title: host.host,
-              subtitle: `${host.hostname || host.names[0] || "no hostname"}${
-                host.vulnerability_count ? ` · ${host.vulnerability_count} vulns` : " · no vulns"
+              subtitle: `${host.hostname || host.names[0] || runText(t.locale, "no hostname")}${
+                host.vulnerability_count
+                  ? ` · ${runText(t.locale, "{count} vulns", { count: host.vulnerability_count })}`
+                  : ` · ${runText(t.locale, "no vulns")}`
               }${host.os_name ? ` · ${host.os_name}${host.os_accuracy ? ` (${host.os_accuracy}%)` : ""}` : ""}`,
-              meta: formatLocation(host) || "No GeoIP",
+              meta: formatLocation(host) || runText(t.locale, "No GeoIP"),
             }))}
             activeKey={filters.host}
             onSelect={report.toggleHost}
@@ -172,7 +243,7 @@ function RunDetailInner() {
                 rel="noreferrer"
                 className="underline-offset-2 hover:underline hover:text-muted-foreground"
               >
-                IP Geolocation by DB-IP
+                {runText(t.locale, "IP Geolocation by DB-IP")}
               </a>
             </p>
           ) : null}
@@ -184,8 +255,10 @@ function RunDetailInner() {
               key: `${row.port}/${row.protocol || "tcp"}`,
               value: row.port,
               title: `:${row.port}${row.protocol ? `/${row.protocol}` : ""}`,
-              subtitle: `${row.host_count} hosts${
-                row.vulnerability_count ? ` · ${row.vulnerability_count} vulns` : ""
+              subtitle: `${runText(t.locale, "{count} hosts", { count: row.host_count })}${
+                row.vulnerability_count
+                  ? ` · ${runText(t.locale, "{count} vulns", { count: row.vulnerability_count })}`
+                  : ""
               }`,
               meta: <span className="font-mono font-bold text-foreground">{row.host_count}</span>,
             }))}
@@ -198,9 +271,7 @@ function RunDetailInner() {
         <TabsContent value="reports">
           <ArtifactsPanel runId={report.detail.run_id} artifacts={report.detail.artifacts} />
         </TabsContent>
-
       </Tabs>
     </div>
   );
 }
-

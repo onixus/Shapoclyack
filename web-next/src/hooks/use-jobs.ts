@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useT } from "@/lib/i18n";
 import { toast } from "sonner";
 import {
   cancelJob,
@@ -76,18 +77,19 @@ export function useJob(jobId: string | null, enabled = true) {
 }
 
 export function useStartScan() {
+  const t = useT();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ body, idempotencyKey }: { body: StartScanBody; idempotencyKey?: string }) =>
       startScan(body, { idempotencyKey }),
     onSuccess: async (job) => {
-      toast.success("Scan job queued", {
-        description: job.job_id ? `Job ${job.job_id}` : undefined,
+      toast.success(t("scanCopy.queued"), {
+        description: job.job_id ? t("scanCopy.job", { id: job.job_id }) : undefined,
       });
       await queryClient.invalidateQueries({ queryKey: queryKeys.jobs });
     },
     onError: (err) => {
-      toast.error("Failed to start scan", {
+      toast.error(t("scanCopy.startFailed"), {
         description: err instanceof Error ? err.message : undefined,
       });
     },
@@ -95,6 +97,7 @@ export function useStartScan() {
 }
 
 export function useCancelJob() {
+  const t = useT();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (jobId: string) => cancelJob(jobId),
@@ -102,16 +105,18 @@ export function useCancelJob() {
       // Two different things happened, and saying "cancelled" for both would
       // promise a stop the API has not been told happened yet (#360).
       if (job.status === "cancelling") {
-        toast.success("Stopping the scan", {
-          description: `Job ${job.job_id} — waiting for the agent to confirm`,
+        toast.success(t("scanCopy.stopping"), {
+          description: t("scanCopy.waitingAgent", { id: job.job_id }),
         });
       } else {
-        toast.success("Job cancelled", { description: `Job ${job.job_id}` });
+        toast.success(t("scanCopy.cancelled"), {
+          description: t("scanCopy.job", { id: job.job_id }),
+        });
       }
       await queryClient.invalidateQueries({ queryKey: queryKeys.jobs });
     },
     onError: (err) => {
-      toast.error("Could not cancel job", {
+      toast.error(t("scanCopy.cancelFailed"), {
         description: err instanceof Error ? err.message : undefined,
       });
     },
@@ -119,18 +124,19 @@ export function useCancelJob() {
 }
 
 export function useSetJobPriority() {
+  const t = useT();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ jobId, priority }: { jobId: string; priority: number }) =>
       setJobPriority(jobId, priority),
     onSuccess: async (job) => {
-      toast.success("Priority changed", {
-        description: `Job ${job.job_id} — priority ${job.priority ?? 0}`,
+      toast.success(t("scanCopy.priority"), {
+        description: t("scanCopy.jobPriority", { id: job.job_id, priority: job.priority ?? 0 }),
       });
       await queryClient.invalidateQueries({ queryKey: queryKeys.jobs });
     },
     onError: (err) => {
-      toast.error("Could not change the priority", {
+      toast.error(t("scanCopy.priorityFailed"), {
         description: err instanceof Error ? err.message : undefined,
       });
     },
@@ -157,17 +163,18 @@ export function useJobPublications(jobId: string | null, enabled = true) {
 }
 
 export function useRequeuePublication(jobId: string) {
+  const t = useT();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (publicationId: string) => requeueJobPublication(jobId, publicationId),
     onSuccess: async () => {
-      toast.success("Publication requeued", {
-        description: "The next reconciler tick publishes it.",
+      toast.success(t("scanCopy.requeued"), {
+        description: t("scanCopy.requeueHint"),
       });
       await queryClient.invalidateQueries({ queryKey: queryKeys.jobs });
     },
     onError: (err) => {
-      toast.error("Could not requeue the publication", {
+      toast.error(t("scanCopy.requeueFailed"), {
         description: err instanceof Error ? err.message : undefined,
       });
     },
@@ -175,17 +182,18 @@ export function useRequeuePublication(jobId: string) {
 }
 
 export function useDiscardPublication(jobId: string) {
+  const t = useT();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (publicationId: string) => discardJobPublication(jobId, publicationId),
     onSuccess: async () => {
-      toast.success("Publication discarded", {
-        description: "The run stays unpublished; its extracted tree is kept until a day after the upload was accepted.",
+      toast.success(t("scanCopy.discarded"), {
+        description: t("scanCopy.discardHint"),
       });
       await queryClient.invalidateQueries({ queryKey: queryKeys.jobs });
     },
     onError: (err) => {
-      toast.error("Could not discard the publication", {
+      toast.error(t("scanCopy.discardFailed"), {
         description: err instanceof Error ? err.message : undefined,
       });
     },

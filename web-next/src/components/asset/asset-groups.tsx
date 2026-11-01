@@ -1,4 +1,8 @@
 "use client";
+import { useT } from "@/lib/i18n";
+import { SystemTechnicalDetails } from "@/components/system-technical-details";
+import { groupState, groupValue } from "@/lib/asset-group-presentation";
+import { useGroupText } from "@/lib/asset-group-presentation";
 
 import Link from "next/link";
 import axios from "axios";
@@ -46,7 +50,7 @@ import {
 } from "@/lib/asset-groups";
 
 const selectClass =
-  "h-10 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  "h-10 min-w-0 w-full max-w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 const newLeaf = (): GroupRule => ({ field: "ip", op: "cidr", value: "" });
 const blankDraft = (): GroupDraft => ({
   name: "",
@@ -81,26 +85,48 @@ function observed(value: unknown): string {
       : String(value);
 }
 function OsEvidence({ value }: { value: unknown }) {
+  const g = useGroupText();
+  const t = useT();
   const evidence = asRecord(value);
   if (!evidence) return null;
   const observations = Array.isArray(evidence.observations) ? evidence.observations : [];
+  if (t.locale === "ru")
+    return (
+      <div className="mt-1 border-l border-border pl-3 text-xs text-muted-foreground">
+        <p>
+          Источник: подтверждённый инвентарь устройства · {groupState(t.locale, evidence.state)} ·
+          срок актуальности: {groupValue(t.locale, "freshness_hours", evidence.freshness_hours)} ч.
+        </p>
+        {evidence.observations_truncated ? (
+          <p>Часть связанных устройств не показана. Неполные данные не подтверждают совпадение.</p>
+        ) : null}
+        <SystemTechnicalDetails data={evidence} />
+      </div>
+    );
   return (
     <div className="mt-1 border-l border-border pl-3 text-xs text-muted-foreground">
       <p>
-        Source: authenticated endpoint inventory · {String(evidence.state ?? "unknown")} · freshness
-        limit {observed(evidence.freshness_hours)} hours
+        {" "}
+        {g("Source: authenticated endpoint inventory ·")} {String(evidence.state ?? g("unknown"))}{" "}
+        {g("· freshness limit")} {observed(evidence.freshness_hours)} {g("hours")}{" "}
       </p>
       {evidence.observations_truncated ? (
-        <p>Additional linked devices were omitted; incomplete evidence never confirms a match.</p>
+        <p>
+          {" "}
+          {g(
+            "Additional linked devices were omitted; incomplete evidence never confirms a match.",
+          )}{" "}
+        </p>
       ) : null}
       {observations.map((item, index) => {
         const snapshot = asRecord(item);
         return (
           <p key={index}>
-            Device {observed(snapshot?.device_id)} · snapshot {observed(snapshot?.snapshot_id)} ·{" "}
-            {observed(snapshot?.family)} · collected {observed(snapshot?.collected_at)} · received{" "}
-            {observed(snapshot?.received_at)} · reconciliation{" "}
-            {observed(snapshot?.reconciliation_status)}
+            {" "}
+            {g("Device")} {observed(snapshot?.device_id)} {g("· snapshot")}{" "}
+            {observed(snapshot?.snapshot_id)} · {observed(snapshot?.family)} {g("· collected")}{" "}
+            {observed(snapshot?.collected_at)} {g("· received")} {observed(snapshot?.received_at)}{" "}
+            {g("· reconciliation")} {observed(snapshot?.reconciliation_status)}
           </p>
         );
       })}
@@ -108,20 +134,53 @@ function OsEvidence({ value }: { value: unknown }) {
   );
 }
 function Reasons({ value }: { value: unknown }) {
+  const g = useGroupText();
+  const t = useT();
   const reasons = Array.isArray(value) ? value : [];
-  if (!reasons.length) return <p>No matching conditions recorded.</p>;
+  if (!reasons.length) return <p> {g("No matching conditions recorded.")} </p>;
+  if (t.locale === "ru")
+    return (
+      <ul className="list-inside list-disc space-y-2">
+        {reasons.map((reason, index) => {
+          const row = asRecord(reason);
+          const field = String(row?.field ?? "Condition");
+          return (
+            <li key={index} className="break-words">
+              {row ? (
+                <>
+                  {g(
+                    ruleLabels[field] ??
+                      { ip: "ip", fqdn: "fqdn", status: "status" }[field] ??
+                      "Condition",
+                  )}{" "}
+                  {row.negate ? "НЕ " : ""}
+                  {g(String(row.op ?? ""))} {groupValue(t.locale, field, row.value)}; наблюдаемое
+                  значение: {groupValue(t.locale, field, row.actual)};{" "}
+                  {groupState(t.locale, row.result ?? "evaluated")}
+                  {row.actual_truncated ? " (данные показаны не полностью)" : ""}
+                </>
+              ) : (
+                "Объяснение условия доступно в технических данных."
+              )}
+              <SystemTechnicalDetails data={reason} />
+              {field === "os_family" && <OsEvidence value={row?.evidence} />}
+            </li>
+          );
+        })}
+      </ul>
+    );
   return (
     <ul className="list-inside list-disc space-y-1">
       {reasons.map((reason, index) => {
         const row = asRecord(reason);
         if (!row) return <li key={index}>{describe(reason)}</li>;
-        const field = String(row.field ?? "Condition");
+        const field = String(row.field ?? g("Condition"));
         return (
           <li key={index}>
-            {ruleLabels[field] ?? field} {row.negate ? "NOT " : ""}
-            {String(row.op ?? "")} {observed(row.value)}; observed: {observed(row.actual)};{" "}
-            {String(row.result ?? "evaluated").replaceAll("_", " ")}
-            {row.actual_truncated ? " (evidence truncated)" : ""}
+            {g(ruleLabels[field] ?? field)} {row.negate ? g("NOT ") : ""}
+            {String(row.op ?? "")} {observed(row.value)} {g("; observed:")} {observed(row.actual)};{" "}
+            {String(row.result ?? g("evaluated")).replaceAll("_", " ")}
+            {row.actual_truncated ? g(" (evidence truncated)") : ""}
             {field === "os_family" && <OsEvidence value={row.evidence} />}
           </li>
         );
@@ -130,18 +189,36 @@ function Reasons({ value }: { value: unknown }) {
   );
 }
 function Changes({ value }: { value: unknown }) {
+  const g = useGroupText();
+  const t = useT();
   const changes = asRecord(value);
-  if (!changes || !Object.keys(changes).length) return <p>No context changes.</p>;
+  if (!changes || !Object.keys(changes).length) return <p> {g("No context changes.")} </p>;
+  if (t.locale === "ru")
+    return (
+      <ul className="list-inside list-disc">
+        {Object.entries(changes).map(([field, change]) => {
+          const row = asRecord(change);
+          return (
+            <li key={field}>
+              {g(ruleLabels[field] ?? "Context")}: {groupValue(t.locale, field, row?.old)} →{" "}
+              {groupValue(t.locale, field, row?.new)}
+              {row?.release ? " (снять значение, заданное правилом)" : ""}
+              <SystemTechnicalDetails data={{ field, ...row }} />
+            </li>
+          );
+        })}
+      </ul>
+    );
   return (
     <ul className="list-inside list-disc">
       {Object.entries(changes).map(([field, change]) => {
         const row = asRecord(change);
         return (
           <li key={field}>
-            {ruleLabels[field] ?? field}: {observed(row?.old)} → {observed(row?.new)}
-            {row?.release ? " (release rule-owned value)" : ""}
-            {row?.group_id ? ` · group ${row.group_id}` : ""}
-            {row?.version != null ? ` · rule v${row.version}` : ""}
+            {g(ruleLabels[field] ?? field)}: {observed(row?.old)} → {observed(row?.new)}
+            {row?.release ? g(" (release rule-owned value)") : ""}
+            {row?.group_id ? g(` · group ${row.group_id}`) : ""}
+            {row?.version != null ? g(` · rule v${row.version}`) : ""}
           </li>
         );
       })}
@@ -149,17 +226,35 @@ function Changes({ value }: { value: unknown }) {
   );
 }
 function Conflicts({ value }: { value: unknown }) {
+  const g = useGroupText();
+  const t = useT();
   const conflicts = Array.isArray(value) ? value : [];
-  if (!conflicts.length) return <p>No conflicts.</p>;
+  if (!conflicts.length) return <p> {g("No conflicts.")} </p>;
+  if (t.locale === "ru")
+    return (
+      <ul className="list-inside list-disc">
+        {conflicts.map((conflict, index) => {
+          const row = asRecord(conflict);
+          return (
+            <li key={index}>
+              {g(ruleLabels[String(row?.field)] ?? "Context")}:{" "}
+              {groupState(t.locale, row?.reason ?? "conflict")}
+              <SystemTechnicalDetails data={conflict} />
+            </li>
+          );
+        })}
+      </ul>
+    );
   return (
     <ul className="list-inside list-disc">
       {conflicts.map((conflict, index) => {
         const row = asRecord(conflict);
-        const field = String(row?.field ?? "Context");
+        const field = String(row?.field ?? g("Context"));
         return (
           <li key={index}>
-            {ruleLabels[field] ?? field}: {String(row?.reason ?? "conflict").replaceAll("_", " ")}
-            {row?.group_ids ? ` · groups ${observed(row.group_ids)}` : ""}
+            {g(ruleLabels[field] ?? field)}:{" "}
+            {String(row?.reason ?? g("conflict")).replaceAll("_", " ")}
+            {row?.group_ids ? g(` · groups ${observed(row.group_ids)}`) : ""}
           </li>
         );
       })}
@@ -167,7 +262,25 @@ function Conflicts({ value }: { value: unknown }) {
   );
 }
 function ErrorMessage({ error }: { error: unknown }) {
+  const g = useGroupText();
+  const t = useT();
   const detail = axios.isAxiosError(error) ? error.response?.data?.detail : undefined;
+  if (error && t.locale === "ru") {
+    const original = detail
+      ? describe(detail)
+      : error instanceof Error
+        ? error.message
+        : String(error);
+    const translated = g(original);
+    return (
+      <div role="alert" className="text-sm text-destructive">
+        {translated === original
+          ? "Не удалось выполнить действие. Подробности ошибки сохранены ниже."
+          : translated}
+        <SystemTechnicalDetails data={{ error: original }} />
+      </div>
+    );
+  }
   return error ? (
     <p role="alert" className="text-sm text-destructive">
       {detail ? describe(detail) : error instanceof Error ? error.message : String(error)}
@@ -176,7 +289,7 @@ function ErrorMessage({ error }: { error: unknown }) {
 }
 function Field({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <label className="grid gap-1.5 text-sm font-medium">
+    <label className="grid min-w-0 gap-1.5 text-sm font-medium">
       {title}
       {children}
     </label>
@@ -197,14 +310,16 @@ function Pager({
   pending?: boolean;
   label?: string;
 }) {
+  const g = useGroupText();
+  const t = useT();
   return (
     <div className="flex flex-wrap items-center gap-3 text-sm">
       <span>
         {total === 0
           ? "0"
           : offset >= total
-            ? "No rows on this page"
-            : `${offset + 1}–${Math.min(offset + 20, total)}`}{" "}
+            ? g("No rows on this page")
+            : g(`${offset + 1}–${Math.min(offset + 20, total)}`)}{" "}
         / {total}
       </span>
       <Button
@@ -212,14 +327,24 @@ function Pager({
         disabled={pending || offset === 0}
         onClick={() => onChange(Math.max(0, offset - 20))}
       >
-        Previous {label ? `${label} ` : ""}page
+        {" "}
+        {t.locale === "ru" ? (
+          `Предыдущая страница${label ? " проверок" : ""}`
+        ) : (
+          <>Previous {label ? `${label} ` : ""}page</>
+        )}{" "}
       </Button>
       <Button
         variant="outline"
         disabled={pending || !hasMore}
         onClick={() => onChange(offset + 20)}
       >
-        Next {label ? `${label} ` : ""}page
+        {" "}
+        {t.locale === "ru" ? (
+          `Следующая страница${label ? " проверок" : ""}`
+        ) : (
+          <>Next {label ? `${label} ` : ""}page</>
+        )}{" "}
       </Button>
     </div>
   );
@@ -255,15 +380,19 @@ export function GroupRuleEditor({
   path?: string;
   depth?: number;
 }) {
+  const g = useGroupText();
   if ("all" in rule || "any" in rule) {
     const children = "all" in rule ? rule.all : rule.any;
     const join = "all" in rule ? "all" : "any";
     const update = (next: GroupRule[]) =>
       onChange(join === "all" ? { ...rule, all: next } : { ...rule, any: next });
     return (
-      <fieldset className="space-y-3 rounded-md border border-border p-3">
-        <legend className="px-1 text-sm font-semibold">Conditions {path}</legend>
-        <Field title={`Match mode ${path}`}>
+      <fieldset className="min-w-0 space-y-3 rounded-md border border-border p-3">
+        <legend className="max-w-full break-words px-1 text-sm font-semibold">
+          {" "}
+          {g("Conditions")} {path}
+        </legend>
+        <Field title={g(`Match mode ${path}`)}>
           <select
             className={selectClass}
             value={join}
@@ -275,8 +404,8 @@ export function GroupRuleEditor({
               )
             }
           >
-            <option value="all">AND — every condition</option>
-            <option value="any">OR — any condition</option>
+            <option value="all"> {g("AND — every condition")} </option>
+            <option value="any"> {g("OR — any condition")} </option>
           </select>
         </Field>
         <label className="flex items-center gap-2 text-sm">
@@ -284,8 +413,8 @@ export function GroupRuleEditor({
             type="checkbox"
             checked={rule.negate ?? false}
             onChange={(event) => onChange({ ...rule, negate: event.target.checked })}
-          />
-          Negate group {path}
+          />{" "}
+          {g("Negate group")} {path}
         </label>
         {children.map((child, index) => (
           <div className="space-y-2" key={index}>
@@ -302,7 +431,8 @@ export function GroupRuleEditor({
               disabled={children.length === 1}
               onClick={() => update(children.filter((_, i) => i !== index))}
             >
-              Remove condition {path}.{index + 1}
+              {" "}
+              {g("Remove condition")} {path}.{index + 1}
             </Button>
           </div>
         ))}
@@ -314,7 +444,8 @@ export function GroupRuleEditor({
             disabled={children.length >= 20}
             onClick={() => update([...children, newLeaf()])}
           >
-            Add condition {path}
+            {" "}
+            {g("Add condition")} {path}
           </Button>
           <Button
             type="button"
@@ -323,7 +454,8 @@ export function GroupRuleEditor({
             disabled={depth >= 3 || children.length >= 20}
             onClick={() => update([...children, { any: [newLeaf()] }])}
           >
-            Add nested group {path}
+            {" "}
+            {g("Add nested group")} {path}
           </Button>
         </div>
       </fieldset>
@@ -332,8 +464,11 @@ export function GroupRuleEditor({
   const isTag = rule.field.startsWith("tag:");
   return (
     <fieldset className="grid gap-3 rounded border border-border p-3 sm:grid-cols-3">
-      <legend className="px-1 text-xs">Condition {path}</legend>
-      <Field title={`Field ${path}`}>
+      <legend className="px-1 text-xs">
+        {" "}
+        {g("Condition")} {path}
+      </legend>
+      <Field title={g(`Field ${path}`)}>
         <select
           className={selectClass}
           value={isTag ? "tag" : rule.field}
@@ -346,14 +481,14 @@ export function GroupRuleEditor({
         >
           {GROUP_FIELDS.map((field) => (
             <option key={field} value={field}>
-              {ruleLabels[field] ?? field}
+              {g(ruleLabels[field] ?? field)}
             </option>
           ))}
-          <option value="tag">Tag</option>
+          <option value="tag"> {g("Tag")} </option>
         </select>
       </Field>
       {isTag && (
-        <Field title={`Tag key ${path}`}>
+        <Field title={g(`Tag key ${path}`)}>
           <Input
             value={rule.field.slice(4)}
             maxLength={128}
@@ -361,7 +496,7 @@ export function GroupRuleEditor({
           />
         </Field>
       )}
-      <Field title={`Operator ${path}`}>
+      <Field title={g(`Operator ${path}`)}>
         <select
           className={selectClass}
           value={rule.op}
@@ -371,13 +506,15 @@ export function GroupRuleEditor({
         >
           {ruleOperators(rule.field).map((op) => (
             <option value={op} key={op}>
-              {op}
+              {g(op)}
             </option>
           ))}
         </select>
       </Field>
       <Field
-        title={`Value ${path}${rule.op === "in" || rule.op === "not_in" ? " (comma separated)" : ""}`}
+        title={g(
+          `Value ${path}${rule.op === "in" || rule.op === "not_in" ? " (comma separated)" : ""}`,
+        )}
       >
         {rule.field === "os_family" && rule.op !== "in" && rule.op !== "not_in" ? (
           <select
@@ -386,10 +523,10 @@ export function GroupRuleEditor({
             value={String(rule.value)}
             onChange={(event) => onChange({ ...rule, value: event.target.value })}
           >
-            <option value="">Select OS family</option>
+            <option value=""> {g("Select OS family")} </option>
             {["windows", "linux", "macos"].map((family) => (
               <option value={family} key={family}>
-                {family}
+                {g(family)}
               </option>
             ))}
           </select>
@@ -404,9 +541,10 @@ export function GroupRuleEditor({
       </Field>
       {rule.field === "os_family" && (
         <p className="text-xs text-muted-foreground sm:col-span-3">
-          Only authenticated, linked endpoint inventory confirms OS family. All linked devices must
-          agree and be fresh (default 48 hours). Missing, stale, conflicting or incomplete evidence
-          stays unknown, including negated rules. Accepted families: windows, linux, macos.
+          {" "}
+          {g(
+            "Only authenticated, linked endpoint inventory confirms OS family. All linked devices must agree and be fresh (default 48 hours). Missing, stale, conflicting or incomplete evidence stays unknown, including negated rules. Accepted families: windows, linux, macos.",
+          )}{" "}
         </p>
       )}
       <label className="flex items-center gap-2 text-sm">
@@ -414,23 +552,24 @@ export function GroupRuleEditor({
           type="checkbox"
           checked={rule.negate ?? false}
           onChange={(event) => onChange({ ...rule, negate: event.target.checked })}
-        />
-        Negate condition {path}
+        />{" "}
+        {g("Negate condition")} {path}
       </label>
     </fieldset>
   );
 }
 function Preview({ result }: { result: GroupPreview }) {
+  const g = useGroupText();
   return (
     <section
       className="space-y-3 rounded-md border border-border p-4"
-      aria-label="Dry-run results"
+      aria-label={g("Dry-run results")}
       aria-live="polite"
     >
       <p className="font-semibold">
         {result.has_more
-          ? "Incomplete preview — continue before saving or applying"
-          : "Preview complete"}
+          ? g("Incomplete preview — continue before saving or applying")
+          : g("Preview complete")}
       </p>
       <dl className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-3">
         {[
@@ -442,35 +581,35 @@ function Preview({ result }: { result: GroupPreview }) {
           ["Conflicts", result.conflicts],
         ].map(([label, value]) => (
           <div key={label}>
-            <dt className="text-muted-foreground">{label}</dt>
-            <dd className="font-mono">{value ?? "Unavailable"}</dd>
+            <dt className="text-muted-foreground">{g(String(label))}</dt>
+            <dd className="font-mono">{value ?? g("Unavailable")}</dd>
           </div>
         ))}
       </dl>
       <p className="text-xs text-muted-foreground">
-        Context changes resolve priorities across all active groups. Higher priority wins;
-        equal-priority contradictions do not write. Manual context remains protected. Membership
-        does not grant permission to scan. Explanations show the current batch (up to 100 assets);
-        counts include all previewed batches.
+        {" "}
+        {g(
+          "Context changes resolve priorities across all active groups. Higher priority wins; equal-priority contradictions do not write. Manual context remains protected. Membership does not grant permission to scan. Explanations show the current batch (up to 100 assets); counts include all previewed batches.",
+        )}{" "}
       </p>
       <div
         className="max-h-64 space-y-2 overflow-auto"
         tabIndex={0}
-        aria-label="Preview asset explanations"
+        aria-label={g("Preview asset explanations")}
       >
         {result.items.map((item) => (
           <details className="rounded border p-2 text-sm" key={item.asset_id}>
             <summary className="cursor-pointer font-mono">
-              {item.asset_id} · {item.matched ? "matches" : "does not match"}
-              {item.entrant ? " · entering" : ""}
-              {item.exited ? " · leaving" : ""}
+              {item.asset_id} · {item.matched ? g("matches") : g("does not match")}
+              {item.entrant ? g(" · entering") : ""}
+              {item.exited ? g(" · leaving") : ""}
             </summary>
             <div className="space-y-1 break-words pt-2">
-              <p className="font-medium">Why</p>
+              <p className="font-medium"> {g("Why")} </p>
               <Reasons value={item.reasons} />
-              <p className="font-medium">Context changes</p>
+              <p className="font-medium"> {g("Context changes")} </p>
               <Changes value={item.changes} />
-              <p className="font-medium">Conflicts</p>
+              <p className="font-medium"> {g("Conflicts")} </p>
               <Conflicts value={item.conflicts} />
             </div>
           </details>
@@ -503,6 +642,8 @@ function GroupEditor({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const g = useGroupText();
+  const t = useT();
   const [draft, setDraft] = useState<GroupDraft>(() =>
     group
       ? {
@@ -569,19 +710,21 @@ function GroupEditor({
         if (!open && !save.isPending) onClose();
       }}
     >
-      <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto">
+      <DialogContent className="max-h-[90vh] min-w-0 max-w-4xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>
-            {group ? `Edit ${group.name} · v${group.version}` : "Create dynamic group"}
+            {group ? g(`Edit ${group.name} · v${group.version}`) : g("Create dynamic group")}
           </DialogTitle>
           <DialogDescription>
-            Unknown values never match, including negated conditions. Preview is read-only; saving
-            schedules reevaluation.
+            {" "}
+            {g(
+              "Unknown values never match, including negated conditions. Preview is read-only; saving schedules reevaluation.",
+            )}{" "}
           </DialogDescription>
         </DialogHeader>
         <form className="space-y-4" onSubmit={submit}>
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field title="Group name">
+            <Field title={g("Group name")}>
               <Input
                 required
                 maxLength={160}
@@ -589,7 +732,7 @@ function GroupEditor({
                 onChange={(event) => setDraft({ ...draft, name: event.target.value })}
               />
             </Field>
-            <Field title="Priority (higher wins)">
+            <Field title={g("Priority (higher wins)")}>
               <Input
                 type="number"
                 required
@@ -600,7 +743,7 @@ function GroupEditor({
               />
             </Field>
           </div>
-          <Field title="Description">
+          <Field title={g("Description")}>
             <Textarea
               maxLength={2000}
               value={draft.description}
@@ -612,31 +755,39 @@ function GroupEditor({
               type="checkbox"
               checked={draft.enabled}
               onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })}
-            />
-            Enabled
+            />{" "}
+            {g("Enabled")}{" "}
           </label>
           <GroupRuleEditor rule={draft.rules} onChange={(rules) => setDraft({ ...draft, rules })} />
+          {t.locale === "ru" && (
+            <SystemTechnicalDetails data={{ rules: draft.rules, context: draft.context }} />
+          )}
           <fieldset className="space-y-3 rounded-md border p-3">
-            <legend className="px-1 text-sm font-semibold">Context assignments</legend>
+            <legend className="max-w-full break-words px-1 text-sm font-semibold">
+              {" "}
+              {g("Context assignments")}{" "}
+            </legend>
             <p className="text-xs text-muted-foreground">
-              Blank fields remain unmanaged. Exposure remains explicitly declared and cannot be
-              assigned by a group.
+              {" "}
+              {g(
+                "Blank fields remain unmanaged. Exposure remains explicitly declared and cannot be assigned by a group.",
+              )}{" "}
             </p>
             <div className="grid gap-3 sm:grid-cols-2">
               {Object.entries(CONTEXT_FIELD_LABELS)
                 .filter(([field]) => field !== "exposure_level")
                 .map(([field, label]) => (
-                  <Field key={field} title={label}>
+                  <Field key={field} title={g(label)}>
                     {contextOptions[field] ? (
                       <select
                         className={selectClass}
                         value={draft.context[field as keyof GroupContext] ?? ""}
                         onChange={(event) => changeContext(field, event.target.value)}
                       >
-                        <option value="">Leave unmanaged</option>
+                        <option value=""> {g("Leave unmanaged")} </option>
                         {contextOptions[field].map((option) => (
                           <option value={option} key={option}>
-                            {option}
+                            {groupValue(t.locale, field, option)}
                           </option>
                         ))}
                       </select>
@@ -661,10 +812,10 @@ function GroupEditor({
               disabled={previewMutation.isPending || save.isPending}
             >
               {previewMutation.isPending
-                ? "Evaluating…"
+                ? g("Evaluating…")
                 : currentPreview?.has_more
-                  ? "Continue preview"
-                  : "Preview dry-run"}
+                  ? g("Continue preview")
+                  : g("Preview dry-run")}
             </Button>
             <Button
               type="button"
@@ -676,15 +827,19 @@ function GroupEditor({
               }
               onClick={() => save.mutate()}
             >
-              {save.isPending ? "Saving…" : "Save group"}
+              {save.isPending ? g("Saving…") : g("Save group")}
             </Button>
             <Button type="button" variant="ghost" disabled={save.isPending} onClick={onClose}>
-              Cancel
+              {" "}
+              {g("Cancel")}{" "}
             </Button>
           </div>
           {!currentPreview && (
             <p className="text-xs text-muted-foreground">
-              Preview the current draft before saving. Changing a field invalidates the preview.
+              {" "}
+              {g(
+                "Preview the current draft before saving. Changing a field invalidates the preview.",
+              )}{" "}
             </p>
           )}
         </form>
@@ -705,6 +860,8 @@ function GroupDetails({
   editable: boolean;
   onChanged: () => void;
 }) {
+  const g = useGroupText();
+  const t = useT();
   const [offset, setOffset] = useState(0);
   const [evaluationOffset, setEvaluationOffset] = useState(0);
   const [preview, setPreview] = useState<GroupPreview>();
@@ -759,18 +916,27 @@ function GroupDetails({
   return (
     <section
       className="space-y-4 rounded-lg border border-border p-4"
-      aria-label={`Group ${group.name}`}
+      aria-label={g(`Group ${group.name}`)}
     >
       <h2 className="text-lg font-semibold">
-        {group.name} · v{group.version}
+        {group.name} {g("· v")}
+        {t.locale === "ru" ? " " : ""}
+        {group.version}
       </h2>
       <p className="text-sm text-muted-foreground">
-        Last successful evaluation:{" "}
-        {group.last_success_at ?? lastSuccess?.completed_at ?? "Not available"}
+        {" "}
+        {g("Last successful evaluation:")}{" "}
+        {group.last_success_at ?? lastSuccess?.completed_at ?? g("Not available")}
       </p>
       <p className="text-sm" role="status">
-        Current rule v{group.version}: {currentEvaluation?.status ?? "awaiting evaluation"}. Last
-        success above may belong to an earlier rule version.
+        {" "}
+        {g("Current rule v")}
+        {t.locale === "ru" ? " " : ""}
+        {group.version}:{" "}
+        {currentEvaluation
+          ? groupState(t.locale, currentEvaluation.status)
+          : g("awaiting evaluation")}{" "}
+        {g(". Last success above may belong to an earlier rule version.")}{" "}
       </p>
       <ErrorMessage
         error={
@@ -779,24 +945,28 @@ function GroupDetails({
             : undefined
         }
       />
-      <h3 className="font-semibold">Evaluation history</h3>
+      <h3 className="font-semibold"> {g("Evaluation history")} </h3>
       <ErrorMessage error={members.error ?? evaluations.error ?? error} />
-      {evaluations.isLoading && <p role="status">Loading evaluations…</p>}
+      {evaluations.isLoading && <p role="status"> {g("Loading evaluations…")} </p>}
       {evaluations.data?.items.map((item, index) => (
         <div key={item.id ?? item.evaluation_id ?? index} className="rounded border p-2 text-sm">
           <p>
-            Evaluation {item.id ?? item.evaluation_id} · version {item.version ?? "—"} ·{" "}
-            {item.status ?? "unknown"}
-            {item.report?.has_more || item.status === "partial" ? " · INCOMPLETE" : ""}
+            {" "}
+            {g("Evaluation")} {item.id ?? item.evaluation_id} {g("· version")} {item.version ?? "—"}{" "}
+            · {groupState(t.locale, item.status)}
+            {item.report?.has_more || item.status === "partial" ? g(" · INCOMPLETE") : ""}
           </p>
           <p>
-            {item.completed_at ?? item.started_at ?? "Time unavailable"} · evaluated{" "}
-            {item.report?.evaluated ?? item.evaluated ?? "—"} · matched{" "}
+            {item.completed_at ?? item.started_at ?? g("Time unavailable")} {g("· evaluated")}{" "}
+            {item.report?.evaluated ?? item.evaluated ?? "—"} {g("· matched")}{" "}
             {item.report?.matched ?? item.matched ?? "—"}
           </p>
+          {t.locale === "ru" && <SystemTechnicalDetails data={item} />}
           {item.error && (
             <p role="alert" className="text-destructive">
-              {item.error}
+              {t.locale === "ru"
+                ? "Не удалось завершить проверку. Причина сохранена в технических данных."
+                : item.error}
             </p>
           )}
         </div>
@@ -819,10 +989,10 @@ function GroupDetails({
             onClick={() => dryRun.mutate()}
           >
             {dryRun.isPending
-              ? "Evaluating…"
+              ? g("Evaluating…")
               : preview?.has_more
-                ? "Continue recalculation preview"
-                : "Preview recalculation"}
+                ? g("Continue recalculation preview")
+                : g("Preview recalculation")}
           </Button>
           <Button
             disabled={
@@ -833,10 +1003,10 @@ function GroupDetails({
             onClick={() => apply.mutate()}
           >
             {apply.isPending
-              ? "Recalculating…"
+              ? g("Recalculating…")
               : applied?.has_more
-                ? "Continue recalculation"
-                : "Apply recalculation"}
+                ? g("Continue recalculation")
+                : g("Apply recalculation")}
           </Button>
         </div>
       )}
@@ -844,36 +1014,42 @@ function GroupDetails({
       {applied && (
         <div role="status" className="text-sm">
           {applied.has_more
-            ? "Recalculation incomplete — continue the next batch."
-            : "Recalculation completed."}{" "}
-          Evaluated {applied.evaluated}; changed {applied.changed ?? "—"}; conflicts{" "}
-          {applied.conflicts ?? "—"}.
+            ? g("Recalculation incomplete — continue the next batch.")
+            : g("Recalculation completed.")}{" "}
+          {g("Evaluated")} {applied.evaluated} {g("; changed")} {applied.changed ?? "—"}{" "}
+          {g("; conflicts")} {applied.conflicts ?? "—"}.
         </div>
       )}
-      <h3 className="font-semibold">Explained members</h3>
-      {members.isLoading && <p role="status">Loading members…</p>}
+      <h3 className="font-semibold"> {g("Explained members")} </h3>
+      {members.isLoading && <p role="status"> {g("Loading members…")} </p>}
       {members.data?.items.map((member) => (
         <details key={member.asset_id} className="rounded border p-2 text-sm">
           <summary className="cursor-pointer">
-            {member.asset_id} · rule v{member.version}
+            {member.asset_id} {g("· rule v")}
+            {t.locale === "ru" ? " " : ""}
+            {member.version}
             {member.version !== group.version
-              ? " · previous rule version, awaiting reevaluation"
+              ? g(" · previous rule version, awaiting reevaluation")
               : ""}
           </summary>
           <div className="break-words py-2">
             <Reasons value={member.reasons} />
           </div>
-          <p>Evaluated {member.evaluated_at}</p>
+          <p>
+            {" "}
+            {g("Evaluated")} {member.evaluated_at}
+          </p>
           <Link
             className="text-primary underline"
             href={`/assets/view?assetId=${encodeURIComponent(member.asset_id)}${tenant ? `&tenantId=${encodeURIComponent(tenant)}` : ""}`}
           >
-            Open asset
+            {" "}
+            {g("Open asset")}{" "}
           </Link>
         </details>
       ))}
       {members.data?.total === 0 && (
-        <p className="text-sm text-muted-foreground">No evaluated members.</p>
+        <p className="text-sm text-muted-foreground"> {g("No evaluated members.")} </p>
       )}
       {members.data && (
         <Pager
@@ -895,6 +1071,8 @@ export function AssetGroups() {
   return <ScopedAssetGroups key={scope} tenant={tenant} scope={scope} />;
 }
 function ScopedAssetGroups({ tenant, scope }: { tenant: string | null; scope: string }) {
+  const g = useGroupText();
+  const t = useT();
   const user = useAuthStore((state) => state.user);
   const editable = can(user, { minRole: "operator" });
   const client = useQueryClient();
@@ -936,10 +1114,13 @@ function ScopedAssetGroups({ tenant, scope }: { tenant: string | null; scope: st
     : null;
   return (
     <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">Tenant: {tenant ?? "Resolved by server"}</p>
-      {editable && <Button onClick={() => setEditor("new")}>Create group</Button>}
+      <p className="text-sm text-muted-foreground">
+        {" "}
+        {g("Tenant:")} {tenant ?? g("Resolved by server")}
+      </p>
+      {editable && <Button onClick={() => setEditor("new")}> {g("Create group")} </Button>}
       <ErrorMessage error={groups.error ?? selectedDetail.error ?? remove.error} />
-      {groups.isLoading && <p role="status">Loading groups…</p>}
+      {groups.isLoading && <p role="status"> {g("Loading groups…")} </p>}
       {groups.data?.items.map((group) => (
         <article
           key={group.id}
@@ -947,25 +1128,31 @@ function ScopedAssetGroups({ tenant, scope }: { tenant: string | null; scope: st
         >
           <div>
             <h2 className="font-semibold">
-              {group.name} · v{group.version}
+              {group.name} {g("· v")}
+              {t.locale === "ru" ? " " : ""}
+              {group.version}
             </h2>
             <p className="text-sm text-muted-foreground">
-              {group.enabled ? "Enabled" : "Disabled"} · priority {group.priority} ·{" "}
-              {group.member_count} members
+              {group.enabled ? g("Enabled") : g("Disabled")} {g("· priority")} {group.priority} ·{" "}
+              {group.member_count} {g("members")}{" "}
             </p>
-            <p className="text-sm">{group.description}</p>
+            <p className="break-words text-sm">{group.description}</p>
+            {t.locale === "ru" && <SystemTechnicalDetails data={group} />}
           </div>
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" onClick={() => setSelected(group)}>
-              Members & evaluations: {group.name}
+              {" "}
+              {g("Members & evaluations:")} {group.name}
             </Button>
             {editable && (
               <>
                 <Button variant="outline" onClick={() => setEditor(group)}>
-                  Edit {group.name}
+                  {" "}
+                  {g("Edit")} {group.name}
                 </Button>
                 <Button variant="ghost" onClick={() => setDeleting(group)}>
-                  Delete {group.name}
+                  {" "}
+                  {g("Delete")} {group.name}
                 </Button>
               </>
             )}
@@ -973,7 +1160,7 @@ function ScopedAssetGroups({ tenant, scope }: { tenant: string | null; scope: st
         </article>
       ))}
       {groups.data?.total === 0 && (
-        <p className="text-sm text-muted-foreground">No dynamic groups in this tenant.</p>
+        <p className="text-sm text-muted-foreground"> {g("No dynamic groups in this tenant.")} </p>
       )}
       {groups.data && (
         <Pager
@@ -1012,15 +1199,20 @@ function ScopedAssetGroups({ tenant, scope }: { tenant: string | null; scope: st
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete {deleting?.name}?</AlertDialogTitle>
+            <AlertDialogTitle>
+              {" "}
+              {g("Delete")} {deleting?.name}?
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              Membership will be retired. Rule-owned values are restored safely on reevaluation;
-              manual and later changes are preserved. Historical audit records remain.
+              {" "}
+              {g(
+                "Membership will be retired. Rule-owned values are restored safely on reevaluation; manual and later changes are preserved. Historical audit records remain.",
+              )}{" "}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <ErrorMessage error={remove.error} />
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={remove.isPending}> {g("Cancel")} </AlertDialogCancel>
             <AlertDialogAction
               disabled={remove.isPending}
               onClick={(event) => {
@@ -1028,7 +1220,7 @@ function ScopedAssetGroups({ tenant, scope }: { tenant: string | null; scope: st
                 if (deleting) remove.mutate(deleting.id);
               }}
             >
-              {remove.isPending ? "Deleting…" : "Delete group"}
+              {remove.isPending ? g("Deleting…") : g("Delete group")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

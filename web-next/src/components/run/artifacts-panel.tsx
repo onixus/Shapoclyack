@@ -1,4 +1,5 @@
 "use client";
+import { runText } from "@/lib/run-presentation";
 
 import { useState } from "react";
 import { useT } from "@/lib/i18n";
@@ -44,7 +45,7 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
     try {
       await downloadArtifact(runId, path);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Download failed");
+      toast.error(error instanceof Error ? error.message : runText(t.locale, "Download failed"));
     } finally {
       setBusyPath(null);
     }
@@ -57,7 +58,9 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
       setSarifText(text);
       setSarifOpen(true);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to load SARIF report");
+      toast.error(
+        error instanceof Error ? error.message : runText(t.locale, "Failed to load SARIF report"),
+      );
     } finally {
       setBusyPath(null);
     }
@@ -74,7 +77,7 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
       const text = await fetchArtifactText(runId, path);
       setPreviewText(prettifyIfJson(path, text));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Preview failed");
+      toast.error(error instanceof Error ? error.message : runText(t.locale, "Preview failed"));
       setPreviewPath(null);
     } finally {
       setPreviewLoading(false);
@@ -104,9 +107,15 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
               </p>
             </div>
           </div>
-          <Button onClick={() => handleDownload(pdfReport)} disabled={busyPath === pdfReport} className="bg-rose-600 hover:bg-rose-500 text-foreground font-semibold text-xs gap-2">
+          <Button
+            onClick={() => handleDownload(pdfReport)}
+            disabled={busyPath === pdfReport}
+            className="bg-rose-600 hover:bg-rose-500 text-foreground font-semibold text-xs gap-2"
+          >
             <Download className="h-4 w-4" />
-            {busyPath === pdfReport ? "Downloading…" : "Download PDF"}
+            {busyPath === pdfReport
+              ? runText(t.locale, "Downloading\u2026")
+              : runText(t.locale, "Download PDF")}
           </Button>
         </div>
       ) : null}
@@ -119,8 +128,13 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <p className="font-semibold text-foreground">OASIS SARIF 2.1.0 Security Findings</p>
-                <Badge variant="outline" className="font-mono text-xs text-indigo-600 dark:text-indigo-300 border-indigo-500/30 bg-indigo-500/10">
+                <p className="font-semibold text-foreground">
+                  {runText(t.locale, "OASIS SARIF 2.1.0 Security Findings")}
+                </p>
+                <Badge
+                  variant="outline"
+                  className="font-mono text-xs text-indigo-600 dark:text-indigo-300 border-indigo-500/30 bg-indigo-500/10"
+                >
                   SARIF 2.1.0
                 </Badge>
               </div>
@@ -145,7 +159,7 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
               className="border-indigo-500/30 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-800 dark:text-indigo-200 hover:bg-indigo-50 dark:bg-indigo-900/50 text-xs gap-1.5"
             >
               <Download className="h-4 w-4" />
-              Download JSON
+              {runText(t.locale, "Download JSON")}
             </Button>
           </div>
         </div>
@@ -160,9 +174,14 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
                 <td className="px-4 py-3 text-right">
                   <div className="flex justify-end gap-2">
                     {isTextArtifact(path) ? (
-                      <Button variant="outline" size="sm" onClick={() => handlePreview(path)} className="border-border bg-muted text-foreground hover:bg-muted text-xs gap-1.5">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handlePreview(path)}
+                        className="border-border bg-muted text-foreground hover:bg-muted text-xs gap-1.5"
+                      >
                         <Eye className="h-3.5 w-3.5" />
-                        Preview
+                        {runText(t.locale, "Preview")}
                       </Button>
                     ) : null}
                     <Button
@@ -173,7 +192,9 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
                       className="border-border bg-muted text-foreground hover:bg-muted text-xs gap-1.5"
                     >
                       <Download className="h-3.5 w-3.5" />
-                      {busyPath === path ? "Downloading…" : "Download"}
+                      {busyPath === path
+                        ? runText(t.locale, "Downloading\u2026")
+                        : runText(t.locale, "Download")}
                     </Button>
                   </div>
                 </td>
@@ -203,13 +224,20 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-foreground">
               <span className="font-mono text-sm">{previewPath}</span>
-              {previewPath ? <Badge variant="secondary" className="bg-sky-500/20 text-sky-600 dark:text-sky-300 border-sky-500/30 text-xs">PREVIEW</Badge> : null}
+              {previewPath ? (
+                <Badge
+                  variant="secondary"
+                  className="bg-sky-500/20 text-sky-600 dark:text-sky-300 border-sky-500/30 text-xs"
+                >
+                  {runText(t.locale, "PREVIEW")}
+                </Badge>
+              ) : null}
             </DialogTitle>
           </DialogHeader>
           {previewLoading ? (
             <div className="flex items-center justify-center py-8 text-muted-foreground gap-2">
               <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
-              <span className="text-xs">Loading artifact text…</span>
+              <span className="text-xs">{runText(t.locale, "Loading artifact text\u2026")}</span>
             </div>
           ) : (
             <pre className="max-h-[60vh] overflow-auto rounded-lg border border-border bg-muted p-4 font-mono text-xs leading-relaxed text-foreground">
