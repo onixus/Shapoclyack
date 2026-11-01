@@ -553,7 +553,7 @@ def test_new_plugins_are_explicitly_unrecorded_source_capabilities():
     recorded = {line.split()[1].removesuffix(".rhai") for line in (CORPUS / "pulse" / "plugins.sha256").read_text().splitlines()}
     shipped = {p.stem for p in pulse_plugins.PLUGINS_DIR.glob("*.rhai")}
     unrecorded = shipped - recorded
-    assert len(unrecorded) == 9
+    assert len(unrecorded) == 13
     accounted = {m["plugin"] for m in NSE_PLUGIN_MAP.values() if m["plugin"]} | set(PLUGIN_ONLY)
     assert unrecorded <= accounted
     # A newly shipped but undeclared plugin must break the complete accounting gate.
