@@ -313,7 +313,10 @@ def test_ci_fails_when_passing_assertions_hide_unhandled_errors(tmp_path, failur
         "    assert True\n"
     )
     (tmp_path / "test_failure.py").write_text(source, encoding="utf-8")
-    env = dict(os.environ, OCTO_REQUIRE_INTEGRATION="0")
+    # Jenkins exports JUNIT_XML / COVERAGE_XML to the cell: inherited here, the
+    # script would load tests.ci_timing from a scratch directory without tests/.
+    env = {k: v for k, v in os.environ.items() if k not in {"JUNIT_XML", "COVERAGE_XML"}}
+    env["OCTO_REQUIRE_INTEGRATION"] = "0"
     env["PATH"] = f"{Path(sys.executable).parent}{os.pathsep}{env['PATH']}"
     result = subprocess.run(
         ["bash", str(script), "--no-cov", "test_failure.py"],

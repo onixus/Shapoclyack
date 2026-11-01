@@ -466,6 +466,133 @@ def _interactsh_args(server: str) -> tuple[list[str], Path | None]:
     return [*args, "-config", str(config_file)], private_dir
 
 
+_DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+# Per invocation part and for the whole sweep: raw matches plus error logs.
+_AUTHORITY_PART_BYTES = 8 * 1024 * 1024
+_AUTHORITY_SWEEP_BYTES = 16 * 1024 * 1024
+
+
+def _authority_name(name: Any) -> str | None:
+    """An ASCII (A-label) DNS name usable as Host and SNI, or None.
+
+    The name comes from input-forward DNS only. It goes to nuclei as one argv
+    element, and the label grammar already excludes whitespace, CR/LF, ``:``
+    and a leading ``-``, so it can neither split a header nor read as a flag.
+    """
+    if not isinstance(name, str):
+        return None
+    name = name.lower()
+    name = name[:-1] if name.endswith(".") else name
+    labels = name.split(".")
+    if len(name) > 253 or len(labels) < 2:
+        return None
+    if not all(_DNS_LABEL.fullmatch(label) for label in labels):
+        return None
+    # An all-numeric last label is an IP literal, never a virtual host name
+    # (and RFC 6066 forbids it in SNI).
+    return None if labels[-1].isdigit() else name
+
+
+def _sweep_authorities(candidates, names):
+    """Bind input-forward DNS authority to a discovered IP; never dial the name."""
+    targets = []
+    for ip, port, scheme in candidates:
+        valid = sorted({n for n in map(_authority_name, names.get(ip, [])) if n})
+        # The bare IP stays: its default virtual host is what the sweep
+        # covered before names were bound, as the planner keeps it too.
+        for name in [None, *valid]:
+            authority = (name or (f"[{ip}]" if ':' in ip else ip)) + f":{port}"
+            # A client omits a default port; exact-match vhost routers
+            # (Envoy domains, HAProxy hdr(host)) do not strip it.
+            host_header = name if port == _DEFAULT_PORTS.get(scheme) else authority
+            targets.append(dict(ip=ip, port=port, url=_build_url(ip, port, scheme),
+                                authority=authority, sni=name if scheme == 'https' else None,
+                                host_header=host_header if name else None))
+    return targets
+
+
+def _bounded_part(path: Path, limit: int) -> tuple[bytes, bool]:
+    """Read at most ``limit`` bytes, cut back to the last complete line."""
+    with path.open('rb') as handle:
+        content = handle.read(max(limit, 0) + 1)
+    if len(content) <= limit:
+        return content, False
+    content = content[:max(limit, 0)]
+    return content[:content.rfind(b'\n') + 1], True
+
+
+def _run_authority_sweep(command, targets, output_dir, timeout, expected_templates=None):
+    """Isolate each authority's Host/SNI and preserve per-invocation raw evidence.
+
+    Returns the aggregate process and one receipt per target, in order: an
+    authority is ``complete``, ``failed`` or ``skipped_deadline``, and only a
+    sweep whose every receipt is complete exits 0.
+    """
+    deadline = time.monotonic() + timeout
+    stderr, matches, errors, receipts = [], [], [], []
+    bytes_left = _AUTHORITY_SWEEP_BYTES
+    for index, target in enumerate(targets):
+        receipt = {'index': index, 'authority': target['authority'], 'sni': target['sni'],
+                   'status': 'skipped_deadline', 'returncode': None, 'templates_loaded': None,
+                   'malformed_result': False, 'artifact_truncated': False}
+        receipts.append(receipt)
+        remaining = int(deadline - time.monotonic())
+        if remaining < _MIN_PROCESS_SECONDS:
+            continue
+        cmd = list(command)
+        inputs = output_dir / f"nuclei_authority_{index:04d}_targets.txt"
+        raw = output_dir / f"nuclei_authority_{index:04d}_raw.jsonl"
+        elog = output_dir / f"nuclei_authority_{index:04d}_errors.jsonl"
+        write_lines(inputs, [target['url']])
+        raw.unlink(missing_ok=True)
+        elog.unlink(missing_ok=True)
+        cmd[cmd.index('-list') + 1] = str(inputs)
+        cmd[cmd.index('-jsonl-export') + 1] = str(raw)
+        cmd[cmd.index('-elog') + 1] = str(elog)
+        if target['host_header']:
+            cmd.extend(['-H', 'Host: ' + target['host_header']])
+        if target['sni']:
+            cmd.extend(['-sni', target['sni']])
+        try:
+            result = run_command(cmd, timeout=remaining, retries=0, check=False)
+            receipt['returncode'] = result.returncode
+            stderr.append(result.stderr or '')
+        except Exception as exc:  # noqa: BLE001 - partial evidence is kept; the receipt fails
+            stderr.append(str(exc))
+        loaded = _TEMPLATES_LOADED.findall(stderr[-1])
+        receipt['templates_loaded'] = int(loaded[-1]) if loaded else None
+        for path, sink in [(raw, matches), (elog, errors)]:
+            if not path.exists():
+                continue
+            content, cut = _bounded_part(path, min(bytes_left, _AUTHORITY_PART_BYTES))
+            receipt['artifact_truncated'] |= cut
+            bytes_left -= len(content)
+            if path == elog:
+                sink.append(content.decode(errors='replace'))
+                continue
+            for line in content.decode(errors='replace').splitlines():
+                if not line.strip():
+                    continue
+                record = _parse_result_line(line)
+                if record is None:
+                    receipt['malformed_result'] = True
+                    continue
+                record['shapoclyack_input'] = dict(schema='octo.nuclei_input.v1',
+                    **{k: target[k] for k in ['ip', 'port', 'authority', 'sni']})
+                sink.append(json.dumps(record))
+        receipt['status'] = 'complete' if (
+            receipt['returncode'] == 0
+            and (expected_templates is None or receipt['templates_loaded'] == expected_templates)
+            and not receipt['malformed_result']
+            and not receipt['artifact_truncated']
+        ) else 'failed'
+    Path(command[command.index('-jsonl-export') + 1]).write_text('\n'.join(matches))
+    Path(command[command.index('-elog') + 1]).write_text('\n'.join(errors))
+    code = 0 if all(r['status'] == 'complete' for r in receipts) else 1
+    return subprocess.CompletedProcess(command, code, '', '\n'.join(stderr)), receipts
+
+
 def _run_web_sweep(
     open_ports: list[str],
     config: NucleiConfig,
@@ -789,7 +916,20 @@ def _run_web_sweep(
         result["interactsh"] = "disabled"
 
     try:
-        if plan is None:
+        authorities = _sweep_authorities(candidates, forward_names(output_dir)) if plan is None and not exact_targets else []
+        if authorities and any(t['host_header'] for t in authorities):
+            if len(authorities) > config.max_targets:
+                truncated = True
+                result['truncated'] = True
+            authorities = authorities[:config.max_targets]
+            coverage['authorities'] = authorities
+            expected_per_process = coverage['templates_expected']
+            if expected_per_process is not None:
+                coverage['templates_expected'] = expected_per_process * len(authorities)
+            completed, coverage['authority_results'] = _run_authority_sweep(
+                command, authorities, output_dir, config.overall_timeout_seconds, expected_per_process
+            )
+        elif plan is None:
             completed = run_command(
                 command, timeout=config.overall_timeout_seconds, retries=0, check=False
             )
@@ -978,13 +1118,17 @@ def _run_web_sweep(
             and len(receipts) == len(plan["targets"])
             and all(r["complete"] for r in receipts)
         )
+    if coverage.get("authority_results") is not None:
+        coverage["ran"] = coverage["ran"] and all(
+            r["status"] == "complete" for r in coverage["authority_results"]
+        )
     if coverage["returncode"] not in (0, None):
         LOG.warning("nuclei exited %s; its run is not counted as coverage", returncode)
     stderr_text = getattr(completed, "stderr", None)
     stderr_text = stderr_text if isinstance(stderr_text, str) else ""
     loaded = _TEMPLATES_LOADED.findall(stderr_text)
     coverage["templates_loaded"] = (
-        (sum(map(int, loaded)) if plan else int(loaded[-1])) if loaded else None
+        (sum(map(int, loaded)) if plan or coverage.get("authorities") else int(loaded[-1])) if loaded else None
     )
     coverage["skipped_targets"] = sorted(
         set(_TARGET_SKIPPED.findall(stderr_text))
@@ -1039,6 +1183,7 @@ def _run_web_sweep(
     # successful run with its pinned catalog loaded can contribute here.
     complete = (
         coverage["ran"]
+        and not truncated
         and not coverage["skipped_targets"]
         and coverage["templates_expected"] is not None
         and coverage["templates_loaded"] == coverage["templates_expected"]
