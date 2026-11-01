@@ -78,8 +78,8 @@ v1.3.0, licensed MIT per its Cargo.toml `license` field):
 Each file keeps an SPDX-License-Identifier: MIT header that names its origin and
 lists what was changed. The MIT licence permits use, modification and
 redistribution provided its copyright and permission notice are kept with the
-copies; the notice of the GenDec release applies to these three files. The other
-plugins in that directory are original to this project (Apache-2.0).
+copies; the notice of the GenDec release applies to these three files. Other
+plugins are Apache-2.0; see the Nuclei notice below for template-derived checks.
 
 Pulse service probes
 --------------------
@@ -91,6 +91,16 @@ sha256 are in scanner/pipeline/pulse_data/probes.json.LICENSE. Rules added after
 that base are written from scratch for this project and are not derived from
 Nmap's nmap-service-probes (NPSL). For the base, we rely on GenDec's own
 statements (see probes.json.LICENSE); we have not verified them independently.
+
+Nuclei template-derived checks
+------------------------------
+
+The Apache-2.0 Rhai plugins shapo_rsync_modules and shapo_zookeeper_envi
+reimplement checks from ProjectDiscovery nuclei-templates v9.9.4 at commit
+f4251b06c100067f230c4f54a1679de59802c7a4, respectively
+javascript/enumeration/rsync/rsync-list-modules.yaml (pussycat0x) and
+network/exposures/exposed-zookeeper.yaml (pdteam). The upstream MIT licence
+and copyright are reproduced in scanner/pipeline/pulse_data/nuclei-templates.LICENSE.
 
 LGPL components
 ---------------

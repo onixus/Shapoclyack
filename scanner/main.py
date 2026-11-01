@@ -986,6 +986,10 @@ def _run_pipeline_body(
                     on_unresolved=unresolved.extend,
                     on_resume_validated=lambda hosts: checkpoint.restart_stage("pulse", hosts),
                     plugins=pulse_cfg.plugins and report_primary_pulse,
+                    observation_tenant_id=scope.tenant_id if scope is not None else None,
+                    observation_run_id=paths.run_id,
+                    observation_receipts_enabled=scope is not None and bool(scope.tenant_id),
+                    observation_probe_enabled=runtime.per_host_rate is None,
                 ),
             )
             if unresolved:

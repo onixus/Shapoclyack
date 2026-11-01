@@ -35,17 +35,28 @@ installed sensor or fleet acceptance.
 | `shapo_smb_signing` | Selected SMB2 NEGOTIATE response does not require signing; offers SMB 2.0.2 and 2.1 | MEDIUM | signing-policy portion of `smb2-security-mode` |
 | `shapo_smb1` | SMB1-only NEGOTIATE explicitly selects NT LM 0.12 | MEDIUM | SMB1-support portion of `smb-protocols` |
 | `shapo_rdp_negotiation` | X.224 negotiation accepts standard RDP security without mandatory NLA | MEDIUM | standard-security acceptance; not full `rdp-enum-encryption` |
-| `shapo_ssh_hostkey` | Verified curve25519-sha256 / Ed25519 exchange signature and SHA256 host-key fingerprint | INFO observation; no known-host trust | native observation |
-| `shapo_snmp_info` | One UDP SNMPv2c `public` GET of sysDescr/sysName | INFO; standalone/native UDP, not production adapter enrichment | native observation |
-| `shapo_smb_protocols` | SMB1 and SMB2 2.0.2/2.1/3.0/3.0.2/3.1.1 selections/signing, including RFC1002 on 139 | MEDIUM when signing is not required; otherwise INFO inventory | native observation |
-| `shapo_ms17_010` | Anonymous IPC$/FID0 Peek status indication | Positive hypothesis only; every non-indicator/error UNKNOWN, never patch proof | native observation |
-| `shapo_rdp_ntlm_info` | X.224→TLS→CredSSP NTLM type2 host/domain/DNS/build/time fields | INFO unauthenticated inventory; no type3/credentials/session | native observation |
-| `shapo_vnc_security` | RFB3.3/3.7/3.8 security-type advertisements | MEDIUM hypothesis when None is advertised; no security selection or desktop session | native observation |
+| `shapo_ssh_hostkey` | Verified curve25519-sha256 / Ed25519 exchange signature and SHA256 host-key fingerprint | INFO inventory; no known-host trust | Rhai plugin row |
+| `shapo_snmp_info` | One UDP SNMPv2c `public` GET of sysDescr/sysName | INFO; standalone/native UDP, not production adapter enrichment | Rhai plugin row when standalone output is adapted |
+| `shapo_smb_protocols` | SMB1 and SMB2 2.0.2/2.1/3.0/3.0.2/3.1.1 selections/signing, including RFC1002 on 139 | MEDIUM when signing is not required; otherwise INFO inventory | Rhai plugin row |
+| `shapo_ms17_010` | Anonymous IPC$/FID0 Peek status indication | Positive hypothesis only; every non-indicator/error UNKNOWN, never patch proof | Rhai plugin row |
+| `shapo_rdp_ntlm_info` | X.224→TLS→CredSSP NTLM type2 host/domain/DNS/build/time fields | INFO unauthenticated inventory; no type3/credentials/session | Rhai plugin row |
+| `shapo_vnc_security` | RFB3.3/3.7/3.8 security-type advertisements | MEDIUM hypothesis when None is advertised; no security selection or desktop session | Rhai plugin row |
+| `shapo_redis_info` | Unauthenticated Redis-compatible `INFO SERVER` response | LOW information disclosure; does not check keys or writes | Separately reports the INFO access check |
+| `shapo_memcached_stats` | Unauthenticated TCP Memcached `stats` response | LOW statistics disclosure; no item access, writes or UDP test | Separately reports the stats access check |
+| `shapo_rsync_modules` | Unauthenticated list of rsync daemon modules | LOW listing disclosure; module access and files are not checked | Nuclei `rsync-list-modules`, narrowed to a complete protocol reply |
+| `shapo_zookeeper_envi` | Unauthenticated ZooKeeper `envi` diagnostic | LOW environment disclosure; znode access is not checked | Nuclei `exposed-zookeeper`, narrowed to the diagnostic |
 
 The two exposure plugins still claim reachability only. Negotiation and
 inventory observations do not establish relay/exploitability, trusted identity,
-authenticated access or patch state. INFO records are retained as informational
-plugin observations; the report maps their severity to unknown.
+authenticated access or patch state. The current Rhai output contract is
+findings-only: every returned map is adapted as a `pulse-plugin` report row.
+INFO severity is normalized to `unknown`; it is not a separate neutral
+observation record, even when the semantic result is inventory. A standalone
+Pulse JSON output must not be confused with the scanner adapter's production
+`vulnerabilities.json` representation. The scoped RDP X.224 inventory check is
+scanner-native and writes only to `observation_receipt.json`; it does not use a
+Rhai return map or create a finding row. This does not alter the findings-only
+contract for the remaining Rhai plugins.
 
 Pulse's own rules already raise `exposure` findings for SMB and RDP (the
 EternalBlue and BlueKeep hypotheses); the plugin findings are separate rows
@@ -174,13 +185,43 @@ which means it cannot confirm that a fix worked (a reset for another reason read
 
 ## In the report and the tracker
 
-A plugin finding is not a CVE. Pulse names it `SCRIPT-<NAME>`; in
+A plugin return value is not a CVE, but the scanner adapter currently treats
+every Rhai map as a plugin finding. Pulse names it `SCRIPT-<NAME>`; in
 `vulnerabilities.json` the row has `cve: ""`, `source: "pulse-plugin"`,
 `script_id: "pulse-plugin:<plugin>"`, `finding_class: "plugin_script"` and
 `ruleset_version: "sha256:<hex of the plugin file>"`. Severity is normalised:
 `critical|high|medium|low` pass, `info` and anything a plugin invents become
-`unknown` in the report. In `finding_evidence.json` it is an observation of kind
-`plugin_report` whose rule is `plugin:<name>`.
+`unknown` in the report. In `finding_evidence.json` the row is projected as an
+observation of kind `plugin_report` whose rule is `plugin:<name>`; this sidecar
+does not turn it into a separate informational channel or remove its report-row
+semantics. A non-vulnerability native observation requires a separate output
+contract.
+
+The Redis plugin asks only for `INFO SERVER` and checks the RESP bulk length and
+server-version field. A complete `NOAUTH` or `NOPERM` reply denies that command;
+other errors, unexpected replies and truncation are inconclusive. A positive
+result does not show whether the caller can read or write keys. The Memcached
+plugin sends `stats` and `quit` over TCP and requires a complete `END`-terminated
+response containing a version or pid field. An error or incomplete response is
+inconclusive. It does not prove item access or UDP amplification. Neither plugin
+stores the returned server statistics as evidence. These checks are independent
+from Nuclei and its findings may therefore appear separately in a report.
+On 2026-10-29, local standalone Pulse 1.4.0 was exercised against Redis 7.4.12
+and Memcached 1.6.45 in disposable containers bound to loopback. Both plugins
+reported their unauthenticated commands; after Redis `requirepass` was enabled,
+the Redis plugin reported no finding. This checks these local configurations,
+not production adapter or fleet acceptance.
+
+The rsync check requests a module listing and requires a complete protocol
+response; module names are not stored in evidence. An empty list does not prove
+that an unlisted module is inaccessible. The ZooKeeper check issues `envi` and
+requires a version field; the response is not retained in evidence. A disabled
+or malformed diagnostic is inconclusive, not a negative znode-access verdict.
+Both reimplementations use nuclei-templates v9.9.4 (see `NOTICE` for provenance).
+On 2026-10-29 standalone Pulse 1.4.0 was exercised against rsync 3.5.0 and
+ZooKeeper 3.9.3 on loopback: listable/enabled configurations produced findings,
+a hidden rsync module produced no finding, and blocked `envi` was inconclusive.
+These are local service checks, not production adapter or fleet acceptance.
 
 ### Verification (`pulse-plugin` detector)
 

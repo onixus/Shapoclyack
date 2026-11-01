@@ -4,11 +4,32 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Security
+
+- The nuclei binary in the scanner and all-in-one images is now built against
+  `github.com/go-jose/go-jose/v4` v4.1.6 instead of the v4.1.4 that nuclei
+  v3.11.1 asks for, closing CVE-2026-116587 (HIGH, denial of service via crafted
+  RSA parameters in JWKs), which had turned the blocking Trivy gate red. The pin
+  sits in `GO_SECURITY_PINS` in `Dockerfile` and `Dockerfile.allinone`.
+
 ### Added
 
 - Operator endpoint settings: saving a credential without a master key is refused, concurrent
   edits return 409, connection tests are audited, and hosted connections are pinned to the
   address that passed the public-endpoint check.
+- Native RDP X.224 negotiation observations and four Pulse service checks
+  ([#620](https://github.com/onixus/Shapoclyack/pull/620)). For an open TCP
+  3389 endpoint of a tenant-scoped run, the scanner sends one X.224 negotiation
+  offer and records the selected protocol, an explicit failure code or
+  `failed`/`unknown`/`skipped` in a separate restricted `observation_receipt.json`
+  (schema `octo.perimeter_observation.v1`, [ADR 0006](docs/adr/0006-native-perimeter-observations.md));
+  it never becomes a finding. Probes are serial with a 30-second total budget:
+  targets beyond it are `skipped`, beyond 10,000 counted as `omitted_targets`,
+  and nothing is sent under a per-host rate ceiling. No ingestion API or
+  console view reads the receipt yet. New Rhai plugins `shapo_redis_info`,
+  `shapo_memcached_stats`, `shapo_rsync_modules` and `shapo_zookeeper_envi`
+  report unauthenticated read-only diagnostics (the latter two reimplement
+  nuclei-templates v9.9.4 checks, see `NOTICE`).
 - Aggregated **problems** and **remediation campaigns**
   ([#579](https://github.com/onixus/Shapoclyack/issues/579)). `GET /api/problems`
   groups tracked findings by a typed key (normalised CVE, detector template,
@@ -42,6 +63,15 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- The legacy Nuclei web sweep binds input-forward DNS names to the discovered
+  IP ([#619](https://github.com/onixus/Shapoclyack/pull/619)): one invocation
+  per authority, always dialling the IP, the bare IP (default virtual host)
+  first, then each name with its `Host` and, over HTTPS, `-sni`. `Host` omits
+  a default port as a client does. `coverage.authority_results` records each
+  authority as `complete`, `failed` or `skipped_deadline`, and any authority
+  short of `complete` keeps the run from counting as coverage. CI archives an
+  incremental pytest timing log (`junit-<py>-timings*.jsonl`); a rerun in the
+  same workspace writes a numbered sibling instead of overwriting or failing.
 - Local scan operator, server side of the #607 review. With a runtime manifest
   configured the worker refuses every task unless the probe is `ready`
   (`operator_runtime_not_ready`); status reports `manifest_attested` /
