@@ -108,6 +108,9 @@ class OperatorStatus(BaseModel):
     model: str
     external_inference: bool
     runtime_status: Literal["not_checked", "ready", "unavailable"] = "not_checked"
+    # Live answer of the configured endpoint (any provider): /models lists the model.
+    endpoint_status: Literal["not_checked", "ready", "unavailable"] = "not_checked"
+    endpoint_error: str | None = None
     # Deprecated alias of ``manifest_attested``; removed after one release.
     runtime_verified: bool = False
     manifest_attested: bool = False
@@ -177,24 +180,30 @@ def _call(
 def operator_status(principal: Principal, settings: OperatorSettings) -> OperatorStatus:
     if not settings.operator_enabled:
         raise HTTPException(status_code=404, detail="Operator is disabled")
+    from api.services.local_operator import overrides
     from api.services.local_operator.config import OperatorConfig
 
     try:
+        settings = overrides.effective_settings(settings)
         config = OperatorConfig.from_settings(settings)
     except ValueError:
         raise HTTPException(
             status_code=503, detail="Operator configuration is invalid"
         ) from None
-    from api.services.local_operator.runtime import probe_cached
+    from api.services.local_operator.runtime import endpoint_cached, manifest_configured, probe_cached
     runtime = probe_cached(settings)
+    endpoint = endpoint_cached(settings)
+    # A pinned manifest makes attested readiness the bar; otherwise the live endpoint is.
+    ready = (runtime["runtime_status"] if manifest_configured(settings) else endpoint["endpoint_status"]) == "ready"
     return OperatorStatus(
         enabled=True,
         provider=config.provider,
         model=config.model,
         external_inference=config.provider != "local",
         task_submission_enabled=getattr(settings, "operator_worker_enabled", False),
-        analysis_available=runtime["runtime_status"] == "ready" and settings.operator_worker_enabled,
+        analysis_available=ready and settings.operator_worker_enabled,
         **runtime,
+        **endpoint,
     )
 
 

@@ -116,6 +116,8 @@ def reset_cache():
     """Forget the cached status (after a configuration change or in tests)."""
     with _cache_lock:
         _cache.update(key=None, at=0.0, value=None)
+    with _endpoint_lock:
+        _endpoint_cache.update(key=None, at=0.0, value=None)
 
 
 def probe_cached(settings):
@@ -140,3 +142,45 @@ def probe_cached(settings):
         return dict(value)
     finally:
         _cache_lock.release()
+
+
+#: Live endpoint readiness for any provider (cloud, arbitrary local server or the
+#: pinned runtime): ``/models`` lists the configured model. Independent of the
+#: manifest, which alone attests *which* weights answer.
+_endpoint_cache = {"key": None, "at": 0.0, "value": None}
+_endpoint_lock = threading.Lock()
+
+
+def endpoint_probe(settings, *, transport=None, resolver=None):
+    import asyncio
+
+    from .connection import check
+
+    try:
+        config = OperatorConfig.from_settings(settings)
+    except ValueError:
+        return {"endpoint_status": "unavailable", "endpoint_error": "operator_configuration_invalid"}
+    result = asyncio.run(check(config, transport=transport, resolver=resolver))
+    return {"endpoint_status": "ready" if result["ok"] else "unavailable", "endpoint_error": result["error"]}
+
+
+def endpoint_cached(settings):
+    """``endpoint_probe`` at most once per TTL, like :func:`probe_cached`."""
+    key = _fingerprint(settings)
+
+    def fresh():
+        ttl = STATUS_TTL_SECONDS if _endpoint_cache["value"]["endpoint_status"] == "ready" else FAILURE_TTL_SECONDS
+        return _endpoint_cache["key"] == key and monotonic() - _endpoint_cache["at"] < ttl
+
+    if _endpoint_cache["value"] is not None and fresh():
+        return dict(_endpoint_cache["value"])
+    if not _endpoint_lock.acquire(blocking=_endpoint_cache["value"] is None or _endpoint_cache["key"] != key):
+        return dict(_endpoint_cache["value"])
+    try:
+        if _endpoint_cache["value"] is not None and fresh():
+            return dict(_endpoint_cache["value"])
+        value = endpoint_probe(settings)
+        _endpoint_cache.update(key=key, at=monotonic(), value=value)
+        return dict(value)
+    finally:
+        _endpoint_lock.release()

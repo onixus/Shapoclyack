@@ -51,6 +51,22 @@ def _endpoint(host: str, port: int, transport: str) -> dict[str, Any]:
     return {"host": normalized, "port": port, "transport": transport}
 
 
+_RDP_SELECTED = frozenset({"PROTOCOL_SSL", "PROTOCOL_HYBRID", "PROTOCOL_HYBRID_EX"})
+
+
+def _check_rdp_outcome(outcome: dict[str, Any]) -> None:
+    """Only the two shapes ``rdp_observation.parse_reply`` can decode."""
+    if set(outcome) == {"result", "selected_protocol"} and outcome["result"] == "selected":
+        if outcome["selected_protocol"] not in _RDP_SELECTED:
+            raise ValueError("invalid RDP X.224 outcome")
+    elif set(outcome) == {"result", "failure_code"} and outcome["result"] == "explicit_failure":
+        code = outcome["failure_code"]
+        if isinstance(code, bool) or not isinstance(code, int) or not 0 <= code <= 0xFFFFFFFF:
+            raise ValueError("invalid RDP failure code")
+    else:
+        raise ValueError("invalid RDP X.224 outcome")
+
+
 def record(*, tenant_id: str, run_id: str, family: str, implementation_sha256: str,
            endpoint: dict[str, Any], variant: str, state: str, outcome: dict[str, Any] | None,
            observed_at: str | None = None, evidence_sha256: str | None = None) -> dict[str, Any]:
@@ -92,18 +108,7 @@ def record(*, tenant_id: str, run_id: str, family: str, implementation_sha256: s
         if family == "rdp.x224.negotiation":
             if state != "responded":
                 raise ValueError("RDP decoded outcome requires responded state")
-            if outcome == {"result": "selected", "selected_protocol": "PROTOCOL_SSL"}:
-                pass
-            elif outcome == {"result": "selected", "selected_protocol": "PROTOCOL_HYBRID"}:
-                pass
-            elif outcome == {"result": "selected", "selected_protocol": "PROTOCOL_HYBRID_EX"}:
-                pass
-            elif outcome.get("result") == "explicit_failure" and set(outcome) == {"result", "failure_code"}:
-                code = outcome.get("failure_code")
-                if isinstance(code, bool) or not isinstance(code, int) or not 0 <= code <= 0xFFFFFFFF:
-                    raise ValueError("invalid RDP failure code")
-            else:
-                raise ValueError("invalid RDP X.224 outcome")
+            _check_rdp_outcome(outcome)
     elif family == "rdp.x224.negotiation" and state == "responded":
         raise ValueError("RDP responded state requires a decoded outcome")
     if evidence_sha256 is not None and (not isinstance(evidence_sha256, str) or not _DIGEST.fullmatch(evidence_sha256)):
@@ -128,12 +133,12 @@ def record(*, tenant_id: str, run_id: str, family: str, implementation_sha256: s
     return {**core, "observation_id": "pobs:" + _sha(core)}
 
 
-def document(records: list[dict[str, Any]], *, tenant_id: str, run_id: str) -> dict[str, Any]:
+def document(records: list[dict[str, Any]], *, tenant_id: str, run_id: str, omitted_targets: int = 0) -> dict[str, Any]:
     """Create deterministic additive sidecar document from validated records."""
     if not isinstance(records, list) or len(records) > MAX_RECORDS:
         raise ValueError("invalid receipt records")
-    if not records:
-        return {"schema": SCHEMA, "context": {"tenant_id": tenant_id, "run_id": run_id}, "records": []}
+    if isinstance(omitted_targets, bool) or not isinstance(omitted_targets, int) or omitted_targets < 0:
+        raise ValueError("invalid omitted target count")
     checked = []
     for item in records:
         if not isinstance(item, dict) or item.get("schema") != SCHEMA:
@@ -145,15 +150,19 @@ def document(records: list[dict[str, Any]], *, tenant_id: str, run_id: str) -> d
             raise ValueError("invalid observation identity")
         checked.append(item)
     checked.sort(key=lambda r: (r["family"], r["subject"]["host"], r["subject"]["port"], r["variant"], r["observation_id"]))
-    return {"schema": SCHEMA, "context": {"tenant_id": tenant_id, "run_id": run_id}, "records": checked}
+    result = {"schema": SCHEMA, "context": {"tenant_id": tenant_id, "run_id": run_id}, "records": checked}
+    if omitted_targets:
+        result["omitted_targets"] = omitted_targets
+    return result
 
 
-def write_receipt(root: Path, records: list[dict[str, Any]], *, tenant_id: str, run_id: str) -> dict[str, Any]:
+def write_receipt(root: Path, records: list[dict[str, Any]], *, tenant_id: str, run_id: str,
+                  omitted_targets: int = 0) -> dict[str, Any]:
     """Atomically replace only observation_receipt.json under a trusted run directory."""
     base = root.resolve(strict=True)
     if not base.is_dir() or (base / FILENAME).is_symlink():
         raise ValueError("invalid run artifact directory")
-    result = document(records, tenant_id=tenant_id, run_id=run_id)
+    result = document(records, tenant_id=tenant_id, run_id=run_id, omitted_targets=omitted_targets)
     temp: str | None = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=base,

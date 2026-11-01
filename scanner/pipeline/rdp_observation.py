@@ -6,6 +6,7 @@ facts (or an inconclusive reason) for the separate observation receipt.
 """
 from __future__ import annotations
 
+import ipaddress
 import socket
 import struct
 import time
@@ -33,12 +34,13 @@ def parse_reply(data: bytes) -> dict[str, Any]:
     if data[0] != 3 or data[1] != 0 or data[4] != 0x0E:
         raise RdpNegotiationError("malformed_tpkt_header")
     length = struct.unpack(">H", data[2:4])[0]
-    if length != len(data) or data[4] != 0x0E:
+    if length != len(data):
         raise RdpNegotiationError("malformed_tpkt_length")
     if data[5:11] != bytes.fromhex("d00000000000"):
         raise RdpNegotiationError("malformed_x224_confirm")
     # RDP_NEG_RSP and RDP_NEG_FAILURE are exactly 8 bytes; X.224 CR has no user data.
-    if data[11] not in (0x02, 0x03) or data[12] != 0 or data[13:15] != b"\x08\x00":
+    if (data[11] not in (0x02, 0x03) or (data[11] == 0x03 and data[12] != 0)
+            or data[13:15] != b"\x08\x00"):
         raise RdpNegotiationError("malformed_negotiation_structure")
     value = struct.unpack("<I", data[15:19])[0]
     if len(data) != 19:
@@ -58,6 +60,12 @@ def observe(host: str, port: int = 3389, *, timeout: float = 1.5) -> tuple[str, 
             or isinstance(timeout, bool) or not isinstance(timeout, (int, float))
             or not 0 < timeout <= 5):
         raise ValueError("RDP observation requires scoped TCP port 3389 and bounded timeout")
+    try:
+        # Connect to the previously scoped address only; never re-resolve a
+        # hostname after admission, where DNS could move outside the scope.
+        host = str(ipaddress.ip_address(host))
+    except ValueError:
+        return "unknown", None
     try:
         deadline = time.monotonic() + timeout
         with socket.create_connection((host, port), timeout=timeout) as connection:

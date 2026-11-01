@@ -97,9 +97,15 @@ from .service_schema import (
     services_to_report_findings,
 )
 from .utils import run_command, save_json, write_lines
+from .perimeter_observations import FILENAME as OBSERVATION_FILENAME
+from .perimeter_observations import MAX_RECORDS as OBSERVATION_MAX_RECORDS
 from .perimeter_observations import record as perimeter_observation, write_receipt as write_observation_receipt
 from .rdp_observation import VARIANT as RDP_OBSERVATION_VARIANT, observe as observe_rdp_x224
 
+
+#: Total wall-clock budget for the optional, serial native RDP probes.
+RDP_OBSERVATION_BUDGET_SECONDS = 30.0
+RDP_OBSERVATION_CALL_SECONDS = 1.5
 
 #: pulse's ruleset id: ``YYYY.MM.DD`` with an optional ``-hN`` hotfix
 #: (pulse 1.1.0 prints ``2026.07.29-h1``).
@@ -666,7 +672,6 @@ def write_pulse_artifacts(
     os_records: list[OsRecord],
     cves: list[CveRecord],
     raw: dict[str, Any] | None = None,
-    observation_receipts_enabled: bool = False,
 ) -> Path:
     """Write canonical JSON files; return pulse/ directory."""
     pulse_dir = output_dir / "pulse"
@@ -945,6 +950,10 @@ def _run_pulse_probe(
     receipt_tenant_id = observation_tenant_id or ""
     receipt_run_id = observation_run_id or output_dir.name or ""
     observation_records: list[dict[str, Any]] = []
+    # A receipt left in the run directory by an earlier attempt of this stage
+    # must not outlive it: this attempt writes its own at the end or none at all
+    # (a Pulse failure, receipts disabled), never the previous one's facts.
+    (output_dir / OBSERVATION_FILENAME).unlink(missing_ok=True)
     pulse_bin = resolve_pulse_bin(bin_path)
     plugin_set = resolve_plugin_set(enabled=plugins)
     # Which plugins Pulse will actually load. It loads every script of its
@@ -1032,12 +1041,39 @@ def _run_pulse_probe(
         on_resume_validated(set(done))
     size = max(1, chunk_hosts)
     chunks = plan_tcp_probe(grouped, chunk_hosts=size, done_hosts=done)
-    # Pulse checkpointing is independent from the native observation family.
-    # Always schedule its approved endpoints, even if Pulse considers their host done.
-    if observation_receipts_enabled:
-        pending_rdp_hosts = set(observation_targets)
-    else:
-        pending_rdp_hosts = set()
+    # Keep the optional inventory bounded independently of Pulse checkpoints.
+    # More targets than fit in the receipt are explicitly counted as omitted.
+    def write_rdp_observations() -> None:
+        if not observation_receipts_enabled:
+            return
+        targets = observation_targets[:OBSERVATION_MAX_RECORDS]
+        omitted = len(observation_targets) - len(targets)
+        deadline = time.monotonic() + min(RDP_OBSERVATION_BUDGET_SECONDS, max(0.0, float(timeout_seconds)))
+        for host in targets:
+            # Reserve a full per-call timeout; never overrun the overall budget
+            # merely to start one last connection.
+            if observation_probe_enabled and time.monotonic() + RDP_OBSERVATION_CALL_SECONDS <= deadline:
+                try:
+                    state, outcome = observe_rdp_x224(host, 3389)
+                except Exception:
+                    # observe() maps socket errors itself; anything else is a
+                    # defect in it and must cost this one record, not the stage.
+                    logging.warning("RDP observation of %s raised; recorded as unknown", host, exc_info=True)
+                    state, outcome = "unknown", None
+            else:
+                state, outcome = "skipped", None
+            observation_records.append(perimeter_observation(
+                tenant_id=receipt_tenant_id, run_id=receipt_run_id,
+                family="rdp.x224.negotiation", implementation_sha256=observation_impl_sha,
+                endpoint={"host": host, "port": 3389, "transport": "tcp"},
+                variant=RDP_OBSERVATION_VARIANT, state=state, outcome=outcome,
+            ))
+        if omitted:
+            logging.warning("RDP observation receipt omitted %s targets beyond its record limit", omitted)
+        write_observation_receipt(output_dir, observation_records,
+                                  tenant_id=receipt_tenant_id, run_id=receipt_run_id,
+                                  omitted_targets=omitted)
+
     planned_endpoints = sum(chunk.endpoint_count for chunk in chunks)
     # Resolved once per run, and recorded: a sensor that lost the table names
     # services from Pulse's embedded one, and that must be traceable.
@@ -1091,26 +1127,8 @@ def _run_pulse_probe(
 
     if not chunks:
         logging.info("pulse_probe: no TCP open ports to probe")
-        if observation_receipts_enabled:
-            for host in sorted(pending_rdp_hosts):
-                if observation_probe_enabled:
-                    try:
-                        state, outcome = observe_rdp_x224(host, 3389)
-                    except Exception:
-                        state, outcome = "unknown", None
-                else:
-                    state, outcome = "skipped", None
-                observation_records.append(perimeter_observation(
-                    tenant_id=receipt_tenant_id, run_id=receipt_run_id,
-                    family="rdp.x224.negotiation", implementation_sha256=observation_impl_sha,
-                    endpoint={"host": host, "port": 3389, "transport": "tcp"},
-                    variant=RDP_OBSERVATION_VARIANT, state=state, outcome=outcome,
-                ))
-                pending_rdp_hosts.discard(host)
-            write_observation_receipt(output_dir, observation_records,
-                                      tenant_id=receipt_tenant_id, run_id=receipt_run_id)
-        write_pulse_artifacts(output_dir, all_services, all_os, all_cves, raw=merged_raw,
-                              observation_receipts_enabled=observation_receipts_enabled)
+        write_rdp_observations()
+        write_pulse_artifacts(output_dir, all_services, all_os, all_cves, raw=merged_raw)
         sync_report_primary_marker(pulse_dir, report_primary)
         return pulse_dir
 
@@ -1321,9 +1339,6 @@ def _run_pulse_probe(
                 )
 
         resolved_hosts = completed_hosts({host: ports_list for host in host_chunk}, payload, returncode)
-        # The scanner-owned X.224 runner is deliberately independent of Pulse's
-        # endpoint result schema. Probe only explicitly approved input endpoints;
-        # one bounded request per host, no follow-up protocol transitions.
         unresolved_hosts = [host for host in host_chunk if host not in resolved_hosts]
         resolved = not unresolved_hosts
         if unresolved_hosts and on_unresolved:
@@ -1438,32 +1453,10 @@ def _run_pulse_probe(
         **diagnostics,
     }
 
-    # Pulse chunks/checkpoints do not own the separate RDP observation family.
-    # Drain all approved candidates exactly once, including checkpointed hosts.
-    if observation_receipts_enabled:
-        for host in sorted(pending_rdp_hosts):
-            if observation_probe_enabled:
-                try:
-                    state, outcome = observe_rdp_x224(host, 3389)
-                except Exception:
-                    state, outcome = "unknown", None
-            else:
-                state, outcome = "skipped", None
-            observation_records.append(perimeter_observation(
-                tenant_id=receipt_tenant_id, run_id=receipt_run_id,
-                family="rdp.x224.negotiation", implementation_sha256=observation_impl_sha,
-                endpoint={"host": host, "port": 3389, "transport": "tcp"},
-                variant=RDP_OBSERVATION_VARIANT, state=state, outcome=outcome,
-            ))
-            pending_rdp_hosts.discard(host)
-        if len(observation_records) != len(observation_targets):
-            raise RuntimeError("RDP observation runner did not cover every approved target")
+    # Pulse checkpoints do not own the separate RDP observation family.
     # Native observations are never added to finding-shaped Pulse artifacts.
-    write_pulse_artifacts(output_dir, deduped, all_os, all_cves, raw=merged_raw,
-                          observation_receipts_enabled=observation_receipts_enabled)
-    if observation_receipts_enabled:
-        write_observation_receipt(output_dir, observation_records,
-                                  tenant_id=receipt_tenant_id, run_id=receipt_run_id)
+    write_pulse_artifacts(output_dir, deduped, all_os, all_cves, raw=merged_raw)
+    write_rdp_observations()
 
     # Mark report preference: explicit flag, else OCTO_SERVICE_BACKEND env.
     sync_report_primary_marker(pulse_dir, report_primary)

@@ -89,10 +89,25 @@ request variant and applicability must be explicit; output is exclusively a
 neutral observation, never a Rhai finding or vulnerability input. No further
 probe families are authorized by this acceptance.
 
-The probe has a single 1.5-second connection/write/read deadline. When a
+The probe connects only to the already-scoped numeric IP (hostnames remain
+`unknown`), avoiding a new DNS resolution after scope admission. It has a single
+1.5-second connection/write/read deadline. When a
 per-host packet-rate ceiling is configured, this unpaced request is not sent;
 the receipt records `skipped` rather than a negative result. Resume schedules
 the observation independently of Pulse's host checkpoint.
+The serial network probes have a 30-second total budget (or the configured
+stage timeout, if smaller); remaining recorded targets are `skipped`. Receipt
+construction and persistence have additional processing time. The
+receipt holds at most 10,000 targets and explicitly counts any omitted targets.
+A probe starts only while a full 1.5 seconds of the budget remain, so with
+silent endpoints only about 20 are probed per run; on a larger perimeter most
+records may be `skipped`, which states that no
+request was sent, not that RDP is absent. The receipt is written after Pulse
+completes: when the Pulse stage fails there is no receipt, and a receipt left by
+an earlier attempt of the stage is deleted when the stage starts, so a reader
+never sees facts from a previous attempt. `observation_id` is the digest of the
+whole record including `observed_at`; it detects tampering within the receipt
+and is not a cross-run deduplication key.
 
 ## Consequences
 
@@ -106,23 +121,8 @@ the observation independently of Pulse's host checkpoint.
   baseline numerator/denominator. Plugin-file count, finding count and three
   request variants alone are not valid evidence of a threefold coverage increase.
 - The accepted RDP inventory slice is an additive scoped implementation, not an
-  agreed coverage metric or proof of threefold expansion. For the operational
-  metric, the numerator is the number of applicable endpoint × check-family
-  opportunities that were enabled, actually executed and completed successfully
-  during the reporting period; the denominator is all applicable opportunities
-  under the same registry, segment, and period rules. Baseline and target compare
-  those fractions over identical scope and accounting rules; threefold means the
-  resulting fraction is at least three times the baseline, not three times the
-  script count. A zero or unavailable baseline is not a valid multiplier.
-- Receipts on a scanner are only local evidence. Since there is no authenticated
-  fleet ingestion, durable production consumer, nor fleet export available, this
-  repository cannot currently calculate that fraction or establish the baseline.
-  A local archive may be retained for later ingest, but must not be treated as
-  fleet telemetry or an accepted production run. The next implementation step
-  requires an agreed authenticated ingestion/storage design and the authoritative
-  source for endpoint applicability and scanner/check enablement. In particular,
-  chunk-level Rhai errors cannot be attributed to an individual matching endpoint;
-  they must not be converted into per-endpoint success receipts.
+  agreed coverage metric or proof of threefold expansion; baseline/target remain
+  undecided pending a curated family registry.
 - Offline parsing tests may validate existing artifacts, but cannot demonstrate
   production observation emission or endpoint completion.
 

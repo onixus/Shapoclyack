@@ -20,6 +20,20 @@ def test_parse_offered_protocols(value, name):
     assert rdp.parse_reply(reply(2, value)) == {"result": "selected", "selected_protocol": name}
 
 
+@pytest.mark.parametrize("flags", [1, 2, 4, 8, 16, 31])
+def test_response_flags_do_not_hide_selected_protocol(flags):
+    data = bytearray(reply(2, 2))
+    data[12] = flags
+    assert rdp.parse_reply(bytes(data)) == {"result": "selected", "selected_protocol": "PROTOCOL_HYBRID"}
+
+
+def test_failure_flags_must_be_zero():
+    data = bytearray(reply(3, 2))
+    data[12] = 1
+    with pytest.raises(rdp.RdpNegotiationError, match="malformed_negotiation_structure"):
+        rdp.parse_reply(bytes(data))
+
+
 def test_parse_explicit_request_failure():
     assert rdp.parse_reply(reply(3, 2)) == {"result": "explicit_failure", "failure_code": 2}
 
@@ -136,3 +150,35 @@ def test_trickled_response_cannot_extend_total_deadline(monkeypatch):
 
     monkeypatch.setattr(rdp.socket, "create_connection", lambda *args, **kwargs: Connection())
     assert rdp.observe("127.0.0.1", timeout=1.5) == ("unknown", None)
+
+
+def test_hostname_is_not_reresolved_after_scope_admission(monkeypatch):
+    def forbidden_connect(*args, **kwargs):
+        raise AssertionError("hostname must not reach DNS or the network")
+
+    monkeypatch.setattr(rdp.socket, "create_connection", forbidden_connect)
+    assert rdp.observe("example.com") == ("unknown", None)
+
+
+def _mutated(offset: int, value: int) -> bytes:
+    data = bytearray(reply(2, 1))
+    data[offset] = value
+    return bytes(data)
+
+
+@pytest.mark.parametrize(("data", "reason"), [
+    (_mutated(0, 2), "malformed_tpkt_header"),             # TPKT version
+    (_mutated(1, 1), "malformed_tpkt_header"),             # TPKT reserved
+    (_mutated(4, 0x0D), "malformed_tpkt_header"),          # X.224 length indicator
+    (_mutated(3, 0x14), "malformed_tpkt_length"),          # TPKT length disagrees with the bytes
+    (_mutated(5, 0xE0), "malformed_x224_confirm"),         # a Connection Request, not a Confirm
+    (_mutated(6, 1), "malformed_x224_confirm"),            # DST-REF
+    (_mutated(10, 1), "malformed_x224_confirm"),           # class option
+    (_mutated(11, 1), "malformed_negotiation_structure"),  # RDP_NEG_REQ echoed back
+    (_mutated(11, 4), "malformed_negotiation_structure"),
+    (_mutated(13, 9), "malformed_negotiation_structure"),  # negotiation length
+    (_mutated(14, 1), "malformed_negotiation_structure"),
+])
+def test_each_header_field_is_checked(data, reason):
+    with pytest.raises(rdp.RdpNegotiationError, match=reason):
+        rdp.parse_reply(data)

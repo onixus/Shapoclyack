@@ -61,6 +61,20 @@ def test_hosted_loader_needs_explicit_egress_permission(clean_operator_env):
     assert "provider-secret" not in repr(settings)
 
 
+def test_loader_accepts_generic_hosted_endpoint_only_when_public(clean_operator_env):
+    clean_operator_env.setenv("OCTO_OPERATOR_ENABLED", "true")
+    clean_operator_env.setenv("OCTO_OPERATOR_PROVIDER", "openai_compatible")
+    clean_operator_env.setenv("OCTO_OPERATOR_API_KEY", "provider-secret")
+    clean_operator_env.setenv("OCTO_OPERATOR_ALLOW_EXTERNAL", "true")
+    clean_operator_env.setenv("OCTO_OPERATOR_BASE_URL", "https://10.0.0.5/v1")
+    with pytest.raises(InsecureConfigurationError, match="hosted_operator_requires_public_host"):
+        load_settings()
+    clean_operator_env.setenv("OCTO_OPERATOR_BASE_URL", "https://llm.example.com/v1")
+    settings = load_settings()
+    assert settings.operator_provider == "openai_compatible"
+    assert "provider-secret" not in json.dumps(redacted_settings(settings))
+
+
 def test_loader_binds_mcp_origins(clean_operator_env):
     clean_operator_env.setenv("OCTO_MCP_ENABLED", "true")
     clean_operator_env.setenv(

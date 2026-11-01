@@ -71,3 +71,49 @@ def test_failed_and_unknown_are_explicit_states_not_invented_negative_facts():
     for state in ("failed", "skipped", "unknown"):
         record = make_record(state=state, outcome=None)
         assert record["state"] == state and record["outcome"] is None
+
+
+def test_receipt_explicitly_accounts_for_omitted_targets(tmp_path):
+    row = make_record()
+    doc = po.write_receipt(tmp_path, [row], tenant_id="tenant-a", run_id="run-1", omitted_targets=42)
+    assert doc["omitted_targets"] == 42
+    assert json.loads((tmp_path / po.FILENAME).read_text())["omitted_targets"] == 42
+    with pytest.raises(ValueError):
+        po.document([], tenant_id="tenant-a", run_id="run-1", omitted_targets=-1)
+
+
+@pytest.mark.parametrize("outcome", [
+    {"result": "selected", "selected_protocol": "PROTOCOL_SSL"},
+    {"result": "selected", "selected_protocol": "PROTOCOL_HYBRID"},
+    {"result": "selected", "selected_protocol": "PROTOCOL_HYBRID_EX"},
+    {"result": "explicit_failure", "failure_code": 0},
+    {"result": "explicit_failure", "failure_code": 0xFFFFFFFF},
+])
+def test_rdp_outcome_accepts_exactly_what_the_parser_decodes(outcome):
+    assert make_record(outcome=outcome)["outcome"] == outcome
+
+
+@pytest.mark.parametrize("outcome", [
+    {"result": "selected", "selected_protocol": "PROTOCOL_RDP"},
+    {"result": "selected", "selected_protocol": "PROTOCOL_SSL", "extra": 1},
+    {"result": "selected"},
+    {"result": "explicit_failure", "failure_code": -1},
+    {"result": "explicit_failure", "failure_code": 0x100000000},
+    {"result": "explicit_failure", "failure_code": True},
+    {"result": "explicit_failure", "failure_code": "2"},
+    {"result": "explicit_failure", "failure_code": 2, "selected_protocol": "PROTOCOL_SSL"},
+    {"result": "explicit_failure", "selected_protocol": "PROTOCOL_SSL"},
+    {"result": "unknown", "failure_code": 2},
+    {},
+])
+def test_rdp_outcome_rejects_any_other_shape(outcome):
+    with pytest.raises(ValueError):
+        make_record(outcome=outcome)
+
+
+def test_rdp_outcome_requires_responded_state_and_vice_versa():
+    with pytest.raises(ValueError):
+        make_record(state="failed")
+    with pytest.raises(ValueError):
+        make_record(outcome=None)
+    assert make_record(state="skipped", outcome=None)["state"] == "skipped"

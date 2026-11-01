@@ -268,8 +268,6 @@ def applies(plugin: str, *, service: str, port: int, banner: str) -> bool:
     # banner in their gates, so it is lower-cased here.
     svc = service or ""
     text = (banner or "").lower()
-    if gate.get("neutral"):
-        return svc in ("", "unknown") and port in gate["ports"] or svc in gate["services"]
     if svc in gate["services"]:
         return True
     if any(text.startswith(prefix) and needle in text for prefix, needle in gate["banner"]):
