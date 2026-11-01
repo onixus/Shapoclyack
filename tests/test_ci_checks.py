@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import os
 import re
 import shlex
@@ -287,8 +289,9 @@ def test_the_pytest_script_declares_the_integration_infrastructure():
     assert "--cov-fail-under" in body
 
 
+@pytest.mark.parametrize("junit_enabled", [False, True])
 @pytest.mark.parametrize("failure", ["unraisable", "thread"])
-def test_ci_fails_when_passing_assertions_hide_unhandled_errors(tmp_path, failure):
+def test_ci_fails_when_passing_assertions_hide_unhandled_errors(tmp_path, failure, junit_enabled):
     """Execute the shared script: checking its text would not prove the gate."""
     scripts = tmp_path / "scripts"
     scripts.mkdir()
@@ -317,6 +320,14 @@ def test_ci_fails_when_passing_assertions_hide_unhandled_errors(tmp_path, failur
     # script would load tests.ci_timing from a scratch directory without tests/.
     env = {k: v for k, v in os.environ.items() if k not in {"JUNIT_XML", "COVERAGE_XML"}}
     env["OCTO_REQUIRE_INTEGRATION"] = "0"
+    if junit_enabled:
+        plugins = tmp_path / "tests"
+        plugins.mkdir()
+        (plugins / "__init__.py").write_text("")
+        (plugins / "ci_timing.py").write_text(
+            (SCRIPTS.parent / "tests" / "ci_timing.py").read_text(encoding="utf-8")
+        )
+        env["JUNIT_XML"] = "nested-junit.xml"
     env["PATH"] = f"{Path(sys.executable).parent}{os.pathsep}{env['PATH']}"
     result = subprocess.run(
         ["bash", str(script), "--no-cov", "test_failure.py"],
@@ -325,3 +336,10 @@ def test_ci_fails_when_passing_assertions_hide_unhandled_errors(tmp_path, failur
     assert result.returncode == 1, result.stdout + result.stderr
     assert "shutdown regression" in result.stdout + result.stderr
     assert "1 passed" not in result.stdout
+    if junit_enabled:
+        assert (tmp_path / "nested-junit.xml").is_file()
+        records = [
+            json.loads(line)
+            for line in (tmp_path / "nested-junit-timings.jsonl").read_text().splitlines()
+        ]
+        assert any(record.get("outcome") == "failed" for record in records)
