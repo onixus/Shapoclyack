@@ -53,3 +53,37 @@ def test_rejects_invalid_limits_and_configuration(kwargs):
 def test_settings_field_contract():
     config = OperatorConfig.from_settings(SimpleNamespace(operator_enabled=True, operator_model="local-test", operator_max_output_tokens=200))
     assert config.enabled and config.model == "local-test" and config.max_output_tokens == 200
+
+
+def test_openai_compatible_accepts_any_public_https_endpoint_with_consent():
+    config = OperatorConfig(enabled=True, provider="openai_compatible", base_url="https://llm.example.com:8443/openai/v1",
+                            allow_external=True, api_key="key", model="qwen/qwen3.5-9b")
+    assert config.status()["external"] is True and config.status()["provider"] == "openai_compatible"
+    assert OperatorConfig(provider="openai_compatible", base_url="https://8.8.8.8/v1").base_url == "https://8.8.8.8/v1"
+
+
+def test_openai_compatible_needs_explicit_base_https_and_consent():
+    assert OperatorConfig(provider="openai_compatible").base_url == ""
+    with pytest.raises(OperatorConfigurationError, match="invalid_operator_base_url"):
+        OperatorConfig(enabled=True, provider="openai_compatible", allow_external=True, api_key="key")
+    with pytest.raises(OperatorConfigurationError, match="requires_https"):
+        OperatorConfig(provider="openai_compatible", base_url="http://llm.example.com/v1")
+    with pytest.raises(OperatorConfigurationError, match="hosted_operator_requires_opt_in_and_key"):
+        OperatorConfig(enabled=True, provider="openai_compatible", base_url="https://llm.example.com/v1", api_key="key")
+
+
+@pytest.mark.parametrize("provider", ["omnirouter", "openai_compatible"])
+@pytest.mark.parametrize("host", [
+    "127.0.0.1", "10.0.0.5", "192.168.1.10", "172.16.0.1", "169.254.169.254", "100.64.0.1", "0.0.0.0",
+    "[::1]", "[fd00::1]", "[fe80::1]", "[::ffff:10.0.0.1]", "[64:ff9b::a00:1]", "[2002:a00:1::1]",
+    "localhost", "llm", "llm.local", "metadata.google.internal", "api.svc.cluster.local", "ollama.lan",
+    "2130706433", "127.1", "0x7f.1",
+])
+def test_hosted_rejects_private_internal_and_ambiguous_hosts(provider, host):
+    with pytest.raises(OperatorConfigurationError, match="hosted_operator_requires_public_host"):
+        OperatorConfig(provider=provider, base_url=f"https://{host}/v1")
+
+
+def test_private_endpoint_is_configured_as_local_not_hosted():
+    config = OperatorConfig(enabled=True, provider="local", base_url="http://192.168.1.50:8080/v1", api_key="lan-key")
+    assert config.status()["external"] is False

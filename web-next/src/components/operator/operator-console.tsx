@@ -542,6 +542,12 @@ export function OperatorConsole({
               {operatorStatusLabel(language, status.data.runtime_status)}
             </span>
           </p>
+          {status.data.endpoint_status && (
+            <p>
+              {t.locale === "ru" ? "Подключение API" : "API connection"}:{" "}
+              {status.data.endpoint_status} {status.data.endpoint_error}
+            </p>
+          )}
           {status.data.runtime_status === "ready" && (
             <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
               {typeof status.data.model_sha256 === "string" &&
@@ -646,7 +652,8 @@ export function OperatorConsole({
             canOperate={
               canOperate &&
               status.data.task_submission_enabled &&
-              status.data.runtime_status !== "unavailable"
+              status.data.runtime_status !== "unavailable" &&
+              status.data.analysis_available !== false
             }
             onQueued={() => {
               void detail.refetch();
@@ -695,6 +702,7 @@ export function OperatorConsole({
                     !canOperate ||
                     !status.data.task_submission_enabled ||
                     status.data.runtime_status === "unavailable" ||
+                    status.data.analysis_available === false ||
                     submit.isPending ||
                     !run.trim()
                   }

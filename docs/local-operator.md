@@ -158,7 +158,8 @@ uses operator rank; named permissions supplement it for specific effects.
 Local offline operation is the default design. The adapter is disabled by
 default, and local mode accepts only its configured loopback or explicit private IP-literal endpoint. It must
 not download models or fall back to a hosted provider when local inference fails.
-See [provider configuration](local-operator-providers.md) for implemented settings.
+See [provider configuration](local-operator-providers.md) for implemented settings and
+[the Windows GPU workstation guide](local-operator-windows.md) for a LAN inference host.
 OpenRouter is an explicit hosted choice; OmniRouter requires an explicit
 administrator-configured compatible base URL. No service identity or hostname
 is inferred from the name. Each hosted choice requires an explicit egress opt-in
