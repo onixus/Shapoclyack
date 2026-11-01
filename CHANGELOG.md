@@ -4,6 +4,14 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Security
+
+- The nuclei binary in the scanner and all-in-one images is now built against
+  `github.com/go-jose/go-jose/v4` v4.1.6 instead of the v4.1.4 that nuclei
+  v3.11.1 asks for, closing CVE-2026-116587 (HIGH, denial of service via crafted
+  RSA parameters in JWKs), which had turned the blocking Trivy gate red. The pin
+  sits in `GO_SECURITY_PINS` in `Dockerfile` and `Dockerfile.allinone`.
+
 ### Added
 
 - Native RDP X.224 negotiation observations and four Pulse service checks
