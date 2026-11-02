@@ -1082,10 +1082,22 @@ def test_fetch_does_not_retry_oversize_or_an_exceeded_deadline(no_backoff) -> No
     assert no_backoff == []
 
 
-def test_passlib_bcrypt_version_probe_is_not_logged_as_a_warning() -> None:
-    import logging
+def test_bcrypt_initialization_is_quiet_without_logger_suppression() -> None:
+    import subprocess
+    import sys
 
-    import api.auth  # noqa: F401 - the import is what configures the logger
-    import api.services.tenants  # noqa: F401
-
-    assert logging.getLogger("passlib.handlers.bcrypt").level == logging.ERROR
+    # A fresh process exercises the backend's first-use probe, not a cached one.
+    result = subprocess.run(
+        [sys.executable, "-W", "error", "-c", """
+import logging
+from api.auth import hash_password, verify_password
+from api.services.tenants import pwd_context
+assert logging.getLogger("passlib.handlers.bcrypt").getEffectiveLevel() <= logging.WARNING
+hashed = hash_password("bcrypt-backend-regression")
+assert verify_password("bcrypt-backend-regression", hashed)
+assert pwd_context.verify("bcrypt-backend-regression", hashed)
+"""],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stderr == ""
