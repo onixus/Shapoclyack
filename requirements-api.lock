@@ -226,7 +226,7 @@ bcrypt==4.2.1 \
     --hash=sha256:f85b1ffa09240c89aa2e1ae9f3b1c687104f7b2b9d2098da4e923f1b7082d331
     # via
     #   -r requirements-api.txt
-    #   passlib
+    #   libpass
 boto3==1.43.94 \
     --hash=sha256:2534bf331acd2f448b9cf8317f4eed453c65d9e0b7de254e77c99d390ac57aec \
     --hash=sha256:aa832d88e85035cebb83f04700c65623328b88fe828ff7ed9539483bd9d608c5
@@ -1079,6 +1079,10 @@ jmespath==1.1.0 \
     # via
     #   boto3
     #   botocore
+libpass[bcrypt]==1.9.4 \
+    --hash=sha256:4ff9a5ebf51aad1e8164453bc29c4a06926cf175a9501d87205612ba247f3cbd \
+    --hash=sha256:a608621af2d7d64579957988fac287f230f88792c83a2d0f895afb05ee429489
+    # via -r requirements-api.txt
 lz4==4.4.5 \
     --hash=sha256:0846e6e78f374156ccf21c631de80967e03cc3c01c373c665789dc0c5431e7fc \
     --hash=sha256:0bba042ec5a61fa77c7e380351a61cb768277801240249841defd2ff0a10742f \
@@ -1571,10 +1575,6 @@ packaging==26.3 \
     --hash=sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79 \
     --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
     # via opentelemetry-instrumentation
-passlib[bcrypt]==1.7.4 \
-    --hash=sha256:aa6bca462b8d8bda89c70b382f0c298a20b5560af6cbfa2dce410c0a2fb669f1 \
-    --hash=sha256:defd50f72b65c5402ab2c573830a6978e5f202ad0d984793c8dde2c4152ebe04
-    # via -r requirements-api.txt
 pillow==13.0.0 \
     --hash=sha256:02464da86f561f410e13b061ec37c3068a9cb557a095494157742d07b3c24a27 \
     --hash=sha256:04a63720f79e22fd54d897c233a68314c50ca0603360f54ce2bd5db8f0f43782 \
