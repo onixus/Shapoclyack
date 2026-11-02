@@ -59,7 +59,7 @@ TEST_USERS: dict[str, str] = {
     "admin": "admin-change-me",
 }
 
-TEST_JWT_SECRET = "test-secret"
+TEST_JWT_SECRET = "test-only-jwt-signing-key-32-bytes-minimum"
 TEST_AGENT_TOKEN = "test-agent-token"
 
 

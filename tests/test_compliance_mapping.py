@@ -201,7 +201,7 @@ def _seed_own_tenant(tmp_path: Path, findings: list[dict] | None = None):
     """``_seed`` in a tenant of this test's own.
 
     The findings in this file are keyed on ``(asset, cve-or-script, port)``,
-    which is stable across ``tmp_path``\ s, so every test that uses ``_seed``
+    which is stable across ``tmp_path`` values, so every test that uses ``_seed``
     shares one set of rows in the shared database. A test that *closes* one
     would leave the next one asserting against a finding somebody else already
     moved, so the two verdict tests below get their own tenant.
