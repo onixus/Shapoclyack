@@ -22,3 +22,6 @@ opentelemetry-instrumentation-fastapi==0.52b1
 # WebAuthn / passkeys (#315): attestation and assertion verification. Pulls
 # cbor2, pyOpenSSL and pyasn1; the signature checks go through cryptography.
 webauthn==3.0.0
+# Enterprise SAML 2.0 and LDAP/Active Directory providers (#317).
+python3-saml==1.16.0
+ldap3==2.9.1

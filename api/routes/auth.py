@@ -68,11 +68,14 @@ from api.routes._session_cookie import (
 from api.services import agents as agents_service
 from api.services import auth as auth_service
 from api.services import auth_audit
+from api.services.federated import FederatedIdentity
 from api.services import jobs as jobs_service
 from api.services import local_login
+from api.services import ldap as ldap_service
 from api.services import memberships as memberships_service
 from api.services import mfa as mfa_service
 from api.services import oidc as oidc_service
+from api.services import saml as saml_service
 from api.services import promoted_domains
 from api.services import quotas
 from api.services import scan_queue
@@ -574,6 +577,94 @@ def _safe_next(value: str | None) -> str:
     return candidate[:512]
 
 
+def _federated_response(
+    settings: Settings,
+    identity,
+    *,
+    client_ip: str,
+    next_url: str = "",
+    allow_redirect: bool = True,
+) -> Response:
+    """Link a verified provider identity and issue the ordinary console session."""
+    try:
+        user_record, action = users_service.link_or_provision_sso_user(
+            settings,
+            issuer=identity.issuer,
+            subject=identity.subject,
+            username=identity.username,
+            email=identity.email,
+            email_verified=identity.email_verified,
+            role=identity.role,
+            tenant_id=identity.tenant_id,
+            jit_enabled=identity.jit_enabled,
+            groups=identity.groups,
+        )
+    except PermissionError as exc:
+        auth_audit.record_denied(
+            username=identity.username,
+            reason=auth_audit.REASON_SSO_NOT_PROVISIONED,
+            detail=str(exc),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This identity has no console account on this installation",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    token_user = TokenUser(
+        username=str(user_record["username"]), role=Role(str(user_record["role"]))
+    )
+    auth_audit.record_sso_login(username=token_user.username, client_ip=client_ip, action=action)
+    challenge: str | None = None
+    opened: sessions_service.OpenedSession | None = None
+    try:
+        if mfa_service.is_enabled(settings, token_user.username):
+            challenge = create_pre_auth_token(
+                settings,
+                token_user.username,
+                ttl_minutes=mfa_service.PRE_AUTH_TTL_MINUTES,
+            )
+            token = ""
+        else:
+            token, opened = issue_session(settings, token_user)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Single sign-on failed") from exc
+
+    destination = settings.oidc_post_login_redirect.strip() if allow_redirect else ""
+    if destination:
+        separator = "&" if "#" in destination else "#"
+        landing = (
+            f"{destination}{separator}mfa_token={challenge}"
+            f"&expires_in={mfa_service.PRE_AUTH_TTL_MINUTES * 60}"
+            if challenge
+            else f"{destination}{separator}access_token={token}&token_type=bearer"
+        )
+        if next_url:
+            landing = f"{landing}&next={urllib.parse.quote(next_url, safe='/')}"
+        redirect = RedirectResponse(landing, status_code=status.HTTP_303_SEE_OTHER)
+        if opened is not None:
+            set_refresh_cookie(redirect, settings, opened)
+        return redirect
+    if challenge:
+        return JSONResponse(
+            LoginResponse(
+                username=token_user.username,
+                mfa_required=True,
+                mfa_token=challenge,
+                expires_in=mfa_service.PRE_AUTH_TTL_MINUTES * 60,
+            ).model_dump(mode="json")
+        )
+    answer = JSONResponse(
+        LoginResponse(
+            access_token=token, role=token_user.role, username=token_user.username
+        ).model_dump(mode="json")
+    )
+    if opened is not None:
+        set_refresh_cookie(answer, settings, opened)
+    return answer
+
+
 @router.get("/auth/oidc/callback", response_model=LoginResponse, dependencies=_AUTHENTICATION)
 def oidc_callback(
     request: Request,
@@ -625,106 +716,166 @@ def oidc_callback(
         ) from exc
 
     claims = completed["claims"]
-    username = oidc_service.username_from_claims(settings, claims)
+    identity = FederatedIdentity(
+        issuer=settings.oidc_issuer.strip().rstrip("/"),
+        subject=str(claims["sub"]),
+        username=oidc_service.username_from_claims(settings, claims),
+        email=claims.get("email"),
+        email_verified=oidc_service.email_verified_from_claims(claims),
+        role=oidc_service.role_from_claims(settings, claims),
+        tenant_id=oidc_service.tenant_from_claims(settings, claims),
+        jit_enabled=settings.oidc_jit_provisioning,
+        groups=oidc_service.groups_from_claims(settings, claims),
+    )
+    return _federated_response(
+        settings,
+        identity,
+        client_ip=client_ip,
+        next_url=str(completed.get("next_url") or ""),
+    )
+
+
+@router.get("/auth/saml/metadata", dependencies=_AUTHENTICATION)
+def saml_metadata(settings: Annotated[Settings, Depends(get_settings)]) -> Response:
     try:
-        user_record, action = users_service.link_or_provision_sso_user(
-            settings,
-            issuer=settings.oidc_issuer.strip().rstrip("/"),
-            subject=str(claims["sub"]),
-            username=username,
-            email=claims.get("email"),
-            email_verified=oidc_service.email_verified_from_claims(claims),
-            role=oidc_service.role_from_claims(settings, claims),
-            tenant_id=oidc_service.tenant_from_claims(settings, claims),
-            jit_enabled=settings.oidc_jit_provisioning,
-            groups=oidc_service.groups_from_claims(settings, claims),
+        document = saml_service.metadata_xml(settings)
+    except saml_service.SamlDisabledError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except saml_service.SamlError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    return Response(content=document, media_type="application/samlmetadata+xml")
+
+
+@router.get("/auth/saml/login", response_model=OidcLoginResponse, dependencies=_AUTHENTICATION)
+def saml_login(
+    settings: Annotated[Settings, Depends(get_settings)],
+    redirect: Annotated[bool, Query()] = True,
+    next_url: Annotated[str | None, Query(alias="next", max_length=512)] = None,
+):
+    try:
+        login = saml_service.begin_login(settings, next_url=_safe_next(next_url))
+    except saml_service.SamlDisabledError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except saml_service.SamlError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    if redirect:
+        return RedirectResponse(login.authorization_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    return OidcLoginResponse(
+        authorization_url=login.authorization_url,
+        state=login.relay_state,
+        expires_in=login.expires_in,
+    )
+
+
+@router.post("/auth/saml/acs", response_model=LoginResponse, dependencies=_AUTHENTICATION)
+async def saml_acs(
+    request: Request, settings: Annotated[Settings, Depends(get_settings)]
+) -> Response:
+    form = await request.form()
+    response_value = form.get("SAMLResponse")
+    relay_state = form.get("RelayState")
+    if not isinstance(response_value, str) or not response_value:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing SAMLResponse")
+    if not isinstance(relay_state, str):
+        relay_state = ""
+    try:
+        completed = saml_service.complete_login(
+            settings, saml_response=response_value, relay_state=relay_state
         )
-    except PermissionError as exc:
+    except saml_service.SamlDisabledError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except saml_service.SamlError as exc:
         auth_audit.record_denied(
-            username=username, reason=auth_audit.REASON_SSO_NOT_PROVISIONED, detail=str(exc)
+            username="", reason=auth_audit.REASON_SSO_DENIED, detail=str(exc)
         )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="This identity has no console account on this installation",
-        ) from exc
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Single sign-on failed") from exc
+    return _federated_response(
+        settings,
+        completed.identity,
+        client_ip=_client_ip(request, settings),
+        next_url=completed.next_url,
+    )
 
-    token_user = TokenUser(
-        username=str(user_record["username"]), role=Role(str(user_record["role"]))
-    )
-    auth_audit.record_sso_login(
-        username=token_user.username, client_ip=client_ip, action=action
-    )
-    # An account that has enrolled a second factor is challenged here too
-    # (#315). The identity provider proved *an* identity; it did not prove
-    # possession of the authenticator this installation holds a seed for, and
-    # letting SSO skip the check would make the whole feature opt-out by way of
-    # clicking a different button. An account that has *not* enrolled needs no
-    # special case: ``get_current_user`` re-derives ``mfa_pending`` per request,
-    # so an SSO session of a covered role is confined exactly like a password
-    # one until it enrols.
-    challenge: str | None = None
-    opened: sessions_service.OpenedSession | None = None
+
+@router.get("/auth/saml/logout", dependencies=_AUTHENTICATION)
+def saml_logout(
+    settings: Annotated[Settings, Depends(get_settings)],
+    _: Annotated[TokenUser, Depends(get_current_user)],
+    next_url: Annotated[str | None, Query(alias="next", max_length=512)] = None,
+) -> Response:
     try:
-        if mfa_service.is_enabled(settings, token_user.username):
-            challenge = create_pre_auth_token(
-                settings,
-                token_user.username,
-                ttl_minutes=mfa_service.PRE_AUTH_TTL_MINUTES,
-            )
-            token = ""
-        else:
-            token, opened = issue_session(settings, token_user)
-    except LookupError as exc:  # the account was deleted mid-callback
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Single sign-on failed"
-        ) from exc
+        logout = saml_service.begin_logout(settings, next_url=_safe_next(next_url))
+    except saml_service.SamlDisabledError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except saml_service.SamlError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    return RedirectResponse(logout.authorization_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
-    destination = settings.oidc_post_login_redirect.strip()
-    if destination:
-        # The token rides in the URL *fragment*, which browsers never send to a
-        # server and which is not written to access logs the way a query string
-        # is. The console reads it, stores it, and clears the fragment.
-        separator = "&" if "#" in destination else "#"
-        landing = (
-            f"{destination}{separator}mfa_token={challenge}"
-            f"&expires_in={mfa_service.PRE_AUTH_TTL_MINUTES * 60}"
-            if challenge
-            else f"{destination}{separator}access_token={token}&token_type=bearer"
+
+@router.get("/auth/saml/slo", dependencies=_AUTHENTICATION)
+def saml_slo(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
+    user: Annotated[TokenUser | None, Depends(get_current_user_if_any)],
+) -> Response:
+    try:
+        destination = saml_service.complete_logout(
+            settings, get_data=dict(request.query_params)
         )
-        next_url = str(completed.get("next_url") or "")
-        if next_url:
-            # Percent-encoded: the fragment already carries the session token as
-            # ``&``-separated parameters, so an unescaped path could append
-            # parameters of its own to the URL the console is about to parse.
-            landing = f"{landing}&next={urllib.parse.quote(next_url, safe='/')}"
-        redirect = RedirectResponse(landing, status_code=status.HTTP_303_SEE_OTHER)
-        # The refresh token rides in the cookie, never in the fragment: the
-        # fragment is read by script, which is exactly what the cookie is
-        # there to keep it away from. SameSite=Strict does not stop a cookie
-        # being *set* by the response to the IdP's top-level redirect, only
-        # being sent on one.
-        if opened is not None:
-            set_refresh_cookie(redirect, settings, opened)
-        return redirect
-    if challenge:
-        return LoginResponse(
-            username=token_user.username,
-            mfa_required=True,
-            mfa_token=challenge,
-            expires_in=mfa_service.PRE_AUTH_TTL_MINUTES * 60,
-        )
-    answer = JSONResponse(
-        LoginResponse(
-            access_token=token, role=token_user.role, username=token_user.username
-        ).model_dump(mode="json")
+    except saml_service.SamlDisabledError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except saml_service.SamlError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Single logout failed") from exc
+    if user is not None:
+        if user.jti is not None and user.expires_at is not None:
+            sessions_service.revoke_token(
+                settings, jti=user.jti, username=user.username, expires_at=user.expires_at
+            )
+        if user.session_id is not None:
+            sessions_service.end_session(settings, user.session_id)
+    presented = request.cookies.get(REFRESH_COOKIE)
+    if presented:
+        sessions_service.end_session_by_refresh_token(settings, presented)
+    answer = RedirectResponse(
+        destination or settings.oidc_post_login_redirect or "/",
+        status_code=status.HTTP_303_SEE_OTHER,
     )
-    if opened is not None:
-        set_refresh_cookie(answer, settings, opened)
+    clear_refresh_cookie(answer, settings)
     return answer
+
+
+@router.post("/auth/ldap/login", response_model=LoginResponse, dependencies=_AUTHENTICATION)
+def ldap_login(
+    body: LoginRequest,
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
+    if not ldap_service.is_enabled(settings):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="LDAP is not configured")
+    try:
+        outcome = auth_audit.attempt_login(
+            username=body.username,
+            client_ip=_client_ip(request, settings),
+            verify=lambda: ldap_service.authenticate(settings, body.username, body.password),
+        )
+    except ldap_service.LdapUnavailable as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except ldap_service.LdapError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    if outcome.lockout is not None:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=_LOCKED_DETAIL,
+            headers={"Retry-After": str(outcome.lockout.retry_after_seconds)},
+        )
+    if outcome.user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    return _federated_response(
+        settings,
+        outcome.user,
+        client_ip=_client_ip(request, settings),
+        allow_redirect=False,
+    )
 
 
 @router.post("/auth/agent/token", response_model=AgentTokenResponse, dependencies=_AUTHENTICATION)

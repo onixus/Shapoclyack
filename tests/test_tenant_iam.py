@@ -389,9 +389,8 @@ def test_runs_and_artifacts_are_not_readable_across_tenants(client, tmp_path):
     assert client.get("/api/runs/run-a/artifacts/summary.json", headers=operator).status_code == 200
 
 
-def test_untagged_runs_stay_with_the_default_tenant(client, tmp_path):
-    """Runs written before P0 carry no marker; they must remain readable in the
-    default tenant instead of vanishing from every listing."""
+def test_untagged_runs_are_not_assigned_to_the_default_tenant(client, tmp_path):
+    """Missing owner metadata fails closed until the operator repairs it (#311)."""
     _make_tenant(client, "ten_a")
     _grant(client, "operator", "ten_a")
     _seed_run(tmp_path, "run-legacy", tenant_id=None)
@@ -399,13 +398,12 @@ def test_untagged_runs_stay_with_the_default_tenant(client, tmp_path):
     scoped = client.get("/api/runs", headers=_headers(client, "operator"))
     assert [r["run_id"] for r in scoped.json()["items"]] == []
 
-    # A viewer with no memberships still acts in the default tenant (pre-P0
-    # behaviour), so the legacy run stays visible there.
     default_scoped = client.get("/api/runs", headers=_headers(client, "viewer"))
     assert default_scoped.status_code == 200
-    items = default_scoped.json()["items"]
-    assert [r["run_id"] for r in items] == ["run-legacy"]
-    assert items[0]["tenant_id"] == "default"
+    assert default_scoped.json()["items"] == []
+    assert client.get(
+        "/api/runs/run-legacy", headers=_headers(client, "viewer")
+    ).status_code == 404
 
 
 def test_platform_admin_sees_runs_from_every_tenant(client, tmp_path):

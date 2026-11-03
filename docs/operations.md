@@ -82,15 +82,57 @@ scan asking for the same id is refused rather than written into the first. A sca
 `<tenant>` is the tenant id itself, or `h_<hash>` for an id that is not a safe
 path segment (ids that predate tenant-id validation).
 
-**Upgrading needs no migration.** Runs already in the flat `runs/<run_id>/`
-layout stay where they are and keep being served, to the tenant their
-`tenant.json` names (no marker: `default`), exactly as before. Nothing moves
-them, on purpose: on S3 a move is a copy and a delete per object, not atomic,
-racing replicas that are serving the run meanwhile — and the flat run is
-readable as it is. Retention ages both layouts out as usual, so the flat ones
-disappear on their own after `OCTO_RUN_RETENTION_DAYS`. Until then, a bucket
-policy scoped to `runs/_tenants/<tenant>/` does not cover that tenant's older
-runs.
+**Migrating flat runs (#311).** A flat run is readable only by the tenant its
+valid `tenant.json` explicitly names. Missing or damaged owner metadata is never
+interpreted as `default`: tenant-scoped reads return 404, retention leaves the
+run alone, and a tenant purge refuses to guess. The platform admin's existing
+cross-tenant view shows the run with an empty `tenant_id` so it can be recovered.
+
+Use the migration command from the API image, with the same database and artifact
+settings as the service:
+
+```bash
+# Dry-run is the default. It validates every owner against tenants in Postgres,
+# hashes every source, detects destination conflicts, and writes a manifest.
+python scripts/migrate-legacy-artifacts.py --manifest /secure/path/run-migration.json
+
+# Apply is resumable. Every source is backed up and every destination is read
+# back and hash-checked before the source is deleted.
+python scripts/migrate-legacy-artifacts.py \
+  --manifest /secure/path/run-migration.json --apply
+
+# If ownership is absent or damaged, establish it from job history and the
+# original scan request, then make an explicit, per-run assignment. Never bulk
+# assign unknown runs to default.
+python scripts/migrate-legacy-artifacts.py \
+  --manifest /secure/path/run-migration.json --assign RUN_ID=acme
+python scripts/migrate-legacy-artifacts.py \
+  --manifest /secure/path/run-migration.json --apply
+```
+
+A marker naming a tenant that no longer exists, a conflicting destination, or an
+old run id that is invalid in the tenant layout stops `--apply` before any byte
+moves. Keep such a run in place while recovering its owner or id; its marked
+owner can still read an unsupported old id through the compatibility path.
+Re-running `--apply` with the same manifest completes an interrupted transfer.
+Backups live under `migration-backups/legacy-artifacts/<migration_id>/` in the
+same artifact store; they are for rollback, not a substitute for a store backup.
+
+For rollback, stop writers and use the same manifest:
+
+```bash
+python scripts/migrate-legacy-artifacts.py \
+  --manifest /secure/path/run-migration.json --rollback
+```
+
+Rollback verifies the backup before restoring the flat key and removes only a
+destination this migration created and whose hash still matches. Backups are
+retained. On S3 neither migration nor rollback is atomic, so schedule a
+maintenance window or pause ingest while applying either. Existing run ids and
+API links do not change. After completion, check that the dry-run reports no
+`pending`, `refused`, `conflict`, or `unsupported` runs and test an old run link
+for each migrated tenant. Until a flat run is migrated, a bucket policy scoped
+only to `runs/_tenants/<tenant>/` does not cover its older runs.
 
 **A rolling update is safe for tenant isolation**, and the shipped manifests
 keep `RollingUpdate` (switching to `Recreate` would make every rollout an
@@ -4872,6 +4914,7 @@ read first.
 | `0035_asset_scan_coverage` | **Every asset's scan-coverage history**: when it was last actually scanned, by which run, and when it was last assessed for vulnerabilities. There is no backfill and there cannot be one — nothing else in the schema records which past run covered which asset — so a downgrade followed by a re-upgrade does not restore them: the whole Coverage block on `/adoption` reads `n/a` again until every asset has been reached by a *new* run, which on a monthly scan cadence is a month of no coverage reading. Nothing else breaks; the findings and the assets themselves are untouched. |
 | `0034_vuln_false_positive` | Every false-positive verdict on `vulnerabilities`: the reason, who made it, its evidence, when the suppression expires, and how many times the finding was seen while suppressed. Nothing else in the schema holds them, so they cannot be reconstructed. The affected findings stay `CLOSED`; the downgrade rewrites their `closure_reason` to `manual`, because the older code does not know the `false_positive` value. The `vulnerability_events` trail (`false_positive_set`, `fp_reobserved`, `fp_overridden`) survives, so *that a verdict existed* is still auditable — only the live suppression is gone, and the next scan re-opens the finding. |
 | `0045_vuln_ticket_sync_cursor` | The ticket-sync poller's cursor and its last error per finding. The old code has no poller, so nothing happens until a re-upgrade — and then every linked ticket is due at once and the first tick re-reads all of them. The load lands on somebody else's Jira rather than on this installation, which is what makes it worth knowing before running this on an estate with thousands of links (raise the subscriptions' `sync_interval_seconds` first, or keep `OCTO_TICKET_SYNC_ENABLED=false` for the first minutes). Nothing about the findings is lost: the reconciliation is idempotent and the `ticket_synced` events stay. |
+| `0105_saml_pending_requests` | Every in-flight SAML AuthnRequest/LogoutRequest. A login or SLO already returned to the browser is refused and can be restarted; accounts, sessions and artifacts are untouched. |
 | `0036_oidc_pending_states` | Every **in-flight** SSO login: the nonce and the PKCE verifier of an authorization request the browser has not come back from yet. Nothing is lost that matters — a row lives for at most `OCTO_OIDC_STATE_TTL_SECONDS` (10 minutes) and a login whose record is gone is refused and retried. The same is true of the *upgrade*: during the rolling deploy in either direction the old and the new code disagree about where a pending login is kept, so logins begun before the switch and finished after it are refused. No account, membership or session is touched. |
 
 ### Legacy JSON state import
@@ -5230,7 +5273,7 @@ working one.
 | Recovery codes (`users.mfa_recovery_codes`) | Postgres | bcrypt hashes — a recovery code is a password |
 | Console passwords, service tokens, provisioning keys (sensor and endpoint Agent) | Postgres | bcrypt / SHA-256 hashes — never reversible, so nothing to encrypt |
 | SSH host keys pinned for sensor deployment | Postgres | Public keys; not secret |
-| `OCTO_OIDC_CLIENT_SECRET`, `OCTO_REPORT_SMTP_PASSWORD`, `OCTO_JWT_SECRET`, the data-plane URLs | Environment (Secret / ExternalSecret) | Not in the database at all — protected by Kubernetes Secret handling, not by this |
+| `OCTO_OIDC_CLIENT_SECRET`, `OCTO_SAML_SP_PRIVATE_KEY`, `OCTO_LDAP_BIND_PASSWORD`, `OCTO_REPORT_SMTP_PASSWORD`, `OCTO_JWT_SECRET`, the data-plane URLs | Environment (Secret / ExternalSecret) | Not in the database at all — protected by Kubernetes Secret handling, not by this |
 
 The last row is the deliberate boundary: encrypting a value the process reads
 from its own environment with a key it reads from the same environment adds

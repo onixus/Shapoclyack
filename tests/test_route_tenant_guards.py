@@ -123,6 +123,12 @@ CROSS_TENANT_ROUTES: dict[str, str] = {
     "api.routes.auth:revoke_own_sessions": _AUTHENTICATION,
     "api.routes.auth:oidc_login": _AUTHENTICATION,
     "api.routes.auth:oidc_callback": _AUTHENTICATION,
+    "api.routes.auth:saml_metadata": _AUTHENTICATION,
+    "api.routes.auth:saml_login": _AUTHENTICATION,
+    "api.routes.auth:saml_acs": _AUTHENTICATION,
+    "api.routes.auth:saml_logout": _AUTHENTICATION,
+    "api.routes.auth:saml_slo": _AUTHENTICATION,
+    "api.routes.auth:ldap_login": _AUTHENTICATION,
     "api.routes.auth:agent_token": (
         "provisioning-key exchange: the key is what names the tenant, so it is "
         "looked up across tenants; declares cross_tenant('authentication')"

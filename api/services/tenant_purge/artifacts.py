@@ -9,10 +9,9 @@ bucket. What belongs to the tenant, and how it is found:
   trees a crashed upload left beside the runs;
 * **flat runs of earlier releases** — ``runs/{run_id}``, whose owner is only
   what its ``tenant.json`` says. Every flat run is read; one whose marker names
-  this tenant is deleted, one with no marker is the default tenant's and left,
-  and one whose marker *cannot* be read fails the step rather than be guessed
-  at: guessing "not ours" would leave a customer's scan behind, and guessing
-  "ours" could delete somebody else's;
+  this tenant is deleted. A missing or unreadable marker fails the step rather
+  than being guessed: guessing "not ours" would leave a customer's scan behind,
+  and guessing "ours" could delete somebody else's (#311);
 * **job inputs** — ``job_inputs/{job_id}/`` for every job row the tenant has,
   read before the Postgres step deletes those rows (hence the step order);
 * **reports** — ``reports/{tenant_id}/`` (#292), plus any ``storage_path`` a
@@ -56,9 +55,6 @@ _REPORT_TENANT_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 #: over by another replica, which would then never finish it either.
 _FLAT_SCAN_CHECKPOINT_RUNS = 100
 _FLAT_SCAN_CHECKPOINT_SECONDS = 30.0
-
-#: What a flat run with no marker belongs to (``runs.read_run_tenant``'s rule).
-_UNMARKED_OWNER = "default"
 
 
 def _report_prefix(tenant_id: str) -> str | None:
@@ -121,24 +117,23 @@ def _tenant_runs(ctx: PurgeContext, store: artifact_store.ArtifactStore) -> None
 
 
 def _flat_owner(store: artifact_store.ArtifactStore, ref: keys.RunRef) -> str | None:
-    """The tenant a flat run's ``tenant.json`` names; None when it cannot be parsed.
+    """The explicitly marked owner; None when it is absent or unreadable (#311).
 
-    Stricter than a listing: an unparsable marker is None here, never "the
-    default tenant's". And narrower than ``retention_policy.run_owner``: a
-    store that fails to answer (throttling, a timeout) raises, so the step
-    fails and is retried instead of reporting a run that is fine as unreadable.
+    A store failure raises so the purge is retried. Missing or malformed owner
+    metadata blocks the flat-run step rather than letting a purge of ``default``
+    delete an artifact whose real owner is unknown.
     """
     marker = keys.run_artifact(ref, "tenant.json")
     try:
         raw = store.get_bytes(marker)
     except artifact_store.ArtifactNotFound:
-        return _UNMARKED_OWNER
+        return None
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         return None
-    owner = str(payload.get("tenant_id") or "").strip() if isinstance(payload, dict) else ""
-    return owner or _UNMARKED_OWNER
+    owner = payload.get("tenant_id") if isinstance(payload, dict) else None
+    return owner.strip() if isinstance(owner, str) and owner.strip() else None
 
 
 def _flat_runs(ctx: PurgeContext, store: artifact_store.ArtifactStore) -> list[str]:

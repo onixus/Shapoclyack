@@ -1386,6 +1386,34 @@ SSO stays **off** until the first three are all set:
 | `OCTO_OIDC_HTTP_TIMEOUT_SECONDS` | `10` | Per-request timeout for discovery, JWKS and the token exchange |
 | `OCTO_OIDC_POST_LOGIN_REDIRECT` | *(empty)* | Where the callback sends the browser once the session exists, with the token in the URL **fragment** (never a query string, which lands in access logs). Empty makes the callback answer with the same JSON body as password login, which is what an API-only install wants; a console install points this at its `/login` page |
 
+SAML 2.0 and LDAP/AD ([#317](https://github.com/onixus/Shapoclyack/issues/317);
+protocol and security details in [api-and-rbac.md](api-and-rbac.md#saml-20-and-ldap--active-directory)):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_SAML_SP_ENTITY_ID` | *(empty)* | SP entity id. Required to enable SAML |
+| `OCTO_SAML_IDP_METADATA_URL` / `OCTO_SAML_IDP_METADATA_PATH` | *(empty)* | IdP metadata URL (HTTPS, no redirects) or local XML file. Exactly one is required |
+| `OCTO_SAML_SP_X509_CERT` / `OCTO_SAML_SP_PRIVATE_KEY` | *(empty)* | SP PEM certificate/key for assertion decryption and request/metadata signatures. Store the key in a Secret |
+| `OCTO_SAML_ACS_URL` / `OCTO_SAML_SLO_URL` | *(derived)* | Assertion-consumer and single-logout URLs. Empty derives them from `OCTO_PUBLIC_BASE_URL`; request `Host` is never trusted |
+| `OCTO_SAML_REQUIRE_ENCRYPTED_ASSERTION` | `true` | Require an encrypted assertion. Signed Responses are required independently and cannot be disabled |
+| `OCTO_SAML_SIGN_REQUESTS` | `true` | Sign AuthnRequest and SLO messages and SP metadata |
+| `OCTO_SAML_USERNAME_ATTRIBUTE` | *(NameID)* | Attribute used as console username |
+| `OCTO_SAML_EMAIL_ATTRIBUTE` / `OCTO_SAML_GROUPS_ATTRIBUTE` / `OCTO_SAML_TENANT_ATTRIBUTE` | `email` / `groups` / *(empty)* | Attribute mapping. Groups use the shared `OCTO_OIDC_ROLE_MAP` and `OCTO_IDP_GROUP_MAP` |
+| `OCTO_SAML_EMAIL_VERIFIED` | `false` | Whether the IdP verifies the email attribute for existing-account linking. Both sides must still carry a verified address |
+| `OCTO_SAML_JIT_PROVISIONING` / `OCTO_SAML_DEFAULT_ROLE` / `OCTO_SAML_DEFAULT_TENANT` | `false` / `viewer` / `default` | Account provisioning and fallback authorization |
+| `OCTO_SAML_STATE_TTL_SECONDS` | `600` | Lifetime of single-use AuthnRequest/SLO state shared by all replicas |
+| `OCTO_SAML_METADATA_CACHE_TTL_SECONDS` / `OCTO_SAML_HTTP_TIMEOUT_SECONDS` | `3600` / `10` | Remote metadata cache and fetch timeout |
+| `OCTO_LDAP_URL` / `OCTO_LDAP_BASE_DN` | *(empty)* | Directory URL and search base. Required to enable LDAP. Use `ldaps://` or StartTLS |
+| `OCTO_LDAP_BIND_DN` / `OCTO_LDAP_BIND_PASSWORD` | *(empty)* | Optional service account for user/group search; configure both or neither |
+| `OCTO_LDAP_USER_DN_TEMPLATE` | *(empty)* | Optional direct-bind template such as `uid={username},ou=people,dc=example,dc=com`; values are DN-escaped |
+| `OCTO_LDAP_USER_FILTER` | `(sAMAccountName={username})` | User search filter; the username is filter-escaped |
+| `OCTO_LDAP_GROUP_SEARCH_BASE` / `OCTO_LDAP_GROUP_FILTER` / `OCTO_LDAP_GROUP_ATTRIBUTE` | base DN / `(member={user_dn})` / `cn` | Group search and values used by the shared role/membership maps |
+| `OCTO_LDAP_USERNAME_ATTRIBUTE` / `OCTO_LDAP_EMAIL_ATTRIBUTE` / `OCTO_LDAP_TENANT_ATTRIBUTE` | `sAMAccountName` / `mail` / *(empty)* | User attribute mapping |
+| `OCTO_LDAP_EMAIL_VERIFIED` | `false` | Whether directory mail is verified for existing-account linking |
+| `OCTO_LDAP_JIT_PROVISIONING` / `OCTO_LDAP_DEFAULT_ROLE` / `OCTO_LDAP_DEFAULT_TENANT` | `false` / `viewer` / `default` | Account provisioning and fallback authorization |
+| `OCTO_LDAP_START_TLS` / `OCTO_LDAP_VERIFY_TLS` / `OCTO_LDAP_CA_FILE` | `false` / `true` / *(system trust)* | Transport protection. Prod refuses plain LDAP without StartTLS and unverified TLS |
+| `OCTO_LDAP_CONNECT_TIMEOUT_SECONDS` | `5` | Connect and receive timeout |
+
 Multi-factor authentication and local-login policy (see
 [api-and-rbac.md](api-and-rbac.md#multi-factor-authentication),
 [#315](https://github.com/onixus/Shapoclyack/issues/315)):
@@ -1401,7 +1429,7 @@ Multi-factor authentication and local-login policy (see
 | `OCTO_WEBAUTHN_RP_ID` | *(hostname of `OCTO_PUBLIC_BASE_URL`)* | The WebAuthn relying-party ID: the domain keys are scoped to, e.g. `shapoclyack.example.com`. It must equal, or be a registrable suffix of, the host the console is served from. Changing it later orphans every registered key — they are bound to the old ID by the authenticator itself |
 | `OCTO_WEBAUTHN_ORIGINS` | *(origin of `OCTO_PUBLIC_BASE_URL`)* | Comma-separated exact origins (`scheme://host[:port]`) a ceremony may come from — the **console's** origin(s), which is not necessarily the API's when they are served separately. An assertion signed on any other origin is refused; this is the check that makes a key phishing-resistant. Never taken from the request. Lower-cased on read, as browsers serialise origins. In `prod` each must be `https` (`localhost` excepted) and have `OCTO_WEBAUTHN_RP_ID` as its host or a parent of it, and the RP ID must not be an IP address — checked whenever WebAuthn is configured or a policy uses it |
 | `OCTO_WEBAUTHN_RP_NAME` | `Shapoclyack` | The name the browser shows in its security-key prompt |
-| `OCTO_LOCAL_LOGIN` | `enabled` | What password login is for once SSO is configured: `enabled` (the pre-#315 behaviour), `break-glass` (only the accounts below), `disabled` (SSO only). **Ignored entirely when no OIDC provider is set** — an installation with neither is one nobody can reach. An unrecognised value keeps password login *enabled* with a warning, deliberately the opposite of the other unknown-value readers: closing this one locks every operator out of an installation whose SSO may be the broken part |
+| `OCTO_LOCAL_LOGIN` | `enabled` | What password login is for once SSO is configured: `enabled` (the pre-#315 behaviour), `break-glass` (only the accounts below), `disabled` (SSO only). **Ignored entirely when no OIDC, SAML or LDAP provider is set** — an installation with neither is one nobody can reach. An unrecognised value keeps password login *enabled* with a warning, deliberately the opposite of the other unknown-value readers: closing this one locks every operator out of an installation whose SSO may be the broken part |
 | `OCTO_BREAK_GLASS_USERS` | *(empty)* | Comma-separated usernames allowed to present a password under `break-glass`. Names, not roles: the point of a break-glass account is that it is specific and closely watched, not a property somebody acquires by promotion. `break-glass` with an empty list behaves as `disabled` and warns at startup in `prod` |
 
 Service tokens (see [api-and-rbac.md](api-and-rbac.md#service-tokens)):

@@ -1002,6 +1002,49 @@ class Settings:
     # tenant defined (#318). Unknown tenants and roles grant nothing.
     idp_group_map: dict[str, list[dict[str, str]]] = field(default_factory=dict)
 
+    # --- Enterprise IAM: SAML 2.0 and LDAP/Active Directory (#317) -----------
+    saml_sp_entity_id: str = ""
+    saml_idp_metadata_url: str = ""
+    saml_idp_metadata_path: str = ""
+    saml_sp_x509_cert: str = ""
+    saml_sp_private_key: str = field(default="", repr=False)
+    saml_acs_url: str = ""
+    saml_slo_url: str = ""
+    saml_username_attribute: str = ""
+    saml_email_attribute: str = "email"
+    saml_groups_attribute: str = "groups"
+    saml_tenant_attribute: str = ""
+    saml_email_verified: bool = False
+    saml_jit_provisioning: bool = False
+    saml_default_role: str = "viewer"
+    saml_default_tenant: str = "default"
+    saml_require_encrypted_assertion: bool = True
+    saml_sign_requests: bool = True
+    saml_state_ttl_seconds: int = 600
+    saml_metadata_cache_ttl_seconds: int = 3600
+    saml_http_timeout_seconds: int = 10
+
+    ldap_url: str = ""
+    ldap_base_dn: str = ""
+    ldap_bind_dn: str = ""
+    ldap_bind_password: str = field(default="", repr=False)
+    ldap_user_dn_template: str = ""
+    ldap_user_filter: str = "(sAMAccountName={username})"
+    ldap_group_search_base: str = ""
+    ldap_group_filter: str = "(member={user_dn})"
+    ldap_group_attribute: str = "cn"
+    ldap_username_attribute: str = "sAMAccountName"
+    ldap_email_attribute: str = "mail"
+    ldap_tenant_attribute: str = ""
+    ldap_email_verified: bool = False
+    ldap_jit_provisioning: bool = False
+    ldap_default_role: str = "viewer"
+    ldap_default_tenant: str = "default"
+    ldap_start_tls: bool = False
+    ldap_verify_tls: bool = True
+    ldap_ca_file: str = ""
+    ldap_connect_timeout_seconds: int = 5
+
     # --- Enterprise IAM: service tokens (ROADMAP Track E) --------------------
     # Non-interactive API credentials, admin-issued per tenant with a scope
     # list (api/services/service_tokens.py). The flag gates the routes only:
@@ -2673,6 +2716,67 @@ def load_settings() -> Settings:
         .lower()
         in {"1", "true", "yes", "on"},
         idp_group_map=_idp_group_map(),
+        saml_sp_entity_id=os.environ.get("OCTO_SAML_SP_ENTITY_ID", "").strip(),
+        saml_idp_metadata_url=os.environ.get("OCTO_SAML_IDP_METADATA_URL", "").strip(),
+        saml_idp_metadata_path=os.environ.get("OCTO_SAML_IDP_METADATA_PATH", "").strip(),
+        saml_sp_x509_cert=os.environ.get("OCTO_SAML_SP_X509_CERT", "").strip(),
+        saml_sp_private_key=os.environ.get("OCTO_SAML_SP_PRIVATE_KEY", "").strip(),
+        saml_acs_url=os.environ.get("OCTO_SAML_ACS_URL", "").strip(),
+        saml_slo_url=os.environ.get("OCTO_SAML_SLO_URL", "").strip(),
+        saml_username_attribute=os.environ.get("OCTO_SAML_USERNAME_ATTRIBUTE", "").strip(),
+        saml_email_attribute=os.environ.get("OCTO_SAML_EMAIL_ATTRIBUTE", "email").strip(),
+        saml_groups_attribute=os.environ.get("OCTO_SAML_GROUPS_ATTRIBUTE", "groups").strip(),
+        saml_tenant_attribute=os.environ.get("OCTO_SAML_TENANT_ATTRIBUTE", "").strip(),
+        saml_email_verified=os.environ.get("OCTO_SAML_EMAIL_VERIFIED", "false").lower()
+        in {"1", "true", "yes", "on"},
+        saml_jit_provisioning=os.environ.get("OCTO_SAML_JIT_PROVISIONING", "false").lower()
+        in {"1", "true", "yes", "on"},
+        saml_default_role=_choice(
+            os.environ.get("OCTO_SAML_DEFAULT_ROLE", "viewer"), VALID_CONSOLE_ROLES, "viewer"
+        ),
+        saml_default_tenant=os.environ.get("OCTO_SAML_DEFAULT_TENANT", "default").strip()
+        or "default",
+        saml_require_encrypted_assertion=os.environ.get(
+            "OCTO_SAML_REQUIRE_ENCRYPTED_ASSERTION", "true"
+        ).lower()
+        in {"1", "true", "yes", "on"},
+        saml_sign_requests=os.environ.get("OCTO_SAML_SIGN_REQUESTS", "true").lower()
+        in {"1", "true", "yes", "on"},
+        saml_state_ttl_seconds=max(30, int(os.environ.get("OCTO_SAML_STATE_TTL_SECONDS", "600"))),
+        saml_metadata_cache_ttl_seconds=max(
+            60, int(os.environ.get("OCTO_SAML_METADATA_CACHE_TTL_SECONDS", "3600"))
+        ),
+        saml_http_timeout_seconds=max(1, int(os.environ.get("OCTO_SAML_HTTP_TIMEOUT_SECONDS", "10"))),
+        ldap_url=os.environ.get("OCTO_LDAP_URL", "").strip(),
+        ldap_base_dn=os.environ.get("OCTO_LDAP_BASE_DN", "").strip(),
+        ldap_bind_dn=os.environ.get("OCTO_LDAP_BIND_DN", "").strip(),
+        ldap_bind_password=os.environ.get("OCTO_LDAP_BIND_PASSWORD", "").strip(),
+        ldap_user_dn_template=os.environ.get("OCTO_LDAP_USER_DN_TEMPLATE", "").strip(),
+        ldap_user_filter=os.environ.get("OCTO_LDAP_USER_FILTER", "(sAMAccountName={username})").strip(),
+        ldap_group_search_base=os.environ.get("OCTO_LDAP_GROUP_SEARCH_BASE", "").strip(),
+        ldap_group_filter=os.environ.get("OCTO_LDAP_GROUP_FILTER", "(member={user_dn})").strip(),
+        ldap_group_attribute=os.environ.get("OCTO_LDAP_GROUP_ATTRIBUTE", "cn").strip() or "cn",
+        ldap_username_attribute=os.environ.get("OCTO_LDAP_USERNAME_ATTRIBUTE", "sAMAccountName").strip()
+        or "sAMAccountName",
+        ldap_email_attribute=os.environ.get("OCTO_LDAP_EMAIL_ATTRIBUTE", "mail").strip(),
+        ldap_tenant_attribute=os.environ.get("OCTO_LDAP_TENANT_ATTRIBUTE", "").strip(),
+        ldap_email_verified=os.environ.get("OCTO_LDAP_EMAIL_VERIFIED", "false").lower()
+        in {"1", "true", "yes", "on"},
+        ldap_jit_provisioning=os.environ.get("OCTO_LDAP_JIT_PROVISIONING", "false").lower()
+        in {"1", "true", "yes", "on"},
+        ldap_default_role=_choice(
+            os.environ.get("OCTO_LDAP_DEFAULT_ROLE", "viewer"), VALID_CONSOLE_ROLES, "viewer"
+        ),
+        ldap_default_tenant=os.environ.get("OCTO_LDAP_DEFAULT_TENANT", "default").strip()
+        or "default",
+        ldap_start_tls=os.environ.get("OCTO_LDAP_START_TLS", "false").lower()
+        in {"1", "true", "yes", "on"},
+        ldap_verify_tls=os.environ.get("OCTO_LDAP_VERIFY_TLS", "true").lower()
+        in {"1", "true", "yes", "on"},
+        ldap_ca_file=os.environ.get("OCTO_LDAP_CA_FILE", "").strip(),
+        ldap_connect_timeout_seconds=max(
+            1, int(os.environ.get("OCTO_LDAP_CONNECT_TIMEOUT_SECONDS", "5"))
+        ),
         service_tokens_enabled=os.environ.get("OCTO_SERVICE_TOKENS_ENABLED", "true").lower()
         in {"1", "true", "yes", "on"},
         service_token_default_ttl_days=max(
@@ -2739,6 +2843,15 @@ def load_settings() -> Settings:
                 or not 1 <= settings.operator_queue_limit <= 100):
             raise InsecureConfigurationError("Invalid operator worker configuration")
 
+    idp_group_source = bool(
+        settings.oidc_role_claim
+        or (
+            settings.saml_sp_entity_id
+            and settings.saml_groups_attribute
+            and (settings.saml_idp_metadata_url or settings.saml_idp_metadata_path)
+        )
+        or (settings.ldap_url and settings.ldap_base_dn)
+    )
     if settings.idp_authoritative and not (settings.oidc_role_map or settings.idp_group_map):
         # Not a refusal, and not obeyed either: with nothing mapped, every SSO
         # account is "in no mapped group", and obeying the switch would
@@ -2748,13 +2861,11 @@ def load_settings() -> Settings:
             "OCTO_IDP_GROUP_MAP set: nothing is mapped, so the IdP resync stays off "
             "rather than deactivating every SSO account. Map the groups first."
         )
-    elif settings.idp_authoritative and not settings.oidc_role_claim:
-        # The same reasoning: no claim configured, no login lists a group, and
-        # every SSO account would be "in no mapped group".
+    elif settings.idp_authoritative and not idp_group_source:
         logger.warning(
-            "OCTO_IDP_AUTHORITATIVE=true with OCTO_OIDC_ROLE_CLAIM empty: no login "
-            "carries the groups, so the IdP resync stays off rather than deactivating "
-            "every SSO account. Name the groups claim first."
+            "OCTO_IDP_AUTHORITATIVE=true with OCTO_OIDC_ROLE_CLAIM empty and no SAML "
+            "group attribute or LDAP directory configured: the IdP resync stays off rather "
+            "than deactivating every SSO account. Configure a group source first."
         )
     elif settings.idp_authoritative and not settings.idp_groups_claim_required:
         logger.info(

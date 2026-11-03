@@ -119,7 +119,7 @@ def _keep_refused_run(
         # the outer handler would only overwrite how it ended.
         _log.error(
             "Run %s of written-off job %s could not be tagged with tenant %s; "
-            "it reads as the default tenant's until removed",
+            "its owner is unknown and no tenant can read it until repaired",
             publication.run_id,
             job_id,
             publication.tenant_id,
