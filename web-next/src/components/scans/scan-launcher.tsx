@@ -680,11 +680,17 @@ export function ScanLauncher({
           </dl>
           <ScanTechnicalDetails intent={intent} mode={mode} backend={serviceBackend} />
           <div className="h-px bg-border" />
-          <Button type="submit" disabled={mutation.isPending} className="w-full font-semibold">
+          <Button
+            type="submit"
+            disabled={mutation.isPending || noTargets}
+            className="w-full font-semibold"
+          >
             <Play className="fill-current" aria-hidden />
             {mutation.isPending ? t("launcher.starting") : t("launcher.start")}
           </Button>
-          <p className="text-xs text-muted-foreground">{t("launcher.defaultsHint")}</p>
+          <p className="text-xs text-muted-foreground">
+            {noTargets ? t("launcher.targetsRequired") : t("launcher.defaultsHint")}
+          </p>
         </aside>
       </div>
 

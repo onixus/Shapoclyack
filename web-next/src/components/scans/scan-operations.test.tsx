@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScanOperations } from "@/components/scans/scan-operations";
 import * as apiModule from "@/lib/api";
@@ -12,6 +13,26 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   useSearchParams: () => new URLSearchParams(),
 }));
+
+vi.mock("@/components/scans/scan-launcher", async () => {
+  const { useState } = await import("react");
+  return {
+    ScanLauncher: ({ onStarted }: { onStarted: () => void }) => {
+      const [value, setValue] = useState("");
+      return (
+        <div>
+          <label htmlFor="persistent-target">Persistent target</label>
+          <input
+            id="persistent-target"
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+          />
+          <button onClick={onStarted}>Finish launch</button>
+        </div>
+      );
+    },
+  };
+});
 
 function member(role: string, permissions: string[], global: Me["role"] = "viewer"): Me {
   return {
@@ -136,7 +157,10 @@ describe("ScanOperations with no sensor", () => {
     vi.spyOn(apiModule, "fetchAgentSummary").mockResolvedValue(fleet(0));
     renderPage();
     expect(await screen.findByText(/No sensor of this tenant is online/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open Sensor Fleet" })).toHaveAttribute("href", "/agents");
+    expect(screen.getByRole("link", { name: "Open Sensor Fleet" })).toHaveAttribute(
+      "href",
+      "/agents",
+    );
   });
 
   it("says nothing once one is online", async () => {
@@ -144,5 +168,25 @@ describe("ScanOperations with no sensor", () => {
     renderPage();
     await waitFor(() => expect(summary).toHaveBeenCalled());
     expect(screen.queryByText(/No sensor of this tenant is online/)).toBeNull();
+  });
+
+  it("keeps launcher state when a started job hides the form", async () => {
+    vi.spyOn(apiModule, "fetchAgentSummary").mockResolvedValue(fleet(1));
+    vi.spyOn(apiModule, "fetchJobs").mockResolvedValue({
+      items: [],
+      total: 0,
+      offset: 0,
+      limit: 15,
+      has_more: false,
+    });
+    renderPage();
+    const user = userEvent.setup();
+
+    const target = await screen.findByLabelText("Persistent target");
+    await user.type(target, "onixus.ru");
+    await user.click(screen.getByRole("button", { name: "Finish launch" }));
+    await user.click(screen.getByRole("button", { name: "New scan" }));
+
+    expect(screen.getByLabelText("Persistent target")).toHaveValue("onixus.ru");
   });
 });
