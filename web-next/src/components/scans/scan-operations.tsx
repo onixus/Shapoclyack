@@ -173,6 +173,7 @@ function ScanOperationsInner({ surface }: { surface: OperationsSurface }) {
   const { data: system } = useSystemStatus();
   // `null` = not decided by the operator yet: open on an empty tenant, closed otherwise.
   const [launcherOpen, setLauncherOpen] = useState<boolean | null>(null);
+  const [launcherMounted, setLauncherMounted] = useState(false);
   const deepLinkedJob = (searchParams.get("job") || "").trim() || null;
 
   useEffect(() => {
@@ -199,6 +200,9 @@ function ScanOperationsInner({ surface }: { surface: OperationsSurface }) {
   const noJobsYet =
     !jobsQuery.isLoading && (jobsQuery.data?.total ?? 0) === 0 && !pagination.search;
   const showLauncher = canOperate && (launcherOpen ?? noJobsYet);
+  useEffect(() => {
+    if (showLauncher) setLauncherMounted(true);
+  }, [showLauncher]);
   const agentMode = system?.runtime.job_execution_mode === "agent";
   const scanStartDisabled = system ? !system.runtime.allow_scan_start : false;
   // In agent mode a scan is accepted and queued whether or not anything can
@@ -305,8 +309,10 @@ function ScanOperationsInner({ surface }: { surface: OperationsSurface }) {
 
       <SurfaceKpis surface={surface} canOperate={canReadJobs} />
 
-      {showLauncher ? (
-        <ScanLauncher surface={surface} onStarted={() => setLauncherOpen(false)} />
+      {launcherMounted ? (
+        <div hidden={!showLauncher}>
+          <ScanLauncher surface={surface} onStarted={() => setLauncherOpen(false)} />
+        </div>
       ) : null}
 
       <section className="space-y-3">

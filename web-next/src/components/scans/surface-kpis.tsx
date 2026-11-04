@@ -83,9 +83,7 @@ export function SurfaceKpis({
   }, [scope.data, surface]);
 
   const last = stats.lastCompleted;
-  const lastValue = last?.finished_at
-    ? ago(last.finished_at)
-    : t("kpi.scans.noneYet");
+  const lastValue = last?.finished_at ? ago(last.finished_at) : t("kpi.scans.noneYet");
 
   return (
     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -95,7 +93,9 @@ export function SurfaceKpis({
         hint={
           counts.queued > 0
             ? t("kpi.scans.queued") + `: ${counts.queued}`
-            : t("kpi.scans.nothingRunning")
+            : counts.running > 0
+              ? t("kpi.scans.active")
+              : t("kpi.scans.nothingRunning")
         }
         decorationColor={counts.running > 0 ? "amber" : "slate"}
       />

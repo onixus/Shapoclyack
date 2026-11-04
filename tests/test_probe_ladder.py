@@ -185,3 +185,66 @@ def test_icmp_ping_filter_runs_one_explicit_command_per_address_family(
     assert len(commands) == 2
     assert any("-4" in command for command in commands)
     assert any("-6" in command for command in commands)
+
+
+def test_naabu_host_discovery_cross_checks_empty_syn_with_connect(tmp_path: Path, monkeypatch):
+    from scanner.pipeline.probe_ladder import naabu_host_discovery
+
+    commands: list[list[str]] = []
+
+    def fake_run_command(command, **kwargs):
+        commands.append(command)
+        result = MagicMock()
+        result.stdout = (
+            "203.0.113.10:80\n203.0.113.11:443\n"
+            if "-Pn" in command
+            else ""
+        )
+        return result
+
+    monkeypatch.setattr("scanner.pipeline.probe_ladder.run_command", fake_run_command)
+    alive = naabu_host_discovery(
+        ["203.0.113.10", "203.0.113.11"],
+        tmp_path,
+        rate=100,
+        timeout=30,
+        retries=1,
+        tag="external",
+        scope_members=["203.0.113.0/24"],
+    )
+
+    assert alive == ["203.0.113.10", "203.0.113.11"]
+    assert len(commands) == 2
+    assert "-sn" in commands[0]
+    assert all(flag in commands[1] for flag in ["-Pn", "-s", "c", "-p", "80,443"])
+    assert (tmp_path / "discover" / "external.naabu.alive.txt").read_text(
+        encoding="utf-8"
+    ) == "203.0.113.10\n203.0.113.11\n"
+
+
+def test_naabu_host_discovery_does_not_connect_to_excluded_ports(tmp_path: Path, monkeypatch):
+    from scanner.pipeline.probe_ladder import naabu_host_discovery
+
+    commands: list[list[str]] = []
+
+    def fake_run_command(command, **kwargs):
+        commands.append(command)
+        result = MagicMock()
+        result.stdout = ""
+        return result
+
+    monkeypatch.setattr("scanner.pipeline.probe_ladder.run_command", fake_run_command)
+    alive = naabu_host_discovery(
+        ["203.0.113.10"],
+        tmp_path,
+        rate=100,
+        timeout=30,
+        retries=1,
+        tag="excluded",
+        scope_members=["203.0.113.10"],
+        exclude_ports=[80, 443],
+    )
+
+    assert alive == []
+    assert len(commands) == 1
+    assert "-sn" in commands[0]

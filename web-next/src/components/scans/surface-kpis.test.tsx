@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SurfaceKpis } from "@/components/scans/surface-kpis";
 import * as apiModule from "@/lib/api";
-import type { Me } from "@/lib/api";
+import type { JobSummary, Me } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 
 function principal(role: Me["role"], tenantRole: string, permissions?: string[]): Me {
@@ -73,5 +73,25 @@ describe("SurfaceKpis scope card", () => {
     renderKpis(principal("admin", "admin", undefined));
 
     expect(await screen.findByText("Approved domains")).toBeInTheDocument();
+  });
+
+  it("does not call a running scan idle when nothing is queued", async () => {
+    const summary: JobSummary = {
+      by_status: { running: 1 },
+      running: 1,
+      queued: 0,
+      by_surface: {
+        external: { running: 1, queued: 0, total: 1 },
+        internal: { running: 0, queued: 0, total: 0 },
+        mixed: { running: 0, queued: 0, total: 0 },
+        unknown: { running: 0, queued: 0, total: 0 },
+      },
+      generated_at: null,
+    };
+    vi.spyOn(apiModule, "fetchJobSummary").mockResolvedValue(summary);
+    renderKpis(principal("operator", "operator", ["config.read", "scan.cancel"]));
+
+    expect(await screen.findByText("scan in progress")).toBeInTheDocument();
+    expect(screen.queryByText("idle")).not.toBeInTheDocument();
   });
 });
