@@ -1606,6 +1606,7 @@ export const en = {
   "kpi.scans.promoted": "{count} promoted domains ride along",
   "kpi.scans.noneYet": "none yet",
   "kpi.scans.nothingRunning": "idle",
+  "kpi.scans.active": "scan in progress",
   "kpi.scans.openFindings": "Open findings on this surface",
   "kpi.scans.openFindingsHint":
     "By the observed network exposure of the finding's host — open the Vulnerability Center",
@@ -1688,6 +1689,7 @@ export const en = {
   "launcher.fillReason.invalid": "unreadable",
   "launcher.fillFailed": "Could not read the scope: {error}",
   "launcher.defaultsHint": "Empty targets fall back to the server's default input files.",
+  "launcher.targetsRequired": "Enter at least one target; the console never uses server defaults.",
   "launcher.detected": "Targets suggest: {surface}",
   "launcher.detectedNone": "No targets typed yet",
   "launcher.mismatch":
@@ -3982,6 +3984,7 @@ export const ru: Record<MsgKey, string> = {
   "kpi.scans.promoted": "{count} продвинутых доменов добавляются",
   "kpi.scans.noneYet": "пока нет",
   "kpi.scans.nothingRunning": "простой",
+  "kpi.scans.active": "скан выполняется",
   "kpi.scans.openFindings": "Открытых находок на поверхности",
   "kpi.scans.openFindingsHint":
     "По наблюдаемой сетевой экспозиции хоста — открыть Центр уязвимостей",
@@ -4067,6 +4070,8 @@ export const ru: Record<MsgKey, string> = {
   "launcher.fillReason.invalid": "не читается",
   "launcher.fillFailed": "Не удалось прочитать область: {error}",
   "launcher.defaultsHint": "Пустые цели — берутся входные файлы сервера по умолчанию.",
+  "launcher.targetsRequired":
+    "Укажите хотя бы одну цель; UI не использует серверные цели по умолчанию.",
   "launcher.detected": "Цели указывают на: {surface}",
   "launcher.detectedNone": "Цели ещё не введены",
   "launcher.mismatch":

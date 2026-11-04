@@ -330,4 +330,16 @@ describe("ScanLauncher", () => {
     expect(start.mock.calls[0][0].agent_group).toBeUndefined();
     expect(groups).not.toHaveBeenCalled();
   });
+
+  it("requires explicit targets instead of launching server defaults", async () => {
+    const start = vi.spyOn(apiModule, "startScan").mockResolvedValue(job());
+    renderLauncher("external");
+    const user = userEvent.setup();
+
+    const launch = screen.getByRole("button", { name: /Start scan/ });
+    expect(launch).toBeDisabled();
+    expect(screen.getByText(/the console never uses server defaults/)).toBeInTheDocument();
+    await user.click(launch);
+    expect(start).not.toHaveBeenCalled();
+  });
 });
