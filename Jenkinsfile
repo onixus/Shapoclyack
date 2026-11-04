@@ -66,10 +66,10 @@ pipeline {
     // commit before it, which is the record of what main actually passed.
     disableConcurrentBuilds(abortPrevious: ABORT_SUPERSEDED_BUILDS)
     buildDiscarder(logRotator(numToKeepStr: '20'))
-    // 150, а не 90: стадии на gaming-amd64 (~67 минут, pytest на VM вдвое
-    // медленнее мака) идут до стадий образа на маке (~31 минута в main #75),
-    // и вместе с ожиданием executor'а мака 90 минут обрывали зелёную сборку.
-    timeout(time: 150, unit: 'MINUTES')
+    // 180: Linux checks на VM могут занимать до 130 минут, а стадии образа
+    // на маке — около 31 минуты. Прежние 110 минут Tests оборвали прогон
+    // на 90–92% без итогового отчёта; общий запас должен покрывать обе части.
+    timeout(time: 180, unit: 'MINUTES')
   }
 
   stages {
@@ -123,13 +123,12 @@ pipeline {
       agent { label 'gaming-amd64' }
       // timeout в options стадии действует до входа в agent, то есть и на
       // ожидание узла: если хост упал между пробой выше и этой стадией,
-      // сборка не висит в очереди до общего таймаута. 110 минут: pytest на VM
-      // занимает 75-80 минут (в #607 билд с 76 минутами был в 9 минутах от
-      // прежних 85, а три следующих уже не уложились), плюс запас; вместе с
-      // образом на маке остаётся в общих 150.
+      // сборка не висит в очереди до общего таймаута. 130 минут: прежние
+      // 110 оборвали pytest на 90–92%; вместе с образом это помещается
+      // в общие 180 минут.
       options {
         skipDefaultCheckout()
-        timeout(time: 110, unit: 'MINUTES')
+        timeout(time: 130, unit: 'MINUTES')
       }
       stages {
         stage('Checkout from GitHub') {
