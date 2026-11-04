@@ -120,6 +120,19 @@ duplicate sources and steps, and historical supplied-output fixtures retain
 their multi-step public contract. This is a latency-oriented wire change, not a
 threshold, gold or scoring change, and requires a fresh measured run.
 
+`finding-analysis-labels-v10` additionally requires labels to use only fields
+actually present in each source context. It distinguishes `service=unknown` from
+a known service, prevents severity-only sources from becoming vulnerabilities or
+exposures, and states that absent severity cannot become high priority. These are
+general rubric clarifications; source, category and priority remain free model
+choices, with no output repair or changed thresholds.
+
+The current `finding-analysis-labels-v12` emits category before priority and
+includes two generic schema-shaped examples: CVE without severity, and independent
+CWE/configuration plus service/exposure sources. These examples teach the frozen
+public rubric, not case-specific gold. They remain part of the reviewed model
+projection and require a new independent run.
+
 Remediation cases call the actual planner, then the native local remediation
 renderer/comparator over a synthetic accepted inventory and a local vendor
 snapshot. Only the fixture data provider is substituted; production identity,
@@ -418,16 +431,24 @@ a contradictory non-empty mention list is unsupported. Conditional `anyOf` and
 they produced an invalid shape. The v6 wire requires new projection review;
 three diagnostic calls are not independent quality evidence.
 
-`typed-intent-resolver-v3` was introduced with v4 and retains the same closed
-input schema and resolution rules in v5 and v6.
-A schema-valid but unresolvable literal witness is an ordinary unsupported plan:
-all arguments are discarded, no effect executes and no confirmation is offered.
-This applies uniformly to every operation, including mixed valid/invalid spans,
-partial or noncanonical identifiers, overlaps, request-relative range errors and
-contradictory selectors. It never clamps, searches, normalizes or repairs spans,
-retains a partial argument, or changes an explicit request to contextual.
+`operator-contextfree-intent-v7` and `typed-literal-resolver-v4` replace
+model-computed character spans with complete literal strings. The server checks
+canonical identity, complete occurrence boundaries and exact typed context
+matches; duplicate, absent, partial, foreign or contradictory witnesses are
+unsupported and no effect or confirmation is offered. The lexical guide's offsets
+are never model output. The prompt also rejects multiple requested operations and
+distinguishes remediation status from a targeted verification rescan. This
+removes offset arithmetic without weakening authority or argument validation.
 Malformed JSON, closed-schema/type violations and independent authority,
-provider, persistence or programming failures remain failures.
+provider, persistence or programming failures remain failures. Earlier failed
+attempts retain their original resolver and are never rescored.
+
+The current `operator-typed-intent-v12` retains literal-resolver-v4 and adds only
+selected resource **types** in `available_subject_kinds`, never IDs, scope or
+authority. Prompt rules distinguish package remediation/status/applicability and
+missing vendor context from analysis, targeted verification and abstention.
+These general rules were developed against exposed failures; they do not repair
+model output and require fresh independent evidence.
 
 The server audit records a bounded resource-resolution status. Component records
 and the informational `planner_resource_resolution` summary distinguish schema

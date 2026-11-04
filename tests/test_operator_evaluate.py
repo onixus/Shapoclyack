@@ -165,8 +165,7 @@ def test_contextfree_intent_wire_is_closed_in_unsupported_claim_accounting():
 
 
 def test_contextfree_literal_spans_cannot_smuggle_identity_fields():
-    raw = json.loads(intent_wire("cancel_scan", selector="explicit", mentions=[
-        {"start": 0, "end": 9, "job_id": "model-owned"}]))
+    raw = json.loads(intent_wire("cancel_scan", selector="explicit", mentions=[{"job_id": "model-owned"}]))
     assert evaluation.unsupported_model_fields({"kind": "planning"}, {"model_content": json.dumps(raw)}) == 1
     with pytest.raises(evaluation.planner.gateway.GatewayError):
         planner.validate_output(json.dumps(raw), planner.PlanRequest(request="job-larch", context={"job_id": "job-larch"}))
@@ -175,7 +174,7 @@ def test_contextfree_literal_spans_cannot_smuggle_identity_fields():
 def test_witness_refusal_is_valid_but_positive_gold_stays_a_false_abstention():
     case = next(c for c in CASES if c["kind"] == "planning" and c["gold"]["tool"] == "find_remediation")
     request = planner.PlanRequest(request="Review selected object.", context={"device_id": "asset-cedar"})
-    raw = intent_wire("find_remediation", selector="explicit", mentions=[{"start": 1, "end": 999}])
+    raw = intent_wire("find_remediation", selector="explicit", mentions=["absent-device"])
     result, status = planner._validated_output(raw, request)
     record = {"case_id": case["case_id"], "valid": True, "model_invoked": True, "elapsed_seconds": 1,
               "model_content": raw, "result": result, "planner_schema_valid": True, "resource_resolution": status}
@@ -194,7 +193,7 @@ def test_witness_refusal_is_valid_but_positive_gold_stays_a_false_abstention():
 def test_actual_component_record_separates_schema_error_from_witness_refusal(monkeypatch, schema_error):
     from api.services.local_operator.providers import Completion
     from api.services.local_operator.config import OperatorConfig
-    raw = json.loads(intent_wire("find_remediation", selector="explicit", mentions=[{"start": 1, "end": 999}]))
+    raw = json.loads(intent_wire("find_remediation", selector="explicit", mentions=["absent-device"]))
     if schema_error:
         raw["arguments"] = {}
     class ControlledProvider:

@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from api.services.local_operator.contracts import Citation
 
-PROMPT_VERSION = "finding-analysis-labels-v9"
+PROMPT_VERSION = "finding-analysis-labels-v12"
 MAX_OUTPUT_BYTES = 32768
 MAX_ITEMS = 40
 SERVICES = frozenset({"http", "https", "ssh", "smtp", "dns", "ftp", "smb", "rdp", "mysql",
@@ -56,8 +56,8 @@ class CompactSelection(BaseModel):
     """Request-local model wire; source identity is supplied only by the server."""
     model_config = ConfigDict(extra="forbid", strict=True)
     source_ref: int = Field(ge=0, lt=MAX_ITEMS)
-    proposed_priority: Literal["low", "medium", "high", "unknown"]
     category: Literal["vulnerability", "exposure", "configuration", "unknown"]
+    proposed_priority: Literal["low", "medium", "high", "unknown"]
     next_steps: list[Literal["verify_evidence", "review_configuration", "confirm_exposure",
                              "request_fresh_scan"]] = Field(min_length=1, max_length=4)
 
@@ -230,9 +230,16 @@ def build_prompt(language, retrieval_result):
          "Severity NEVER changes category. A CVE is vulnerability even with low, info, unknown or missing "
          "severity, and even without service. A CWE without CVE is configuration even with critical/high "
          "severity. A service/port-only source cannot inherit another source's CVE. "
+         "Only fields actually present in the supplied context are evidence. Never infer labels from source "
+         "IDs or hidden evidence. service=unknown is not a known service. With no valid CVE/CWE, known service "
+         "or numeric port, category is unknown even when severity is present. "
          "PRIORITY: use ONLY this source's severity in a SEPARATE table: "
          "critical or high -> high; medium -> medium; low or info -> low; "
-         "missing or unknown -> unknown. CVE, CWE, service and port NEVER raise priority. "
+         "missing or unknown -> unknown. Absent severity NEVER means high. CVE, CWE, service and port NEVER "
+         "raise priority. "
+         "Generic examples of these rules: CVE without a severity field -> vulnerability + unknown priority; "
+         "CWE with service/port but without CVE -> configuration; only known service/port -> exposure; "
+         "only service=unknown and severity -> unknown category with severity mapped only to priority. "
          "These are proposed labels for human review, not verified exploitation or official risk. "
          "For state partial or truncated, select at least one supplied non-stale source. "
          "Include every supplied non-stale source when it fits the output budget, once each; "
@@ -242,6 +249,20 @@ def build_prompt(language, retrieval_result):
          "non-stale source exists, return recommendations []. The server derives the summary from retrieval "
          "state and supplies the response language. Choose exactly one relevant allowed next_steps item. "
          "No remediation or comparison claims are supported."},
+        {"role": "user", "content": json.dumps({"language": "en", "state": "partial", "sources": [
+            {"source_ref": 0, "context": {"cve": "CVE-2000-1234"}}]}, separators=(",", ":"))},
+        {"role": "assistant", "content": json.dumps({"recommendations": [
+            {"source_ref": 0, "category": "vulnerability", "proposed_priority": "unknown",
+             "next_steps": ["verify_evidence"]}]}, separators=(",", ":"))},
+        {"role": "user", "content": json.dumps({"language": "en", "state": "partial", "sources": [
+            {"source_ref": 0, "context": {"cwe": "CWE-287", "service": "https", "port": 8443, "severity": "high"}},
+            {"source_ref": 1, "context": {"service": "telnet", "port": 2323, "severity": "info"}}]},
+            separators=(",", ":"))},
+        {"role": "assistant", "content": json.dumps({"recommendations": [
+            {"source_ref": 0, "category": "configuration", "proposed_priority": "high",
+             "next_steps": ["review_configuration"]},
+            {"source_ref": 1, "category": "exposure", "proposed_priority": "low",
+             "next_steps": ["confirm_exposure"]}]}, separators=(",", ":"))},
         {"role": "user", "content": json.dumps({"language": language,
          "state": retrieval_result["state"], "sources": sources}, ensure_ascii=False, sort_keys=True)},
     ]

@@ -691,7 +691,7 @@ def unsupported_model_fields(case, record):
         mentions = raw.get("mentions", [])
         for item in mentions if isinstance(mentions, list) else []:
             if isinstance(item, dict):
-                count += len(set(item) - set(planner.Mention.model_fields))
+                count += len(set(item))
     return count
 
 

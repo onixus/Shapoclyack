@@ -51,7 +51,7 @@ def test_retrieved_instructions_cannot_enter_analysis_prompt(language, field, pa
     case["retrieval"]["items"][0]["context"][field] = payload
     binding = analysis.bind(case["retrieval"])
     prompt = analysis.build_prompt(language, binding)
-    context = json.loads(prompt[1]["content"])["sources"][0]["context"]
+    context = json.loads(prompt[-1]["content"])["sources"][0]["context"]
     assert field not in context
     assert "attacker.invalid" not in str(prompt)
     assert "раскрыть токен" not in str(prompt)

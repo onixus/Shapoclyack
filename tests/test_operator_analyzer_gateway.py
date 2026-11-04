@@ -37,7 +37,7 @@ def env(gateway_env):  # noqa: F811
 
 
 def _selection(messages):
-    prompt = json.loads(messages[1]["content"])
+    prompt = json.loads(messages[-1]["content"])
     selected = prompt["sources"][0]
     return {"recommendations": [
         {"source_ref": selected["source_ref"],

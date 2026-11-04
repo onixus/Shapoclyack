@@ -46,7 +46,7 @@ def test_missing_requested_reference_cannot_fall_back_to_other_selected_objects(
 
 
 def spans(text, literals):
-    return [{"start": text.index(value), "end": text.index(value) + len(value)} for value in literals]
+    return list(literals)
 
 
 @pytest.mark.parametrize("language,prefix", [("ru", "Рассмотри объект"), ("en", "Review object")])
@@ -94,7 +94,7 @@ def test_partial_identifier_and_noncanonical_identity_fail_closed(text, literal)
     assert result["tool"] == "abstain" and result["arguments"] == {}
 
 
-@pytest.mark.parametrize("selector,mentions", [("explicit", []), ("contextual", [{"start": 0, "end": 9}])])
+@pytest.mark.parametrize("selector,mentions", [("explicit", []), ("contextual", ["job-larch"])])
 def test_selector_does_not_hide_or_invent_literal_evidence(selector, mentions):
     request = planner.PlanRequest(request="job-larch", context=CONTEXT)
     result, status = planner._validated_output(intent_wire("cancel_scan", selector=selector, mentions=mentions), request)
@@ -106,22 +106,22 @@ def test_comparison_preserves_roles_and_rejects_duplicate_or_incomplete_pair():
     text = "'run-alder', 'run-birch', 'run-alder'"
     request = planner.PlanRequest(request=text, context=CONTEXT)
     for values in [["run-alder"], ["run-alder", "run-alder"]]:
-        mentions = spans(text, values)
-        if len(values) == 2:
-            mentions[1] = {"start": text.rindex(values[1]), "end": text.rindex(values[1]) + len(values[1])}
-        result = planner.validate_output(intent_wire("compare_runs", selector="explicit", mentions=mentions), request)
+        result = planner.validate_output(intent_wire("compare_runs", selector="explicit", mentions=spans(text, values)), request)
         assert result["tool"] == "abstain"
 
 
-def test_prompt_and_schema_are_independent_of_every_context_reference_and_scope():
+def test_prompt_never_exposes_context_identity_or_scope_values():
     requests = [planner.PlanRequest(request="Review selected object.", context=context)
                 for context in [{}, CONTEXT, {**CONTEXT, "job_id": "replacement", "device_id": "alternate"}]]
-    assert all(planner.build_prompt(r) == planner.build_prompt(requests[0]) for r in requests)
+    assert planner.build_prompt(requests[1]) == planner.build_prompt(requests[2])
     assert all(planner.output_schema(r) == planner.output_schema(requests[0]) for r in requests)
     user = json.loads(planner.build_prompt(requests[0])[1]["content"])
-    assert set(user) == {"request", "language", "literal_spans"}
+    assert set(user) == {"request", "language", "literal_spans", "available_subject_kinds"}
+    assert user["available_subject_kinds"] == []
     assert user["literal_spans"] == [["Review", [0]], ["selected", [7]], ["object.", [16]]]
     wire = json.dumps(planner.build_prompt(requests[1]))
+    assert json.loads(planner.build_prompt(requests[1])[1]["content"])["available_subject_kinds"] == [
+        "run", "device", "job", "finding", "previous_run", "scan_scope"]
     for value in ["192.0.2.77", "8443", "run-alder", "asset-cedar", "job-larch", "finding-pine"]:
         assert value not in wire
 
@@ -163,14 +163,11 @@ OPERATIONS = [(intent, next(iter(kinds))) for intent, kinds in KINDS.items() if 
 
 
 @pytest.mark.parametrize("intent,kind", OPERATIONS)
-@pytest.mark.parametrize("failure", ["reversed", "empty", "outside_request", "overlap", "noncanonical",
-                                     "partial", "mixed_valid_invalid", "explicit_without_mentions", "contextual_with_mentions"])
+@pytest.mark.parametrize("failure", ["noncanonical", "partial", "mixed_valid_invalid",
+                                     "explicit_without_mentions", "contextual_with_mentions"])
 def test_every_operation_rejects_whole_unresolved_witness_without_effect(intent, kind, failure):
     text = "'run-alder' 'не-ид' 'prefixjob-larch'"
     mention_list = {
-        "reversed": [{"start": 4, "end": 3}], "empty": [{"start": 4, "end": 4}],
-        "outside_request": [{"start": 1, "end": 999}],
-        "overlap": [{"start": 1, "end": 10}, {"start": 2, "end": 10}],
         "noncanonical": spans(text, ["не-ид"]), "partial": spans(text, ["job-larch"]),
         "mixed_valid_invalid": spans(text, ["run-alder", "не-ид"]),
         "explicit_without_mentions": [], "contextual_with_mentions": spans(text, ["run-alder"]),
@@ -221,7 +218,7 @@ def test_witness_refusal_does_not_hide_authority_provider_or_store_failures(tmp_
         counts["provider"] += 1
         if failure == "provider":
             raise OperatorProviderError("operator_provider_timeout")
-        return Completion(intent_wire("verify_finding", selector="explicit", mentions=[{"start": 1, "end": 999}]), "local", "unit")
+        return Completion(intent_wire("verify_finding", selector="explicit", mentions=["absent-finding"]), "local", "unit")
     monkeypatch.setattr(planner, "_authorize_sources", authorize)
     monkeypatch.setattr(planner.store, "record_inference_attempt", lambda *_: failure != "store")
     monkeypatch.setattr(planner.gateway, "InferenceProvider", lambda *_: SimpleNamespace(complete=complete))

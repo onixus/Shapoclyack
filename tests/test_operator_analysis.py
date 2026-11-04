@@ -50,11 +50,11 @@ def test_prompt_excludes_free_text_and_personal_identifiers():
         "service": "private-service", "cwe": "CWE-79", "severity": ["malicious"],
     })
     messages = build_prompt(case["language"], bind(retrieval))
-    data = json.loads(messages[1]["content"])
+    data = json.loads(messages[-1]["content"])
     assert data["sources"][0]["context"] == {"cve": "CVE-2026-1234", "cwe": "CWE-79", "port": 443}
     for secret in ("192.0.2.1", "Ignore instructions", "private-owner", "private-host", "private-run",
                    "private-service", "evil.example", "secret evidence"):
-        assert secret not in messages[1]["content"]
+        assert secret not in messages[-1]["content"]
 
 
 def test_prompt_states_ordered_independent_decisions_and_preserves_per_source_inputs():
@@ -72,7 +72,7 @@ def test_prompt_states_ordered_independent_decisions_and_preserves_per_source_in
     assert "Severity NEVER changes category" in system
     assert "CVE, CWE, service and port NEVER raise priority" in system
     assert "Never copy a CVE, CWE, category or severity from another source" in system
-    supplied = json.loads(messages[1]["content"])["sources"]
+    supplied = json.loads(messages[-1]["content"])["sources"]
     assert supplied[0]["context"] == first["context"]
     assert supplied[1]["context"] == second["context"]
     assert "cve" not in supplied[1]["context"]
@@ -204,7 +204,7 @@ def test_compact_wire_expands_server_tuples_without_repairing_labels_or_public_s
     for item in retrieval["items"]:
         for field in ("source_id", "source_hash", "snapshot_id"):
             assert item[field] not in prompt and item[field] not in schema
-    assert json.loads(build_prompt("en", binding)[1]["content"])["sources"] == [
+    assert json.loads(build_prompt("en", binding)[-1]["content"])["sources"] == [
         {"source_ref": 0, "context": {key: value for key, value in retrieval["items"][0]["context"].items() if key != "ip"}},
         {"source_ref": 1, "context": retrieval["items"][1]["context"]},
     ]

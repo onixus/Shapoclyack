@@ -268,6 +268,42 @@ resolved three subsequent diagnostic calls, but those calls used a temporary
 An attempted `anyOf`/`oneOf` conditional schema was rejected for the product
 because the pinned runtime generated an invalid shape; no such schema is used.
 
+## Exact-v6 cold start and first independent holdout — 2026-11-04
+
+A newly exported exact `aa3ddb9b5859ce51a4477ea08fd17af54deeb0a3` bundle passed
+verification and fresh authenticated startup. Its manifest SHA-256 is
+`19476740df6f13fdbfe53f99b131c4b681934467ca379e1dca8597619fb2aa28`. The real
+package/device planner request returned `resolved` with contextual
+`find_remediation`; no temporary source overlay was used. Host packet capture
+began before startup and recorded zero DNS/drops and no external unicast IPv4
+destination from the project subnet. A separate 60-second namespace observation
+of inference, embeddings, API and worker found zero unexpected destinations,
+DNS, receive errors or drops and no OOM/restarts. Shared-VM IPv6/IGMP process
+attribution remains an explicit limitation of the host capture.
+
+The independently authored/reviewed holdout completed all 190 first-shot cases
+and a 3601.83-second serial load with 637 additional requests and no additional
+errors. It failed quality: 138/190 gold cases, tool accuracy 39/70, fixed-version
+recall 6/14 and 12 security classification errors. Category macro-F1 was 0.91268,
+citation precision 156/156 and p95 9.695 seconds. The load gate passed, but it
+does not offset quality. The 90-minute observer recorded no OOM/restart, DNS,
+unexpected destination, drop or sampling error. Raw-record SHA-256 is
+`1926fb09211bbe8e01273f97a704346166f33aa2c8545bf42892be92c291d2cb`; the watchdog
+exported all native evidence and no OOM occurred. This holdout is now exposed
+regression data and cannot supply another independent pass. Its remaining model
+errors are being fixed without changing gold or thresholds.
+
+Follow-up exposed diagnostics exercised representatives of every observed error
+class. Literal witnesses removed offset errors; general intent and classification
+examples corrected the selected remediation, planning, analysis, degraded and
+security representatives on the final v12 planner/analysis rules. These selected
+development calls are not a complete run or independent evidence. The 576
+profile tests and Ruff passed. A separately authored/reviewed holdout remains
+mandatory.
+
+Jenkins build 3 checked out `aa3ddb9b` but was later ABORTED when the
+`gaming-amd64` channel terminated and did not recover. It is not a CI pass.
+
 ## Evidence locations and remaining gates
 
 The private local evidence root is `.operator-local/evaluation/`, including
