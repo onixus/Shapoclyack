@@ -410,8 +410,16 @@ case-specific output repair. Explicit witnesses retain the same closed schema
 and resolver; a fresh model-input projection and independent holdout are still
 required after the wire change.
 
+`operator-contextfree-intent-v6` explicitly requires `mentions=[]` for every
+contextual selection, including requests containing ASCII package literals, and
+adds a generic selected-device/package example. The resolver remains strict:
+a contradictory non-empty mention list is unsupported. Conditional `anyOf` and
+`oneOf` schemas were tested against the pinned runtime and are not used because
+they produced an invalid shape. The v6 wire requires new projection review;
+three diagnostic calls are not independent quality evidence.
+
 `typed-intent-resolver-v3` was introduced with v4 and retains the same closed
-input schema and resolution rules in v5.
+input schema and resolution rules in v5 and v6.
 A schema-valid but unresolvable literal witness is an ordinary unsupported plan:
 all arguments are discarded, no effect executes and no confirmation is offered.
 This applies uniformly to every operation, including mixed valid/invalid spans,

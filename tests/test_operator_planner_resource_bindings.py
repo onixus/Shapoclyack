@@ -135,6 +135,7 @@ def test_literal_guide_has_exact_repeated_offsets_but_no_resource_authority():
     request = planner.PlanRequest(request="Remediate package openssl on the selected device.", context=CONTEXT)
     prompt = planner.build_prompt(request)[0]["content"]
     assert "Package names, product descriptions and ordinary words" in prompt
+    assert "selector contextual REQUIRES mentions []" in prompt
     assert "Provided targets belong to the selected scan_scope" in prompt
 
 

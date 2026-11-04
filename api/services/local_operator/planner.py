@@ -18,7 +18,7 @@ from api.services.local_operator.providers import OperatorProviderError
 
 ToolName = Literal["summarize_run", "analyze_run", "compare_runs", "find_remediation",
                    "prepare_scan", "cancel_scan", "verify_finding", "abstain"]
-PROMPT_VERSION = "operator-contextfree-intent-v5"
+PROMPT_VERSION = "operator-contextfree-intent-v6"
 TOOL_VERSION = "typed-intent-resolver-v3"
 
 
@@ -128,9 +128,12 @@ def build_prompt(request: PlanRequest) -> list[dict[str, str]]:
          "or finding; preserve the user's kind. For unsupported or unclear intent use abstain with "
          "subject_kind unspecified or ambiguous, selector none or ambiguous, and mentions []. "
          "Use selector contextual and mentions [] when the user refers to selected/current/provided objects "
-         "without naming their canonical identifiers. Package names, product descriptions and ordinary words "
-         "are not resource identifiers; remediation for a selected device remains contextual even when it "
-         "names a package. Provided targets belong to the selected scan_scope and do not make it explicit. "
+         "without naming their canonical identifiers. selector contextual REQUIRES mentions [], even when "
+         "the request contains ASCII literals. Never attach a span to a contextual request. Package names, "
+         "product descriptions and ordinary words are not resource identifiers; remediation for a selected "
+         "device remains contextual even when it names a package. For example, 'Remediate package openssl on "
+         "the selected device' means selector contextual and mentions []. Provided targets belong to the "
+         "selected scan_scope and do not make it explicit. "
          "If canonical resource identifiers are explicitly named, use selector explicit and supply their "
          "literal spans as {start,end}: zero-based Unicode-character offsets into the request, start "
          "inclusive, end exclusive. Include every named resource identifier; comparison needs two. "

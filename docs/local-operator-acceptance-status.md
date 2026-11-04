@@ -1,4 +1,4 @@
-# Mac acceptance evidence — 2026-10-26
+# Mac acceptance evidence — status through 2026-11-04
 
 The implementation and acceptance harnesses are delivered in PR #607. **The
 Mac runtime and the complete epic are not accepted.** This record distinguishes
@@ -239,6 +239,34 @@ It therefore failed coverage and latency despite passing the measured accuracy
 fractions. Its records remain in
 `shapo-operator-quality-36b176096cea40b7a5a240a96fae800a`. These two attempts
 use different corpora and configurations and are not interchangeable evidence.
+
+## Compact v9 engineering run and cold-start diagnostics — 2026-11-04
+
+The exposed original corpus was rerun with `finding-analysis-labels-v9` and
+`operator-contextfree-intent-v5`; the relevant source bytes were subsequently
+committed as `2ac852820a2100d8e94dc6d5ef1a409f9b7cc457`. All 190 responses were
+valid and present. The run retained seven wrong analysis answers: six CWE
+category errors and one English missing-severity priority error. Measured gates
+nevertheless passed their frozen numeric thresholds: tool accuracy 70/70,
+category macro-F1 0.86556 (minimum 0.85), citation precision 118/118, fixed
+version support and recall 14/14, all 40 security cases, p50 3.049 seconds and
+p95 7.622 seconds. Raw-record SHA-256 is
+`c5457e584bbb4dbc388e0f1499308ecafec53cfb13d74d319449051e510471ae`; source and
+reviewed inputs remained unchanged. Both models stayed healthy with no OOM or
+restart. This was an 11.5-minute development run without the final hour soak;
+`quality_gate_passed=false` remains correct because the corpus is exposed.
+
+The verified exact-source offline bundle for `2ac85282` exported, independently
+verified and completed a fresh authenticated import/start. Its manifest SHA-256
+is `811e9ce577ea00c073a7fbd3f123d434cfb5e9ac9ed4d76edd2d75bd93ce3b9e`. No cold-start
+packet capture was attached to that first import, so the network gate remains
+open. One v5 cold planner request returned the contradictory combination
+`selector=contextual` plus a package span and was correctly refused as
+`witness_unresolved`. The v6 prompt explicitly forbids that combination and
+resolved three subsequent diagnostic calls, but those calls used a temporary
+`/tmp` source overlay and do not replace a fresh exact-v6 bundle/capture run.
+An attempted `anyOf`/`oneOf` conditional schema was rejected for the product
+because the pinned runtime generated an invalid shape; no such schema is used.
 
 ## Evidence locations and remaining gates
 
