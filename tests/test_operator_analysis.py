@@ -2,7 +2,6 @@
 import copy
 import hashlib
 import json
-from itertools import permutations, product
 from pathlib import Path
 
 import pytest
@@ -19,7 +18,7 @@ CASES = json.loads(FIXTURE.read_text())["cases"]
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c["case_id"])
 def test_frozen_analysis_contract(case):
-    args = (json.dumps(compact_fixture_output(case["model_output"], case["retrieval"])), case["language"])
+    args = (json.dumps(compact_fixture_output(case["model_output"], case["retrieval"], case["language"])), case["language"])
     if case["expected"] == "reject":
         with pytest.raises(AnalysisError):
             validate_output(*args, bind(case["retrieval"]))
@@ -90,7 +89,7 @@ def test_invalid_json_has_no_repair_or_fallback(raw):
 
 def test_stale_item_cannot_be_selected_in_partial_result():
     case = copy.deepcopy(CASES[0])
-    raw = compact_fixture_output(case["model_output"], case["retrieval"])
+    raw = compact_fixture_output(case["model_output"], case["retrieval"], case["language"])
     case["retrieval"]["items"][0]["citation"]["status"] = "stale"
     with pytest.raises(AnalysisError, match="abstention"):
         validate_output(json.dumps(raw), "ru", bind(case["retrieval"]))
@@ -114,7 +113,7 @@ def test_generation_schema_exposes_only_bounded_local_refs_and_no_source_tuples(
     frozen = copy.deepcopy(retrieval)
     schema = output_schema(bind(retrieval), language="en")
     assert schema["additionalProperties"] is False
-    assert schema["properties"]["language"] == {"type": "string", "const": "en"}
+    assert set(schema["properties"]) == {"recommendations"}
     selection = schema["$defs"]["CompactSelection"]
     assert selection["additionalProperties"] is False
     assert selection["properties"]["source_ref"] == {"type": "integer", "enum": list(range(10))}
@@ -127,27 +126,18 @@ def test_generation_schema_exposes_only_bounded_local_refs_and_no_source_tuples(
     assert schema["properties"]["recommendations"]["items"] == {"$ref": "#/$defs/CompactSelection"}
 
 
-def test_generation_step_choices_preserve_every_unique_order_and_exclude_repetition():
+def test_generation_bounds_steps_to_one_without_forcing_semantic_labels():
     retrieval = copy.deepcopy(CASES[0]["retrieval"])
     second = copy.deepcopy(retrieval["items"][0])
     second["source_id"] = second["citation"]["source_id"] = "second-source"
     retrieval["items"].append(second)
     schema = output_schema(bind(retrieval), language="en")
-    steps = schema["$defs"]["UniqueNextSteps"]
-    choices = steps["items"]["enum"]
-    expected = {order for size in range(1, 5) for order in permutations(choices, size)}
-    actual = {tuple(order) for order in steps["enum"]}
-    assert len(actual) == len(steps["enum"]) == 64
-    assert actual == expected
-    assert () not in actual
-    for size in range(2, 5):
-        for order in product(choices, repeat=size):
-            if len(set(order)) != size:
-                assert order not in actual
     selection = schema["$defs"]["CompactSelection"]
     assert selection["properties"]["source_ref"]["enum"] == [0, 1]
-    assert selection["properties"]["next_steps"] == {"$ref": "#/$defs/UniqueNextSteps"}
-    # No forced source prefix/order or all-source minimum, and no forced labels.
+    steps = selection["properties"]["next_steps"]
+    assert steps["minItems"] == steps["maxItems"] == 1
+    assert set(steps["items"]["enum"]) == {"verify_evidence", "review_configuration",
+                                           "confirm_exposure", "request_fresh_scan"}
     assert schema["properties"]["recommendations"]["minItems"] == 1
     assert schema["properties"]["recommendations"]["maxItems"] == 2
     assert "prefixItems" not in schema["properties"]["recommendations"]
@@ -160,7 +150,7 @@ def test_actual_duplicate_next_step_response_is_still_rejected_without_repair():
     selection = case["model_output"]["recommendations"][0]
     selection["next_steps"] = ["request_fresh_scan", "request_fresh_scan"]
     with pytest.raises(AnalysisError, match="duplicate_selection"):
-        validate_output(json.dumps(compact_fixture_output(case["model_output"], case["retrieval"])),
+        validate_output(json.dumps(compact_fixture_output(case["model_output"], case["retrieval"], case["language"])),
                         case["language"], bind(case["retrieval"]))
 
 
@@ -172,7 +162,7 @@ def test_unavailable_generation_schema_requires_an_empty_abstention(state):
         retrieval["items"] = []
     schema = output_schema(bind(retrieval))
     assert schema["properties"]["recommendations"]["maxItems"] == 0
-    assert schema["properties"]["summary"]["const"] == "insufficient_evidence"
+    assert set(schema["properties"]) == {"recommendations"}
 
 
 def test_stale_references_cannot_be_generated_from_a_partial_result():
@@ -193,7 +183,7 @@ def _two_sources():
 
 
 def _compact(ref=0):
-    return {"language": "en", "summary": "review_required", "recommendations": [{
+    return {"recommendations": [{
         "source_ref": ref, "category": "unknown", "proposed_priority": "low", "next_steps": ["verify_evidence"]}]}
 
 

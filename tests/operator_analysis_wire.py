@@ -7,8 +7,12 @@ and must still fail the new wire contract; no label or other field is repaired.
 from copy import deepcopy
 
 
-def compact_fixture_output(output, retrieval):
+def compact_fixture_output(output, retrieval, language):
     result = deepcopy(output)
+    if result.get("language") == language:
+        result.pop("language")
+    if result.get("summary") in {"review_required", "insufficient_evidence"}:
+        result.pop("summary")
     eligible = [item for item in retrieval["items"] if item["citation"]["status"] != "stale"]
     for selection in result.get("recommendations", []):
         fields = ("source_id", "source_hash", "snapshot_id")

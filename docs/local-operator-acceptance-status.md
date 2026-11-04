@@ -217,6 +217,29 @@ must invalidate it before expansion. Category/priority decisions remain free,
 with no repair to match gold. This reduces redundant copying, but latency and
 full quality still require a fresh measured run.
 
+## Independent holdout and compact-literal attempts — 2026-10-27/28
+
+The retained native-volume records provide the later results that were absent
+from this status document. On `4b97e6ef`, the independently authored and
+reviewed 190-case holdout completed every first-shot case and a 3604.54-second
+serial load phase, but failed quality: 130/190 overall gold cases, tool accuracy
+25/70, remediation 0/40, category macro-F1 0.80890, citation precision 148/148,
+and full-response p95 30.178 seconds. All 40 remediation cases were valid
+`witness_unresolved` refusals: the parser treated package or descriptive text as
+an explicit resource witness instead of the selected device. The hour-long load
+gate passed; it does not offset the quality or latency failure. The authoritative
+records remain in Docker volume `shapo-operator-quality-d357c0f748fd4117b93d3349a0527874`.
+This holdout is now exposed and cannot be rerun as independent acceptance.
+
+A later compact-literal engineering run on the exposed original corpus produced
+181/190 gold cases, tool accuracy 67/70, category macro-F1 0.91944, citation
+precision 117/117 and fixed-version support/recall 14/14. Two cases were
+interrupted and full-response p95 was 36.312 seconds; no hour-long soak was run.
+It therefore failed coverage and latency despite passing the measured accuracy
+fractions. Its records remain in
+`shapo-operator-quality-36b176096cea40b7a5a240a96fae800a`. These two attempts
+use different corpora and configurations and are not interchangeable evidence.
+
 ## Evidence locations and remaining gates
 
 The private local evidence root is `.operator-local/evaluation/`, including

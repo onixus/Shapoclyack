@@ -63,6 +63,13 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- Local operator intent parsing uses a context-independent literal guide and
+  typed resource witnesses, keeping package names and supplied scan targets
+  distinct from canonical resource IDs. The evaluation harness supports a
+  separately authored, independently reviewed one-shot holdout with durable
+  exposure accounting. Finding-analysis generation leaves language and summary
+  to the server and emits one next step per source, reducing provider wire size
+  and latency without changing the public response or quality thresholds.
 - The legacy Nuclei web sweep binds input-forward DNS names to the discovered
   IP ([#619](https://github.com/onixus/Shapoclyack/pull/619)): one invocation
   per authority, always dialling the IP, the bare IP (default virtual host)

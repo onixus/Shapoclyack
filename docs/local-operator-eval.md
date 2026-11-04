@@ -1,23 +1,27 @@
 # Finding analysis contract and evaluation boundary
 
 `analyze_run` uses a selection-only model contract, exported as
-`docs/schemas/operator-analysis-v1.json`. The model selects a summary label,
-registered source ID/hash/snapshot tuples, proposed priority (`low`, `medium`,
+`docs/schemas/operator-analysis-v1.json`. On the provider wire the model selects
+request-local integer source references, proposed priority (`low`, `medium`,
 `high`, `unknown`), category (`vulnerability`, `exposure`, `configuration`,
-`unknown`), and up to four fixed next-step labels. Server code renders the
-summary and next steps in Russian or English and attaches citations from the
-registered evidence. Free-form prose, URLs, commands, tenant/actor/ownership,
-version, risk and other extra fields are rejected. These are proposals for
-human review, never writes to finding priority, risk, ownership or configuration.
-No comparison or remediation claims are supported.
+`unknown`), and one fixed next-step label per source. The server derives the
+summary from retrieval state, expands references into the original registered
+source ID/hash/snapshot tuples, and renders the summary and next step in Russian
+or English. The exported public response contract is unchanged. Free-form prose,
+URLs, commands, tenant/actor/ownership, version, risk and other extra fields are
+rejected. These are proposals for human review, never writes to finding
+priority, risk, ownership or configuration. No comparison or remediation claims
+are supported.
 
 The analyzer requests strict `json_schema` generation from its configured
-provider. The execution schema binds the requested language and each permitted
-source ID/hash/snapshot tuple as server-owned constants; stale sources cannot
-be selected. The schema is bounded and included with the messages in the audit
-prompt digest (prompt/tool version 2). Response validation still runs afterward.
-Unsupported provider schema mode fails without repair or fallback. This affects
-format and reference consistency, not classification quality.
+provider. The execution schema binds permitted source references to the held
+server registry; stale sources cannot be selected. Language and summary are not
+generated. Bounding generation to one next step avoids the large permutation
+schema and duplicate-step failures without changing the public response shape.
+Response validation still runs afterward and continues to accept the historical
+supplied-output contract with up to four steps. Unsupported provider schema mode
+fails without repair or fallback. This affects format and reference consistency,
+not classification quality.
 
 The caller must authorize retrieval and revalidate every selected source after
 inference. This validator does not establish tenant authorization. Every

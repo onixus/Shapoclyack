@@ -40,7 +40,7 @@ ATTACKS = [
 def evidence_case(language):
     case = copy.deepcopy(next(case for case in CASES if case["expected"] == "accept"
                               and case["model_output"]["recommendations"] and case["language"] == language))
-    case["model_output"] = compact_fixture_output(case["model_output"], case["retrieval"])
+    case["model_output"] = compact_fixture_output(case["model_output"], case["retrieval"], language)
     return case
 
 

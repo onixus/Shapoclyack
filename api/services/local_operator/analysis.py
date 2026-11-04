@@ -8,16 +8,14 @@ from __future__ import annotations
 import json
 import re
 import hashlib
-from copy import deepcopy
 from dataclasses import dataclass, field
-from itertools import permutations
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.services.local_operator.contracts import Citation
 
-PROMPT_VERSION = "finding-analysis-labels-v8"
+PROMPT_VERSION = "finding-analysis-labels-v9"
 MAX_OUTPUT_BYTES = 32768
 MAX_ITEMS = 40
 SERVICES = frozenset({"http", "https", "ssh", "smtp", "dns", "ftp", "smb", "rdp", "mysql",
@@ -65,9 +63,8 @@ class CompactSelection(BaseModel):
 
 
 class CompactModelAnalysis(BaseModel):
+    """Only semantic selections are generated; server owns language and summary."""
     model_config = ConfigDict(extra="forbid", strict=True)
-    language: Literal["ru", "en"]
-    summary: Literal["review_required", "insufficient_evidence"]
     recommendations: list[CompactSelection] = Field(max_length=MAX_ITEMS)
 
 
@@ -139,28 +136,16 @@ def output_schema(retrieval_result, *, language=None):
     schema = CompactModelAnalysis.model_json_schema()
     if language is not None:
         _language(language)
-        schema["properties"]["language"] = {"type": "string", "const": language}
     recommendations = schema["properties"]["recommendations"]
     eligible = _eligible(registered)
     if not eligible or retrieval_result["state"] in {"missing", "stale", "unknown"}:
         recommendations["maxItems"] = 0
-        schema["properties"]["summary"] = {"type": "string", "const": "insufficient_evidence"}
         return schema
-    # The pinned runtime's grammar converter supports array-valued enum, but
-    # does not implement uniqueItems. Preserve every legal nonempty ordering
-    # of these four choices while excluding duplicates before generation.
-    # Share the definition instead of repeating 64 arrays for every source.
     selection = schema["$defs"]["CompactSelection"]["properties"]
-    steps = deepcopy(selection["next_steps"])
-    choices = steps["items"]["enum"]
-    steps["enum"] = [list(order) for size in range(1, len(choices) + 1)
-                     for order in permutations(choices, size)]
-    schema["$defs"]["UniqueNextSteps"] = steps
-    selection["next_steps"] = {"$ref": "#/$defs/UniqueNextSteps"}
+    selection["next_steps"]["maxItems"] = 1
     selection["source_ref"] = {"type": "integer", "enum": list(range(len(eligible)))}
     recommendations["minItems"] = 1
     recommendations["maxItems"] = min(MAX_ITEMS, len(eligible))
-    schema["properties"]["summary"] = {"type": "string", "const": "review_required"}
     return schema
 
 
@@ -249,13 +234,13 @@ def build_prompt(language, retrieval_result):
          "critical or high -> high; medium -> medium; low or info -> low; "
          "missing or unknown -> unknown. CVE, CWE, service and port NEVER raise priority. "
          "These are proposed labels for human review, not verified exploitation or official risk. "
-         "For state partial or truncated, select at least one supplied non-stale source and set summary "
-         "review_required. Include every supplied non-stale source when it fits the output budget, once each; "
+         "For state partial or truncated, select at least one supplied non-stale source. "
+         "Include every supplied non-stale source when it fits the output budget, once each; "
          "partial coverage does not require abstaining from individual observations. A registered source with "
          "empty context still gets category unknown and proposed_priority unknown, never an empty selection. "
          "Never select a source whose status is stale. Only for state missing, stale or unknown, or when no "
-         "non-stale source exists, abstain: summary insufficient_evidence and recommendations []. "
-         "Choose only relevant allowed next_steps, without repeating a step. "
+         "non-stale source exists, return recommendations []. The server derives the summary from retrieval "
+         "state and supplies the response language. Choose exactly one relevant allowed next_steps item. "
          "No remediation or comparison claims are supported."},
         {"role": "user", "content": json.dumps({"language": language,
          "state": retrieval_result["state"], "sources": sources}, ensure_ascii=False, sort_keys=True)},
@@ -283,13 +268,9 @@ def validate_output(raw_text, language, retrieval_result):
             parse_constant=lambda _: (_ for _ in ()).throw(ValueError("invalid number"))))
     except (ValueError, TypeError, RecursionError) as exc:
         raise AnalysisError("operator_invalid_model_output") from exc
-    if model.language != language:
-        raise AnalysisError("operator_analysis_language_mismatch")
     eligible = _eligible(registered)
     abstain = retrieval_result["state"] in {"missing", "stale", "unknown"} or not eligible
-    if (abstain and (model.summary != "insufficient_evidence" or model.recommendations)
-            or (model.summary == "insufficient_evidence" and model.recommendations)
-            or (model.summary == "review_required" and not model.recommendations)):
+    if abstain == bool(model.recommendations):
         raise AnalysisError("operator_analysis_abstention_required")
     recommendations, citations, seen = [], [], set()
     for selection in model.recommendations:
@@ -308,7 +289,8 @@ def validate_output(raw_text, language, retrieval_result):
             "proposed_priority": selection.proposed_priority, "category": selection.category,
             "next_steps": [TEXT[language][step] for step in selection.next_steps],
             "citation": reference})
+    summary = "insufficient_evidence" if abstain else "review_required"
     return {"schema_version": "1", "language": language, "status": "incomplete",
             "quality_status": "quality_unverified", "reason": TEXT[language]["reason"],
-            "summary": TEXT[language][model.summary], "recommendations": recommendations,
+            "summary": TEXT[language][summary], "recommendations": recommendations,
             "citations": citations}

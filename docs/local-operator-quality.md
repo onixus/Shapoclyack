@@ -110,6 +110,16 @@ tests establish the binding/shape boundary, not a measured latency gain. A
 new sealed actual-model run is required. The gateway's binding implementation
 is included in evaluator source provenance alongside the prompt and scorer.
 
+Provider wire `finding-analysis-labels-v9` removes server-owned `language` and
+`summary` from generation and permits one next step per recommendation. The
+server derives the summary from retrieval state and preserves the public
+language, summary and next-step arrays. Category, priority and source selection
+remain free model decisions with no deterministic repair. The generation schema
+no longer carries 64 next-step permutations; post-validation still rejects
+duplicate sources and steps, and historical supplied-output fixtures retain
+their multi-step public contract. This is a latency-oriented wire change, not a
+threshold, gold or scoring change, and requires a fresh measured run.
+
 Remediation cases call the actual planner, then the native local remediation
 renderer/comparator over a synthetic accepted inventory and a local vendor
 snapshot. Only the fixture data provider is substituted; production identity,
@@ -269,3 +279,153 @@ stalled. They are failed/interrupted **development** runs, never final passes.
 `development-infra-observations.json` records the associated infrastructure
 observations, including the absence of a cgroup OOM event in the inspected
 snapshot; it does not replace final resource/soak acceptance.
+
+### Independently authored holdout protocol
+
+The default 190-case corpus remains an exposed regression corpus. Its bytes,
+labels, rubric, thresholds and exposed-only status are unchanged. Passing it
+cannot establish performance on unseen inputs.
+
+A separately authored synthetic holdout may be selected using `--dataset` on
+both `freeze` and `run`. This requires all of `--exposure-policy`, an independently
+communicated `--exposure-policy-sha256`, and `--prior-inputs`. There is no waiver
+flag. The policy binds exact dataset bytes and canonical content, original
+protocol, every scenario and every actual model messages/schema projection.
+The full original counts (60 analysis, 40 remediation, 30 planning, 20 degraded,
+40 security), equal RU/EN split within each kind and original thresholds apply.
+Each scenario family contains one equivalent RU/EN pair. Every model-visible
+input must differ from the original corpus, other holdout cases and the reviewed
+inventory of prior locally dispatched request hashes. Changing source IDs,
+hashes, gold or editorial labels cannot establish novelty. No collision
+exceptions or mixed exposed/unseen corpus are accepted.
+
+Before any model output, a blind author and a different named reviewer must
+record independent gold and scenario-novelty review. The dataset has
+`dataset_role: independent_synthetic_holdout_v1` and authoring metadata with
+`review_status: reviewed`, `independent_review.reviewer` matching the policy and
+`human_domain_expert_reviewed: false`. The reviewer uses
+`evaluation_policy.review_material(dataset, baseline, model_input_projection)`
+to compute the binding fields, then signs off the exact policy digest through a
+separate trusted channel. That function computes bindings; it does not perform
+review or certify author identity. The prior-input inventory binds a reviewed
+list of SHA256 request projections and SHA256 attempt receipts. The trusted
+reviewer must establish the inventory is complete from retained raw attempts;
+a hash list alone cannot independently prove its own completeness.
+
+Policy schema version 1 requires: role, dataset_sha256,
+dataset_canonical_sha256, protocol_sha256, case_set_sha256,
+case_projection_sha256 (case ID to request digest), unseen_case_ids,
+development_exposed_case_ids (empty), prior_inputs_sha256; author with name,
+completed_at and blind_to_prior_outputs=true; review with name, reviewed_at,
+before_model_outputs=true, gold_reviewed=true, scenario_novelty_reviewed=true;
+and claims synthetic_only=true, human_domain_expert_reviewed=false,
+external_certification=false, pretraining_contamination_unknown=true.
+Timestamps require timezones and author completion precedes review. The prior
+inventory schema version 1 has canonicalization
+`sha256-canonical-messages-schema-v1`, reviewer, reviewed_at,
+model_input_sha256 and attempt_evidence_sha256. Both digest lists are nonempty,
+unique and reviewed before the policy. Duplicate JSON keys, ambiguous numeric
+constants and symlink/nonregular input files are rejected.
+
+Run the full holdout directly, without a pilot, subset or development dispatch:
+
+```sh
+python scripts/operator-evaluate.py freeze --output "$FREEZE" \
+  --model-path "$PINNED_MODEL" --reviewed-by "$REVIEWER" \
+  --dataset "$HOLDOUT" --exposure-policy "$POLICY" \
+  --exposure-policy-sha256 "$TRUSTED_POLICY_SHA256" --prior-inputs "$PRIOR_INPUTS"
+python scripts/operator-evaluate.py run --output "$RESULTS" \
+  --manifest "$FREEZE/manifest.json" --soak-seconds 3600 \
+  --dataset "$HOLDOUT" --exposure-policy "$POLICY" \
+  --exposure-policy-sha256 "$TRUSTED_POLICY_SHA256" --prior-inputs "$PRIOR_INPUTS" \
+  --exposure-ledger "$PERSISTENT_NATIVE_LEDGER" --require-native-filesystem
+```
+
+The trusted controller must mount the same persistent native exposure-ledger
+volume across **all** attempts, bind its identity in provenance, retain it, and
+use the normal launch-permit/resource/network observation controls. These sample
+commands do not replace those runtime controls. The ledger reserves every input
+before inference and fsyncs its claim. Crashes retain exposure. A new output,
+changed source/policy or reused input cannot start a fresh retry. `--resume`
+requires the original output, identical metadata and original claim; failed or
+uncertain initial executions retain their failed records and are never retried.
+A nonblocking native output execution lock is acquired before shared metadata or
+journal recovery and held through all model calls and terminal report writes.
+Concurrent resumptions cannot both dispatch or recover the same journal. The
+lock inode is retained; closing the descriptor or process death releases kernel
+ownership, while the separate durable corpus claim survives. A live-owner lock
+failure is not permission to remove the lock file or retry in a new output.
+A privileged operator can replace a ledger or lie in an attestation; this is
+reviewed local provenance, not anti-administrator enforcement.
+
+The first execution of each case supplies the quality denominator. Later soak
+executions have their own journal and measure stability, without adding new
+unseen cases or replacing failures. Publication includes raw first-shot failures,
+scenario/request collision review, policy and prior-input digests, durable
+claims and separate quality/load gates. This is synthetic engineering
+acceptance, not external domain certification, and it cannot establish absence
+of pretraining contamination. A failed holdout becomes exposed regression data;
+revising its gold, selecting only successes or rerunning it cannot make it unseen.
+
+### Context-free planner intent and typed resolution
+
+`operator-contextfree-intent-v4` uses one inference to parse requested semantics,
+not to select from the currently bound resources. The model sees only the
+credential-minimized request and language, a closed operation/subject contract,
+and literal identifier spans. Changing selected run/device/job/finding IDs or
+scan scope cannot change this prompt or schema. The parser supplies an intent,
+subject kind, contextual/explicit selector and zero-based Unicode character spans
+for identifiers explicitly present in the minimized request; it supplies no
+action arguments.
+
+The server resolves those assertions against existing typed context. Missing or
+wrong kinds and unmatched explicit identities produce an unsupported plan.
+Remediation for a device and remediation for a finding are separate variants;
+neither falls back to the other. Literal spans must be complete canonical IDs,
+within the request and non-overlapping. Comparisons require the exact two bound
+run IDs; server current/previous roles remain fixed. Explicit scan-scope literals
+cannot override the selected scan template. Malformed spans or extra model
+arguments fail validation. Public request/result fields, current source/session
+authorization, proposal-only behavior and separate action confirmation remain.
+
+This proves consistency with the **parsed assertion**, not perfect understanding
+of arbitrary Russian or English. A model can still misclassify a subject, omit
+an explicitly named identifier or miscount character offsets. The server cannot
+detect every such semantic omission without an independent authoritative typed
+subject selected by the human. No lexical failure-case rules, second inference,
+gold changes or automatic semantic repair are used. Unit fixtures prove resolver
+and privacy properties only; real model regression must establish quality.
+The exposed original190 remains unchanged. A new prompt/schema changes actual
+model input projections, so a blind candidate requires a fresh pre-output
+projection/collision review, exact policy digest adoption and source freeze;
+an older policy digest must never silently authorize the new wire.
+
+`operator-contextfree-intent-v5` adds a server-generated `literal_spans` guide
+with exact ASCII tokens and every occurrence offset. The guide contains no
+selected context and no authority: ordinary words and foreign identifiers remain
+untrusted. Prompt guidance distinguishes canonical resource identifiers from
+package names, product descriptions, ordinary words and provided scan targets.
+This addresses the observed class of package-name/span confusion without adding
+case-specific output repair. Explicit witnesses retain the same closed schema
+and resolver; a fresh model-input projection and independent holdout are still
+required after the wire change.
+
+`typed-intent-resolver-v3` was introduced with v4 and retains the same closed
+input schema and resolution rules in v5.
+A schema-valid but unresolvable literal witness is an ordinary unsupported plan:
+all arguments are discarded, no effect executes and no confirmation is offered.
+This applies uniformly to every operation, including mixed valid/invalid spans,
+partial or noncanonical identifiers, overlaps, request-relative range errors and
+contradictory selectors. It never clamps, searches, normalizes or repairs spans,
+retains a partial argument, or changes an explicit request to contextual.
+Malformed JSON, closed-schema/type violations and independent authority,
+provider, persistence or programming failures remain failures.
+
+The server audit records a bounded resource-resolution status. Component records
+and the informational `planner_resource_resolution` summary distinguish schema
+failure from an unsupported domain refusal. These diagnostics are not new gates
+or waivers. Schema validity is recorded immediately after strict parsing, so an
+unexpected later resolver failure stays a failed record with schema-valid=true.
+A valid unsupported plan is still a wrong answer for positive gold;
+safe abstention and correct interpretation are different measurements. Existing
+failed attempts remain unchanged and are never rescored with this resolver.

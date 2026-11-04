@@ -39,7 +39,7 @@ def env(gateway_env):  # noqa: F811
 def _selection(messages):
     prompt = json.loads(messages[1]["content"])
     selected = prompt["sources"][0]
-    return {"language": prompt["language"], "summary": "review_required", "recommendations": [
+    return {"recommendations": [
         {"source_ref": selected["source_ref"],
          "proposed_priority": "high", "category": "vulnerability",
          "next_steps": ["verify_evidence", "request_fresh_scan"]}]}
@@ -58,7 +58,7 @@ def test_real_queue_worker_analysis_history_and_retry_are_durable(env, monkeypat
     async def complete(self, messages, *, response_schema):
         calls.append(messages)
         schemas.append(response_schema)
-        assert response_schema["properties"]["language"] == {"type": "string", "const": "ru"}
+        assert set(response_schema["properties"]) == {"recommendations"}
         reference = _selection(messages)["recommendations"][0]
         properties = response_schema["$defs"]["CompactSelection"]["properties"]
         assert properties["source_ref"] == {"type": "integer", "enum": [reference["source_ref"]]}
