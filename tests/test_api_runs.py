@@ -15,6 +15,7 @@ pytestmark = requires_postgres
 def _write_run(root: Path, run_id: str) -> None:
     run_dir = root / "runs" / run_id
     run_dir.mkdir(parents=True)
+    (run_dir / "tenant.json").write_text('{"tenant_id": "default"}', encoding="utf-8")
     (run_dir / "run_meta.json").write_text(
         json.dumps({"run_id": run_id, "profile": "balanced", "started_at": "2026-07-16T10:00:00+00:00"}),
         encoding="utf-8",
@@ -242,6 +243,7 @@ def test_list_runs_unconfirmed_findings_absent_for_older_runs(tmp_path: Path):
     client = _client(tmp_path)
     legacy = tmp_path / "output" / "runs" / "run-legacy"
     legacy.mkdir(parents=True)
+    (legacy / "tenant.json").write_text('{"tenant_id": "default"}', encoding="utf-8")
     (legacy / "run_meta.json").write_text(json.dumps({"run_id": "run-legacy"}), encoding="utf-8")
     (legacy / "summary.json").write_text(
         json.dumps({"alive_hosts": 1, "potential_vulnerabilities": 4}), encoding="utf-8"

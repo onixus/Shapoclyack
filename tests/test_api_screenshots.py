@@ -24,6 +24,7 @@ def _seed_run(output: Path, run_id: str = "run-shot") -> Path:
         json.dumps({"run_id": run_id}), encoding="utf-8"
     )
     (run_dir / "summary.json").write_text("{}", encoding="utf-8")
+    (run_dir / "tenant.json").write_text('{"tenant_id": "default"}', encoding="utf-8")
     (shots / FILE_NAME).write_bytes(PNG)
     (run_dir / "screenshots.json").write_text(
         json.dumps(
