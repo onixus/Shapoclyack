@@ -443,12 +443,15 @@ Malformed JSON, closed-schema/type violations and independent authority,
 provider, persistence or programming failures remain failures. Earlier failed
 attempts retain their original resolver and are never rescored.
 
-The current `operator-typed-intent-v12` retains literal-resolver-v4 and adds only
+The current `operator-typed-intent-v14` retains literal-resolver-v4 and adds only
 selected resource **types** in `available_subject_kinds`, never IDs, scope or
 authority. Prompt rules distinguish package remediation/status/applicability and
-missing vendor context from analysis, targeted verification and abstention.
-These general rules were developed against exposed failures; they do not repair
-model output and require fresh independent evidence.
+missing vendor context from analysis, targeted verification and abstention. A
+schema-shaped example rejects a request that combines summary and comparison;
+Windows fixed-status and advisory freshness/missing-fix questions remain
+find_remediation even when the domain result is unknown. These general rules were
+developed against exposed failures; they do not repair model output and require
+fresh independent evidence.
 
 The server audit records a bounded resource-resolution status. Component records
 and the informational `planner_resource_resolution` summary distinguish schema

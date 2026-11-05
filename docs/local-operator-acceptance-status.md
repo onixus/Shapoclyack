@@ -316,6 +316,25 @@ succeeded with `inference_performed=false`. Idempotent replay returned the same
 task ID and no network scan ran. The initial 27/30 record is retained; it is not
 reported as a clean 30-scenario pass. A fresh run is required on the final commit.
 
+## Second independent holdout and planner correction — 2026-11-05
+
+The second independently reviewed 190-case holdout on `3dd34ca2` improved to
+170/190 gold cases and passed all 40 security cases, category macro-F1 0.90278,
+citation precision 166/166, p95 8.853 seconds and the 3603.54-second load phase
+with 653 additional requests and no additional errors. It nevertheless failed:
+tool accuracy was 62/70 and fixed-version recall 12/14. Twelve analysis label
+errors, two mixed-intent selections and six remediation refusals remain recorded.
+Raw-record SHA-256 is
+`d2b46ff7634f2400f6271447d461bd52a674489d8176191d7a7feeaf23b76e96`; all
+reviewed inputs and sources stayed unchanged. The observer found no OOM/restart,
+DNS, unexpected destination, drop or sampling error. This corpus is exposed and
+cannot be reused for a later independent claim.
+
+Follow-up v13/v14 diagnostics corrected all six selected remediation refusals and
+both mixed summary/compare selections without changing resolver or gold. These
+are exposed development results only; a third independently authored/reviewed
+holdout is required.
+
 ## Evidence locations and remaining gates
 
 The private local evidence root is `.operator-local/evaluation/`, including

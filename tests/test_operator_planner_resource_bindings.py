@@ -115,12 +115,12 @@ def test_prompt_never_exposes_context_identity_or_scope_values():
                 for context in [{}, CONTEXT, {**CONTEXT, "job_id": "replacement", "device_id": "alternate"}]]
     assert planner.build_prompt(requests[1]) == planner.build_prompt(requests[2])
     assert all(planner.output_schema(r) == planner.output_schema(requests[0]) for r in requests)
-    user = json.loads(planner.build_prompt(requests[0])[1]["content"])
+    user = json.loads(planner.build_prompt(requests[0])[-1]["content"])
     assert set(user) == {"request", "language", "literal_spans", "available_subject_kinds"}
     assert user["available_subject_kinds"] == []
     assert user["literal_spans"] == [["Review", [0]], ["selected", [7]], ["object.", [16]]]
     wire = json.dumps(planner.build_prompt(requests[1]))
-    assert json.loads(planner.build_prompt(requests[1])[1]["content"])["available_subject_kinds"] == [
+    assert json.loads(planner.build_prompt(requests[1])[-1]["content"])["available_subject_kinds"] == [
         "run", "device", "job", "finding", "previous_run", "scan_scope"]
     for value in ["192.0.2.77", "8443", "run-alder", "asset-cedar", "job-larch", "finding-pine"]:
         assert value not in wire
