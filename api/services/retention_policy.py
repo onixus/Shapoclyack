@@ -364,26 +364,25 @@ def run_owner(
     the plan singles out; any other segment is a tenant on the default window,
     and the segment is as good a key as its id for that.
 
-    A flat run's owner is its ``tenant.json``, and a run with none is the
-    default tenant's — the rule ``runs.read_run_tenant`` applies to readers.
-    But an *unreadable* marker is not a missing one: ``workspace.read_run_marker``
-    treats the two alike, which is right for a listing and wrong here, where
-    guessing "default" could delete a held tenant's run. None tells the reaper
-    to leave the run for the next tick.
+    A flat run's owner is its ``tenant.json``. Missing, malformed and unreadable
+    markers all return None: guessing ``default`` could expose a run to that
+    tenant or delete one covered by another tenant's legal hold (#311). None
+    tells the reaper to leave the run for operator recovery or the next tick.
     """
-    from api.services.tenants import DEFAULT_TENANT_ID
-
     if ref.tenant is not None:
         return segments.get(ref.tenant, ref.tenant)
     marker = artifact_store.keys.run_artifact(ref, "tenant.json")
     try:
         payload = json.loads(store.get_bytes(marker).decode("utf-8"))
-    except artifact_store.ArtifactNotFound:
-        return DEFAULT_TENANT_ID
-    except (artifact_store.ArtifactStoreError, UnicodeDecodeError, ValueError):
+    except (
+        artifact_store.ArtifactNotFound,
+        artifact_store.ArtifactStoreError,
+        UnicodeDecodeError,
+        ValueError,
+    ):
         return None
-    owner = str(payload.get("tenant_id") or "").strip() if isinstance(payload, dict) else ""
-    return owner or DEFAULT_TENANT_ID
+    owner = payload.get("tenant_id") if isinstance(payload, dict) else None
+    return owner.strip() if isinstance(owner, str) and owner.strip() else None
 
 
 def segment_map(plan: RetentionPlan) -> dict[str, str]:

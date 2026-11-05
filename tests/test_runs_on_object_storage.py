@@ -128,15 +128,16 @@ def test_the_surface_filter_reads_the_marker_not_the_run(tmp_path: Path) -> None
     assert total == 1 and page[0].run_id == "20260915T100000Z"
 
 
-def test_an_untagged_run_belongs_to_the_default_tenant(tmp_path: Path) -> None:
-    """A run from the plain CLI, or from before the marker existed."""
+def test_an_untagged_run_has_no_tenant(tmp_path: Path) -> None:
+    """A plain CLI run needs an explicit owner before any tenant may read it."""
     shared = FakeS3Client()
     writer = _replica(tmp_path, "pod-a", shared)
     reader = _replica(tmp_path, "pod-b", shared)
     _publish(writer, "20260915T100000Z", tenant=None)
 
-    _page, total = runs_service.list_runs(reader, tenant_id="default")
-    assert total == 1
+    assert runs_service.list_runs(reader, tenant_id="default") == ([], 0)
+    _page, total = runs_service.list_runs(reader, tenant_id="acme")
+    assert total == 0
 
 
 def test_an_artifact_resolves_to_a_key_without_materialising_the_run(

@@ -11,7 +11,6 @@ from api.services import artifact_store
 from api.services import pagination
 from api.services import promoted_domains as promoted_service
 from api.services import retention_policy
-from api.services import tenants as tenants_service
 from api.services.artifact_store import keys as artifact_keys
 from api.services.artifact_store import workspace
 from api.services.risk_scoring import get_scorer
@@ -21,8 +20,8 @@ from api.settings import Settings
 LOG = logging.getLogger("shapoclyack.runs")
 
 # Marker file written into a run directory naming the tenant the run belongs to
-# (ROADMAP P0). Runs produced before this shipped have no marker and are read as
-# belonging to the default tenant — the tenant every pre-P0 install scanned as.
+# (ROADMAP P0). A flat run without a valid marker has no tenant until an operator
+# establishes one; it is never assigned implicitly to default (#311).
 RUN_TENANT_FILE = "tenant.json"
 
 # Families kept in the output directory beside ``runs/``. The single-run layout
@@ -30,7 +29,7 @@ RUN_TENANT_FILE = "tenant.json"
 # them -- ``reports/<tenant>/`` included -- would be an artifact of that run.
 _OUTPUT_FAMILIES = frozenset(
     family for family, where in artifact_keys.LOCAL_ROOT_BY_FAMILY.items() if where == "output"
-)
+) | {"migration-backups"}
 
 
 def _outside_flat_run(run_id: str, rel: Path) -> bool:
@@ -166,16 +165,11 @@ def _run_refs(settings: Settings, *, tenant_id: str | None = None) -> list[artif
 
 
 def read_run_tenant(run_dir: Path) -> str:
-    """Tenant that owns the run materialised at ``run_dir``.
+    """Tenant that owns the run materialised at ``run_dir``; empty when unknown.
 
-    Falls back to the default tenant when the marker is missing or unreadable —
-    runs written before P0, and any run produced by the plain ``scanner.main``
-    CLI outside the API, have no marker.
-
-    Takes a path rather than a run id because every caller already holds the
-    run's working copy: they went through :func:`get_run_dir`, which is what
-    materialised it. The listing, which has no working copy and must not make
-    one, uses :func:`run_tenant_of` instead.
+    A missing or unreadable marker is deliberately not attributed to ``default``
+    (#311). The operator must establish the owner and repair the marker, or use
+    ``scripts/migrate-legacy-artifacts.py --assign RUN_ID=TENANT_ID``.
     """
     return _tenant_from_marker(_load_json(run_dir / RUN_TENANT_FILE))
 
@@ -192,10 +186,10 @@ def read_run_surface(run_dir: Path) -> str | None:
 
 def _tenant_from_marker(meta: Any) -> str:
     if isinstance(meta, dict):
-        tenant_id = str(meta.get("tenant_id") or "").strip()
-        if tenant_id:
-            return tenant_id
-    return tenants_service.DEFAULT_TENANT_ID
+        tenant_id = meta.get("tenant_id")
+        if isinstance(tenant_id, str) and tenant_id.strip():
+            return tenant_id.strip()
+    return ""
 
 
 def _surface_from_marker(meta: Any) -> str | None:
@@ -207,7 +201,7 @@ def _surface_from_marker(meta: Any) -> str | None:
 
 
 def run_tenant_of(settings: Settings, run: artifact_keys.RunRef | str) -> str:
-    """Owner of a run, without materialising it.
+    """Owner of a run, without materialising it; empty for an unknown flat owner.
 
     A run in a tenant's subtree (#427) belongs to that tenant whatever its
     marker says: the path is where the product put it, the marker is a file
@@ -218,7 +212,7 @@ def run_tenant_of(settings: Settings, run: artifact_keys.RunRef | str) -> str:
     """
     ref = artifact_keys.as_ref(run)
     marked = _tenant_from_marker(workspace.read_run_marker(settings, ref))
-    if ref.tenant is None or artifact_keys.tenant_segment(marked) == ref.tenant:
+    if ref.tenant is None or (marked and artifact_keys.tenant_segment(marked) == ref.tenant):
         return marked
     # A segment is the tenant id itself unless the id predates validation and
     # was hashed; that one's marker is what names it, and a marker that
@@ -233,14 +227,13 @@ def run_surface_of(settings: Settings, run: artifact_keys.RunRef | str) -> str |
 def _owned_by(settings: Settings, ref: artifact_keys.RunRef, tenant_id: str) -> bool:
     """Whether ``tenant_id`` may read the run at ``ref``.
 
-    The whole tenant policy for runs, in one place. A tenant's own subtree is
-    its own by construction. A flat run -- every run from before #427, and a
-    CLI run -- is the tenant's only if its marker says so, with no marker
-    meaning the default tenant, exactly as before this release.
+    A tenant's own subtree is its own by construction. A flat run belongs only
+    to the tenant explicitly named by its marker; unknown owners are visible
+    only in the platform admin's fleet-wide view (#311).
     """
     if ref.tenant is not None:
         return ref.tenant == artifact_keys.tenant_segment(tenant_id)
-    return run_tenant_of(settings, ref) == tenant_id
+    return bool(tenant_id) and run_tenant_of(settings, ref) == tenant_id
 
 
 def resolve_run(
@@ -340,10 +333,9 @@ def stage_run_tenant(
     The counterpart of :func:`write_run_tenant` for the agent ingest, and not
     best-effort: the marker goes in *before* the run is promoted and uploaded,
     so both copies carry their owner from the moment anything can read them.
-    Written afterwards, a failure would leave a published run with no marker —
-    and :func:`read_run_tenant` reads that as the default tenant, i.e. as one
-    tenant's scan sitting in every tenant's run list. The caller lets an error
-    here cost the upload its outcome instead.
+    Written afterwards, a failure would leave a published run with no marker and
+    therefore no tenant that may read it (#311). The caller lets an error here
+    cost the upload its outcome instead.
     """
     (Path(staging) / RUN_TENANT_FILE).write_bytes(
         _run_tenant_marker(tenant_id, job_id=job_id, surface=surface, publication_id=publication_id)
@@ -359,9 +351,8 @@ def write_run_tenant(
     surface: str | None = None,
 ) -> bool:
     """Tag a run directory with its owning tenant. Best-effort: returns False
-    when the run directory doesn't exist or the write fails, since losing the
-    marker must never fail a scan that otherwise succeeded (the run then reads
-    back as the default tenant).
+    when the run directory doesn't exist or the write fails. An unmarked run is
+    withheld from tenant readers until its owner is established (#311).
 
     ``surface`` rides along in the same file rather than a second one: it is
     known at the same moment, written by the same two call sites, and a run
@@ -384,9 +375,8 @@ def write_run_tenant(
         return False
     try:
         # Through the workspace, so the marker reaches the artifact store and
-        # not only this pod: a run whose owner is recorded on one replica's
-        # disk reads back as the default tenant everywhere else, which is the
-        # run list of every tenant on the installation (#336).
+        # not only this pod: an owner recorded on one replica must be the owner
+        # every other replica reads (#336).
         workspace.publish_run_file(
             settings,
             ref,

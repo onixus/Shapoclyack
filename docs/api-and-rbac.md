@@ -993,6 +993,66 @@ the account's sessions** (`token_version` and every refresh-token family, as
 `PUT /api/users/{u}/role` does) — the login that caused it gets a fresh one. A
 new grant alone ends nothing.
 
+## SAML 2.0 and LDAP / Active Directory
+
+Two additional identity providers (#317) use the same account-linking, JIT,
+group-role, tenant-membership, authoritative-resync, MFA and session rules as
+OIDC. `GET /api/auth/sso` lists enabled providers without disclosing their URLs.
+
+### SAML 2.0
+
+The service provider is enabled by `OCTO_SAML_SP_ENTITY_ID` plus exactly one of
+`OCTO_SAML_IDP_METADATA_URL` and `OCTO_SAML_IDP_METADATA_PATH`. Remote metadata
+is fetched over HTTPS through the configured egress proxy, without redirects,
+and cached; the file form supports air-gapped imports. `GET /api/auth/saml/metadata`
+returns the SP metadata to import at the IdP.
+
+The SP requires a signed SAML **Response** (`wantMessagesSigned`) and rejects
+deprecated signing algorithms. With the default
+`OCTO_SAML_REQUIRE_ENCRYPTED_ASSERTION=true`, assertions must also be encrypted
+for the SP public key. `OCTO_SAML_SP_X509_CERT` and `OCTO_SAML_SP_PRIVATE_KEY`
+are therefore required for decryption and, by default, sign AuthnRequest,
+LogoutRequest, LogoutResponse and SP metadata. Set `OCTO_SAML_SIGN_REQUESTS=false`
+only for an IdP that explicitly does not accept signed requests. The API and
+all-in-one images include the `xmlsec1` runtime used by `python3-saml`.
+
+`GET /api/auth/saml/login` issues an HTTP-Redirect AuthnRequest;
+`POST /api/auth/saml/acs` accepts the HTTP-POST Response. A random RelayState is
+stored only as a hash in `saml_pending_requests` and consumed atomically, while
+the response must name the stored AuthnRequest in `InResponseTo`. Unsolicited
+(IdP-initiated) and replayed sign-ins are refused, and callbacks may land on any
+replica. `GET /api/auth/saml/logout` starts SP-initiated SLO;
+`GET /api/auth/saml/slo` validates both SLO requests and responses and ends the
+local session and refresh cookie.
+
+`OCTO_SAML_USERNAME_ATTRIBUTE` defaults to NameID; email, groups and tenant come
+from `OCTO_SAML_EMAIL_ATTRIBUTE`, `OCTO_SAML_GROUPS_ATTRIBUTE` and
+`OCTO_SAML_TENANT_ATTRIBUTE`. `OCTO_SAML_EMAIL_VERIFIED=false` is the safe
+default: an address is not enough to auto-link a local account unless the
+operator explicitly declares the IdP verifies it. JIT is separately off by
+default. Groups use the shared `OCTO_OIDC_ROLE_MAP` and `OCTO_IDP_GROUP_MAP`.
+
+### LDAP / Active Directory
+
+`POST /api/auth/ldap/login` accepts the same username/password body as local
+login, but the password is used only for the directory bind and is never stored.
+The default search is `sAMAccountName={username}` under `OCTO_LDAP_BASE_DN`;
+`OCTO_LDAP_USER_DN_TEMPLATE` supports direct-bind directories. Filter values and
+DN values are escaped before interpolation. A service bind is optional for
+directories that permit anonymous user search; after the user bind, group search
+uses `OCTO_LDAP_GROUP_FILTER` (default `member={user_dn}`) and returns
+`OCTO_LDAP_GROUP_ATTRIBUTE` values. For nested AD groups, configure the filter
+with the LDAP matching-rule OID `1.2.840.113556.1.4.1941`.
+
+Use `ldaps://`, or `ldap://` with `OCTO_LDAP_START_TLS=true`; prod refuses plain
+LDAP without StartTLS and refuses disabled certificate verification.
+`OCTO_LDAP_CA_FILE` supplies an enterprise CA. Username, email and tenant
+attributes map through `OCTO_LDAP_USERNAME_ATTRIBUTE`,
+`OCTO_LDAP_EMAIL_ATTRIBUTE` and `OCTO_LDAP_TENANT_ATTRIBUTE`. Role and group maps
+are shared with the other providers. LDAP attempts use the existing
+Postgres-backed login rate limiter and produce the same MFA challenge and
+session cookies as every other provider.
+
 ## SCIM 2.0 provisioning
 
 `/scim/v2` speaks the subset of SCIM 2.0 (RFC 7643/7644) that Okta, Entra ID
@@ -2962,12 +3022,13 @@ opening one by id without a tenant selected resolves the flat run first and
 then the first tenant subtree holding the id, so select the tenant to open the
 other.
 
-A flat run **without** the marker reads as belonging to `default`: runs
-produced before tenant tagging shipped, and any run created by invoking
-`scanner.main` directly outside the API, stay visible to the default tenant
-instead of disappearing. There is no backfill — if pre-existing runs belong to
-a customer tenant, write their `tenant.json` by hand before granting that
-customer access.
+A flat run **without** a valid marker has no tenant and is withheld from every
+tenant-scoped route, including `default` (#311). This covers runs produced before
+tenant tagging and direct `scanner.main` runs. Establish the owner from job
+history, then migrate with `scripts/migrate-legacy-artifacts.py`; for a damaged or
+missing marker, the command's `--assign RUN_ID=TENANT_ID` records an explicit
+operator decision. The full dry-run, backup and rollback procedure is in
+[operations.md § Run directories](operations.md#run-directories).
 
 ## Artifact access
 

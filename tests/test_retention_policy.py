@@ -190,10 +190,10 @@ def test_run_retention_sweeps_each_tenant_on_its_own_window(settings):
     own = _tenant_run(settings, OWN, "run-own", days=45)
     own_expired = _tenant_run(settings, OWN, "run-own-old", days=120)
     held = _tenant_run(settings, HELD, "run-held", days=400)
-    # Pre-#427 flat runs: the owner is the marker, and no marker is default's.
+    # Pre-#427 flat runs: the owner is the marker; an absent one is unknown (#311).
     flat_own = _flat_run(settings, "flat-own", marker=json.dumps({"tenant_id": OWN}), days=45)
     flat_held = _flat_run(settings, "flat-held", marker=json.dumps({"tenant_id": HELD}), days=400)
-    flat_default = _flat_run(settings, "flat-default", marker=None, days=45)
+    flat_unknown = _flat_run(settings, "flat-unknown", marker=None, days=45)
 
     stats = run_retention.sweep(settings)
 
@@ -203,9 +203,10 @@ def test_run_retention_sweeps_each_tenant_on_its_own_window(settings):
     assert held.exists()
     assert flat_own.exists()
     assert flat_held.exists()
-    assert not flat_default.exists()
-    assert stats["deleted"] == 3
+    assert flat_unknown.exists()
+    assert stats["deleted"] == 2
     assert stats["kept"] == 4
+    assert stats["errors"] == 1
 
 
 def test_a_shorter_window_of_its_own_is_honoured_too(settings):
@@ -218,8 +219,7 @@ def test_a_shorter_window_of_its_own_is_honoured_too(settings):
 
 
 def test_a_run_whose_owner_cannot_be_read_is_left_for_the_next_tick(settings):
-    """An unreadable marker is not a missing one: guessing "default" could be
-    deleting a held tenant's run."""
+    """An unreadable marker leaves the run alone rather than guessing an owner."""
     garbled = _flat_run(settings, "flat-garbled", marker="{not json", days=400)
     stats = run_retention.sweep(settings)
     assert garbled.exists()

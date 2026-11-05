@@ -34,6 +34,7 @@ def _seed_run(output: Path, run_id: str = "run-own") -> Path:
     run_dir.mkdir(parents=True)
     (run_dir / "run_meta.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
     (run_dir / "summary.json").write_text("{}", encoding="utf-8")
+    (run_dir / "tenant.json").write_text('{"tenant_id": "default"}', encoding="utf-8")
     (run_dir / "ownership.json").write_text(json.dumps(OWNERSHIP), encoding="utf-8")
     (run_dir / "ownership_findings.txt").write_text(
         "example.com:ok:registrant=public:registrar=RESERVED-Registrar\n", encoding="utf-8"

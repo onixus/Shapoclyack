@@ -43,7 +43,7 @@ type AuthState = {
   /** Signs in, or reports that a second factor is still owed (#315). The
    * caller renders the code step from `mfaToken`; nothing is stored in the
    * browser until a real session exists. */
-  login: (username: string, password: string) => Promise<LoginStep>;
+  login: (username: string, password: string, provider?: "local" | "ldap") => Promise<LoginStep>;
   /** Second leg of a login, or a step-up on the current session. */
   verifyMfa: (input: { mfaToken?: string | null; code?: string; recoveryCode?: string }) =>
     Promise<void>;
@@ -106,8 +106,8 @@ export const useAuthStore = create<AuthState>((set) => ({
       set({ user: null, loading: false, hydrated: true, canOperate: false, activeTenant: null });
     }
   },
-  async login(username, password) {
-    const session = await apiLogin(username, password);
+  async login(username, password, provider = "local") {
+    const session = await apiLogin(username, password, provider);
     if (session.mfa_required && !session.access_token) {
       // No state is set: this browser is not signed in, and pretending
       // otherwise would leave a half-authenticated console behind if the user

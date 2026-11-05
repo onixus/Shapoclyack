@@ -79,6 +79,31 @@ def build_naabu_sn_command(
     ]
 
 
+def build_naabu_connect_command(
+    input_file: str | Path,
+    *,
+    probe_ports: list[int],
+    rate: int,
+    retries: int,
+) -> list[str]:
+    return [
+        "naabu",
+        "-list",
+        str(input_file),
+        "-Pn",
+        "-s",
+        "c",
+        "-p",
+        ",".join(str(port) for port in probe_ports),
+        "-silent",
+        "-disable-update-check",
+        "-rate",
+        str(rate),
+        "-retries",
+        str(max(1, retries)),
+    ]
+
+
 def parse_naabu_host_lines(stdout: str) -> list[str]:
     """Extract hosts from naabu output without truncating IPv6 at its first colon."""
     hosts: set[str] = set()
@@ -179,6 +204,34 @@ def tcp_port_probe(
     return alive, pending
 
 
+def _connect_host_discovery(
+    targets: list[str],
+    output_dir: Path,
+    *,
+    probe_ports: list[int],
+    rate: int,
+    timeout: int,
+    retries: int,
+    tag: str,
+    scope_members: list[str],
+) -> list[str]:
+    batch_dir = output_dir / "discover"
+    input_file = batch_dir / f"{tag}.naabu.connect.targets.txt"
+    alive_file = batch_dir / f"{tag}.naabu.connect.alive.txt"
+    write_lines(input_file, targets)
+    result = run_command(
+        build_naabu_connect_command(
+            input_file, probe_ports=probe_ports, rate=rate, retries=retries
+        ),
+        timeout=timeout,
+        retries=retries,
+    )
+    alive = parse_naabu_host_lines(result.stdout or "")
+    alive = filter_hosts_in_scope(alive, scope_members)
+    write_lines(alive_file, alive)
+    return alive
+
+
 def naabu_host_discovery(
     targets: list[str],
     output_dir: Path,
@@ -204,6 +257,8 @@ def naabu_host_discovery(
 
     The command itself is :func:`build_naabu_sn_command`, which is also where
     the ``-wn`` that has to travel with a spelled-out probe set is explained.
+    An empty or failed SYN/ACK probe is cross-checked with CONNECT on the same
+    ports: containers can exit 0 without delivering raw-socket results.
     """
     if not targets:
         return []
@@ -221,15 +276,39 @@ def naabu_host_discovery(
     alive_file = batch_dir / f"{tag}.naabu.alive.txt"
     write_lines(input_file, targets)
 
-    result = run_command(
-        build_naabu_sn_command(
-            input_file, rate=rate, retries=retries, exclude_ports=exclude_ports
-        ),
-        timeout=timeout,
-        retries=retries,
-    )
-    alive = parse_naabu_host_lines(result.stdout or "")
-    alive = filter_hosts_in_scope(alive, scope_members)
+    try:
+        result = run_command(
+            build_naabu_sn_command(
+                input_file, rate=rate, retries=retries, exclude_ports=exclude_ports
+            ),
+            timeout=timeout,
+            retries=retries,
+        )
+    except Exception:  # noqa: BLE001 -- raw sockets can be unavailable; CONNECT decides
+        logging.warning("naabu host discovery failed for batch %s; trying CONNECT", tag)
+        alive = []
+    else:
+        alive = filter_hosts_in_scope(
+            parse_naabu_host_lines(result.stdout or ""), scope_members
+        )
+    if not alive and probe_ports:
+        connect_alive = _connect_host_discovery(
+            targets,
+            output_dir,
+            probe_ports=probe_ports,
+            rate=rate,
+            timeout=timeout,
+            retries=retries,
+            tag=tag,
+            scope_members=scope_members,
+        )
+        if connect_alive:
+            logging.warning(
+                "naabu SYN/ACK host discovery returned no hosts for batch %s while CONNECT found %s",
+                tag,
+                len(connect_alive),
+            )
+        alive = connect_alive
     write_lines(alive_file, alive)
     logging.info("naabu -sn batch %s: %s alive (of %s)", tag, len(alive), len(targets))
     return alive

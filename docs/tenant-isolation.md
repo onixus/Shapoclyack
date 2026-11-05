@@ -277,10 +277,14 @@ It leaves the role: it is cluster-wide and may be in use by another database.
 Downgrade only with `OCTO_TENANT_RLS=off` already rolled out, or `enforce`
 replicas refuse to start.
 
-**Supported PostgreSQL.** 16 is what the shipped manifests run and what this was
-built and tested on. 14 and 15 work with a superuser API role, or with the
-`NOINHERIT` layout above; the migration and the startup check print the
-variant of each statement for the server they run against.
+**Supported PostgreSQL matrix.** PostgreSQL 16 is the supported and tested
+version, with three role layouts covered by `tests/test_tenant_rls.py` and
+`tests/test_migration_0067_tenant_rls.py`: the stock superuser API, a separate
+least-privilege API login, and `audit_events` owned by a separate role.
+PostgreSQL 14 and 15 are **not in the supported matrix**: their
+`NOINHERIT` migration/startup hints remain for an operator-managed compatibility
+path, but no isolation acceptance is claimed for those versions. Upgrade to 16
+before relying on `OCTO_TENANT_RLS=enforce` as a supported control.
 
 ### Verifying
 
@@ -366,7 +370,9 @@ System-scope transactions pay nothing.
   run artifacts are keyed under their tenant since
   [#427](https://github.com/onixus/Shapoclyack/issues/427)
   (`runs/_tenants/<tenant>/<run_id>`, ids minted with a random suffix) with an
-  owner-checked read-through for runs from before it — see
+  owner-checked read-through for runs from before it. Missing or damaged legacy
+  owner metadata is not assigned to `default`; the migration CLI provides dry-run,
+  explicit recovery, backup and rollback — see
   [operations.md § Run directories](operations.md#run-directories).
 * **The SQLite fallback** — no roles and no row security; it is refused in
   `prod` (#174).

@@ -82,6 +82,7 @@ const WITH_REFRESH_COOKIE = { withCredentials: true } as const;
  * refused credential into a second attempt nobody asked for. */
 const REFRESH_EXEMPT = [
   "/auth/login",
+  "/auth/ldap/login",
   "/auth/refresh",
   "/auth/logout",
   "/auth/mfa/verify",
@@ -1516,10 +1517,14 @@ export type LoginResult = {
   expires_in: number | null;
 };
 
-export async function login(username: string, password: string): Promise<LoginResult> {
+export async function login(
+  username: string,
+  password: string,
+  provider: "local" | "ldap" = "local",
+): Promise<LoginResult> {
   try {
     const { data } = await api.post<LoginResult>(
-      "/auth/login",
+      provider === "ldap" ? "/auth/ldap/login" : "/auth/login",
       { username, password },
       WITH_REFRESH_COOKIE,
     );
@@ -3586,6 +3591,10 @@ export async function triggerRiskSnapshot() {
 export type SsoStatus = {
   enabled: boolean;
   login_url: string;
+  providers?: Array<{
+    provider: "oidc" | "saml" | "ldap";
+    login_url: string;
+  }>;
   /** What password login is for on this installation (#315). Only ever a
    * mode — the break-glass account names stay server-side. */
   local_login: "enabled" | "break-glass" | "disabled";

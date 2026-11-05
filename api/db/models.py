@@ -826,6 +826,24 @@ class OidcPendingState(Base):
     expires_at: Mapped[datetime] = mapped_column(index=True)
 
 
+class SamlPendingRequest(Base):
+    """One in-flight SAML AuthnRequest or LogoutRequest (#317).
+
+    The relay token is stored only as a hash and consumed atomically. Binding the
+    response's InResponseTo to this row prevents unsolicited or replayed sign-ins
+    from becoming console sessions and lets any API replica answer the callback.
+    """
+
+    __tablename__ = "saml_pending_requests"
+
+    request_id: Mapped[str] = mapped_column(primary_key=True)
+    relay_state_hash: Mapped[str] = mapped_column(unique=True, index=True)
+    kind: Mapped[str] = mapped_column(default="login")
+    next_url: Mapped[str] = mapped_column(default="")
+    created_at: Mapped[datetime]
+    expires_at: Mapped[datetime] = mapped_column(index=True)
+
+
 class ProvisioningKey(Base):
     __tablename__ = "provisioning_keys"
 

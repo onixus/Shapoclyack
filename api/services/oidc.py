@@ -184,13 +184,26 @@ def public_config(settings: Settings) -> dict[str, Any]:
     every submission of which is refused. It names a mode, never an account:
     the break-glass usernames stay out of an unauthenticated response.
     """
+    from api.services import ldap as ldap_service
+    from api.services import saml as saml_service
+
+    providers = []
+    if is_enabled(settings):
+        providers.append({"provider": "oidc", "login_url": "/api/auth/oidc/login"})
+    if saml_service.is_enabled(settings):
+        providers.append({"provider": "saml", "login_url": "/api/auth/saml/login"})
+    if ldap_service.is_enabled(settings):
+        providers.append({"provider": "ldap", "login_url": "/api/auth/ldap/login"})
+    enabled = bool(providers)
     return {
-        "enabled": is_enabled(settings),
+        "enabled": enabled,
+        # Retained for older consoles, which know only the OIDC button.
         "login_url": "/api/auth/oidc/login",
+        "providers": providers,
         # "enabled" whenever no provider is configured, because the policy does
         # not apply then — an installation with no SSO and no password login
         # would be one nobody can reach.
-        "local_login": settings.local_login if is_enabled(settings) else LOCAL_LOGIN_ENABLED,
+        "local_login": settings.local_login if enabled else LOCAL_LOGIN_ENABLED,
     }
 
 

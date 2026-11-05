@@ -11,14 +11,15 @@ from sqlalchemy.engine import make_url
 from api.db import migrate, models, tenant_scope
 from tests.conftest import POSTGRES_URL, requires_postgres
 
-HEAD = "0104_operator_campaigns_merge"
+HEAD = "0105_saml_pending_requests"
+MERGE_HEAD = "0104_operator_campaigns_merge"
 PARENTS = {"0103_operator_planner", "0101_remediation_campaigns"}
 
 
 def test_single_merge_head_keeps_both_original_revision_lineages():
     scripts = ScriptDirectory.from_config(Config(str(Path(__file__).parents[1] / "api/db/alembic.ini")))
     assert scripts.get_heads() == [HEAD]
-    assert set(scripts.get_revision(HEAD).down_revision) == PARENTS
+    assert set(scripts.get_revision(MERGE_HEAD).down_revision) == PARENTS
     assert scripts.get_revision("0101_operator_actions").down_revision == "0100_asset_groups"
     assert scripts.get_revision("0101_remediation_campaigns").down_revision == "0100_asset_groups"
 
@@ -68,11 +69,11 @@ def test_fresh_and_both_existing_branches_really_upgrade_without_data_loss(monke
                     row = db.execute(text("SELECT name,selection FROM remediation_campaigns WHERE campaign_id='preserve'")).one()
                     assert tuple(row) == ("Keep campaign", {"finding_ids": ["keep"]})
         # A relative -1 is ambiguous at a merge. An explicit parent unmerges
-        # this node into BOTH existing heads without deleting either schema.
+        # 0104 into BOTH existing heads; 0105 above it removes only its own table.
         migrate._downgrade("0103_operator_planner")  # noqa: SLF001
         with engine.connect() as db:
             assert set(db.execute(text("SELECT version_num FROM alembic_version")).scalars()) == PARENTS
-        assert set(inspect(engine).get_table_names()) == tables
+        assert set(inspect(engine).get_table_names()) == tables - {"saml_pending_requests"}
         migrate.run_upgrade(url)
         with engine.connect() as db:
             assert db.execute(text("SELECT version_num FROM alembic_version")).scalars().all() == [HEAD]
