@@ -22,8 +22,7 @@ async def execute(settings, task):
     prompt = analysis.build_prompt(task["language"], binding)
     attempt = None
     if not evidence["items"] or evidence["state"] in {"missing", "stale", "unknown"}:
-        raw = json.dumps({"language": task["language"], "summary": "insufficient_evidence",
-                          "recommendations": []})
+        raw = json.dumps({"recommendations": []})
     else:
         await run_in_threadpool(gateway.authorize_actor, settings, task)
         config = OperatorConfig.from_settings(settings)

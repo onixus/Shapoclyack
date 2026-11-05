@@ -304,6 +304,18 @@ mandatory.
 Jenkins build 3 checked out `aa3ddb9b` but was later ABORTED when the
 `gaming-amd64` channel terminated and did not recover. It is not a CI pass.
 
+## Durable API/worker run and early-abstain correction — 2026-11-05
+
+The 30 authenticated API/session/worker scenarios on `25caf2ce` retained 27
+successes and three failures. All three were empty-analysis early abstentions
+whose server-generated JSON still contained legacy `language/summary` fields
+rejected by the v9+ closed wire. The fix emits only `recommendations=[]` while
+the server supplies the public language/summary. A real PostgreSQL run passed
+132 analysis/gateway tests, and a fresh authenticated empty-analysis task then
+succeeded with `inference_performed=false`. Idempotent replay returned the same
+task ID and no network scan ran. The initial 27/30 record is retained; it is not
+reported as a clean 30-scenario pass. A fresh run is required on the final commit.
+
 ## Evidence locations and remaining gates
 
 The private local evidence root is `.operator-local/evaluation/`, including
