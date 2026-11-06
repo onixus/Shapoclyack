@@ -23,10 +23,13 @@ NVIDIA acceptance remains separate in #609 under ADR 0005.
   interpretation, original failed scorer output and raw stream are retained in
   [the capacity report](local-operator-capacity.md). This does not establish a
   resource/soak pass or typical-operation latency.
-- A normal signed agent scan against an owned Apache fixture published a real
-  Pulse TRACE observation. The finding remained `machine_verified=false`.
-  Analysis, reviewed configuration change and real verification are still
-  pending; the positive scan alone does not complete the end-to-end gate.
+- On `924af63559597f1e207fe3df2e2c24af4d2fd059`, an isolated owned Apache
+  fixture completed confirmed scan, real model analysis, hash-bound reviewed
+  `TraceEnable off`, and confirmed targeted verification. TRACE changed from
+  200 to 405; the finding reached `CLOSED`, `machine_verified=true`,
+  `closure_reason=verified_remediated`, with a `verification_passed` event.
+  The task-owned containers and network were removed. This operational pass
+  does not change the failed model-quality verdict.
 
 Note on the evaluator verdict: because all 190 benchmark cases are development
 exposed, a fully green final run reports `quality_gate_status: exposed_only`
@@ -353,9 +356,39 @@ three independent failed quality runs, the pinned model must not be described as
 accepted or reliable enough for the frozen release gate.
 
 The local-only Mac CI profile ran the full Python matrices, Web, SSH, Kustomize,
-image smoke and E2E. Its Trivy gate then failed on apt CVE-2026-109518: the pinned
-base carries 3.0.3 while 3.0.4 is fixed. This is a separate base-image release
-blocker, not a successful full-CI result or an operator quality finding.
+image smoke and E2E. Earlier security stages failed on apt CVE-2026-109518 and
+then on pyasn1 CVE-2026-119194. The final source upgrades apt/libapt-pkg7.0 to
+at least 3.0.4 and pyasn1 to 0.6.5 with official wheel/sdist hashes. Local API
+and all-in-one builds passed the blocking Trivy HIGH/CRITICAL gate; 355 lock and
+image-pin tests passed. A terminal exact-head Jenkins result remains required.
+
+## Operational lifecycle and exact-current offline bundle — 2026-11-06
+
+The successful five-phase lifecycle report is retained as
+`.operator-local/lifecycle-924af635.json` (SHA-256
+`abfe5c4f04a6247f1651f43090857412b73789daf3f40b081e7e06065625c7d0`). It used
+the current application source and a real pinned Pulse 1.4.0 binary copied from
+the already installed digest-bound all-in-one image. The private GenDec credential
+was not read or printed. An earlier attempt exposed a full Docker VM; removing only
+unused build cache recovered 21.23 GB before the successful run. Harness setup
+failures were not counted as lifecycle passes.
+
+The exact `924af635` offline bundle passed export, independent verification,
+fresh import/Docker load and authenticated startup. Its manifest SHA-256 is
+`36dbc461e35676d0291b752714e62b3d278b30298c278a539c9f4c61bba66378`. Capture began
+before startup and recorded zero DNS, external unicast IPv4 destinations or kernel
+drops from the project subnet. A separate 61.22-second observation of inference,
+embeddings, API and worker found zero unexpected destinations, DNS, receive errors,
+drops, OOM or restarts. Shared-VM IPv6/IGMP process attribution remains limited.
+The imported project was stopped with its data preserved.
+
+A fresh exact-`924af635` durable run passed all 30 authenticated API/session/worker
+scenarios in 747.00 seconds. Twelve nonempty analysis tasks performed real model
+inference, three empty-analysis tasks correctly abstained without inference, and
+15 summaries used the real model. Idempotent replay returned the same task ID.
+These were synthetic published observations with no network scan. The report is
+`.operator-local/durable-924af635.json` with SHA-256
+`3507201999af4d8cf27be07cc85ea095cbf068ce5c260a57704317c5d6aa1a94`.
 
 ## Evidence locations and remaining gates
 
@@ -366,17 +399,17 @@ Raw records, uncertain inflight journals, controller receipts and original
 scorer outputs are preserved. Temporary retrieval/UI/operational reports are
 separate from those immutable model records.
 
-The exact `05607225` controlled-provider operational drill passed all eight
+The exact `924af635` controlled-provider operational drill passed all eight
 phases, including restart, crash/cancellation, backup/restore, rollback/upgrade,
-deletion and feature-off; it made no real model or network scan requests.
-The offline artifact on that source passed export, independent verification and
-fresh import/Docker load, but did not start a runtime. Its feed freshness and
-incomplete vendor coverage remain explicit. Updated source requires a new bundle.
+deletion and feature-off; it made no real model or network scan requests. Its
+report is `.operator-local/recovery-924af635.json` with SHA-256
+`844fc717cac7fec0d1d2711cd97ea7678ce1e3ad158eb046557774fcadd7fb59`.
+Feed freshness and incomplete vendor coverage remain explicit.
 
-To accept the Mac profile, establish stable runtime operation and complete the
-frozen 190-case evaluation and measured 60-minute bounded load. Also finish the
-30 durable API/worker scenarios, actual fix-to-verification lifecycle, complete
-offline cold start and exact-head CI. The completed controlled-provider recovery
-drill does not substitute for those real-model gates.
+The durable scenarios, actual fix-to-verification lifecycle, recovery drill and
+offline cold start are complete on `924af635`. They do not offset the three failed
+independent quality runs. Mac acceptance still requires a passing independent
+quality evaluation with its measured 60-minute bounded load and terminal
+exact-head CI. The model remains unaccepted.
 Required feed snapshots carry their actual freshness and seed/unknown status;
 offline availability never implies a fresh, complete vendor knowledge base.
