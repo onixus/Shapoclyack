@@ -59,6 +59,7 @@ describe("installation operator settings", () => {
     await screen.findByText("AI connection settings (installation-wide)");
     const user = userEvent.setup();
     await user.click(screen.getByText("AI connection settings (installation-wide)"));
+    expect(screen.getByRole("option", { name: "xAI (Grok)" })).toBeInTheDocument();
     await user.clear(screen.getByLabelText("API base URL"));
     await user.type(screen.getByLabelText("API base URL"), "http://10.0.0.9/v1");
     await user.click(screen.getByRole("button", { name: "Discover models" }));

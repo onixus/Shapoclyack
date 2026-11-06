@@ -15,7 +15,7 @@ its accepted model identifier must match the deployment setting.
 | Environment setting | Default | Meaning |
 | --- | --- | --- |
 | `OCTO_OPERATOR_ENABLED` | `false` | Explicitly enable inference |
-| `OCTO_OPERATOR_PROVIDER` | `local` | `local`, `openrouter`, `omnirouter`, or `openai_compatible` |
+| `OCTO_OPERATOR_PROVIDER` | `local` | `local`, `xai`, `openrouter`, `omnirouter`, or `openai_compatible` |
 | `OCTO_OPERATOR_BASE_URL` | provider default | API base URL, excluding `/chat/completions` |
 | `OCTO_OPERATOR_MODEL` | `Qwen3.5-9B-Q4_K_M` | Model identifier; set a provider-specific model for hosted use |
 | `OCTO_OPERATOR_API_KEY` | empty | Optional local key; required for hosted inference |
@@ -46,6 +46,13 @@ HTTP proxies, do not follow redirects, request uncompressed responses, and refus
 compressed responses. The overall deadline also bounds slow response bodies.
 Hosted TLS certificate verification uses the HTTP client's normal verified TLS.
 
+xAI uses the fixed base `https://api.x.ai/v1` and the same OpenAI chat-completions
+request. Set `OCTO_OPERATOR_MODEL` to a text model such as `grok-4.7`. Enabling
+it requires `OCTO_OPERATOR_ALLOW_EXTERNAL=true` and a bearer key from the xAI
+console. The key is a deployment secret: do not commit it, and do not reuse a
+personal CLI session token in a shared deployment. A local failure never falls
+over to xAI. Image and video model identifiers are not operator models.
+
 OpenRouter uses the fixed base `https://openrouter.ai/api/v1`, bearer-key
 authentication, and a deployment-selected model. Its
 [official chat completion documentation](https://openrouter.ai/docs/api/api-reference/chat/send-chat-completion-request)
@@ -67,7 +74,7 @@ that precedes `/chat/completions`, for example `https://llm.example.com/v1`, and
 enable it with an API key and `OCTO_OPERATOR_ALLOW_EXTERNAL=true` like the other
 hosted providers.
 
-All hosted providers (`openrouter`, `omnirouter`, `openai_compatible`) require
+All hosted providers (`xai`, `openrouter`, `omnirouter`, `openai_compatible`) require
 HTTPS and a public host. Configuration refuses private, loopback, link-local,
 CGNAT and metadata IP literals, IPv6 forms that embed an IPv4 address
 (IPv4-mapped, NAT64, 6to4, Teredo), single-label names, `localhost` and
@@ -91,6 +98,7 @@ key and restrict the port to the API host. See
 | --- | --- | --- | --- |
 | Model on the API host | `local` | `http://127.0.0.1:8080/v1` (default) | Key optional |
 | Model on a LAN machine | `local` | `http://<private IP>:<port>/v1` | Key recommended |
+| xAI (Grok) | `xai` | fixed `https://api.x.ai/v1`, leave empty | `ALLOW_EXTERNAL=true` + key |
 | OpenRouter | `openrouter` | fixed, leave empty | `ALLOW_EXTERNAL=true` + key |
 | OmniRouter | `omnirouter` | the service's HTTPS base | `ALLOW_EXTERNAL=true` + key |
 | Another cloud endpoint | `openai_compatible` | its HTTPS base | `ALLOW_EXTERNAL=true` + key |
