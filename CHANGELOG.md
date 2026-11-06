@@ -6,6 +6,9 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- Scanner, API and all-in-one images upgrade `apt` and `libapt-pkg7.0` to at
+  least 3.0.4 during the build, closing CVE-2026-109518 (HIGH) without hiding
+  it from the Trivy report or weakening the fixable-vulnerability gate.
 - The nuclei binary in the scanner and all-in-one images is now built against
   `github.com/go-jose/go-jose/v4` v4.1.6 instead of the v4.1.4 that nuclei
   v3.11.1 asks for, closing CVE-2026-116587 (HIGH, denial of service via crafted

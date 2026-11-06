@@ -263,6 +263,10 @@ RUN set -eux; \
     # here rather than at the Trivy gate. Drop a line once a base bump covers it.
     apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0; \
     dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libpcre2-8-0)" ge '10.46-1~deb13u3'; \
+    apt-get install -y --no-install-recommends --only-upgrade apt libapt-pkg7.0; \
+    for pkg in apt libapt-pkg7.0; do \
+        dpkg --compare-versions "$(dpkg-query -W -f='${Version}' "$pkg")" ge '3.0.4'; \
+    done; \
     apt-get install -y --no-install-recommends --only-upgrade curl libcurl3t64-gnutls libcurl4t64; \
     for pkg in curl libcurl3t64-gnutls libcurl4t64; do \
         dpkg --compare-versions "$(dpkg-query -W -f='${Version}' "$pkg")" ge '8.14.1-2+deb13u7'; \
