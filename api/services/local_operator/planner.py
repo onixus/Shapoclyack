@@ -18,7 +18,7 @@ from api.services.local_operator.providers import OperatorProviderError
 
 ToolName = Literal["summarize_run", "analyze_run", "compare_runs", "find_remediation",
                    "prepare_scan", "cancel_scan", "verify_finding", "abstain"]
-PROMPT_VERSION = "operator-typed-intent-v14"
+PROMPT_VERSION = "operator-typed-intent-v15"
 TOOL_VERSION = "typed-literal-resolver-v4"
 
 
@@ -171,6 +171,26 @@ def build_prompt(request: PlanRequest) -> list[dict[str, str]]:
          ensure_ascii=False, separators=(",", ":"))},
         {"role": "assistant", "content": json.dumps({"intent": "abstain", "subject_kind": "ambiguous",
          "selector": "none", "mentions": []}, separators=(",", ":"))},
+        {"role": "user", "content": json.dumps({"language": "en",
+         "request": "Cancel scan-job-42 after confirmation",
+         "available_subject_kinds": ["job"], "literal_spans": []}, separators=(",", ":"))},
+        {"role": "assistant", "content": json.dumps({"intent": "cancel_scan", "subject_kind": "job",
+         "selector": "explicit", "mentions": ["scan-job-42"]}, separators=(",", ":"))},
+        {"role": "user", "content": json.dumps({"language": "en",
+         "request": "Plan a targeted check of finding-42",
+         "available_subject_kinds": ["finding"], "literal_spans": []}, separators=(",", ":"))},
+        {"role": "assistant", "content": json.dumps({"intent": "verify_finding", "subject_kind": "finding",
+         "selector": "explicit", "mentions": ["finding-42"]}, separators=(",", ":"))},
+        {"role": "user", "content": json.dumps({"language": "en",
+         "request": "Can future-dated inventory be used?",
+         "available_subject_kinds": ["device"], "literal_spans": []}, separators=(",", ":"))},
+        {"role": "assistant", "content": json.dumps({"intent": "find_remediation", "subject_kind": "device",
+         "selector": "contextual", "mentions": []}, separators=(",", ":"))},
+        {"role": "user", "content": json.dumps({"language": "en",
+         "request": "Resolve the advisory with two channel fixes.",
+         "available_subject_kinds": ["device"], "literal_spans": []}, separators=(",", ":"))},
+        {"role": "assistant", "content": json.dumps({"intent": "find_remediation", "subject_kind": "device",
+         "selector": "contextual", "mentions": []}, separators=(",", ":"))},
         {"role": "user", "content": json.dumps({"language": request.language, "request": request.request,
          "available_subject_kinds": selected_subject_kinds(request),
          "literal_spans": literal_spans(request.request)}, ensure_ascii=False, separators=(",", ":"))},

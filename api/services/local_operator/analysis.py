@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from api.services.local_operator.contracts import Citation
 
-PROMPT_VERSION = "finding-analysis-labels-v12"
+PROMPT_VERSION = "finding-analysis-labels-v13"
 MAX_OUTPUT_BYTES = 32768
 MAX_ITEMS = 40
 SERVICES = frozenset({"http", "https", "ssh", "smtp", "dns", "ftp", "smb", "rdp", "mysql",
@@ -263,6 +263,12 @@ def build_prompt(language, retrieval_result):
              "next_steps": ["review_configuration"]},
             {"source_ref": 1, "category": "exposure", "proposed_priority": "low",
              "next_steps": ["confirm_exposure"]}]}, separators=(",", ":"))},
+        {"role": "user", "content": json.dumps({"language": "en", "state": "partial", "sources": [
+            {"source_ref": 0, "context": {"cve": "CVE-2000-1235", "severity": "info"}}]},
+            separators=(",", ":"))},
+        {"role": "assistant", "content": json.dumps({"recommendations": [
+            {"source_ref": 0, "category": "vulnerability", "proposed_priority": "low",
+             "next_steps": ["verify_evidence"]}]}, separators=(",", ":"))},
         {"role": "user", "content": json.dumps({"language": language,
          "state": retrieval_result["state"], "sources": sources}, ensure_ascii=False, sort_keys=True)},
     ]

@@ -1,4 +1,4 @@
-# Mac acceptance evidence — status through 2026-11-04
+# Mac acceptance evidence — status through 2026-11-06
 
 The implementation and acceptance harnesses are delivered in PR #607. **The
 Mac runtime and the complete epic are not accepted.** This record distinguishes
@@ -334,6 +334,28 @@ Follow-up v13/v14 diagnostics corrected all six selected remediation refusals an
 both mixed summary/compare selections without changing resolver or gold. These
 are exposed development results only; a third independently authored/reviewed
 holdout is required.
+
+## Third independent holdout — 2026-11-06
+
+The third independently authored/reviewed 190-case holdout on `4a5551e8` produced
+165/190 gold cases and failed tool accuracy (60/70), planning and security. Fixed
+version support/recall reached 14/14, category macro-F1 0.90455, citation precision
+180/180 and p95 9.698 seconds. The 3603.36-second load phase completed 659
+additional requests without additional errors. Raw-record SHA-256 is
+`ac20efabbaea0e3f3d2c5b2afccd33f3e6a265784dab2ec22c8828e570c0f3cd`; reviewed
+inputs and sources stayed unchanged. This corpus is exposed and not eligible for
+another independent pass.
+
+Selected v15/v13 diagnostics corrected nine of twelve gated failures sampled from
+this run, but left one Russian informational-priority error and two future-inventory
+abstentions. They are selected development evidence, not a quality pass. After
+three independent failed quality runs, the pinned model must not be described as
+accepted or reliable enough for the frozen release gate.
+
+The local-only Mac CI profile ran the full Python matrices, Web, SSH, Kustomize,
+image smoke and E2E. Its Trivy gate then failed on apt CVE-2026-109518: the pinned
+base carries 3.0.3 while 3.0.4 is fixed. This is a separate base-image release
+blocker, not a successful full-CI result or an operator quality finding.
 
 ## Evidence locations and remaining gates
 

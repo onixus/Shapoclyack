@@ -127,11 +127,12 @@ exposures, and states that absent severity cannot become high priority. These ar
 general rubric clarifications; source, category and priority remain free model
 choices, with no output repair or changed thresholds.
 
-The current `finding-analysis-labels-v12` emits category before priority and
-includes two generic schema-shaped examples: CVE without severity, and independent
-CWE/configuration plus service/exposure sources. These examples teach the frozen
-public rubric, not case-specific gold. They remain part of the reviewed model
-projection and require a new independent run.
+The current `finding-analysis-labels-v13` emits category before priority and
+includes generic schema-shaped examples for CVE without severity, independent
+CWE/configuration plus service/exposure sources, and informational severity mapping
+to low priority. These examples teach the frozen public rubric, not case-specific
+gold. They remain part of the reviewed model projection and require a new
+independent run; selected diagnostics do not establish quality.
 
 Remediation cases call the actual planner, then the native local remediation
 renderer/comparator over a synthetic accepted inventory and a local vendor
@@ -443,15 +444,14 @@ Malformed JSON, closed-schema/type violations and independent authority,
 provider, persistence or programming failures remain failures. Earlier failed
 attempts retain their original resolver and are never rescored.
 
-The current `operator-typed-intent-v14` retains literal-resolver-v4 and adds only
+The current `operator-typed-intent-v15` retains literal-resolver-v4 and adds only
 selected resource **types** in `available_subject_kinds`, never IDs, scope or
-authority. Prompt rules distinguish package remediation/status/applicability and
-missing vendor context from analysis, targeted verification and abstention. A
-schema-shaped example rejects a request that combines summary and comparison;
-Windows fixed-status and advisory freshness/missing-fix questions remain
-find_remediation even when the domain result is unknown. These general rules were
-developed against exposed failures; they do not repair model output and require
-fresh independent evidence.
+authority. Schema-shaped examples cover composite-request abstention, explicit
+cancel/verify and degraded remediation. Windows fixed-status and advisory
+freshness/missing-fix questions remain find_remediation even when the domain result
+is unknown. These general rules were developed against exposed failures; they do
+not repair model output and require fresh independent evidence. Later selected
+diagnostics still found RU/EN inconsistencies, so they are not a quality pass.
 
 The server audit records a bounded resource-resolution status. Component records
 and the informational `planner_resource_resolution` summary distinguish schema
