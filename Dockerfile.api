@@ -41,6 +41,10 @@ RUN set -eux; \
     # here rather than at the Trivy gate. Drop a line once a base bump covers it.
     apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0; \
     dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libpcre2-8-0)" ge '10.46-1~deb13u3'; \
+    apt-get install -y --no-install-recommends --only-upgrade apt libapt-pkg7.0; \
+    for pkg in apt libapt-pkg7.0; do \
+        dpkg --compare-versions "$(dpkg-query -W -f='${Version}' "$pkg")" ge '3.0.4'; \
+    done; \
     rm -rf /var/lib/apt/lists/*
 # Copy only client binaries, helpers, config and provenance; no vulnerable
 # distro copy, SSH server, host keys or privileged signing helper ships.

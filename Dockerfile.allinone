@@ -39,19 +39,20 @@ ARG NAABU_VERSION=v2.6.1
 # each closes a vulnerability none of them has picked up yet. Only ever raise
 # these, and drop one only once every tool requires that version by itself:
 #
-#   x/crypto v0.57.0   CVE-2026-56854 (ssh source-address not enforced,
+#   x/crypto v0.58.0   CVE-2026-56854 (ssh source-address not enforced,
 #                      CRITICAL) plus the 0.46-0.52 batch; all three tools;
-#                      0.57.0 because x/net v0.60.0 requires it
+#                      0.58.0 because x/net v0.62.0 requires it
 #   go-git   v5.19.2   CVE-2026-71556 (arbitrary file read/write via symlink
 #                      resolution); nuclei
 #   x/mod    v0.41.0   CVE-2026-56864, CVE-2026-56865 (GOSUMDB / tlog
 #                      verification bypass); nuclei
 #   grpc     v1.83.2   CVE-2026-84304, CVE-2026-84445 (DoS); nuclei
 #   utls     v1.8.2    CVE-2026-27017; dnsx
-#   x/net    v0.60.0   CVE-2026-78669 (HTTP/2 SETTINGS flood DoS); all three
-#                      tools. The stdlib half of it and CVE-2026-78667 need
-#                      Go >= 1.26.9; the go-tools digest carries 1.26.10
-#                      for CVE-2026-111943 (crypto/x509 CA trust mitigation)
+#   x/net    v0.62.0   CVE-2026-78661 (html parser DoS) plus CVE-2026-78669
+#                      (HTTP/2 SETTINGS flood DoS); all three tools. The
+#                      stdlib half of CVE-2026-78667 needs Go >= 1.26.9; the
+#                      go-tools digest carries 1.26.10 for CVE-2026-111943
+#                      (crypto/x509 CA trust mitigation)
 #   kin-openapi v0.149.0
 #                      CVE-2026-100349, -100351, -100352, -100353, -100354
 #                      (HIGH: DoS and an auth bypass; fixed across 0.146.0-
@@ -70,7 +71,7 @@ ARG NAABU_VERSION=v2.6.1
 # finding: a pin the binary does not link in costs nothing, and a tool that
 # grows the dependency later inherits the fixed version rather than a fresh
 # advisory.
-ARG GO_SECURITY_PINS="golang.org/x/crypto@v0.57.0 github.com/go-git/go-git/v5@v5.19.2 golang.org/x/mod@v0.41.0 google.golang.org/grpc@v1.83.2 github.com/refraction-networking/utls@v1.8.2 golang.org/x/net@v0.60.0 github.com/getkin/kin-openapi@v0.149.0 github.com/klauspost/compress@v1.18.7 github.com/go-jose/go-jose/v4@v4.1.6"
+ARG GO_SECURITY_PINS="golang.org/x/crypto@v0.58.0 github.com/go-git/go-git/v5@v5.19.2 golang.org/x/mod@v0.41.0 google.golang.org/grpc@v1.83.2 github.com/refraction-networking/utls@v1.8.2 golang.org/x/net@v0.62.0 github.com/getkin/kin-openapi@v0.149.0 github.com/klauspost/compress@v1.18.7 github.com/go-jose/go-jose/v4@v4.1.6"
 
 # Keep builds on the reviewed, digest-pinned patched compiler. A dependency
 # requiring a newer compiler must fail rather than download an unpinned toolchain.
@@ -285,6 +286,10 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends --only-upgrade curl libcurl3t64-gnutls libcurl4t64; \
     for pkg in curl libcurl3t64-gnutls libcurl4t64; do \
         dpkg --compare-versions "$(dpkg-query -W -f='${Version}' "$pkg")" ge '8.14.1-2+deb13u7'; \
+    done; \
+    apt-get install -y --no-install-recommends --only-upgrade apt libapt-pkg7.0; \
+    for pkg in apt libapt-pkg7.0; do \
+        dpkg --compare-versions "$(dpkg-query -W -f='${Version}' "$pkg")" ge '3.0.4'; \
     done; \
     rm -rf /var/lib/apt/lists/*
 
