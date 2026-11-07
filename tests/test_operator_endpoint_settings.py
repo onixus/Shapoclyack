@@ -91,6 +91,7 @@ def test_hosted_needs_deployment_egress_permission(settings):
     ({"provider": "openai_compatible", "base_url": "https://llm.internal/v1", "api_key": "k", "allow_external": True}, "public_host"),
     ({"provider": "openai_compatible", "api_key": "k", "allow_external": True}, "invalid_operator_base_url"),
     ({"provider": "openrouter", "base_url": "https://evil.example/v1", "api_key": "k", "allow_external": True}, "openrouter"),
+    ({"provider": "xai", "base_url": "https://evil.example/v1", "api_key": "k", "allow_external": True}, "invalid_xai_base_url"),
     ({"bogus": 1}, "not_an_editable"),
 ])
 def test_hosted_edits_keep_every_constraint(settings, changes, code):
