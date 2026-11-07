@@ -1,7 +1,7 @@
 import { api } from "@/lib/api";
 
 export type EndpointSettings = {
-  provider: "local" | "openrouter" | "omnirouter" | "openai_compatible";
+  provider: "local" | "openrouter" | "omnirouter" | "openai_compatible" | "xai";
   base_url: string;
   model: string;
   allow_external: boolean;

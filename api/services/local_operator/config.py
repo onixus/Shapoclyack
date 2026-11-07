@@ -12,9 +12,16 @@ class OperatorConfigurationError(ValueError):
     """A sanitized configuration error, safe for status responses."""
 
 
-PROVIDERS = frozenset({"local", "openrouter", "omnirouter", "openai_compatible"})
+PROVIDERS = frozenset({"local", "openrouter", "omnirouter", "openai_compatible", "xai"})
 # Hosted providers whose base URL is deployment-supplied rather than fixed.
 EXPLICIT_BASE_PROVIDERS = frozenset({"omnirouter", "openai_compatible"})
+# Empty base URL falls back to these. OpenRouter and xAI stay pinned to them:
+# a different URL is a configuration error, not a silent rewrite.
+DEFAULT_BASE_URLS = {
+    "local": "http://127.0.0.1:8080/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+    "xai": "https://api.x.ai/v1",
+}
 LOCAL_NETWORKS = tuple(ipaddress.ip_network(net) for net in (
     "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7"))
 # IPv6 forms that carry an IPv4 address the global check does not look through.
@@ -65,8 +72,7 @@ class OperatorConfig:
         if self.provider not in PROVIDERS:
             raise OperatorConfigurationError("unsupported_operator_provider")
         if not self.base_url:
-            defaults = {"local": "http://127.0.0.1:8080/v1", "openrouter": "https://openrouter.ai/api/v1"}
-            object.__setattr__(self, "base_url", defaults.get(self.provider, ""))
+            object.__setattr__(self, "base_url", DEFAULT_BASE_URLS.get(self.provider, ""))
         if not isinstance(self.timeout_seconds, (int, float)) or isinstance(self.timeout_seconds, bool) or not math.isfinite(self.timeout_seconds) or not 0 < self.timeout_seconds <= 120:
             raise OperatorConfigurationError("invalid_operator_timeout")
         for name, ceiling in (("max_response_bytes", 1048576), ("max_input_chars", 131072), ("max_output_tokens", 8192)):
@@ -101,8 +107,10 @@ class OperatorConfig:
             if not _hosted_host_allowed(url.hostname):
                 # Private endpoints belong to the local provider, which never needs egress consent.
                 raise OperatorConfigurationError("hosted_operator_requires_public_host")
-            if self.provider == "openrouter" and self.base_url.rstrip("/") != "https://openrouter.ai/api/v1":
+            if self.provider == "openrouter" and self.base_url.rstrip("/") != DEFAULT_BASE_URLS["openrouter"]:
                 raise OperatorConfigurationError("invalid_openrouter_base_url")
+            if self.provider == "xai" and self.base_url.rstrip("/") != DEFAULT_BASE_URLS["xai"]:
+                raise OperatorConfigurationError("invalid_xai_base_url")
             if self.enabled and (not self.allow_external or not self.api_key):
                 raise OperatorConfigurationError("hosted_operator_requires_opt_in_and_key")
 

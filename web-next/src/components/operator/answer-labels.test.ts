@@ -93,6 +93,8 @@ describe("operator configuration labels", () => {
   it("labels provider and actions", () => {
     expect(operatorProviderLabel("ru", "local")).toBe("Локальный провайдер");
     expect(operatorProviderLabel("en", "local")).toBe("local");
+    expect(operatorProviderLabel("ru", "xai")).toBe("xAI (Grok)");
+    expect(operatorProviderLabel("en", "xai")).toBe("xai");
     expect(operatorActionLabel("ru", "start_scan")).toBe("Запуск скана");
   });
 });

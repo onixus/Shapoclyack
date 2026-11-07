@@ -14,6 +14,10 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- AI operator provider `xai` (`OCTO_OPERATOR_PROVIDER`) for the xAI chat API at
+  the fixed base `https://api.x.ai/v1`. It uses the same opt-in, bearer key and
+  public-host checks as the other hosted providers, and a different base URL is
+  rejected (`invalid_xai_base_url`). Local inference does not fall back to it.
 - Operator endpoint settings: saving a credential without a master key is refused, concurrent
   edits return 409, connection tests are audited, and hosted connections are pinned to the
   address that passed the public-endpoint check.

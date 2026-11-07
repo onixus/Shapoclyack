@@ -13,7 +13,7 @@ def complete(config=None, handler=None, messages=None, *, response_schema=None):
     return asyncio.run(provider.complete(messages if messages is not None else [{"role": "user", "content": "question"}], response_schema=response_schema))
 
 
-@pytest.mark.parametrize("provider,base", [("local", "http://127.0.0.1:8080/v1"), ("openrouter", "https://openrouter.ai/api/v1"), ("omnirouter", "https://router.example/v1")])
+@pytest.mark.parametrize("provider,base", [("local", "http://127.0.0.1:8080/v1"), ("openrouter", "https://openrouter.ai/api/v1"), ("omnirouter", "https://router.example/v1"), ("xai", "https://api.x.ai/v1")])
 def test_explicit_schema_requests_strict_json_without_changing_contract(provider, base):
     schema = {"type": "object", "additionalProperties": False, "properties": {"result": {"type": "string"}}, "required": ["result"]}
     requests = []
@@ -67,7 +67,7 @@ def test_schema_rejected_by_upstream_is_not_retried_as_unconstrained_output():
     assert len(requests) == 1
 
 
-@pytest.mark.parametrize("provider,base", [("local", "http://127.0.0.1:8080/v1"), ("openrouter", "https://openrouter.ai/api/v1"), ("omnirouter", "https://router.example/v1")])
+@pytest.mark.parametrize("provider,base", [("local", "http://127.0.0.1:8080/v1"), ("openrouter", "https://openrouter.ai/api/v1"), ("omnirouter", "https://router.example/v1"), ("xai", "https://api.x.ai/v1")])
 def test_posts_bounded_chat_completion(provider, base):
     seen = []
     def handler(request):
@@ -82,6 +82,15 @@ def test_posts_bounded_chat_completion(provider, base):
     result = complete(config, handler)
     assert (result.content, result.provider, result.model) == ("answer", provider, "test/model")
     assert len(seen) == 1
+
+
+def test_xai_null_refusal_and_reasoning_still_return_content():
+    def handler(_request):
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {
+            "role": "assistant", "content": '{"result":"bounded"}', "refusal": None,
+            "reasoning_content": "not part of the operator answer"}}]})
+    config = OperatorConfig(enabled=True, provider="xai", model="grok-4.7", api_key="private-key", allow_external=True)
+    assert complete(config, handler).content == '{"result":"bounded"}'
 
 
 def test_disabled_never_opens_transport():
