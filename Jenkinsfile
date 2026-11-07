@@ -66,10 +66,11 @@ pipeline {
     // commit before it, which is the record of what main actually passed.
     disableConcurrentBuilds(abortPrevious: ABORT_SUPERSEDED_BUILDS)
     buildDiscarder(logRotator(numToKeepStr: '20'))
-    // 180: Linux checks на VM могут занимать до 130 минут, а стадии образа
-    // на маке — около 31 минуты. Прежние 110 минут Tests оборвали прогон
-    // на 90–92% без итогового отчёта; общий запас должен покрывать обе части.
-    timeout(time: 180, unit: 'MINUTES')
+    // 190: Checks on Linux на Fedor занимают до 140 минут (pytest одной
+    // версии Python около 105 минут, feat/operator-local-xai #8), затем
+    // стадии образа на маке около 31 минуты (main #75). Прежние 130 минут
+    // checks оставляли слишком узкий запас на сам pytest.
+    timeout(time: 190, unit: 'MINUTES')
   }
 
   stages {
@@ -123,12 +124,14 @@ pipeline {
       agent { label 'gaming-amd64' }
       // timeout в options стадии действует до входа в agent, то есть и на
       // ожидание узла: если хост упал между пробой выше и этой стадией,
-      // сборка не висит в очереди до общего таймаута. 130 минут: прежние
-      // 110 оборвали pytest на 90–92%; вместе с образом это помещается
-      // в общие 180 минут.
+      // сборка не висит в очереди до общего таймаута. 140 минут: pytest на
+      // Fedor (6 vCPU) занимает около 105 минут на версию Python
+      // (feat/operator-local-xai #8: 6208 с и 6478 с). 110 минут оборвали
+      // security-audit-c77a1 #4 на зелёных ~85%. Вместе с образом на маке
+      // это остаётся в общих 190.
       options {
         skipDefaultCheckout()
-        timeout(time: 130, unit: 'MINUTES')
+        timeout(time: 140, unit: 'MINUTES')
       }
       stages {
         stage('Checkout from GitHub') {
