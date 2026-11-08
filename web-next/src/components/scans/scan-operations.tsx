@@ -169,7 +169,7 @@ function ScanOperationsInner({ surface }: { surface: OperationsSurface }) {
   const t = useT();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { canOperate, user } = useAuthStore();
+  const { canOperate, user, activeTenant } = useAuthStore();
   const { data: system } = useSystemStatus();
   // `null` = not decided by the operator yet: open on an empty tenant, closed otherwise.
   const [launcherOpen, setLauncherOpen] = useState<boolean | null>(null);
@@ -311,7 +311,11 @@ function ScanOperationsInner({ surface }: { surface: OperationsSurface }) {
 
       {launcherMounted ? (
         <div hidden={!showLauncher}>
-          <ScanLauncher surface={surface} onStarted={() => setLauncherOpen(false)} />
+          <ScanLauncher
+            key={`${activeTenant ?? ""}:${surface ?? "all"}`}
+            surface={surface}
+            onStarted={() => setLauncherOpen(false)}
+          />
         </div>
       ) : null}
 

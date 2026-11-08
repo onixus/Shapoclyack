@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import threading
 from pathlib import Path
 
 from .config_schema import DiscoveryConfig
@@ -19,6 +20,30 @@ PROBE_METHODS = ("icmp", "tcp", "naabu")
 #: what lets this stage honour the avoid-list: ``-exclude-ports`` belongs to
 #: the port scan and does not reach host discovery.
 NAABU_SN_PROBE_PORTS: tuple[int, ...] = (80, 443)
+
+# Whether ``naabu -sn`` actually returns hosts here, decided once per process
+# the same way the port scan decides SYN: "untested" until one batch shows it,
+# then "ok" or "unavailable". Discovery batches run concurrently, so the
+# deciding batch holds the lock — otherwise every batch launches CONNECT.
+_host_syn_lock = threading.Lock()
+_host_decision_lock = threading.Lock()
+_host_syn_state = "untested"
+
+
+def _get_host_syn_state() -> str:
+    with _host_syn_lock:
+        return _host_syn_state
+
+
+def _set_host_syn_state(value: str) -> None:
+    global _host_syn_state
+    with _host_syn_lock:
+        _host_syn_state = value
+
+
+def _reset_host_syn_state() -> None:
+    """Test seam: forget what this process learned about ``naabu -sn``."""
+    _set_host_syn_state("untested")
 
 
 def sn_probe_ports(exclude_ports: list[int] | None = None) -> list[int]:
@@ -157,7 +182,7 @@ def tcp_port_probe(
     if not ports:
         if excluded:
             logging.info(
-                "TCP probe batch %s: skipped — every configured port is excluded (#362)", tag
+                "TCP probe batch %s: skipped — every configured port is excluded (#362)", tag,
             )
         return [], list(targets)
 
@@ -204,6 +229,22 @@ def tcp_port_probe(
     return alive, pending
 
 
+def _run_recorded_naabu(
+    targets: list[str],
+    *,
+    input_file: Path,
+    command: list[str],
+    scope_members: list[str],
+    timeout: int,
+    retries: int,
+) -> list[str]:
+    write_lines(input_file, targets)
+    result = run_command(command, timeout=timeout, retries=retries)
+    return filter_hosts_in_scope(
+        parse_naabu_host_lines(result.stdout or ""), scope_members
+    )
+
+
 def _connect_host_discovery(
     targets: list[str],
     output_dir: Path,
@@ -217,19 +258,340 @@ def _connect_host_discovery(
 ) -> list[str]:
     batch_dir = output_dir / "discover"
     input_file = batch_dir / f"{tag}.naabu.connect.targets.txt"
-    alive_file = batch_dir / f"{tag}.naabu.connect.alive.txt"
-    write_lines(input_file, targets)
-    result = run_command(
-        build_naabu_connect_command(
+    alive = _run_recorded_naabu(
+        targets,
+        input_file=input_file,
+        command=build_naabu_connect_command(
             input_file, probe_ports=probe_ports, rate=rate, retries=retries
         ),
+        scope_members=scope_members,
         timeout=timeout,
         retries=retries,
     )
-    alive = parse_naabu_host_lines(result.stdout or "")
-    alive = filter_hosts_in_scope(alive, scope_members)
-    write_lines(alive_file, alive)
+    write_lines(batch_dir / f"{tag}.naabu.connect.alive.txt", alive)
     return alive
+
+
+def _syn_host_discovery(
+    targets: list[str],
+    output_dir: Path,
+    *,
+    rate: int,
+    timeout: int,
+    retries: int,
+    tag: str,
+    scope_members: list[str],
+    exclude_ports: list[int] | None,
+) -> list[str]:
+    input_file = output_dir / "discover" / f"{tag}.naabu.targets.txt"
+    return _run_recorded_naabu(
+        targets,
+        input_file=input_file,
+        command=build_naabu_sn_command(
+            input_file, rate=rate, retries=retries, exclude_ports=exclude_ports
+        ),
+        scope_members=scope_members,
+        timeout=timeout,
+        retries=retries,
+    )
+
+
+def _connect_cross_check(
+    targets: list[str],
+    output_dir: Path,
+    *,
+    probe_ports: list[int],
+    rate: int,
+    timeout: int,
+    retries: int,
+    tag: str,
+    scope_members: list[str],
+) -> list[str] | None:
+    """CONNECT hosts, or None when the cross-check command itself failed.
+
+    An empty list is a real answer (nothing answered). None is not: the
+    caller must not treat a crashed cross-check as "these hosts are dead".
+    """
+    try:
+        return _connect_host_discovery(
+            targets,
+            output_dir,
+            probe_ports=probe_ports,
+            rate=rate,
+            timeout=timeout,
+            retries=retries,
+            tag=tag,
+            scope_members=scope_members,
+        )
+    except Exception:  # noqa: BLE001 -- the caller decides whether SYN still stands
+        logging.warning("naabu CONNECT cross-check failed for batch %s", tag)
+        return None
+
+
+def _host_key(value: str) -> str:
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        return value
+
+
+def _uncovered_targets(
+    targets: list[str], alive: list[str], scope_members: list[str]
+) -> list[str]:
+    """In-scope targets whose normalized address SYN did not return.
+
+    naabu prints ``2001:db8::1`` for an input of ``2001:db8:0:0:0:0:0:1``.
+    A raw string difference would send CONNECT at a host SYN already found.
+    """
+    found = {_host_key(host) for host in alive}
+    pending = [host for host in targets if _host_key(host) not in found]
+    return filter_hosts_in_scope(pending, scope_members)
+
+
+def _union_missed_hosts(
+    alive: list[str],
+    targets: list[str],
+    output_dir: Path,
+    *,
+    probe_ports: list[int],
+    rate: int,
+    timeout: int,
+    retries: int,
+    tag: str,
+    scope_members: list[str],
+) -> list[str]:
+    """CONNECT hosts a successful SYN probe missed, and union them.
+
+    One alive host used to suppress the fallback for the rest of the batch.
+    The cross-check covers only that miss. A failed or empty CONNECT keeps
+    the SYN hosts and does not take the run off SYN: ICMP-reachable hosts
+    would disappear if later batches became CONNECT-only. Both probe ports
+    avoided leaves nothing legal to connect to.
+    """
+    if not alive or not probe_ports:
+        return alive
+    pending = _uncovered_targets(targets, alive, scope_members)
+    if not pending:
+        return alive
+    found = _connect_cross_check(
+        pending,
+        output_dir,
+        probe_ports=probe_ports,
+        rate=rate,
+        timeout=timeout,
+        retries=retries,
+        tag=tag,
+        scope_members=scope_members,
+    )
+    if not found:
+        return alive
+    logging.warning(
+        "naabu SYN/ACK host discovery missed %s host(s) in batch %s; CONNECT found %s",
+        len(pending),
+        tag,
+        len(found),
+    )
+    return sorted(set(alive) | set(found))
+
+
+def _accept_connect_recovery(tag: str, found: list[str]) -> list[str]:
+    _set_host_syn_state("unavailable")
+    logging.warning(
+        "naabu SYN/ACK host discovery returned no hosts for batch %s while CONNECT found %s",
+        tag,
+        len(found),
+    )
+    return found
+
+
+def _recover_failed_syn(
+    exc: Exception,
+    targets: list[str],
+    output_dir: Path,
+    *,
+    probe_ports: list[int],
+    rate: int,
+    timeout: int,
+    retries: int,
+    tag: str,
+    scope_members: list[str],
+) -> list[str]:
+    """Replace a failed SYN probe only when CONNECT actually finds hosts.
+
+    Returning ``[]`` here is what a delta refresh reads as "these known hosts
+    are dead". CONNECT that finds nobody, or fails itself, leaves the SYN
+    error in place so the batch is not checkpointed.
+    """
+    if not probe_ports:
+        raise exc
+    logging.warning("naabu host discovery failed for batch %s; trying CONNECT", tag)
+    found = _connect_cross_check(
+        targets,
+        output_dir,
+        probe_ports=probe_ports,
+        rate=rate,
+        timeout=timeout,
+        retries=retries,
+        tag=tag,
+        scope_members=scope_members,
+    )
+    if found:
+        return _accept_connect_recovery(tag, found)
+    raise exc
+
+
+def _decide_host_syn(
+    targets: list[str],
+    output_dir: Path,
+    *,
+    probe_ports: list[int],
+    rate: int,
+    timeout: int,
+    retries: int,
+    tag: str,
+    scope_members: list[str],
+    exclude_ports: list[int] | None,
+) -> list[str]:
+    """Settle, from one batch, whether ``naabu -sn`` can be trusted here."""
+    try:
+        alive = _syn_host_discovery(
+            targets,
+            output_dir,
+            rate=rate,
+            timeout=timeout,
+            retries=retries,
+            tag=tag,
+            scope_members=scope_members,
+            exclude_ports=exclude_ports,
+        )
+    except Exception as exc:  # noqa: BLE001 -- no raw sockets; CONNECT may still answer
+        return _recover_failed_syn(
+            exc,
+            targets,
+            output_dir,
+            probe_ports=probe_ports,
+            rate=rate,
+            timeout=timeout,
+            retries=retries,
+            tag=tag,
+            scope_members=scope_members,
+        )
+    if not alive:
+        if not probe_ports:
+            return []
+        found = _connect_cross_check(
+            targets,
+            output_dir,
+            probe_ports=probe_ports,
+            rate=rate,
+            timeout=timeout,
+            retries=retries,
+            tag=tag,
+            scope_members=scope_members,
+        )
+        if found is None:
+            return []
+        if found:
+            return _accept_connect_recovery(tag, found)
+        _set_host_syn_state("ok")
+        return []
+
+    # SYN reached something, so later batches keep using it, but this
+    # batch's misses are still CONNECT-probed.
+    alive = _union_missed_hosts(
+        alive,
+        targets,
+        output_dir,
+        probe_ports=probe_ports,
+        rate=rate,
+        timeout=timeout,
+        retries=retries,
+        tag=tag,
+        scope_members=scope_members,
+    )
+    _set_host_syn_state("ok")
+    return alive
+
+
+def _resolve_host_discovery(
+    targets: list[str],
+    output_dir: Path,
+    *,
+    probe_ports: list[int],
+    rate: int,
+    timeout: int,
+    retries: int,
+    tag: str,
+    scope_members: list[str],
+    exclude_ports: list[int] | None,
+) -> list[str]:
+    while True:
+        state = _get_host_syn_state()
+        if state == "unavailable":
+            if not probe_ports:
+                raise RuntimeError(
+                    f"naabu SYN host discovery is unavailable for batch {tag} "
+                    "and the avoid-list leaves no CONNECT probe port"
+                )
+            return _connect_host_discovery(
+                targets,
+                output_dir,
+                probe_ports=probe_ports,
+                rate=rate,
+                timeout=timeout,
+                retries=retries,
+                tag=tag,
+                scope_members=scope_members,
+            )
+        if state == "ok":
+            try:
+                alive = _syn_host_discovery(
+                    targets,
+                    output_dir,
+                    rate=rate,
+                    timeout=timeout,
+                    retries=retries,
+                    tag=tag,
+                    scope_members=scope_members,
+                    exclude_ports=exclude_ports,
+                )
+            except Exception as exc:  # noqa: BLE001 -- capability lost after SYN had worked
+                return _recover_failed_syn(
+                    exc,
+                    targets,
+                    output_dir,
+                    probe_ports=probe_ports,
+                    rate=rate,
+                    timeout=timeout,
+                    retries=retries,
+                    tag=tag,
+                    scope_members=scope_members,
+                )
+            return _union_missed_hosts(
+                alive,
+                targets,
+                output_dir,
+                probe_ports=probe_ports,
+                rate=rate,
+                timeout=timeout,
+                retries=retries,
+                tag=tag,
+                scope_members=scope_members,
+            )
+        with _host_decision_lock:
+            if _get_host_syn_state() != "untested":
+                continue
+            return _decide_host_syn(
+                targets,
+                output_dir,
+                probe_ports=probe_ports,
+                rate=rate,
+                timeout=timeout,
+                retries=retries,
+                tag=tag,
+                scope_members=scope_members,
+                exclude_ports=exclude_ports,
+            )
 
 
 def naabu_host_discovery(
@@ -257,8 +619,16 @@ def naabu_host_discovery(
 
     The command itself is :func:`build_naabu_sn_command`, which is also where
     the ``-wn`` that has to travel with a spelled-out probe set is explained.
-    An empty or failed SYN/ACK probe is cross-checked with CONNECT on the same
-    ports: containers can exit 0 without delivering raw-socket results.
+    An exit-0 empty SYN/ACK probe is cross-checked once with CONNECT on the
+    same ports: containers can exit 0 without delivering raw-socket results.
+    A non-empty probe can still miss hosts when raw sockets work for only
+    part of the batch. Those pending hosts are CONNECT-probed and unioned,
+    on this batch and on later ones; one alive host does not stand in for
+    the rest. A failed probe is not an empty result. CONNECT replaces it
+    only when that cross-check finds hosts; otherwise the error still fails
+    the batch, so a delta refresh cannot drop known hosts. Both probe ports
+    excluded means there is nothing legal to CONNECT to, and the SYN error
+    propagates.
     """
     if not targets:
         return []
@@ -271,45 +641,18 @@ def naabu_host_discovery(
             probe_ports or "none (ICMP only)",
         )
 
-    batch_dir = output_dir / "discover"
-    input_file = batch_dir / f"{tag}.naabu.targets.txt"
-    alive_file = batch_dir / f"{tag}.naabu.alive.txt"
-    write_lines(input_file, targets)
-
-    try:
-        result = run_command(
-            build_naabu_sn_command(
-                input_file, rate=rate, retries=retries, exclude_ports=exclude_ports
-            ),
-            timeout=timeout,
-            retries=retries,
-        )
-    except Exception:  # noqa: BLE001 -- raw sockets can be unavailable; CONNECT decides
-        logging.warning("naabu host discovery failed for batch %s; trying CONNECT", tag)
-        alive = []
-    else:
-        alive = filter_hosts_in_scope(
-            parse_naabu_host_lines(result.stdout or ""), scope_members
-        )
-    if not alive and probe_ports:
-        connect_alive = _connect_host_discovery(
-            targets,
-            output_dir,
-            probe_ports=probe_ports,
-            rate=rate,
-            timeout=timeout,
-            retries=retries,
-            tag=tag,
-            scope_members=scope_members,
-        )
-        if connect_alive:
-            logging.warning(
-                "naabu SYN/ACK host discovery returned no hosts for batch %s while CONNECT found %s",
-                tag,
-                len(connect_alive),
-            )
-        alive = connect_alive
-    write_lines(alive_file, alive)
+    alive = _resolve_host_discovery(
+        targets,
+        output_dir,
+        probe_ports=probe_ports,
+        rate=rate,
+        timeout=timeout,
+        retries=retries,
+        tag=tag,
+        scope_members=scope_members,
+        exclude_ports=exclude_ports,
+    )
+    write_lines(output_dir / "discover" / f"{tag}.naabu.alive.txt", alive)
     logging.info("naabu -sn batch %s: %s alive (of %s)", tag, len(alive), len(targets))
     return alive
 

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScanOperations } from "@/components/scans/scan-operations";
@@ -188,5 +188,27 @@ describe("ScanOperations with no sensor", () => {
     await user.click(screen.getByRole("button", { name: "New scan" }));
 
     expect(screen.getByLabelText("Persistent target")).toHaveValue("onixus.ru");
+  });
+
+  it("drops the retained draft when the active tenant changes", async () => {
+    vi.spyOn(apiModule, "fetchAgentSummary").mockResolvedValue(fleet(1));
+    vi.spyOn(apiModule, "fetchJobs").mockResolvedValue({
+      items: [],
+      total: 0,
+      offset: 0,
+      limit: 15,
+      has_more: false,
+    });
+    useAuthStore.setState({ activeTenant: "alpha" });
+    renderPage();
+    const user = userEvent.setup();
+
+    const target = await screen.findByLabelText("Persistent target");
+    await user.type(target, "onixus.ru");
+    act(() => {
+      useAuthStore.setState({ activeTenant: "beta" });
+    });
+
+    expect(screen.getByLabelText("Persistent target")).toHaveValue("");
   });
 });
