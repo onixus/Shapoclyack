@@ -270,7 +270,7 @@ A job the reaper or a restart already wrote off refuses the terminal write, so
 its run gets no row — the local counterpart of a refused stale attempt. Unlike a
 refused upload, which is a staging tree nobody lists, that run is a flat
 `runs/<run_id>` every replica lists, so it is tagged with the job's tenant
-before it is left there (no marker reads as `default`), and the job keeps the
+before it is left there (without a marker no tenant may read it, #311), and the job keeps the
 error it was written off with. A flat
 `runs/<run_id>` that already carries another owner's `tenant.json` is left in
 place, as before, and the job's `error` now says so.
@@ -404,7 +404,7 @@ are tracked in `docs/ui-ux-redesign-roadmap.md`.
 
 Tenant IDs created through the current API are constrained to a route- and NATS-safe representation. Legacy IDs that cannot be embedded injectively in NATS subjects use a reserved hash token rather than lossy character replacement, preventing two tenant IDs from collapsing onto one routing subject.
 
-Completed runs are stored under their tenant (`runs/_tenants/<tenant>/<run_id>`, #427) and carry `tenant.json`. Runs in the flat `runs/<run_id>` layout of earlier releases are still read, by the tenant their marker names; historical/direct scanner runs without that marker are treated as belonging to `default` for backward compatibility. Tenant IDs that are not a safe path segment are hashed into the reserved `h_` namespace, the same scheme the NATS subjects use.
+Completed runs are stored under their tenant (`runs/_tenants/<tenant>/<run_id>`, #427) and carry `tenant.json`. Runs in the flat `runs/<run_id>` layout of earlier releases are read only by the tenant their marker explicitly names; historical/direct scanner runs without that marker have no tenant until the operator establishes one with the migration tool (#311). Tenant IDs that are not a safe path segment are hashed into the reserved `h_` namespace, the same scheme the NATS subjects use.
 
 See [API and RBAC](api-and-rbac.md) for endpoint-level authorization behavior.
 

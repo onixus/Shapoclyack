@@ -279,6 +279,9 @@ def verify_mfa(
         )
 
     break_glass = False
+    saml_name_id: str | None = None
+    saml_name_id_format: str | None = None
+    saml_session_index: str | None = None
     # The session family a step-up re-proves the factor for. ``None`` on the
     # login leg, which opens a new one, and for a pre-refresh-token session,
     # which has none to stamp and is given one (#314).
@@ -288,6 +291,9 @@ def verify_mfa(
         username = challenge.username
         break_glass = challenge.break_glass
         binding = challenge.jti
+        saml_name_id = challenge.saml_name_id
+        saml_name_id_format = challenge.saml_name_id_format
+        saml_session_index = challenge.saml_session_index
     elif credentials is not None and credentials.scheme.lower() == "bearer":
         # decode_token rather than the get_current_user dependency: a session
         # carrying ``mfa_pending`` must be able to reach this, and so must one
@@ -383,7 +389,13 @@ def verify_mfa(
             )
         else:
             token, opened = issue_session(
-                settings, principal, mfa_verified_at=verified_at, mfa_method=method
+                settings,
+                principal,
+                mfa_verified_at=verified_at,
+                mfa_method=method,
+                saml_name_id=saml_name_id,
+                saml_name_id_format=saml_name_id_format,
+                saml_session_index=saml_session_index,
             )
             set_refresh_cookie(response, settings, opened)
     except (LookupError, PermissionError) as exc:

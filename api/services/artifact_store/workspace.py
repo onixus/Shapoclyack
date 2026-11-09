@@ -423,16 +423,16 @@ def adopt_local_run(settings: Settings, run: RunRef | str, source: Path) -> int:
                 # reused). Merged, as the scanner itself merged into the one
                 # flat directory before #427 and as ``promote_staging`` merges
                 # an upload -- left flat instead, the new scan has no marker
-                # and reads as the default tenant's.
+                # and no tenant may read it until its owner is written (#311).
                 shutil.copytree(source, destination, dirs_exist_ok=True)
                 shutil.rmtree(source, ignore_errors=True)
             else:
                 source.rename(destination)
         except OSError:
             # Fail-soft: the scan is whole where it is (``copytree`` copies
-            # before anything is removed). But flat and unmarked it is the
-            # default tenant's, and with the tenant's own run beside it the
-            # marker written next goes there, not here -- so it is marked now.
+            # before anything is removed). Flat and unmarked it has no owner,
+            # and with the tenant's own run beside it the marker written next
+            # goes there, not here -- so it is marked now.
             # The segment is the tenant id unless the id was hashed; then the
             # marker names nobody, which is the safe way to be wrong.
             LOG.warning("Could not move run %s into %s", ref.path, destination, exc_info=True)
@@ -826,8 +826,9 @@ def read_run_marker(settings: Settings, run: RunRef | str) -> dict:
     """``tenant.json`` for one run, as a dict. ``{}`` when there is none.
 
     A run written before the marker existed has none, and so does a run
-    produced by the plain ``scanner.main`` CLI outside the API -- callers read
-    that as the default tenant, which is what those installations scanned as.
+    produced by the plain ``scanner.main`` CLI outside the API. Since #311 its
+    owner is unknown, not implicitly ``default``; the migration CLI provides
+    the reviewed recovery path.
 
     On the local backend this is a file read and is not cached: the file is
     right there, and a cache would only add a window in which a just-written

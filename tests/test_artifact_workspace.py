@@ -150,9 +150,8 @@ def test_a_run_deleted_from_the_store_stops_being_served_from_the_cache(
 def test_a_marker_written_after_publication_reaches_the_store(tmp_path: Path) -> None:
     """``tenant.json`` is written *after* the run is published.
 
-    Locally only, it would leave the run reading back as the default tenant on
-    every other replica -- which is the run list of every tenant on the
-    installation.
+    Locally only, it would leave the run without an owner on every other
+    replica, where no tenant may read it until the marker is repaired (#311).
     """
     shared = FakeS3Client()
     writer = _replica(tmp_path, "pod-a", shared)

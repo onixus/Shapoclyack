@@ -586,6 +586,13 @@ class SessionFamily(Base):
     mfa_method: Mapped[str | None] = mapped_column(default=None)
     revoked_at: Mapped[datetime | None] = mapped_column(default=None)
     revoked_reason: Mapped[str | None] = mapped_column(default=None)
+    # SAML session this family was opened from (#317). Empty for a password,
+    # OIDC or LDAP sign-in. LogoutRequest is addressed with these three, and
+    # an IdP-initiated logout ends only the families that carry the same NameID
+    # (and SessionIndex, when the request names one).
+    saml_name_id: Mapped[str | None] = mapped_column(default=None, index=True)
+    saml_name_id_format: Mapped[str | None] = mapped_column(default=None)
+    saml_session_index: Mapped[str | None] = mapped_column(default=None)
 
 
 class RefreshToken(Base):
@@ -824,6 +831,31 @@ class OidcPendingState(Base):
     next_url: Mapped[str] = mapped_column(default="")
     created_at: Mapped[datetime]
     expires_at: Mapped[datetime] = mapped_column(index=True)
+
+
+class SamlPendingRequest(Base):
+    """One in-flight SAML AuthnRequest or LogoutRequest (#317).
+
+    The relay token is stored only as a hash and consumed atomically. Binding the
+    response's InResponseTo to this row prevents unsolicited or replayed sign-ins
+    from becoming console sessions and lets any API replica answer the callback.
+
+    ``kind="assertion"`` is the short-lived replay cache of an accepted assertion
+    id (the same table, so a replica that did not see the ACS still refuses the
+    replay). ``kind="logout"`` may name the console family that started SLO in
+    ``family_id``; the callback ends that family and no other.
+    """
+
+    __tablename__ = "saml_pending_requests"
+
+    request_id: Mapped[str] = mapped_column(primary_key=True)
+    relay_state_hash: Mapped[str] = mapped_column(unique=True, index=True)
+    kind: Mapped[str] = mapped_column(default="login")
+    next_url: Mapped[str] = mapped_column(default="")
+    created_at: Mapped[datetime]
+    expires_at: Mapped[datetime] = mapped_column(index=True)
+    # Set on a logout row: the console family SP-initiated SLO must end.
+    family_id: Mapped[str | None] = mapped_column(default=None)
 
 
 class ProvisioningKey(Base):

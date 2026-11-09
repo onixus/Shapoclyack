@@ -70,6 +70,9 @@ def issue_session(
     *,
     mfa_verified_at: datetime | None = None,
     mfa_method: str | None = None,
+    saml_name_id: str | None = None,
+    saml_name_id_format: str | None = None,
+    saml_session_index: str | None = None,
 ) -> tuple[str, sessions_service.OpenedSession]:
     """Open a session family for ``user`` and mint its first access token.
 
@@ -86,6 +89,9 @@ def issue_session(
         username=user.username,
         mfa_verified_at=mfa_verified_at,
         mfa_method=mfa_method,
+        saml_name_id=saml_name_id,
+        saml_name_id_format=saml_name_id_format,
+        saml_session_index=saml_session_index,
     )
     token = create_access_token(
         settings,

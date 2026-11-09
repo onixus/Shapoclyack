@@ -58,15 +58,21 @@ class Page(BaseModel, Generic[T]):
     has_more: bool
 
 
-class SsoStatus(BaseModel):
-    """Whether this installation offers single sign-on. Unauthenticated.
+class SsoProviderStatus(BaseModel):
+    provider: Literal["oidc", "saml", "ldap"]
+    login_url: str
 
-    Deliberately not the issuer: the login form is reachable by anyone, and the
-    provider's URL names the customer's identity vendor.
+
+class SsoStatus(BaseModel):
+    """Which federated sign-in providers are configured. Unauthenticated.
+
+    Only provider kinds and local login paths are public; issuer, directory and
+    metadata URLs would disclose the customer's identity infrastructure (#317).
     """
 
     enabled: bool = False
     login_url: str = "/api/auth/oidc/login"
+    providers: list[SsoProviderStatus] = Field(default_factory=list)
     # What password login is for on this installation (#315): "enabled",
     # "break-glass" or "disabled". A mode, never a list of accounts — the
     # console renders the form, a warning, or nothing at all from it.
@@ -95,9 +101,9 @@ class HealthResponse(BaseModel):
 
 class RunSummary(BaseModel):
     run_id: str
-    # Owning tenant (ROADMAP P0). Reads back as "default" for runs written
-    # before runs were tagged.
-    tenant_id: str = "default"
+    # Owning tenant (ROADMAP P0). Empty for a flat run whose marker is missing
+    # or damaged; such runs are withheld from every tenant-scoped view (#311).
+    tenant_id: str = ""
     profile: str | None = None
     started_at: str | None = None
     config: str | None = None

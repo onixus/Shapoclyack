@@ -513,6 +513,11 @@ def _holds_a_membership(session, username: str) -> bool:
     )
 
 
+def _identity_source(issuer: str) -> str:
+    """Audit/provenance prefix for OIDC, SAML and LDAP identities (#317)."""
+    return issuer if issuer.startswith(("saml:", "ldap:")) else f"oidc:{issuer}"
+
+
 def link_or_provision_sso_user(
     settings: Settings,
     *,
@@ -526,7 +531,7 @@ def link_or_provision_sso_user(
     jit_enabled: bool,
     groups: list[str] | None = None,
 ) -> tuple[dict[str, Any], str]:
-    """Resolve an OIDC identity to a console account.
+    """Resolve an OIDC, SAML or LDAP identity to a console account.
 
     Returns ``(user, action)`` where ``action`` is ``signin``, ``link`` or
     ``provision`` — the caller records which one happened in the auth trail.
@@ -585,7 +590,7 @@ def link_or_provision_sso_user(
     groups_listed = groups is not None
     groups = list(groups or [])
     context = audit_service.AuditContext(
-        actor=f"oidc:{issuer}"[:128], actor_type=audit_service.ACTOR_SYSTEM
+        actor=_identity_source(issuer)[:128], actor_type=audit_service.ACTOR_SYSTEM
     )
     refusal: str | None = None
     outcome: tuple[dict[str, Any], str] | None = None
@@ -714,7 +719,7 @@ def link_or_provision_sso_user(
                     created_at=now,
                     updated_at=now,
                     password_changed_at=None,
-                    created_by=f"oidc:{issuer}",
+                    created_by=_identity_source(issuer),
                     email=email,
                     email_verified=bool(email and email_verified),
                     oidc_issuer=issuer,
@@ -746,7 +751,7 @@ def link_or_provision_sso_user(
                 username=provisioned["username"],
                 tenant_id=tenant_id,
                 role=role,
-                created_by=f"oidc:{issuer}",
+                created_by=_identity_source(issuer),
                 # The platform granting on the identity provider's word, which
                 # the installation configured: there is no granter in the
                 # tenant whose ceiling it could be held to.

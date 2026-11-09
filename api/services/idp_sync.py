@@ -146,9 +146,18 @@ def is_authoritative(settings: Settings) -> bool:
     """Whether SSO logins resync. Off with nothing mapped, or with no claim to
     read the groups from (see settings): either way every login would read as
     "in no mapped group" and disable the account."""
+    group_source = bool(
+        settings.oidc_role_claim.strip()
+        or (
+            settings.saml_sp_entity_id.strip()
+            and settings.saml_groups_attribute.strip()
+            and (settings.saml_idp_metadata_url.strip() or settings.saml_idp_metadata_path.strip())
+        )
+        or (settings.ldap_url.strip() and settings.ldap_base_dn.strip())
+    )
     return bool(
         settings.idp_authoritative
-        and settings.oidc_role_claim.strip()
+        and group_source
         and (settings.oidc_role_map or settings.idp_group_map)
     )
 
@@ -159,7 +168,12 @@ def places_tenants(settings: Settings) -> bool:
     Then an account left with no membership is not let into the ``default``
     tenant by the pre-P0 fallback — see the module docstring.
     """
-    return bool(settings.idp_group_map or settings.oidc_tenant_claim.strip())
+    return bool(
+        settings.idp_group_map
+        or settings.oidc_tenant_claim.strip()
+        or (settings.saml_sp_entity_id and settings.saml_tenant_attribute.strip())
+        or (settings.ldap_url and settings.ldap_tenant_attribute.strip())
+    )
 
 
 def _unplaced(settings: Settings, role: str, tenant_ids: Iterable[str]) -> bool:

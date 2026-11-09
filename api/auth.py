@@ -577,10 +577,23 @@ class PreAuthChallenge(BaseModel):
     # The token's own id. A WebAuthn challenge issued on this login is bound to
     # it (#315), so a challenge cannot be carried over to a different login.
     jti: str | None = None
+    # Present only when the first factor was SAML. The second leg opens the
+    # session, so the NameID has to ride this token or logout cannot address
+    # the IdP. Absent on a password login.
+    saml_name_id: str | None = None
+    saml_name_id_format: str | None = None
+    saml_session_index: str | None = None
 
 
 def create_pre_auth_token(
-    settings: Settings, username: str, *, ttl_minutes: int, break_glass: bool = False
+    settings: Settings,
+    username: str,
+    *,
+    ttl_minutes: int,
+    break_glass: bool = False,
+    saml_name_id: str | None = None,
+    saml_name_id_format: str | None = None,
+    saml_session_index: str | None = None,
 ) -> str:
     """Mint the short-lived token that stands between a password and a session.
 
@@ -605,6 +618,12 @@ def create_pre_auth_token(
     }
     if break_glass:
         payload["bg"] = True
+    if saml_name_id:
+        payload["saml_nid"] = saml_name_id[:512]
+        if saml_name_id_format:
+            payload["saml_nfmt"] = saml_name_id_format[:256]
+        if saml_session_index:
+            payload["saml_sidx"] = saml_session_index[:256]
     return jwt.encode(
         payload,
         settings.jwt_secret,
@@ -659,6 +678,9 @@ def decode_pre_auth_token(settings: Settings, token: str) -> PreAuthChallenge:
         username=username,
         break_glass=bool(payload.get("bg")),
         jti=str(payload["jti"]) if payload.get("jti") else None,
+        saml_name_id=str(payload["saml_nid"]) if payload.get("saml_nid") else None,
+        saml_name_id_format=str(payload["saml_nfmt"]) if payload.get("saml_nfmt") else None,
+        saml_session_index=str(payload["saml_sidx"]) if payload.get("saml_sidx") else None,
     )
 
 
