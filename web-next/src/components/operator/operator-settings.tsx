@@ -128,6 +128,7 @@ export function OperatorSettings({ actor }: { actor: string }) {
               }}
             >
               <option value="local">Local / LAN</option>
+              <option value="xai">xAI (Grok)</option>
               <option value="openrouter">OpenRouter</option>
               <option value="omnirouter">OmniRouter</option>
               <option value="openai_compatible">OpenAI-compatible cloud</option>
@@ -141,7 +142,11 @@ export function OperatorSettings({ actor }: { actor: string }) {
               placeholder={
                 draft.provider === "local"
                   ? "http://192.168.1.50:8080/v1"
-                  : "https://llm.example.com/v1"
+                  : draft.provider === "xai"
+                    ? "https://api.x.ai/v1"
+                    : draft.provider === "openrouter"
+                      ? "https://openrouter.ai/api/v1"
+                      : "https://llm.example.com/v1"
               }
               onChange={(e) => {
                 setDraft({ ...draft, base_url: e.target.value });

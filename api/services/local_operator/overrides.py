@@ -26,7 +26,7 @@ from api.db.engine import get_session
 from api.services import audit as audit_service
 from api.services.crypto import envelope
 
-from .config import PROVIDERS, OperatorConfig, OperatorConfigurationError
+from .config import DEFAULT_BASE_URLS, PROVIDERS, OperatorConfig, OperatorConfigurationError
 
 LOG = logging.getLogger(__name__)
 
@@ -53,8 +53,7 @@ def _deployment(settings) -> dict[str, Any]:
 
 def _endpoint(values: dict[str, Any]) -> tuple[str, str]:
     provider = values["provider"]
-    base_url = values["base_url"] or {"local": "http://127.0.0.1:8080/v1",
-                                      "openrouter": "https://openrouter.ai/api/v1"}.get(provider, "")
+    base_url = values["base_url"] or DEFAULT_BASE_URLS.get(provider, "")
     return provider, base_url.rstrip("/")
 
 
