@@ -35,6 +35,17 @@ def test_openrouter_default_and_no_secret_in_repr_or_status():
     assert "private-key" not in str(config.status())
 
 
+def test_xai_uses_fixed_public_base_and_hides_the_key():
+    config = OperatorConfig(enabled=True, provider="xai", allow_external=True, api_key="private-key", model="grok-4.7")
+    assert config.base_url == "https://api.x.ai/v1"
+    assert config.status()["external"] is True
+    assert "private-key" not in repr(config)
+    with pytest.raises(OperatorConfigurationError, match="invalid_xai_base_url"):
+        OperatorConfig(enabled=True, provider="xai", base_url="https://attacker.example/v1", allow_external=True, api_key="key")
+    with pytest.raises(OperatorConfigurationError, match="hosted_operator_requires_opt_in_and_key"):
+        OperatorConfig(enabled=True, provider="xai", api_key="key")
+
+
 def test_omnirouter_requires_explicit_https_base():
     with pytest.raises(OperatorConfigurationError):
         OperatorConfig(enabled=True, provider="omnirouter", allow_external=True, api_key="key")

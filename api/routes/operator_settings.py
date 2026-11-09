@@ -50,7 +50,7 @@ class EndpointSettings(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid", strict=True)
-    provider: Literal["local", "openrouter", "omnirouter", "openai_compatible"] | None = None
+    provider: Literal["local", "openrouter", "omnirouter", "openai_compatible", "xai"] | None = None
     base_url: Annotated[str, Field(max_length=2048)] | None = None
     model: Annotated[str, Field(min_length=1, max_length=256)] | None = None
     api_key: Annotated[str, Field(max_length=4096)] | None = Field(default=None, repr=False)
