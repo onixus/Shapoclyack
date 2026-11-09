@@ -494,8 +494,15 @@ pipeline {
               sh """
                 set -eu
                 set --
-                if [ -s "\${NVD_API_KEY_FILE:-/run/secrets/nvd_api_key}" ]; then
-                  set -- --secret "id=nvd_api_key,src=\${NVD_API_KEY_FILE:-/run/secrets/nvd_api_key}"
+                nvd_key=""
+                for candidate in "\${NVD_API_KEY_FILE:-}" /run/secrets/nvd_api_key "\${HOME}/.nvd-api-key"; do
+                  if [ -n "\$candidate" ] && [ -s "\$candidate" ]; then
+                    nvd_key="\$candidate"
+                    break
+                  fi
+                done
+                if [ -n "\$nvd_key" ]; then
+                  set -- --secret "id=nvd_api_key,src=\$nvd_key"
                 fi
                 DOCKER_BUILDKIT=1 docker build "\$@" \
                   --secret id=github_token,env=GH_TOKEN \
@@ -645,8 +652,15 @@ pipeline {
                     sh """
                       set -eu
                       set --
-                      if [ -s "\${NVD_API_KEY_FILE:-/run/secrets/nvd_api_key}" ]; then
-                        set -- --secret "id=nvd_api_key,src=\${NVD_API_KEY_FILE:-/run/secrets/nvd_api_key}"
+                      nvd_key=""
+                      for candidate in "\${NVD_API_KEY_FILE:-}" /run/secrets/nvd_api_key "\${HOME}/.nvd-api-key"; do
+                        if [ -n "\$candidate" ] && [ -s "\$candidate" ]; then
+                          nvd_key="\$candidate"
+                          break
+                        fi
+                      done
+                      if [ -n "\$nvd_key" ]; then
+                        set -- --secret "id=nvd_api_key,src=\$nvd_key"
                       fi
                       docker build "\$@" --secret id=github_token,env=GH_TOKEN -f Dockerfile.${kind} -t ${tag} .
                     """

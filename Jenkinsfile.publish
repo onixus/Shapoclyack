@@ -231,6 +231,14 @@ pipeline {
     stage('Build & push') {
       steps {
         script {
+          // Полный NVD CPE лежит в контексте до docker build. Скачивание внутри
+          // Dockerfile сделало бы каждую сборку и прогон тестов многочасовыми.
+          // DRY_RUN образ получает сид из git и ничего не публикует.
+          if (!params.DRY_RUN) {
+            sh 'scripts/stage-release-nvd-cpe.sh'
+          } else {
+            echo "DRY_RUN: полный набор NVD CPE не скачивается; образы получат сид из git."
+          }
           def version = params.TAG.replaceFirst(/^v/, '')
           def only = params.ONLY?.trim() ? params.ONLY.split(',').collect { it.trim() } : null
           def selected = only ? MATRIX.findAll { only.contains(it.name) } : MATRIX
@@ -271,8 +279,15 @@ pipeline {
                 mkdir -p .publish
                 rm -f .publish/${m.name}.json
                 set --
-                if [ -s "\${NVD_API_KEY_FILE:-/run/secrets/nvd_api_key}" ]; then
-                  set -- --secret "id=nvd_api_key,src=\${NVD_API_KEY_FILE:-/run/secrets/nvd_api_key}"
+                nvd_key=""
+                for candidate in "\${NVD_API_KEY_FILE:-}" /run/secrets/nvd_api_key "\${HOME}/.nvd-api-key"; do
+                  if [ -n "\$candidate" ] && [ -s "\$candidate" ]; then
+                    nvd_key="\$candidate"
+                    break
+                  fi
+                done
+                if [ -n "\$nvd_key" ]; then
+                  set -- --secret "id=nvd_api_key,src=\$nvd_key"
                 fi
                 docker buildx build "\$@" --builder ${builder} \
                   --platform ${platforms} \
@@ -313,6 +328,12 @@ pipeline {
               echo "Опубликовано и подписано ${selected.size()} образ(ов) с тегами ${version} и latest."
             }
           }
+        }
+      }
+      post {
+        always {
+          // Вернуть сид в рабочую копию. Сам набор в git не коммитится.
+          sh 'scripts/stage-release-nvd-cpe.sh --restore'
         }
       }
     }

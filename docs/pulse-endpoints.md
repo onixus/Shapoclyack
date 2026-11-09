@@ -297,10 +297,10 @@ the group and its 253-bit curve size; HRR remains unmeasured. TLS1.2 certificate
 does not enforce a packet limit within multi-message upgrade exchanges, so
 `per_host_rate` scan policy disables cipher enumeration. The same restriction
 applies to a locally configured per-host packet ceiling. Passive TLS evidence
-parsing remains available. Released Pulse 1.3.0 lacks these capabilities; keep
-`enumerate_ciphers` off until an approved binary carrying the new engine is
-installed. Source, local protocol fixtures, and release acceptance remain
-separate gates.
+parsing remains available. Shipped scanner configs turn `enumerate_ciphers` on
+for pinned Pulse 1.4.0. Pulse 1.3.0 has no `--tls-enum`; a deployment still on
+that binary must set the flag false. Source, local protocol fixtures, and
+release acceptance remain separate gates.
 
 TLS enumeration resume receipts also carry the requested `raw-starttls-v2`
 contract. Earlier candidate receipts with v1 or without a marker are re-probed; this marker

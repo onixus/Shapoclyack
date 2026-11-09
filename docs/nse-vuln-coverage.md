@@ -261,9 +261,12 @@ authoritative source and `pulse --cve` the secondary one. Checked against the co
   `pulse_cves.json` (`source: pulse`). It sees only what its binary knew on the day of the scan.
 - So the order is by design: `retro_match` first (current, backport-aware, no probe), `pulse --cve`
   second (at scan time). **But the first is only as good as its dataset.** The shipped
-  `scanner/data/nvd-cpe/nvd-cpe-ranges.json` is a *seed*: 8 products, 23 CVEs; the real
-  dataset is opt-in (`OCTO_NVD_CPE_FETCH_ENABLED=true scripts/fetch-nvd-cpe.py --full`) and
-  `GET /api/system` reads `nvd_cpe.usable: false` until it is loaded.
+  `scanner/data/nvd-cpe/nvd-cpe-ranges.json` in git is a *seed*: 8 products, 23 CVEs.
+  A release puts the full dataset in the build context before `docker build`
+  (`scripts/stage-release-nvd-cpe.sh`). Tests and image builds do not download
+  it. After installation the client's key can run `scripts/fetch-nvd-cpe.py --full`.
+  Runtime refresh stays opt-in, and `GET /api/system` reads `nvd_cpe.usable: false`
+  until a full dataset is loaded.
 - Measured on the corpus (`tests/test_nmap_pulse_corpus.py`): Nmap's scripts named 428
   (host, port, CVE) triples; `pulse --cve` named 3 of them (`cve_both 3`, `cve_only_nmap 425`,
   `cve_only_pulse 0`); `retro_match` with the

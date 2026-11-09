@@ -10,7 +10,9 @@ two stages are instruction for instruction the same.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -53,11 +55,27 @@ def test_enrichment_stage_runs_on_the_build_platform(name: str) -> None:
     assert "--mount=type=secret,id=nvd_api_key,required=false" in text
     assert "bash scripts/fetch-enrichment.sh" in text
     assert "ARG ENRICHMENT_STRICT=0" in body
+    assert "fetch-nvd-cpe.py" not in text
     # The fetch imports scanner.pipeline.cvss4, scripts/*.py and, for vendor
     # advisories, api.services (which reaches agent.runtime.egress).
     for src in ("scanner", "scripts", "api", "agent"):
         assert f"COPY {src} /app/{src}" in body
     assert "COPY scanner/data /opt/shapoclyack/seed-data" in body
+
+
+def test_image_builds_do_not_harvest_nvd_cpe():
+    for name in ("Dockerfile", "Dockerfile.api", "Dockerfile.allinone"):
+        text = (ROOT / name).read_text(encoding="utf-8")
+        assert "fetch-nvd-cpe.py" not in text
+        assert "NVD_CPE_FULL" not in text
+
+
+def test_release_stages_the_dataset_before_the_image_build():
+    text = (ROOT / "Jenkinsfile.publish").read_text(encoding="utf-8")
+    stage = text.split("stage('Build & push')", 1)[1].split("stage('Sensor bundle')", 1)[0]
+    assert stage.index("scripts/stage-release-nvd-cpe.sh") < stage.index("docker buildx build")
+    assert "scripts/stage-release-nvd-cpe.sh --restore" in stage
+    assert "params.DRY_RUN" in stage
 
 
 @pytest.mark.parametrize("name", DOCKERFILES)
@@ -76,3 +94,47 @@ def test_final_stage_copies_the_data_instead_of_fetching(name: str) -> None:
     assert body.index(copy) < chown
     # The pristine seed the runtime refresh floors from stays in the image.
     assert "COPY scanner/data /opt/shapoclyack/seed-data" in body
+
+
+def _release_env(tmp_path: Path, dest: Path, backup: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env.pop("NVD_API_KEY", None)
+    env["HOME"] = str(tmp_path / "home")
+    env["OCTO_NVD_CPE_KEY_PATHS"] = ""
+    env["OCTO_NVD_CPE_RELEASE_DEST"] = str(dest)
+    env["OCTO_NVD_CPE_RELEASE_BACKUP"] = str(backup)
+    (tmp_path / "home").mkdir()
+    return env
+
+
+def test_release_harvest_refuses_to_start_without_a_key(tmp_path: Path) -> None:
+    dest = tmp_path / "nvd-cpe-ranges.json"
+    dest.write_text("seed", encoding="utf-8")
+    backup = tmp_path / "backup.json"
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "stage-release-nvd-cpe.sh")],
+        env=_release_env(tmp_path, dest, backup),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert dest.read_text(encoding="utf-8") == "seed"
+    assert not backup.exists()
+
+
+def test_release_restore_puts_the_seed_back(tmp_path: Path) -> None:
+    dest = tmp_path / "nvd-cpe-ranges.json"
+    dest.write_text("harvest", encoding="utf-8")
+    backup = tmp_path / "backup.json"
+    backup.write_text("seed", encoding="utf-8")
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "stage-release-nvd-cpe.sh"), "--restore"],
+        env=_release_env(tmp_path, dest, backup),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert dest.read_text(encoding="utf-8") == "seed"
+    assert not backup.exists()

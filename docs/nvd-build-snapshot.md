@@ -55,4 +55,11 @@ This opt-in updates only that image, not the parked repository snapshot.
 Runtime `scripts/fetch-enrichment.sh`, Kubernetes refresh jobs, and offline
 bundle creation continue refreshing NVD by default. An explicit
 `OCTO_CVSS4_FETCH_ENABLED=false` skips just CVSS4 and preserves its prior origin;
-the other feeds continue as before. NVD CPE ranges retain their separate opt-in.
+the other feeds continue as before. NVD CPE ranges stay out of that default
+refresh and out of the image build. The committed CPE file remains the
+8-product seed so unit tests stay on it. `Jenkinsfile.publish` runs
+`scripts/stage-release-nvd-cpe.sh` before `docker build` on a real release, and
+the image copies that file. An installation can replace its own copy afterwards
+with `scripts/fetch-nvd-cpe.py --full` and the client's `NVD_API_KEY`.
+`scripts/fetch-enrichment.sh` still skips CPE unless `OCTO_NVD_CPE_FETCH_ENABLED`
+is set.

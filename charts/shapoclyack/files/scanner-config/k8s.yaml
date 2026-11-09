@@ -184,6 +184,12 @@ service_probe:
     cve: true
     cve_online: false
 
+# Certificate checks and A-F cipher grades. Pinned Pulse 1.4.0 has --tls-enum.
+# A per-host packet ceiling still turns enumeration off (scan_policy).
+tls_posture:
+  enabled: true
+  enumerate_ciphers: true
+
 reporting:
   markdown_summary: true
   html_summary: true

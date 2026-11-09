@@ -134,13 +134,14 @@ What Nmap did that nothing replaces yet. These are not hidden by the migration;
 each is tracked.
 
 1. **TLS cipher-suite enumeration** ([#545](https://github.com/onixus/Shapoclyack/issues/545),
-   waiting for [GenDec#34](https://github.com/onixus/GenDec/issues/34)). The
-   grading code (`tls_grading.py`) and the contract for Pulse's enumeration are
-   in place and tested against recordings, but Pulse does not enumerate suites
-   yet. Until it does, **a real scan on the Pulse path produces no TLS grade
-   A–F**, no `weak_cipher_grade`, and none of the findings that need the suite
-   list. Certificate checks, the stdlib legacy-protocol handshakes and the
-   hostname and chain checks run as before.
+   [GenDec#34](https://github.com/onixus/GenDec/issues/34)). Pinned Pulse 1.4.0
+   accepts `--tls-enum`. Shipped `scanner/config/default.yaml` and both k8s
+   scanner configs set `tls_posture.enabled` and `enumerate_ciphers`, so a scan
+   that uses those files and has no per-host packet ceiling grades observed
+   suites A–F. A config that omits the section keeps the schema default off,
+   and `scan_policy` turns enumeration off when a per-host rate is set.
+   Certificate checks, the stdlib legacy-protocol handshakes and the hostname
+   and chain checks do not need the suite list.
 2. **Four NSE `vuln`/`safe` scripts have no replacement**: `smb-vuln-ms17-010`,
    `smb-vuln-ms10-061`, `smb-protocols` and `rdp-enum-encryption`. Each needs a
    binary protocol exchange that the Rhai sandbox cannot send and that has no

@@ -415,7 +415,9 @@ service_probe:
 # pulse/tls.json from Pulse (the ssl-cert / ssl-enum-ciphers XML of runs recorded
 # before the Nmap stage was removed is still read), else
 # if probe_fallback is true open a stdlib TLS handshake on probe_tls_ports.
-# Opt-in; findings only, never merged into scan scope.
+# Shipped on: pinned Pulse 1.4.0 supports --tls-enum, so this file requests
+# certificate checks and A-F cipher grades. An omitted section keeps the
+# schema default off. Findings only, never merged into scan scope.
 # hostname_mismatch (P4.1) flags cert_name_mismatch when the certificate's
 # CN/SAN covers none of the FQDNs the scan used to reach the endpoint. It
 # compares against the *forward* names in hostnames.json only (PTR names are
@@ -430,9 +432,9 @@ service_probe:
 # otherwise). These three are sensor-config only: the platform's config
 # overlay does not carry them. See docs/pulse-backend.md.
 tls_posture:
-  enabled: false
-  # Requires a Pulse build with --tls-enum; raw selections need confirmation.
-  enumerate_ciphers: false
+  enabled: true
+  # Raw suite selection. Pinned Pulse 1.4.0 provides --tls-enum.
+  enumerate_ciphers: true
   max_targets: 2000
   expiring_soon_days: 30
   hostname_mismatch: true

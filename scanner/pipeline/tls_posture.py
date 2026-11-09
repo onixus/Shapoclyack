@@ -77,7 +77,9 @@ per-source parsing is done:
     ``requires_confirmation`` -- it cannot be told apart from a default-vhost
     answer without re-probing with the name.
 
-SAFETY: disabled by default (``tls_posture.enabled = false``). The set of
+SAFETY: the schema default is off when the section is omitted
+(``tls_posture.enabled = false``). Shipped scanner configs turn the stage
+and cipher enumeration on. The set of
 host:port endpoints inspected is capped by ``max_targets`` -- past the cap,
 remaining endpoints are skipped and the run is flagged "truncated" rather
 than silently processing everything. Findings are reported only

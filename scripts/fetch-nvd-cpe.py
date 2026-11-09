@@ -8,10 +8,12 @@ hours into minutes (5 → 50 requests per 30 s). See docs/retro-cve-matching.md.
 
 Two modes:
 
-  --full           Page the whole NVD corpus and *replace* the dataset. Slow,
-                   meant to be run by hand once (and after a long outage), like
-                   ``fetch-cvss4-db.py --full``. Refused unless the result
-                   clears the dataset's floor in scripts/enrichment_manifest.py.
+  --full           Page the whole NVD corpus and *replace* the dataset. Slow.
+                   A release runs it before docker build
+                   (scripts/stage-release-nvd-cpe.sh). An installation runs it
+                   once with the client's NVD_API_KEY. Image builds and unit
+                   tests do not. Refused unless the result clears the dataset's
+                   floor in scripts/enrichment_manifest.py.
   (default)        Incremental: CVEs NVD modified since the existing file's
                    coverage ends (``covered_until``, less a day of overlap),
                    *merged* into it. This is what scripts/fetch-enrichment.sh

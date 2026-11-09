@@ -17,6 +17,15 @@ FIXTURES = Path(__file__).parent / "fixtures" / "pulse_probe_db"
 UPSTREAM = FIXTURES / "probes.v1.3.0.json"
 #: sha256 of GenDec v1.3.0 ``src/scanner/probes.json`` (also in probes.json.LICENSE).
 UPSTREAM_SHA256 = "ee2c2c71e9c0c04ecbabdc3abb195f35acfe35477b56834bb451304c4ffa1a1a"
+# First-match wins, so these upstream rules are renamed in place. Pattern and
+# product stay GenDec's; only the service id changes.
+SERVICE_RENAMES = {
+    ("http-get-api", 0): "elasticsearch",
+    ("http-get-api", 1): "opensearch",
+    ("http-get-api", 2): "elasticsearch",
+    ("http-get-api", 6): "minio",
+    ("http-get-api", 7): "minio",
+}
 
 
 def _load(path: Path) -> dict:
@@ -47,7 +56,20 @@ def test_our_database_only_adds_to_upstream():
             assert set(new_rule) == set(old_rule)
         for key in ("ports", "rarity", "payload", "payload_hex"):
             assert new.get(key) == old.get(key), f"{old['name']}: {key} differs from upstream"
-        assert new["matches"][: len(old["matches"])] == old["matches"], (
+        expected = []
+        for index, rule in enumerate(old["matches"]):
+            service = SERVICE_RENAMES.get((old["name"], index))
+            if service is None:
+                expected.append(rule)
+                continue
+            renamed = dict(rule)
+            assert renamed.get("service") == "http"
+            renamed["service"] = service
+            assert {k: v for k, v in new["matches"][index].items() if k != "service"} == {
+                k: v for k, v in rule.items() if k != "service"
+            }
+            expected.append(renamed)
+        assert new["matches"][: len(old["matches"])] == expected, (
             f"{old['name']}: upstream matches must be an unchanged prefix; add ours after them"
         )
     assert len({p["name"] for p in ours}) == len(ours), "probe names must be unique"

@@ -831,19 +831,19 @@
       "matches": [
         {
           "pattern": "(?i)\"number\"\\s*:\\s*\"([0-9.]+)\"[^}]*\"build_flavor\"\\s*:\\s*\"default\"[^}]*\"lucene_version\"",
-          "service": "http",
+          "service": "elasticsearch",
           "product": "Elasticsearch",
           "version": "$1"
         },
         {
           "pattern": "(?i)\"number\"\\s*:\\s*\"([0-9.]+)\"[^}]*\"distribution\"\\s*:\\s*\"opensearch\"",
-          "service": "http",
+          "service": "opensearch",
           "product": "OpenSearch",
           "version": "$1"
         },
         {
           "pattern": "(?i)\"tagline\"\\s*:\\s*\"You Know, for Search\"",
-          "service": "http",
+          "service": "elasticsearch",
           "product": "Elasticsearch"
         },
         {
@@ -866,13 +866,13 @@
         },
         {
           "pattern": "(?i)server:\\s*MinIO(?:/([0-9a-zA-Z._-]+))?",
-          "service": "http",
+          "service": "minio",
           "product": "MinIO Object Storage",
           "version": "$1"
         },
         {
           "pattern": "(?i)x-amz-request-id:.*minio",
-          "service": "http",
+          "service": "minio",
           "product": "MinIO Object Storage"
         },
         {

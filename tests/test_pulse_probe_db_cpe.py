@@ -53,6 +53,21 @@ def test_mapped_probe_products_name_wellformed_nvd_keys():
             assert re.fullmatch(r"[aho]:[a-z0-9_.\-]+:[a-z0-9_.\-]+", key), (product, key)
 
 
+def test_storage_engines_are_named_as_themselves():
+    wanted = {
+        "Elasticsearch": "elasticsearch",
+        "OpenSearch": "opensearch",
+        "MinIO Object Storage": "minio",
+    }
+    found: dict[str, set[str]] = {}
+    for probe in json.loads(PROBE_DB.read_text(encoding="utf-8"))["probes"]:
+        for rule in probe["matches"]:
+            product = rule.get("product", "")
+            if product in wanted:
+                found.setdefault(product, set()).add(rule.get("service", ""))
+    assert found == {product: {service} for product, service in wanted.items()}
+
+
 def test_apache_mina_sshd_is_filed_under_both_nvd_spellings():
     # CVE-2023-35887 is on apache:sshd; apache:mina_sshd is the older spelling (NVD CPE API, 2026-10-10).
     assert set(retro_match.PRODUCT_TABLE["apache mina sshd"]) == {"a:apache:sshd", "a:apache:mina_sshd"}
