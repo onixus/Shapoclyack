@@ -115,9 +115,18 @@ def response_xml() -> str:
     </samlp:Response>"""
 
 
-def signed_response() -> str:
-    """Sign the Assertion. A Response signature alone is no longer accepted."""
-    root = etree.fromstring(response_xml().encode())
+_DS_NS = "http://www.w3.org/2000/09/xmldsig#"
+_SAML_NS = "urn:oasis:names:tc:SAML:2.0:assertion"
+_BEARER = "urn:oasis:names:tc:SAML:2.0:cm:bearer"
+
+
+def signed_response(xml: str | None = None, *, signature_object: etree._Element | None = None) -> str:
+    """Sign the Assertion. A Response signature alone is no longer accepted.
+
+    ``signature_object`` is appended under ``ds:Signature`` after signing. The
+    enveloped transform excludes that element, so the signature still verifies.
+    """
+    root = etree.fromstring((xml or response_xml()).encode())
     xmlsec.tree.add_ids(root, ["ID"])
     assertion = root.find(".//{urn:oasis:names:tc:SAML:2.0:assertion}Assertion")
     signature = xmlsec.template.create(
@@ -133,7 +142,24 @@ def signed_response() -> str:
     context = xmlsec.SignatureContext()
     context.key = xmlsec.Key.from_memory(KEY, xmlsec.KeyFormat.PEM)
     context.sign(signature)
+    if signature_object is not None:
+        signature.append(signature_object)
     return base64.b64encode(etree.tostring(root)).decode()
+
+
+def signature_object(*children: etree._Element) -> etree._Element:
+    """A ``ds:Object`` planted after the signature, which the digest does not cover."""
+    obj = etree.Element(f"{{{_DS_NS}}}Object")
+    for child in children:
+        obj.append(child)
+    return obj
+
+
+def saml_element(tag: str, text: str | None = None, **attrs: str) -> etree._Element:
+    node = etree.Element(f"{{{_SAML_NS}}}{tag}", attrs)
+    if text is not None:
+        node.text = text
+    return node
 
 
 class FakeAuth:
@@ -169,7 +195,11 @@ class FakeAuth:
     def get_last_response_xml(self):
         return (
             '<Response xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">'
-            "<saml:Assertion><saml:Conditions><saml:AudienceRestriction>"
+            "<saml:Assertion><saml:Subject>"
+            f'<saml:SubjectConfirmation Method="{_BEARER}">'
+            '<saml:SubjectConfirmationData InResponseTo="request-1"/>'
+            "</saml:SubjectConfirmation></saml:Subject>"
+            "<saml:Conditions><saml:AudienceRestriction>"
             "<saml:Audience>https://console.example.com/saml</saml:Audience>"
             "</saml:AudienceRestriction></saml:Conditions></saml:Assertion></Response>"
         )
@@ -271,7 +301,19 @@ def test_a_signed_response_is_accepted_by_the_real_saml_validator(tmp_path, monk
 def test_a_response_without_in_response_to_is_refused(tmp_path, monkeypatch):
     settings = make_settings(tmp_path)
     fake = FakeAuth()
-    fake.get_last_response_in_response_to = lambda: None
+    # The Response attribute matches. The signed assertion does not carry it.
+    fake.get_last_response_in_response_to = lambda: "request-1"
+    fake.get_last_response_xml = lambda: (
+        '<Response xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" InResponseTo="request-1">'
+        "<saml:Audience>https://console.example.com/saml</saml:Audience>"
+        "<saml:Assertion><saml:Subject>"
+        f'<saml:SubjectConfirmation Method="{_BEARER}">'
+        "<saml:SubjectConfirmationData/>"
+        "</saml:SubjectConfirmation></saml:Subject>"
+        "<saml:Conditions><saml:AudienceRestriction>"
+        "<saml:Audience>https://console.example.com/saml</saml:Audience>"
+        "</saml:AudienceRestriction></saml:Conditions></saml:Assertion></Response>"
+    )
     monkeypatch.setattr(saml, "_auth", lambda *_args: fake)
     _pending_response(monkeypatch)
     with pytest.raises(saml.SamlError, match="not a reply"):
@@ -282,13 +324,176 @@ def test_a_response_whose_audience_is_not_the_sp_is_refused(tmp_path, monkeypatc
     settings = make_settings(tmp_path)
     fake = FakeAuth()
     fake.get_last_response_xml = lambda: (
-        '<Response xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">'
-        "<saml:Audience>https://other.example/saml</saml:Audience></Response>"
+        '<Response xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" InResponseTo="request-1">'
+        "<saml:Audience>https://console.example.com/saml</saml:Audience>"
+        "<saml:Assertion><saml:Subject>"
+        f'<saml:SubjectConfirmation Method="{_BEARER}">'
+        '<saml:SubjectConfirmationData InResponseTo="request-1"/>'
+        "</saml:SubjectConfirmation></saml:Subject>"
+        "<saml:Conditions><saml:AudienceRestriction>"
+        "<saml:Audience>https://other.example/saml</saml:Audience>"
+        "</saml:AudienceRestriction></saml:Conditions></saml:Assertion></Response>"
     )
     monkeypatch.setattr(saml, "_auth", lambda *_args: fake)
     _pending_response(monkeypatch)
     with pytest.raises(saml.SamlError, match="audience"):
         saml.complete_login(settings, saml_response="response", relay_state="relay")
+
+
+@pytest.mark.parametrize(
+    ("assertion_in_response_to", "message"),
+    [(None, "not a reply"), ("request-1", "audience")],
+)
+def test_a_signed_assertion_ignores_wrapper_audience_and_in_response_to(
+    tmp_path, monkeypatch, assertion_in_response_to, message
+):
+    """The library accepts this response. The binding values sit outside the signature."""
+    settings = make_settings(
+        tmp_path, saml_sign_requests=False, saml_require_encrypted_assertion=False
+    )
+    _pending_response(monkeypatch)
+    now = datetime.now(UTC)
+
+    def stamp(moment: datetime) -> str:
+        return moment.isoformat().replace("+00:00", "Z")
+
+    in_response_to = (
+        f' InResponseTo="{assertion_in_response_to}"' if assertion_in_response_to else ""
+    )
+    xml = f"""<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_response" Version="2.0" IssueInstant="{stamp(now)}" Destination="{ACS}" InResponseTo="request-1">
+      <saml:Issuer>{IDP_ENTITY}</saml:Issuer>
+      <samlp:Extensions><saml:Audience>https://console.example.com/saml</saml:Audience></samlp:Extensions>
+      <samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status>
+      <saml:Assertion ID="_assertion" IssueInstant="{stamp(now)}" Version="2.0"><saml:Issuer>{IDP_ENTITY}</saml:Issuer><saml:Subject><saml:NameID>alice</saml:NameID><saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer"><saml:SubjectConfirmationData{in_response_to} NotOnOrAfter="{stamp(now + timedelta(minutes=5))}" Recipient="{ACS}"/></saml:SubjectConfirmation></saml:Subject><saml:Conditions NotBefore="{stamp(now - timedelta(minutes=1))}" NotOnOrAfter="{stamp(now + timedelta(minutes=5))}"/><saml:AuthnStatement AuthnInstant="{stamp(now)}" SessionIndex="session-1"><saml:AuthnContext><saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:Password</saml:AuthnContextClassRef></saml:AuthnContext></saml:AuthnStatement></saml:Assertion>
+    </samlp:Response>"""
+    with pytest.raises(saml.SamlError, match=message):
+        saml.complete_login(settings, saml_response=signed_response(xml), relay_state="relay")
+
+
+def _binding_response(
+    *,
+    response_to: str | None,
+    confirmation_to: str | None,
+    audience: str | None,
+) -> str:
+    now = datetime.now(UTC)
+
+    def stamp(moment: datetime) -> str:
+        return moment.isoformat().replace("+00:00", "Z")
+
+    response_attr = f' InResponseTo="{response_to}"' if response_to else ""
+    confirmation_attr = f' InResponseTo="{confirmation_to}"' if confirmation_to else ""
+    audience_xml = (
+        f"<saml:AudienceRestriction><saml:Audience>{audience}</saml:Audience></saml:AudienceRestriction>"
+        if audience
+        else ""
+    )
+    return f"""<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_response" Version="2.0" IssueInstant="{stamp(now)}" Destination="{ACS}"{response_attr}>
+      <saml:Issuer>{IDP_ENTITY}</saml:Issuer>
+      <samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status>
+      <saml:Assertion ID="_assertion" IssueInstant="{stamp(now)}" Version="2.0"><saml:Issuer>{IDP_ENTITY}</saml:Issuer><saml:Subject><saml:NameID>alice</saml:NameID><saml:SubjectConfirmation Method="{_BEARER}"><saml:SubjectConfirmationData{confirmation_attr} NotOnOrAfter="{stamp(now + timedelta(minutes=5))}" Recipient="{ACS}"/></saml:SubjectConfirmation></saml:Subject><saml:Conditions NotBefore="{stamp(now - timedelta(minutes=1))}" NotOnOrAfter="{stamp(now + timedelta(minutes=5))}">{audience_xml}</saml:Conditions><saml:AuthnStatement AuthnInstant="{stamp(now)}" SessionIndex="session-1"><saml:AuthnContext><saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:Password</saml:AuthnContextClassRef></saml:AuthnContext></saml:AuthnStatement></saml:Assertion>
+    </samlp:Response>"""
+
+
+def _real_login(tmp_path, monkeypatch):
+    settings = make_settings(
+        tmp_path, saml_sign_requests=False, saml_require_encrypted_assertion=False
+    )
+    _pending_response(monkeypatch)
+    return settings
+
+
+@pytest.mark.parametrize("confirmation_to", [None, "other-request"])
+def test_in_response_to_inside_the_signature_object_is_ignored(
+    tmp_path, monkeypatch, confirmation_to
+):
+    settings = _real_login(tmp_path, monkeypatch)
+    planted = saml_element("SubjectConfirmationData", InResponseTo="request-1")
+    payload = signed_response(
+        _binding_response(
+            response_to=None,
+            confirmation_to=confirmation_to,
+            audience="https://console.example.com/saml",
+        ),
+        signature_object=signature_object(planted),
+    )
+    with pytest.raises(saml.SamlError, match="not a reply"):
+        saml.complete_login(settings, saml_response=payload, relay_state="relay")
+
+
+def test_an_audience_inside_the_signature_object_is_ignored(tmp_path, monkeypatch):
+    settings = _real_login(tmp_path, monkeypatch)
+    restriction = saml_element("AudienceRestriction")
+    restriction.append(saml_element("Audience", "https://console.example.com/saml"))
+    payload = signed_response(
+        _binding_response(response_to="request-1", confirmation_to="request-1", audience=None),
+        signature_object=signature_object(restriction),
+    )
+    with pytest.raises(saml.SamlError, match="audience"):
+        saml.complete_login(settings, saml_response=payload, relay_state="relay")
+
+
+def test_an_extra_audience_inside_the_signature_object_does_not_reject(tmp_path, monkeypatch):
+    settings = _real_login(tmp_path, monkeypatch)
+    restriction = saml_element("AudienceRestriction")
+    restriction.append(saml_element("Audience", "https://other.example/saml"))
+    completed = saml.complete_login(
+        settings,
+        saml_response=signed_response(signature_object=signature_object(restriction)),
+        relay_state="relay",
+    )
+    assert completed.identity.subject == "alice"
+
+
+def test_a_non_bearer_confirmation_does_not_bind_the_request(tmp_path, monkeypatch):
+    settings = make_settings(tmp_path)
+    fake = FakeAuth()
+    fake.get_last_response_xml = lambda: (
+        '<Response xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">'
+        "<saml:Assertion><saml:Subject>"
+        '<saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:holder-of-key">'
+        '<saml:SubjectConfirmationData InResponseTo="request-1"/>'
+        "</saml:SubjectConfirmation></saml:Subject>"
+        "<saml:Conditions><saml:AudienceRestriction>"
+        "<saml:Audience>https://console.example.com/saml</saml:Audience>"
+        "</saml:AudienceRestriction></saml:Conditions></saml:Assertion></Response>"
+    )
+    monkeypatch.setattr(saml, "_auth", lambda *_args: fake)
+    _pending_response(monkeypatch)
+    with pytest.raises(saml.SamlError, match="not a reply"):
+        saml.complete_login(settings, saml_response="response", relay_state="relay")
+
+
+def test_an_unsigned_logout_request_is_refused(tmp_path):
+    from onelogin.saml2.utils import OneLogin_Saml2_Utils
+
+    settings = make_settings(
+        tmp_path, saml_sign_requests=False, saml_require_encrypted_assertion=False
+    )
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    xml = (
+        '<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" '
+        'xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" '
+        f'ID="_logout1" Version="2.0" IssueInstant="{now}">'
+        "<saml:NameID>alice@example.com</saml:NameID></samlp:LogoutRequest>"
+    )
+    with pytest.raises(saml.SamlError, match="not signed"):
+        saml.complete_logout(
+            settings,
+            get_data={"SAMLRequest": OneLogin_Saml2_Utils.deflate_and_base64_encode(xml)},
+        )
+
+
+def test_an_unsigned_logout_response_does_not_burn_the_pending_request(tmp_path):
+    settings = make_settings(tmp_path)
+    saml._store_request(settings, "request-1", "relay", kind="logout", family_id="fam-1")  # noqa: SLF001
+    with pytest.raises(saml.SamlError, match="not signed"):
+        saml.complete_logout(
+            settings, get_data={"SAMLResponse": "signed", "RelayState": "relay"}
+        )
+    pending = saml._peek_request(settings, "relay", kind="logout")  # noqa: SLF001
+    assert pending is not None
+    assert pending.family_id == "fam-1"
 
 
 def test_an_accepted_assertion_cannot_be_replayed(tmp_path, monkeypatch):
@@ -318,7 +523,8 @@ def test_slo_response_is_bound_to_the_pending_logout_request(tmp_path, monkeypat
         settings, "request-1", "relay", kind="logout", family_id="fam-1", next_url="/done"
     )
     done = saml.complete_logout(
-        settings, get_data={"SAMLResponse": "signed", "RelayState": "relay"}
+        settings,
+        get_data={"SAMLResponse": "signed", "RelayState": "relay", "Signature": "sig"},
     )
     assert fake.request_id == "request-1"
     assert done.family_id == "fam-1"
@@ -326,7 +532,8 @@ def test_slo_response_is_bound_to_the_pending_logout_request(tmp_path, monkeypat
     assert done.message == "response"
     with pytest.raises(saml.SamlError, match="already used"):
         saml.complete_logout(
-            settings, get_data={"SAMLResponse": "signed", "RelayState": "relay"}
+            settings,
+            get_data={"SAMLResponse": "signed", "RelayState": "relay", "Signature": "sig"},
         )
 
 
@@ -344,7 +551,8 @@ def test_a_failed_logout_response_does_not_burn_the_pending_request(tmp_path, mo
     saml._store_request(settings, "request-1", "relay", kind="logout", family_id="fam-1")  # noqa: SLF001
     with pytest.raises(saml.SamlError, match="validation failed"):
         saml.complete_logout(
-            settings, get_data={"SAMLResponse": "signed", "RelayState": "relay"}
+            settings,
+            get_data={"SAMLResponse": "signed", "RelayState": "relay", "Signature": "sig"},
         )
     pending = saml._peek_request(settings, "relay", kind="logout")  # noqa: SLF001
     assert pending is not None
@@ -376,7 +584,8 @@ def test_an_idp_logout_request_names_its_subject_and_ignores_relay_state(tmp_pat
     monkeypatch.setattr(saml, "_auth", lambda *_args: LogoutAuth())
     saml._store_request(settings, "request-1", "relay", kind="logout", family_id="fam-1")  # noqa: SLF001
     done = saml.complete_logout(
-        settings, get_data={"SAMLRequest": "request", "RelayState": "relay"}
+        settings,
+        get_data={"SAMLRequest": "request", "RelayState": "relay", "Signature": "sig"},
     )
     assert done.message == "request"
     assert done.name_id == "alice@example.com"
