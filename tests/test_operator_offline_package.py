@@ -702,6 +702,7 @@ def test_generated_offline_profile_passes_the_start_check(module, bundle, tmp_pa
 
 @pytest.mark.parametrize("key,value,code", [
     ("OCTO_OPERATOR_PROVIDER", "openrouter", "bundle_offline_profile_external_provider"),
+    ("OCTO_OPERATOR_PROVIDER", "xai", "bundle_offline_profile_external_provider"),
     ("OCTO_OPERATOR_ALLOW_EXTERNAL", "true", "bundle_offline_profile_external_provider"),
     ("OCTO_OPERATOR_BASE_URL", "http://10.9.9.9:8082/v1", "bundle_offline_profile_inference_outside_network"),
     ("OCTO_OPERATOR_BASE_URL", "http://inference.example:8082/v1", "bundle_offline_profile_inference_outside_network"),

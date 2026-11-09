@@ -108,6 +108,10 @@ export function operatorProviderLabel(locale: "ru" | "en", provider: string) {
     (
       {
         local: "Локальный провайдер",
+        xai: "xAI (Grok)",
+        openrouter: "OpenRouter",
+        omnirouter: "OmniRouter",
+        openai_compatible: "Внешний OpenAI-совместимый провайдер",
         hosted: "Внешний провайдер",
         external: "Внешний провайдер",
       } as Record<string, string>
