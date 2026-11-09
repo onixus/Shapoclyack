@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 onixus
-// Confirms: one anonymous header-only request against a plain-HTTP reply
-// that serves content comes back without content-type sniffing protection
-// and without framing protection. Not checked: a second request over TLS,
-// HSTS (its absence on plain HTTP is not a finding), the quality of any CSP.
+// One HEAD of a plain-HTTP reply. Not requested: TLS, HSTS and CSP quality.
+// A reply with no finished header block throws; a cut-off 200 is not a finding.
 fn name() { "shapo_http_headers" }
 fn description() { "Report plain-HTTP content responses missing content-type and framing protection headers." }
 fn ports() { [] }
@@ -17,7 +15,10 @@ fn run() {
     if reply.len() == 0 { throw "empty reply to the header check"; }
     let lines = reply.split("\n");
     let status = "";
-    if lines.len() > 0 { status = lines[0].trim(); }
+    if lines.len() > 0 {
+        status = lines[0];
+        status.trim();
+    }
     if !status.starts_with("HTTP/") { throw "header check reply is not HTTP: " + head(reply, 60); }
     let parts = status.split(" ");
     if parts.len() < 2 || parts[1].len() != 3 { throw "unparseable HTTP status line: " + head(status, 60); }
@@ -26,9 +27,8 @@ fn run() {
     if !serves { return; }
     let sep4 = reply.index_of("\r\n\r\n");
     let sep2 = reply.index_of("\n\n");
-    let block = reply;
-    if sep4 >= 0 { block = reply.sub_string(0, sep4); }
-    else if sep2 >= 0 { block = reply.sub_string(0, sep2); }
+    if sep4 < 0 && sep2 < 0 { throw "header check reply is cut off inside the headers"; }
+    let block = if sep4 >= 0 { reply.sub_string(0, sep4) } else { reply.sub_string(0, sep2) };
     let text = block.to_lower();
     let has_nosniff = text.contains("x-content-type-options:");
     let has_framing = text.contains("x-frame-options:") || text.contains("content-security-policy:");

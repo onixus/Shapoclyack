@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 onixus
-// One plain-HTTP GET of the built-in ping endpoint; no queries, no tables,
-// no native TCP protocol on the shared 9000 port.
+// One plain-HTTP GET of the built-in ping endpoint. Not requested: queries,
+// tables and the native protocol. The body is "Ok." plus an optional LF or CRLF.
 fn name() { "shapo_clickhouse_ping" }
 fn description() { "Detect a ClickHouse HTTP ping endpoint answering without authentication." }
 fn ports() { [] }
@@ -48,7 +48,8 @@ fn run() {
     let reply = probe_send(port, "GET /ping HTTP/1.1\r\nHost: shapoclyack.invalid\r\nConnection: close\r\n\r\n", 1500);
     if reply.len() == 0 { throw "empty ping endpoint reply"; }
     let lines = reply.split("\n");
-    let status = lines[0].trim();
+    let status = lines[0];
+    status.trim();
     if !status.starts_with("HTTP/") { throw "no HTTP status line in the ping reply: " + head(reply, 60); }
     let parts = status.split(" ");
     if parts.len() < 2 || parts[1].len() != 3 { throw "malformed HTTP status line in the ping reply: " + head(status, 60); }
@@ -69,11 +70,14 @@ fn run() {
     let chunked = false;
     let has_ch_header = false;
     for line in header_block.split("\n") {
-        let l = line.trim().to_lower();
+        let l = line;
+        l.trim();
+        l = l.to_lower();
         if l.starts_with("x-clickhouse") { has_ch_header = true; }
         if l.starts_with("transfer-encoding:") && l.contains("chunked") { chunked = true; }
         if l.starts_with("content-length:") {
-            let raw = l.sub_string(15).trim();
+            let raw = l.sub_string(15);
+            raw.trim();
             if raw.len() < 1 || raw.len() > 8 { throw "invalid Content-Length in the ping reply"; }
             content_length = parse_int(raw);
         }
@@ -89,7 +93,7 @@ fn run() {
     if code == "401" || code == "403" { return; }
     if code != "200" { throw "unexpected HTTP status from the ping endpoint: " + head(status, 60); }
     if !has_ch_header { throw "200 ping reply carries no X-ClickHouse header"; }
-    if body != "Ok." { throw "unexpected ping reply body"; }
+    if body != "Ok." && body != "Ok.\n" && body != "Ok.\r\n" { throw "unexpected ping reply body"; }
     return #{
         title: "ClickHouse ping endpoint answered without authentication",
         severity: "LOW",

@@ -16,7 +16,10 @@ fn run() {
     if reply.len() == 0 { throw "empty Ollama probe reply"; }
     let lines = reply.split("\n");
     let status = "";
-    if lines.len() > 0 { status = lines[0].trim(); }
+    if lines.len() > 0 {
+        status = lines[0];
+        status.trim();
+    }
     if !status.starts_with("HTTP/") { throw "Ollama probe reply is not HTTP: " + head(reply, 60); }
     let parts = status.split(" ");
     if parts.len() < 2 || parts[1].len() != 3 { throw "unparseable HTTP status line: " + head(status, 60); }
@@ -36,12 +39,14 @@ fn run() {
         let raw = block.sub_string(pos + marker.len());
         let end = raw.index_of("\n");
         if end >= 0 { raw = raw.sub_string(0, end); }
-        raw = raw.trim();
+        raw.trim();
         let want = parse_int(raw);
         if body.len() != want { throw "truncated Ollama reply body"; }
     }
     if !body.contains("\"models\"") { throw "Ollama tags reply has no models key"; }
-    if !body.trim().ends_with("}") { throw "truncated JSON body in the Ollama reply"; }
+    let trimmed = body;
+    trimmed.trim();
+    if !trimmed.ends_with("}") { throw "truncated JSON body in the Ollama reply"; }
     return #{
         title: "Ollama API exposes the model list without authentication",
         severity: "LOW",

@@ -36,7 +36,8 @@ fn ber(data, pos, limit) {
 fn run() {
     let unnamed = service == "" || service == "unknown";
     if !(service == "ldap" || (unnamed && port == 389)) { return; }
-    let reply = probe_send_hex(port, "3050020101634b04000a01000a0100020100020100010100a310040b6f626a656374436c61737304012a30260414737570706f727465644c44415056657273696f6e040e6e616d696e67436f6e7465787473", 1500).to_lower();
+    // Present filter [7] objectClass, not equalityMatch against "*".
+    let reply = probe_send_hex(port, "304b020101634604000a01000a0100020100020100010100870b6f626a656374436c61737330260414737570706f727465644c44415056657273696f6e040e6e616d696e67436f6e7465787473", 1500).to_lower();
     if reply.len() < 8 || reply.len() % 2 != 0 || reply.len() > 32768 { throw "invalid LDAP response size"; }
     let limit = reply.len() / 2;
     let pos = 0;

@@ -48,7 +48,8 @@ fn run() {
     let reply = probe_send(port, "GET /version HTTP/1.1\r\nHost: shapoclyack.invalid\r\nConnection: close\r\n\r\n", 1500);
     if reply.len() == 0 { throw "empty version endpoint reply"; }
     let lines = reply.split("\n");
-    let status = lines[0].trim();
+    let status = lines[0];
+    status.trim();
     if !status.starts_with("HTTP/") { throw "no HTTP status line in the version reply: " + head(reply, 60); }
     let parts = status.split(" ");
     if parts.len() < 2 || parts[1].len() != 3 { throw "malformed HTTP status line in the version reply: " + head(status, 60); }
@@ -68,10 +69,13 @@ fn run() {
     let content_length = -1;
     let chunked = false;
     for line in header_block.split("\n") {
-        let l = line.trim().to_lower();
+        let l = line;
+        l.trim();
+        l = l.to_lower();
         if l.starts_with("transfer-encoding:") && l.contains("chunked") { chunked = true; }
         if l.starts_with("content-length:") {
-            let raw = l.sub_string(15).trim();
+            let raw = l.sub_string(15);
+            raw.trim();
             if raw.len() < 1 || raw.len() > 8 { throw "invalid Content-Length in the version reply"; }
             content_length = parse_int(raw);
         }
@@ -83,7 +87,8 @@ fn run() {
     }
     if code == "401" || code == "403" { return; }
     if code != "200" { throw "unexpected HTTP status from the version endpoint: " + head(status, 60); }
-    let doc = body.trim();
+    let doc = body;
+    doc.trim();
     if doc.len() < 2 || !doc.starts_with("{") || !doc.ends_with("}") { throw "version reply is not a complete JSON object"; }
     if doc.contains("\"ApiVersion\"") || doc.contains("\"Engine\"") {
         return #{

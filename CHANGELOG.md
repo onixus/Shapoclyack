@@ -12,6 +12,15 @@ All notable changes to Shapoclyack are documented in this file.
   RSA parameters in JWKs), which had turned the blocking Trivy gate red. The pin
   sits in `GO_SECURITY_PINS` in `Dockerfile` and `Dockerfile.allinone`.
 
+### Fixed
+
+- Pulse status checks decode one chunked HTTP body, accept a ClickHouse ping
+  body of `Ok.` with one trailing LF or CRLF, walk MongoDB timestamp and regex
+  fields, and require a complete Prometheus `"success"` status. The Kubernetes
+  check runs only when the service is `k8s-api`. A plain-HTTP header check with
+  no finished header block is an error. The LDAP RootDSE search uses a present
+  filter for `objectClass`.
+
 ### Added
 
 - Pulse plugin phase 1: read-only unauthenticated status checks for ClickHouse
@@ -21,9 +30,10 @@ All notable changes to Shapoclyack are documented in this file.
   Grafana, Jenkins, Consul, Vault and the Kubernetes API. Metrics, dashboards,
   jobs, catalog/KV data, secrets and API objects are not read.
 - Pulse plugin phase 3: bounded Kafka ApiVersions, anonymous MQTT CONNECT,
-  AMQP 0-9-1 connection.start, LDAP RootDSE and Git upload-pack advertisement
-  checks. Authentication, publishing, object transfer and directory subtree
-  searches remain out of scope.
+  AMQP 0-9-1 connection.start and an anonymous LDAP RootDSE search.
+  Authentication, publishing and directory subtree searches remain out of scope.
+  A git-daemon advertisement check is not shipped: one fixed non-repository
+  path cannot produce the finding.
 - Pulse plugin phase 4: WinRM challenge confirmation, X11 setup acceptance,
   plain-HTTP browser hardening headers and unauthenticated Ollama model listing.
   No credentials, post-setup X11 requests or model generation are used.

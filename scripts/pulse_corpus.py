@@ -395,7 +395,6 @@ PLUGIN_ONLY.update({
     "shapo_mqtt_anonymous": "anonymous CONNECT only; subscribe and publish untested",
     "shapo_amqp_start": "connection.start protocol confirmation only; login and queues untested",
     "shapo_ldap_rootdse": "RootDSE base search only; users, subtree search and bind untested",
-    "shapo_git_daemon": "upload-pack ref advertisement only; objects and receive-pack untested",
     "shapo_winrm_http": "WinRM authentication challenge only; credentials and SOAP commands untested",
     "shapo_x11_noauth": "initial connection acceptance only; screens, input and windows untested",
     "shapo_http_headers": "two plain-HTTP browser hardening header groups only; HTTPS, HSTS and CSP quality untested",

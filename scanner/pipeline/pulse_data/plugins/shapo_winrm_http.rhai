@@ -17,7 +17,10 @@ fn run() {
     if reply.len() == 0 { throw "empty WinRM probe reply"; }
     let lines = reply.split("\n");
     let status = "";
-    if lines.len() > 0 { status = lines[0].trim(); }
+    if lines.len() > 0 {
+        status = lines[0];
+        status.trim();
+    }
     if !status.starts_with("HTTP/") { throw "WinRM probe reply is not HTTP: " + head(reply, 60); }
     let parts = status.split(" ");
     if parts.len() < 2 || parts[1].len() != 3 { throw "unparseable HTTP status line: " + head(status, 60); }

@@ -61,7 +61,6 @@ installed sensor or fleet acceptance.
 | `shapo_mqtt_anonymous` | MQTT CONNECT accepted without credentials | LOW; subscribe and publish are not attempted | Separate anonymous-access check |
 | `shapo_amqp_start` | AMQP 0-9-1 `connection.start` response | LOW protocol confirmation only; no login or queue operation | Separate protocol check |
 | `shapo_ldap_rootdse` | Parsed anonymous LDAP RootDSE search entry | LOW; users, subtree search and bind are not attempted | Separate read-only directory check |
-| `shapo_git_daemon` | Git daemon upload-pack reference advertisement | LOW; objects and receive-pack are not requested | Separate read-only protocol check |
 | `shapo_winrm_http` | WinRM authentication challenge with both protocol indicators | LOW; credentials and SOAP commands are not used | Separate service confirmation |
 | `shapo_x11_noauth` | X11 initial connection accepted without authorisation | MEDIUM; no screen, input or window access is attempted | Separate anonymous-access check |
 | `shapo_http_headers` | Missing `X-Content-Type-Options` and frame/CSP protection on selected plain-HTTP statuses | LOW; HTTPS, HSTS and CSP quality are not assessed | Separate header check |

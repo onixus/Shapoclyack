@@ -1010,6 +1010,24 @@ def _http_reply(status: str, *headers: bytes, body: bytes = b"") -> bytes:
     return head + b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
 
 
+def _chunked_http_reply(
+    status: str, *headers: bytes, body: bytes = b"", content_length: int | None = None
+) -> bytes:
+    """One complete chunked HTTP response.
+
+    Content-Length is omitted unless the caller passes one. A length that does
+    not match the raw chunk bytes shows that chunked framing wins.
+    """
+    chunk = f"{len(body):x}\r\n".encode() + body + b"\r\n0\r\n\r\n"
+    head = f"HTTP/1.1 {status}\r\n".encode()
+    for header in headers:
+        head += header + b"\r\n"
+    head += b"Transfer-Encoding: chunked\r\n"
+    if content_length is not None:
+        head += b"Content-Length: " + str(content_length).encode() + b"\r\n"
+    return head + b"\r\n" + chunk
+
+
 #: (id, plugin, service, request target, stub reply, expected outcome).
 #: Docs criteria: clickhouse wants X-ClickHouse with an Ok. body; prometheus and
 #: grafana treat a wrong 200 body as a parse error, not a finding; jenkins must
@@ -1018,7 +1036,14 @@ def _http_reply(status: str, *headers: bytes, body: bytes = b"") -> bytes:
 #: error, never as clean.
 HTTP_PHASE_CASES = [
     ("clickhouse-ok", "shapo_clickhouse_ping", "clickhouse", "/ping",
-     _http_reply("200 OK", b"X-ClickHouse-Summary: {}", body=b"Ok."), "finding"),
+     _http_reply("200 OK", b"X-ClickHouse-Summary: {}", body=b"Ok.\n"), "finding"),
+    ("clickhouse-chunked", "shapo_clickhouse_ping", "clickhouse", "/ping",
+     _chunked_http_reply("200 OK", b"X-ClickHouse-Summary: {}", body=b"Ok.\n", content_length=2),
+     "finding"),
+    ("clickhouse-crlf", "shapo_clickhouse_ping", "clickhouse", "/ping",
+     _http_reply("200 OK", b"X-ClickHouse-Summary: {}", body=b"Ok.\r\n"), "finding"),
+    ("clickhouse-trailing-junk", "shapo_clickhouse_ping", "clickhouse", "/ping",
+     _http_reply("200 OK", b"X-ClickHouse-Summary: {}", body=b"Ok.junk"), "error"),
     ("clickhouse-refused", "shapo_clickhouse_ping", "clickhouse", "/ping",
      _http_reply("401 Unauthorized"), "clean"),
     ("clickhouse-garbage", "shapo_clickhouse_ping", "clickhouse", "/ping",
@@ -1041,10 +1066,22 @@ HTTP_PHASE_CASES = [
     ("prometheus-ok", "shapo_prometheus_ready", "prometheus", "/api/v1/status/buildinfo",
      _http_reply("200 OK", b"Content-Type: application/json",
                  body=b'{"status":"success","data":{"version":"2.47.0","revision":"abc1234"}}'), "finding"),
+    ("prometheus-spaced-success", "shapo_prometheus_ready", "prometheus", "/api/v1/status/buildinfo",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"status": "success", "data": {}}'),
+     "finding"),
+    ("prometheus-chunked", "shapo_prometheus_ready", "prometheus", "/api/v1/status/buildinfo",
+     _chunked_http_reply("200 OK", b"Content-Type: application/json", body=b'{"status":"success","data":{}}'),
+     "finding"),
     ("prometheus-refused", "shapo_prometheus_ready", "prometheus", "/api/v1/status/buildinfo",
      _http_reply("401 Unauthorized"), "clean"),
     ("prometheus-healthy-word", "shapo_prometheus_ready", "prometheus", "/api/v1/status/buildinfo",
      _http_reply("200 OK", b"Content-Type: text/plain", body=b"Healthy"), "error"),
+    ("prometheus-successful", "shapo_prometheus_ready", "prometheus", "/api/v1/status/buildinfo",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"status":"successful"}'), "error"),
+    ("prometheus-success-extra", "shapo_prometheus_ready", "prometheus", "/api/v1/status/buildinfo",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"status":"success extra"}'), "error"),
+    ("prometheus-truncated-chunk", "shapo_prometheus_ready", "prometheus", "/api/v1/status/buildinfo",
+     b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n8\r\n{\"sta", "error"),
     ("grafana-ok", "shapo_grafana_health", "grafana", "/api/health",
      _http_reply("200 OK", b"Content-Type: application/json",
                  body=b'{"database":"ok","commit":"f2a5a52fee","version":"10.1.5"}'), "finding"),
@@ -1058,6 +1095,8 @@ HTTP_PHASE_CASES = [
      "finding"),
     ("jenkins-forbidden-with-x-jenkins", "shapo_jenkins_anonymous", "jenkins", "/whoAmI/api/json",
      _http_reply("403 Forbidden", b"X-Jenkins: 2.440"), "clean"),
+    ("jenkins-chunked-forbidden", "shapo_jenkins_anonymous", "jenkins", "/whoAmI/api/json",
+     _chunked_http_reply("403 Forbidden", b"X-Jenkins: 2.440", body=b"no"), "clean"),
     ("jenkins-garbage", "shapo_jenkins_anonymous", "jenkins", "/whoAmI/api/json",
      b"\x16\x03\x01 not http at all\r\n", "error"),
     ("consul-ok", "shapo_consul_status", "consul", "/v1/status/leader",
@@ -1145,7 +1184,9 @@ def test_winrm_http_challenge_needs_both_signatures_and_shapes_the_post(reply, e
      "clean"),
     (_http_reply("500 Internal Server Error"), "clean"),
     (b"this is not http\r\n", "error"),
-], ids=["200-missing-both-groups", "200-with-both-groups", "500-outside-the-status-list", "not-http"])
+    (b"HTTP/1.1 200 OK\r\nServer: stub", "error"),
+], ids=["200-missing-both-groups", "200-with-both-groups", "500-outside-the-status-list", "not-http",
+        "truncated-headers"])
 def test_http_headers_reports_missing_hardening_headers_on_head(reply, expect, stub, tmp_path):
     server = stub(b"", lambda _request: reply)
     lines, errors = _run_binary_plugin("shapo_http_headers", "http", server, tmp_path)
@@ -1180,6 +1221,13 @@ def _bson_doc(elements) -> bytes:
             body += b"\x01" if value else b"\x00"
         elif kind == 0x10:  # int32
             body += struct.pack("<i", value)
+        elif kind == 0x0B:  # regex: pattern and options, each a C string
+            pattern, options = value
+            body += pattern.encode() + b"\x00" + options.encode() + b"\x00"
+        elif kind == 0x11:  # timestamp, eight raw bytes
+            if len(value) != 8:
+                raise ValueError("BSON timestamp must be 8 bytes")
+            body += value
         else:
             raise ValueError(f"unsupported BSON element kind {kind:#x}")
     return struct.pack("<i", len(body) + 5) + body + b"\x00"
@@ -1198,9 +1246,15 @@ def _mongo_wire_reply(request: bytes, doc: bytes) -> bytes:
 def test_mongodb_hello_parses_the_bson_answer_or_raises(stub, tmp_path, case):
     def reply(request: bytes) -> bytes:
         if case == "hello-ok":
-            # Marker fields only: the plugin reads a zero low word of a double ok
-            # value as ok == 0, and 1.0 has zero low bytes.
-            doc = _bson_doc([(0x08, "ismaster", True), (0x10, "maxBsonObjectSize", 16777216)])
+            # ok is the double 1.0, which is not eight zero bytes. operationTime
+            # is a top-level timestamp. note is a regex of two C strings.
+            doc = _bson_doc([
+                (0x08, "ismaster", True),
+                (0x01, "ok", 1.0),
+                (0x11, "operationTime", b"\x01\x00\x00\x00\x02\x00\x00\x00"),
+                (0x0B, "note", ("a", "i")),
+                (0x10, "maxBsonObjectSize", 16777216),
+            ])
         elif case == "auth-error":
             doc = _bson_doc([(0x01, "ok", 0.0), (0x02, "errmsg", "not authorized on admin to execute command"),
                              (0x10, "code", 13)])
@@ -1341,39 +1395,12 @@ def test_ldap_rootdse_base_search_parses_ber_or_raises(stub, tmp_path, case):
     lines, errors = _run_binary_plugin("shapo_ldap_rootdse", "ldap", server, tmp_path)
     seen = finding(lines)
     assert server.received[-1].hex() == (
-        "3050020101634b04000a01000a0100020100020100010100a310040b6f626a656374436c6173"
-        "7304012a30260414737570706f727465644c44415056657273696f6e040e6e616d696e67436f6e7465787473"
-    ), "one base SearchRequest on the empty RootDSE for the two naming attributes"
+        "304b020101634604000a01000a0100020100020100010100870b6f626a656374436c617373"
+        "30260414737570706f727465644c44415056657273696f6e040e6e616d696e67436f6e7465787473"
+    ), "one base SearchRequest: present filter objectClass, two naming attributes"
     if case == "entry-ok":
         assert seen and seen[0] == "LOW" and not errors.strip()
     elif case == "insufficient-access-rights":
-        assert seen is None and not errors.strip()
-    else:
-        assert seen is None and errors.strip() and "Function not found" not in errors
-
-
-_GIT_REFS_ADVERTISEMENT = b"0014refs/heads/main\n" + b"0000"
-_GIT_ERR_LINE = b"001dERR repository not found\n"
-_GIT_OVERRUN_LENGTH = b"fff4refs/heads/main\n0000"
-
-
-@needs_pulse
-@pytest.mark.parametrize(("reply", "expect"), [
-    (_GIT_REFS_ADVERTISEMENT, "finding"),
-    (_GIT_ERR_LINE, "clean"),
-    (_GIT_OVERRUN_LENGTH, "error"),
-], ids=["refs-then-flush-pkt", "err-line", "pkt-length-overrun"])
-def test_git_daemon_upload_pack_advertisement_is_parsed_to_flush_or_err(reply, expect, stub, tmp_path):
-    server = stub(b"", lambda _request: reply)
-    lines, errors = _run_binary_plugin("shapo_git_daemon", "git", server, tmp_path)
-    seen = finding(lines)
-    assert server.received[-1].hex() == (
-        "303034326769742d75706c6f61642d7061636b202f736861706f636c7961636b2e696e76616c6964"
-        "00686f73743d736861706f636c7961636b2e696e76616c696400"
-    ), "one upload-pack pkt-line for the fixed inert path, not the repository listing"
-    if expect == "finding":
-        assert seen and seen[0] == "LOW" and not errors.strip()
-    elif expect == "clean":
         assert seen is None and not errors.strip()
     else:
         assert seen is None and errors.strip() and "Function not found" not in errors

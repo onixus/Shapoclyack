@@ -1,24 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 onixus
-// Read the Consul leader status over plain HTTP and report it when the
-// endpoint answers an anonymous caller. One request, and the request asks the
-// server to close the connection, so the reply is read to EOF. Plain HTTP
-// only: the sandbox has no TLS, so TLS-only listeners are never reached.
-//
-// Confirmed: the leader status endpoint returned one complete quoted string
-// without credentials. The address contents are never recorded. Not checked:
-// KV data, the catalog and ACL tokens. An empty answer to a refused request
-// (401/403) is a clean return, not an error.
-//
-// Verdicts: 401/403 is a silent clean return, with or without a body
-// (credentials are wanted). A reply that is not one complete HTTP document --
-// no status line, headers cut off, a chunked body, a Content-Length that
-// disagrees with the bytes read to EOF, a body that is not exactly one
-// complete JSON string, or any unexpected non-401/403 status -- raises an
-// error: "not exposed" cannot be claimed from an answer that was not
-// understood. The JSON check is structural (header terminator, length, the
-// opening and closing quote), not a full parser; evidence carries no body
-// and no address.
+// One GET of the leader status. Not requested: KV, the catalog and ACL tokens.
+// A 401/403 is clean. The address is not copied into evidence.
 fn name() { "shapo_consul_status" }
 fn description() { "Report a Consul leader status string readable without authentication." }
 fn ports() { [] }
@@ -42,9 +25,45 @@ fn run() {
 
 // --- HTTP helpers (one reply, read to EOF) ---------------------------------
 
+fn decode_chunked(body) {
+    let out = "";
+    let rest = body;
+    for guard in 0..64 {
+        if rest.len() == 0 { throw "truncated chunked body"; }
+        let eol = rest.index_of("\r\n");
+        if eol < 1 { throw "bad chunk size line"; }
+        let size_line = rest.sub_string(0, eol);
+        let semi = size_line.index_of(";");
+        let size_text = if semi >= 0 { size_line.sub_string(0, semi) } else { size_line };
+        let digits = "0123456789abcdef";
+        let n = 0;
+        let i = 0;
+        while i < size_text.len() {
+            let d = digits.index_of(size_text.sub_string(i, 1).to_lower());
+            if d < 0 { throw "bad chunk size digit"; }
+            n = n * 16 + d;
+            i += 1;
+        }
+        if size_text.len() == 0 || n > 65536 { throw "bad chunk size"; }
+        if n == 0 {
+            let tail = rest.sub_string(eol + 2);
+            if tail.len() == 0 || tail == "\r\n" { return out; }
+            if tail.ends_with("\r\n\r\n") { return out; }
+            throw "bad chunk trailer";
+        }
+        let data_at = eol + 2;
+        if data_at + n + 2 > rest.len() { throw "truncated chunk data"; }
+        out += rest.sub_string(data_at, n);
+        if rest.sub_string(data_at + n, 2) != "\r\n" { throw "bad chunk delimiter"; }
+        rest = rest.sub_string(data_at + n + 2);
+    }
+    throw "too many chunks";
+}
+
 // [status_code, headers_block, body]. Raises when the reply is not one
-// complete-enough HTTP reply: a bad status line, headers cut off, a chunked
-// body, or a Content-Length that disagrees with the body read to EOF.
+// complete HTTP reply: a bad status line, headers cut off, truncated chunk
+// framing, or a Content-Length that disagrees with the body read to EOF.
+// One chunked body is decoded. When both encodings are present, chunked wins.
 fn http_read(reply) {
     if reply.len() < 8 || !reply.starts_with("HTTP/") {
         throw "reply is not HTTP";
@@ -53,7 +72,8 @@ fn http_read(reply) {
     if nl < 0 {
         throw "HTTP reply is cut off inside the status line";
     }
-    let line = reply.sub_string(0, nl).trim();
+    let line = reply.sub_string(0, nl);
+    line.trim();
     let sp = line.index_of(" ");
     if sp < 0 {
         throw "malformed HTTP status line";
@@ -87,27 +107,31 @@ fn http_read(reply) {
     let body = reply.sub_string(sep + sep_len, reply.len() - sep - sep_len);
     let lower = head.to_lower();
     if lower.contains("transfer-encoding:") && lower.contains("chunked") {
-        throw "chunked HTTP reply is not parsed";
-    }
-    let wanted = -1;
-    for hline in head.split("\n") {
-        let t = hline.trim().to_lower();
-        if t.starts_with("content-length:") {
-            let v = t.sub_string(15, t.len() - 15).trim();
-            let n = 0;
-            try {
-                n = parse_int(v);
-            } catch (e) {
-                throw "malformed Content-Length header";
+        body = decode_chunked(body);
+    } else {
+        let wanted = -1;
+        for hline in head.split("\n") {
+            let t = hline;
+            t.trim();
+            t = t.to_lower();
+            if t.starts_with("content-length:") {
+                let v = t.sub_string(15, t.len() - 15);
+                v.trim();
+                let n = 0;
+                try {
+                    n = parse_int(v);
+                } catch (e) {
+                    throw "malformed Content-Length header";
+                }
+                if n < 0 {
+                    throw "negative Content-Length header";
+                }
+                wanted = n;
             }
-            if n < 0 {
-                throw "negative Content-Length header";
-            }
-            wanted = n;
         }
-    }
-    if wanted >= 0 && body.len() != wanted {
-        throw "HTTP body length does not match Content-Length";
+        if wanted >= 0 && body.len() != wanted {
+            throw "HTTP body length does not match Content-Length";
+        }
     }
     [code, head, body]
 }
@@ -116,7 +140,8 @@ fn http_read(reply) {
 // quote, so a reply cut mid-string does not slip through. The contents are
 // never copied anywhere.
 fn json_string(body) {
-    let t = body.trim();
+    let t = body;
+    t.trim();
     if t.len() < 2 || !t.starts_with("\"") || !t.ends_with("\"") { return false; }
     let escaped = false;
     let i = 1;

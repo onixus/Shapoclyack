@@ -32,8 +32,9 @@ fn run() {
     let doc_len = le32(reply, 36);
     let doc_end = 36 + doc_len;
     if doc_len < 5 || doc_end != size { throw "MongoDB document length mismatch"; }
-    // Walk the top-level elements of the single reply document, skipping
-    // values by their declared BSON widths; anything unknown is an error.
+    // Walk the top-level elements of the single reply document. Fixed-width
+    // BSON types are skipped by width; a regex is two C strings. Unknown types
+    // are an error.
     let name_ismaster = "69736d6173746572";
     let name_maxbson = "6d617842736f6e4f626a65637453697a65";
     let name_errmsg = "6572726d7367";
@@ -64,8 +65,17 @@ fn run() {
         } else if t == 6 || t == 10 || t == 127 || t == 255 { skip = 0; }
         else if t == 7 { skip = 12; }
         else if t == 8 { skip = 1; }
-        else if t == 9 || t == 11 || t == 18 { skip = 8; }
-        else if t == 12 {
+        else if t == 9 || t == 17 || t == 18 { skip = 8; }
+        else if t == 11 {
+            let cpos = pos;
+            let strings = 0;
+            while strings < 2 {
+                if cpos >= doc_end - 1 { throw "BSON regex overruns the document"; }
+                if octet(reply, cpos) == 0 { strings += 1; }
+                cpos += 1;
+            }
+            skip = cpos - pos;
+        } else if t == 12 {
             let n = le32(reply, pos);
             skip = 16 + n;
         } else if t == 15 {
