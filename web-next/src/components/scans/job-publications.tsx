@@ -33,7 +33,7 @@ function stamp(iso: string | null | undefined): string | null {
 }
 
 const STATE_TONE: Record<RunPublicationInfo["state"], string> = {
-  publishing: "border-sky-500/40 text-sky-700 dark:text-sky-300",
+  publishing: "border-primary text-primary",
   retrying: "border-amber-500/40 text-amber-700 dark:text-amber-300",
   dead: "border-rose-500/40 text-rose-700 dark:text-rose-300",
 };

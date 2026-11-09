@@ -53,7 +53,7 @@ export function TenantSwitcher() {
   if (!isPlatformAdmin && tenants.length <= 1) {
     return (
       <div className="hidden items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 py-1 text-xs text-foreground sm:flex">
-        <Building2 className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
+        <Building2 className="h-3.5 w-3.5 text-primary" />
         <span className="text-muted-foreground">{t("tenant.label")}</span>
         <span className="font-semibold text-foreground">{current}</span>
       </div>
@@ -67,7 +67,7 @@ export function TenantSwitcher() {
           variant="outline"
           className="hidden gap-1.5 border-border bg-card px-2.5 text-xs text-foreground hover:bg-muted hover:text-foreground sm:flex"
         >
-          <Building2 className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
+          <Building2 className="h-3.5 w-3.5 text-primary" />
           <span className="text-muted-foreground">{t("tenant.label")}</span>
           <span className="font-semibold text-foreground">{current}</span>
           <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
@@ -85,7 +85,7 @@ export function TenantSwitcher() {
           className="cursor-pointer text-xs text-foreground focus:bg-muted focus:text-foreground"
         >
           <Check
-            className={cn("mr-2 h-3.5 w-3.5", activeTenant ? "opacity-0" : "text-sky-600 dark:text-sky-400")}
+            className={cn("mr-2 h-3.5 w-3.5", activeTenant ? "opacity-0" : "text-primary")}
           />
           {fallbackLabel(isPlatformAdmin, defaultTenant, t("tenant.all"))}
         </DropdownMenuItem>
@@ -99,7 +99,7 @@ export function TenantSwitcher() {
             <Check
               className={cn(
                 "mr-2 h-3.5 w-3.5",
-                activeTenant === tenantId ? "text-sky-600 dark:text-sky-400" : "opacity-0",
+                activeTenant === tenantId ? "text-primary" : "opacity-0",
               )}
             />
             <span className="truncate font-mono">{tenantId}</span>

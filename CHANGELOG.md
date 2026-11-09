@@ -67,6 +67,13 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- The console finishes the APEX surface pass
+  ([#603](https://github.com/onixus/Shapoclyack/issues/603)). The theme
+  preference is `apex.theme` (`dark`, `light` or `system`), Inter and
+  JetBrains Mono ship with the build, and charts use the `viz-*` and `sev-*`
+  palettes. The remediation board keeps all six lifecycle stages on a 1440px
+  screen. Current dark and light captures, with documentation addresses in
+  place of the lab tenant, are in [docs/ui.md](docs/ui.md).
 - The legacy Nuclei web sweep binds input-forward DNS names to the discovered
   IP ([#619](https://github.com/onixus/Shapoclyack/pull/619)): one invocation
   per authority, always dialling the IP, the bare IP (default virtual host)

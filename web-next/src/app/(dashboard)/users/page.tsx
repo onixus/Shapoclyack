@@ -113,7 +113,7 @@ export default function UsersPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border/80 pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-sky-500/20 bg-sky-500/10 text-sky-500 shadow-sm">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-primary bg-accent-subtle text-primary shadow-sm">
             <UserCog className="h-5 w-5" />
           </div>
           <div>

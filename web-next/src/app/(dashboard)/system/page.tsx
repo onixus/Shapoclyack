@@ -84,7 +84,7 @@ export default function SystemPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20 shadow-md">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-subtle text-primary border border-primary shadow-md">
             <Settings className="h-5 w-5" />
           </div>
           <div>
@@ -110,7 +110,7 @@ export default function SystemPage() {
 
       {isLoading || !data ? (
         <div className="flex items-center justify-center py-16 text-muted-foreground gap-2">
-          <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+          <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
           <span className="text-sm">{t("loading.system")}</span>
         </div>
       ) : (
@@ -171,7 +171,7 @@ export default function SystemPage() {
                       </td>
                       <td className="py-2.5 px-2 text-right">
                         {tool.version ? (
-                          <code className="rounded bg-muted px-2 py-0.5 font-mono text-xs text-sky-600 dark:text-sky-400 border border-border">
+                          <code className="rounded bg-muted px-2 py-0.5 font-mono text-xs text-primary border border-border">
                             {toolMessage(t.locale, tool.version)}
                           </code>
                         ) : tool.optional ? (
@@ -305,7 +305,7 @@ export default function SystemPage() {
                     </span>
                     <Badge
                       variant="secondary"
-                      className="bg-sky-500/20 text-sky-600 dark:text-sky-300 border-sky-500/30 font-mono text-xs"
+                      className="bg-accent-subtle text-primary border-primary font-mono text-xs"
                     >
                       {data.scan_config.service_backend === "pulse"
                         ? systemText(t.locale, "Pulse scanner")
@@ -322,7 +322,7 @@ export default function SystemPage() {
                       <Badge
                         key={p}
                         variant="secondary"
-                        className="bg-muted text-sky-600 dark:text-sky-300 font-mono text-xs"
+                        className="bg-muted text-primary font-mono text-xs"
                       >
                         {scanModeLabel(t.locale, p)}
                       </Badge>
@@ -342,7 +342,7 @@ export default function SystemPage() {
                   <span className="font-semibold text-foreground">{t("ui.jobExecutionMode")}</span>
                   <Badge
                     variant="secondary"
-                    className="bg-sky-500/20 text-sky-600 dark:text-sky-300 border-sky-500/30 uppercase font-bold text-overline"
+                    className="bg-accent-subtle text-primary border-primary uppercase font-bold text-overline"
                   >
                     {scanExecutionLabel(t.locale, data.runtime.job_execution_mode)}
                   </Badge>
@@ -371,7 +371,7 @@ export default function SystemPage() {
                   <span className="font-semibold text-foreground">
                     {t("ui.assetStaleThreshold")}
                   </span>
-                  <span className="font-mono font-bold text-sky-600 dark:text-sky-400">
+                  <span className="font-mono font-bold text-primary">
                     {data.runtime.asset_stale_days} {systemText(t.locale, "days")}
                   </span>
                 </div>
@@ -392,7 +392,7 @@ export default function SystemPage() {
                   <span className="font-semibold text-foreground">
                     {t("ui.endpointsStaleTotal")}
                   </span>
-                  <span className="font-mono font-bold text-sky-600 dark:text-sky-400">
+                  <span className="font-mono font-bold text-primary">
                     {data.endpoint_inventory.devices_stale ?? "—"} /{" "}
                     {data.endpoint_inventory.devices_total ?? "—"}
                   </span>
@@ -401,7 +401,7 @@ export default function SystemPage() {
                   <span className="font-semibold text-foreground">
                     {t("ui.endpointStaleThreshold")}
                   </span>
-                  <span className="font-mono font-bold text-sky-600 dark:text-sky-400">
+                  <span className="font-mono font-bold text-primary">
                     {data.endpoint_inventory.stale_hours} {systemText(t.locale, "hours")}
                   </span>
                 </div>
@@ -413,7 +413,7 @@ export default function SystemPage() {
                   <span className="font-semibold text-foreground">
                     {t("ui.softwareRowsChangeEvents")}
                   </span>
-                  <span className="font-mono font-bold text-sky-600 dark:text-sky-400">
+                  <span className="font-mono font-bold text-primary">
                     {data.endpoint_inventory.snapshot_retention_days} {systemText(t.locale, "d")} /{" "}
                     {data.endpoint_inventory.change_retention_days} {systemText(t.locale, "d")}
                   </span>
@@ -422,7 +422,7 @@ export default function SystemPage() {
                   <span className="font-semibold text-foreground">
                     {t("ui.lastRetentionSweep")}
                   </span>
-                  <span className="font-mono font-bold text-sky-600 dark:text-sky-400">
+                  <span className="font-mono font-bold text-primary">
                     {data.endpoint_inventory.retention_last_run_at
                       ? ago(data.endpoint_inventory.retention_last_run_at)
                       : systemText(t.locale, "not yet run")}

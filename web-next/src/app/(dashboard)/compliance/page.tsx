@@ -114,7 +114,7 @@ export default function CompliancePage() {
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="flex items-center gap-2 text-xl font-bold text-foreground">
-            <ClipboardCheck className="h-5 w-5 text-sky-500" />
+            <ClipboardCheck className="h-5 w-5 text-primary" />
             {t("prose.compliancePosture")}
           </h1>
           <p className="text-sm text-muted-foreground">

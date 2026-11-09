@@ -220,7 +220,7 @@ export default function TenantsPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20 shadow-md">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-subtle text-primary border border-primary shadow-md">
             <Building className="h-5 w-5" />
           </div>
           <div>
@@ -272,7 +272,7 @@ export default function TenantsPage() {
               ) : (
                 <div className="space-y-3 rounded-lg border border-border bg-muted p-3.5 text-xs">
                   <p className="font-semibold text-foreground">
-                    Provisioning key for <code className="text-sky-600 dark:text-sky-400">{createdTenantId}</code>
+                    Provisioning key for <code className="text-primary">{createdTenantId}</code>
                   </p>
                   <code className="block break-all rounded bg-card border border-border p-2 font-mono text-xs text-amber-600 dark:text-amber-300">
                     {generatedKey}

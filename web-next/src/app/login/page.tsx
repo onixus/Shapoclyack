@@ -181,7 +181,7 @@ export default function LoginPage() {
       </div>
       <section className="relative z-10 w-full max-w-md space-y-6 rounded-xl border border-border bg-card p-8 text-foreground">
         <div className="space-y-2">
-          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-sky-600 dark:text-sky-400">
+          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-primary">
             {t("login.kicker")}
           </p>
           <h1 className="text-2xl font-semibold tracking-tight">
@@ -231,7 +231,7 @@ export default function LoginPage() {
             <div className="flex items-center justify-between text-xs">
               <button
                 type="button"
-                className="text-sky-600 dark:text-sky-400 hover:underline"
+                className="text-primary hover:underline"
                 onClick={() => {
                   setUseRecovery((value) => !value);
                   setCode("");

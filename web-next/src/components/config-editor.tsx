@@ -146,7 +146,7 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
       <div className="mt-5 space-y-6">
         {Object.entries(grouped).map(([group, groupPaths]) => (
           <div key={group}>
-            <p className="mb-2 text-xs font-mono font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400">
+            <p className="mb-2 text-xs font-mono font-bold uppercase tracking-wider text-primary">
               {configGroup(t.locale, group)}
             </p>
             <div className="grid gap-3 sm:grid-cols-2">
@@ -197,7 +197,7 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
                           checked={Boolean(values[path])}
                           disabled={!canEdit}
                           onCheckedChange={(c) => setValue(path, Boolean(c))}
-                          className="border-border data-[state=checked]:bg-sky-500 data-[state=checked]:border-sky-500"
+                          className="border-border data-[state=checked]:bg-primary data-[state=checked]:border-primary"
                         />
                       ) : widget === "topports" ? (
                         <Select

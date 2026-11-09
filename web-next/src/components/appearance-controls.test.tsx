@@ -6,7 +6,12 @@ import { useAppearanceStore } from "@/lib/appearance";
 
 describe("AppearanceControls", () => {
   beforeEach(() => {
-    useAppearanceStore.setState({ theme: "dark", locale: "en", hydrated: true });
+    useAppearanceStore.setState({
+      theme: "dark",
+      preference: "dark",
+      locale: "en",
+      hydrated: true,
+    });
     document.documentElement.className = "dark";
     document.documentElement.lang = "en";
   });
@@ -20,12 +25,15 @@ describe("AppearanceControls", () => {
     expect(screen.getByRole("button", { name: "Язык" })).toBeInTheDocument();
   });
 
-  it("toggles light theme on the document", async () => {
+  it("selects the light theme from the menu", async () => {
     const user = userEvent.setup();
     render(<AppearanceControls />);
-    await user.click(screen.getByRole("button", { name: "Light" }));
+    await user.click(screen.getByRole("button", { name: "Theme" }));
+    await user.click(screen.getByRole("menuitem", { name: "Light" }));
+    expect(useAppearanceStore.getState().preference).toBe("light");
     expect(useAppearanceStore.getState().theme).toBe("light");
     expect(document.documentElement.classList.contains("light")).toBe(true);
     expect(document.documentElement.classList.contains("dark")).toBe(false);
+    expect(document.documentElement.dataset.theme).toBe("light");
   });
 });

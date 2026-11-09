@@ -51,9 +51,12 @@ export function sortByPressure<T extends { assets: UsageResource; scans: UsageRe
   return [...rows].sort((a, b) => pressure(b) - pressure(a));
 }
 
-/** The billing period as a plain day range; the API sends naive ISO stamps. */
+/** The billing period as a plain day range; the API sends naive ISO stamps.
+ * Non-breaking hyphens keep each date on one line: a normal hyphen is a wrap
+ * point, and a narrow card was splitting "2026-12-01" after "2026-". */
 export function periodLabel(start: string, end: string): string {
-  return `${start.slice(0, 10)} → ${end.slice(0, 10)}`;
+  const day = (stamp: string) => stamp.slice(0, 10).replaceAll("-", "\u2011");
+  return `${day(start)} → ${day(end)}`;
 }
 
 /** "2026-09" → "Sep 2026", for the history chart's axis. */

@@ -25,7 +25,7 @@ export default function OrgProfilePage() {
     <Suspense
       fallback={
         <div className="flex items-center justify-center py-16 gap-2 text-muted-foreground">
-          <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+          <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
           <span className="text-sm">Loading organization profile…</span>
         </div>
       }
@@ -84,7 +84,7 @@ function OrgProfileInner() {
             {runId ? (
               <Link
                 href={runDetailHref(runId)}
-                className="inline-flex items-center gap-1 pb-2 font-mono text-xs text-sky-600 dark:text-sky-400 hover:underline"
+                className="inline-flex items-center gap-1 pb-2 font-mono text-xs text-primary hover:underline"
               >
                 open run
                 <ArrowUpRight className="h-3 w-3" />

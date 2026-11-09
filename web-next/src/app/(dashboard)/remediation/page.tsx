@@ -109,9 +109,9 @@ const STAGE_META: Record<
     title: "Open",
     description: "New findings requiring triage",
     accentColor: "sky",
-    topBorder: "border-t-sky-500",
-    badgeBg: "bg-sky-500/10 dark:bg-sky-500/20",
-    badgeText: "text-sky-700 dark:text-sky-300",
+    topBorder: "border-t-primary",
+    badgeBg: "bg-accent-subtle",
+    badgeText: "text-primary",
     icon: AlertCircle,
   },
   ACKNOWLEDGED: {
@@ -308,7 +308,7 @@ export default function RemediationPage() {
             onClick={() => setIsActivitySheetOpen(true)}
             className="gap-1.5 border-border bg-card text-xs font-semibold shadow-sm"
           >
-            <History className="h-3.5 w-3.5 text-sky-500" />
+            <History className="h-3.5 w-3.5 text-primary" />
             Audit Trail
           </Button>
 
@@ -324,7 +324,7 @@ export default function RemediationPage() {
       {/* KPI / Risk Strip */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <div className="flex items-center gap-3 rounded-xl border border-border bg-card p-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-500/10 text-sky-500 font-bold text-xs">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-subtle text-primary font-bold text-xs">
             {totalFindings}
           </div>
           <div>
@@ -496,7 +496,7 @@ export default function RemediationPage() {
           </div>
         </div>
       ) : (
-        <div className="flex min-w-0 gap-4 overflow-x-auto custom-scrollbar-x pb-5 pt-1">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {VULN_STATES.map((state) => (
             <KanbanColumn
               key={state}
@@ -534,7 +534,7 @@ export default function RemediationPage() {
         <SheetContent side="right" className="flex flex-col p-0 overflow-hidden bg-card">
           <SheetHeader className="border-b border-border/80 p-6 pb-4">
             <SheetTitle className="flex items-center gap-2 text-lg font-bold">
-              <History className="h-5 w-5 text-sky-500" />
+              <History className="h-5 w-5 text-primary" />
               {t("prose.remediationAuditTrail")}
             </SheetTitle>
             <SheetDescription>
@@ -588,7 +588,7 @@ function KanbanColumn({
   return (
     <div
       className={cn(
-        "flex w-80 sm:w-84 shrink-0 flex-col rounded-2xl border bg-muted/40 text-card-foreground shadow-sm transition-all duration-200",
+        "flex min-w-0 flex-col rounded-2xl border bg-muted/40 text-card-foreground shadow-sm transition-all duration-200",
         meta.topBorder,
         isDropTarget
           ? "border-primary ring-2 ring-primary/30 bg-primary/5 shadow-md"
@@ -679,7 +679,7 @@ function KanbanCard({
       ? "border-l-orange-500"
       : normSev === "medium"
       ? "border-l-amber-500"
-      : "border-l-sky-500";
+      : "border-l-primary";
 
   return (
     <div
@@ -884,7 +884,7 @@ function VulnerabilityDrawer({
           {/* Affected Target / Asset Information */}
           <div className="rounded-xl border border-border bg-muted/40 p-4 space-y-2">
             <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-              <Server className="h-3.5 w-3.5 text-sky-500" />
+              <Server className="h-3.5 w-3.5 text-primary" />
               {t("prose.targetHostService")}
             </h4>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs font-mono">
@@ -946,7 +946,7 @@ function VulnerabilityDrawer({
           {/* Audit History Timeline */}
           <div className="space-y-3">
             <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-              <History className="h-3.5 w-3.5 text-sky-500" />
+              <History className="h-3.5 w-3.5 text-primary" />
               Audit Trail
             </h4>
             <div className="rounded-xl border border-border bg-card p-4">

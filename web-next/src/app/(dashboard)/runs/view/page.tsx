@@ -28,7 +28,7 @@ export default function RunDetailPage() {
     <Suspense
       fallback={
         <div className="flex items-center justify-center py-16 text-muted-foreground gap-2">
-          <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+          <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
           <span className="text-sm">{runText(t.locale, "Loading run telemetry\u2026")}</span>
         </div>
       }
@@ -105,7 +105,7 @@ function RunDetailInner() {
   if (report.isLoading || !report.detail) {
     return (
       <div className="flex items-center justify-center py-16 text-muted-foreground gap-2">
-        <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+        <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
         <span className="text-sm">
           {runText(t.locale, "Retrieving run telemetry artifacts\u2026")}
         </span>
@@ -119,7 +119,7 @@ function RunDetailInner() {
         <BackToRuns />
         <h1 className="text-2xl font-extrabold tracking-tight text-foreground font-mono">
           {runText(t.locale, "Run")}{" "}
-          <span className="text-sky-600 dark:text-sky-400">{report.detail.run_id}</span>
+          <span className="text-primary">{report.detail.run_id}</span>
         </h1>
         <p className="text-xs text-muted-foreground">
           {runText(
@@ -135,7 +135,7 @@ function RunDetailInner() {
               {report.isFilterFetching ? runText(t.locale, " · updating…") : ""}.{" "}
               <button
                 type="button"
-                className="text-sky-600 dark:text-sky-400 hover:text-sky-600 dark:text-sky-300 font-semibold underline"
+                className="text-primary hover:text-primary font-semibold underline"
                 onClick={report.clearFilters}
               >
                 {runText(t.locale, "Clear Filter")}
@@ -171,37 +171,37 @@ function RunDetailInner() {
         <TabsList className="bg-card border border-border p-1 h-auto flex-wrap justify-start">
           <TabsTrigger
             value="vulns"
-            className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300"
+            className="text-xs font-semibold data-[state=active]:bg-accent-subtle data-[state=active]:text-primary dark:text-primary"
           >
             {runText(t.locale, "Findings")} ({report.vulns.length})
           </TabsTrigger>
           <TabsTrigger
             value="hosts"
-            className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300"
+            className="text-xs font-semibold data-[state=active]:bg-accent-subtle data-[state=active]:text-primary dark:text-primary"
           >
             {runText(t.locale, "Hosts")} ({report.hosts.length})
           </TabsTrigger>
           <TabsTrigger
             value="ports"
-            className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300"
+            className="text-xs font-semibold data-[state=active]:bg-accent-subtle data-[state=active]:text-primary dark:text-primary"
           >
             {runText(t.locale, "Ports")} ({report.ports.length})
           </TabsTrigger>
           <TabsTrigger
             value="controls"
-            className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300"
+            className="text-xs font-semibold data-[state=active]:bg-accent-subtle data-[state=active]:text-primary dark:text-primary"
           >
             {t("ui.controls")}
           </TabsTrigger>
           <TabsTrigger
             value="org-profile"
-            className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300"
+            className="text-xs font-semibold data-[state=active]:bg-accent-subtle data-[state=active]:text-primary dark:text-primary"
           >
             {t("ui.orgProfile")}
           </TabsTrigger>
           <TabsTrigger
             value="reports"
-            className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300"
+            className="text-xs font-semibold data-[state=active]:bg-accent-subtle data-[state=active]:text-primary dark:text-primary"
           >
             {runText(t.locale, "Artifacts")} ({report.detail.artifacts.length})
           </TabsTrigger>

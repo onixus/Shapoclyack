@@ -40,7 +40,7 @@ export default function AttackSurfacePage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20 shadow-md">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-subtle text-primary border border-primary shadow-md">
             <Network className="h-5 w-5" />
           </div>
           <div>
@@ -111,7 +111,7 @@ export default function AttackSurfacePage() {
         </div>
       ) : isLoading ? (
         <div className="flex items-center justify-center py-16 text-muted-foreground gap-2">
-          <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+          <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
           <span className="text-sm">{t("common.loading")}</span>
         </div>
       ) : (

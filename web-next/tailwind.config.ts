@@ -1,6 +1,39 @@
 import type { Config } from "tailwindcss";
 import tailwindAnimate from "tailwindcss-animate";
-import colors from "tailwindcss/colors";
+
+/**
+ * Tremor paints both its light and `dark:` classes. Point them at the same
+ * APEX variables so a card follows the theme instead of staying white.
+ */
+const tremorPalette = {
+  brand: {
+    faint: "var(--apex-accent-subtle)",
+    muted: "hsl(var(--apex-accent) / 0.35)",
+    subtle: "hsl(var(--apex-accent) / 0.6)",
+    DEFAULT: "hsl(var(--apex-accent))",
+    emphasis: "hsl(var(--apex-accent))",
+    inverted: "hsl(var(--apex-on-accent))",
+  },
+  background: {
+    muted: "hsl(var(--apex-sunken))",
+    subtle: "hsl(var(--apex-surface-2))",
+    DEFAULT: "hsl(var(--apex-surface-1))",
+    emphasis: "hsl(var(--apex-text-secondary))",
+  },
+  border: {
+    DEFAULT: "hsl(var(--apex-border-subtle))",
+  },
+  ring: {
+    DEFAULT: "hsl(var(--apex-border-subtle))",
+  },
+  content: {
+    subtle: "hsl(var(--apex-text-muted))",
+    DEFAULT: "hsl(var(--apex-text-secondary))",
+    emphasis: "hsl(var(--apex-text-primary))",
+    strong: "hsl(var(--apex-text-primary))",
+    inverted: "hsl(var(--apex-canvas))",
+  },
+};
 
 const config: Config = {
   darkMode: ["class"],
@@ -85,35 +118,22 @@ const config: Config = {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
-        tremor: {
-          brand: {
-            faint: colors.blue[50],
-            muted: colors.blue[200],
-            subtle: colors.blue[400],
-            DEFAULT: colors.blue[500],
-            emphasis: colors.blue[700],
-            inverted: colors.white,
-          },
-          background: {
-            muted: colors.gray[50],
-            subtle: colors.gray[100],
-            DEFAULT: colors.white,
-            emphasis: colors.gray[700],
-          },
-          border: {
-            DEFAULT: colors.gray[200],
-          },
-          ring: {
-            DEFAULT: colors.gray[200],
-          },
-          content: {
-            subtle: colors.gray[400],
-            DEFAULT: colors.gray[500],
-            emphasis: colors.gray[700],
-            strong: colors.gray[900],
-            inverted: colors.white,
-          },
-        },
+        // Flat names: Tremor appends a shade only for Tailwind base colours.
+        viz1: "var(--viz-1)",
+        viz2: "var(--viz-2)",
+        viz3: "var(--viz-3)",
+        viz4: "var(--viz-4)",
+        viz5: "var(--viz-5)",
+        viz6: "var(--viz-6)",
+        viz7: "var(--viz-7)",
+        viz8: "var(--viz-8)",
+        sevinfo: "hsl(var(--sev-info))",
+        sevlow: "hsl(var(--sev-low))",
+        sevmedium: "hsl(var(--sev-medium))",
+        sevhigh: "hsl(var(--sev-high))",
+        sevcritical: "hsl(var(--sev-critical))",
+        tremor: tremorPalette,
+        "dark-tremor": tremorPalette,
       },
       borderRadius: {
         lg: "var(--radius)",
@@ -124,11 +144,17 @@ const config: Config = {
         "tremor-full": "9999px",
       },
       boxShadow: {
-        "tremor-input": "0 1px 2px 0 rgb(0 0 0 / 0.05)",
-        "tremor-card":
-          "0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1)",
-        "tremor-dropdown":
-          "0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)",
+        // Depth is the 1px ring. A tremor drop shadow reads as a second theme.
+        "tremor-input": "none",
+        "tremor-card": "none",
+        "tremor-dropdown": "none",
+        "dark-tremor-input": "none",
+        "dark-tremor-card": "none",
+        "dark-tremor-dropdown": "none",
+      },
+      fontFamily: {
+        sans: ["var(--font-inter)", "ui-sans-serif", "system-ui", "sans-serif"],
+        mono: ["var(--font-jetbrains)", "ui-monospace", "monospace"],
       },
       fontSize: {
         "tremor-label": ["0.75rem", { lineHeight: "1rem" }],
@@ -170,6 +196,11 @@ const config: Config = {
     {
       pattern:
         /^(fill-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
+    },
+    {
+      pattern:
+        /^(?:bg|text|border|stroke|fill|ring)-(?:viz[1-8]|sevinfo|sevlow|sevmedium|sevhigh|sevcritical)$/,
+      variants: ["hover", "dark", "data-[selected]"],
     },
   ],
   plugins: [tailwindAnimate],

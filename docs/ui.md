@@ -15,6 +15,12 @@ Do not manufacture UI states for documentation. In particular, a screenshot
 claiming a verified closure should show the real finding state/event data produced
 by a completed verification run.
 
+The frames in [Interface screenshots](#interface-screenshots) were taken from an
+authorized lab tenant at 1440×1200. Hostnames, addresses, run ids and asset ids
+in those files are rewritten to `*.example.test`, the RFC 5737 documentation
+ranges and `asset-demo-*` before the PNG is written. Counts, severity and
+lifecycle state stay as the console showed them.
+
 ## Tenant context
 
 The console has a global tenant switcher for users with more than one allowed tenant. The selected tenant is attached to tenant-scoped API requests and changing it clears cached query data so one customer's data is not reused in another tenant view.
@@ -23,11 +29,54 @@ Platform administrators can retain fleet-wide views where the API contract permi
 
 ## Language and theme
 
-The console ships **English** and **dark** as the defaults. The header (and the login screen) expose a sun/moon toggle and an EN/RU language menu. Both persist in `localStorage` (`shapoclyack.theme`, `shapoclyack.locale`) and are applied before first paint so the page does not flash the other theme.
+The console ships **English** and **dark** as the defaults. The header and the login screen expose a theme menu (dark, light, or match the system) and an EN/RU language menu. The theme is stored as `apex.theme` (`dark`, `light`, or `system`). A stored `shapoclyack.theme` value of `light` or `dark` is copied to `apex.theme` once. The locale stays in `shapoclyack.locale`. Both are applied before first paint so the page does not flash the other theme. `system` follows the operating system and updates while the console is open.
 
 Russian covers chrome: navigation, page titles, table headers, status badges, login, and empty/loading copy. Scan identifiers, CVE IDs, hostnames and API error strings stay as the backend sent them. Status values (`OPEN`, `critical`, `breached`) are translated at the badge, not in the stored finding.
 
-The light theme remaps the existing slate utility classes rather than rewriting every screen. Default remains dark so existing screenshots and operator muscle memory stay valid until someone picks light.
+Surfaces use APEX tokens, so the light theme is not a remap of slate utilities. The accent is `primary`. UI text is Inter and monospace is JetBrains Mono, both served from the build. Default remains dark, which is the theme of the first capture in each pair below.
+
+## Interface screenshots
+
+Regenerate the whole set after a material UI change. Sign in to a current build,
+set `apex.theme` to `dark` and then `light`, and capture these routes at
+1440×1200 without browser chrome. Replace real names and addresses before
+committing the files. See [Demo screenshot hygiene](#demo-screenshot-hygiene).
+
+### Sign in
+
+![Sign in, dark](images/ui-login-dark.png)
+
+![Sign in, light](images/ui-login-light.png)
+
+### Risk overview
+
+![Risk overview, dark](images/ui-dashboard-dark.png)
+
+![Risk overview, light](images/ui-dashboard-light.png)
+
+### Vulnerabilities
+
+![Vulnerabilities, dark](images/ui-vulnerabilities-dark.png)
+
+![Vulnerabilities, light](images/ui-vulnerabilities-light.png)
+
+### Assets
+
+![Assets, dark](images/ui-assets-dark.png)
+
+![Assets, light](images/ui-assets-light.png)
+
+### Usage
+
+![Usage, dark](images/ui-usage-dark.png)
+
+![Usage, light](images/ui-usage-light.png)
+
+### Remediation
+
+![Remediation, dark](images/ui-remediation-dark.png)
+
+![Remediation, light](images/ui-remediation-light.png)
 
 ## Current surfaces
 

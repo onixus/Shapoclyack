@@ -205,7 +205,7 @@ export function DeployAgentDialog() {
       <DialogContent className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden p-0 bg-card text-card-foreground border-border shadow-2xl">
         <DialogHeader className="border-b border-border/80 px-6 pt-6 pb-4">
           <DialogTitle className="flex items-center gap-2.5 text-xl font-bold">
-            <Cpu className="h-5 w-5 text-sky-500" />
+            <Cpu className="h-5 w-5 text-primary" />
             {t("prose.deployScanningAgent")}
           </DialogTitle>
           <DialogDescription className="text-muted-foreground text-xs sm:text-sm">
@@ -246,8 +246,8 @@ export function DeployAgentDialog() {
             <TabsContent value="ssh" className="mt-4 space-y-4">
               {!activeDeployId ? (
                 <form onSubmit={handleStartDeploy} className="space-y-4">
-                  <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-xs text-foreground">
-                    <p className="flex items-center gap-1.5 font-semibold text-sky-600 dark:text-sky-400">
+                  <div className="rounded-lg border border-primary bg-accent-subtle p-4 text-xs text-foreground">
+                    <p className="flex items-center gap-1.5 font-semibold text-primary">
                       <Shield className="h-4 w-4" />
                       {t("prose.agentPushDeploymentViaSsh")}
                     </p>
@@ -457,11 +457,11 @@ export function DeployAgentDialog() {
                   <div className="flex items-center justify-between rounded-lg border border-border bg-muted/50 p-3">
                     <div>
                       <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs font-semibold text-sky-600 dark:text-sky-400">
+                        <span className="font-mono text-xs font-semibold text-primary">
                           {deployStatus?.stage || "Processing..."}
                         </span>
                         {deployStatus?.status === "installing" || deployStatus?.status === "connecting" || deployStatus?.status === "verifying" ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-500" />
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
                         ) : deployStatus?.status === "completed" ? (
                           <span className="rounded bg-emerald-500/20 px-2 py-0.5 text-xs font-bold text-emerald-600 dark:text-emerald-400">
                             SUCCESS
@@ -523,8 +523,8 @@ export function DeployAgentDialog() {
             {/* TAB 2: LINUX ONE-LINER */}
             <TabsContent value="systemd" className="mt-4 space-y-4">
               {keyNotice}
-              <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-xs text-foreground">
-                <p className="font-semibold text-sky-600 dark:text-sky-400">{t("ui.automatedSystemdServiceOneliner")}</p>
+              <div className="rounded-lg border border-primary bg-accent-subtle p-4 text-xs text-foreground">
+                <p className="font-semibold text-primary">{t("ui.automatedSystemdServiceOneliner")}</p>
                 <p className="mt-1 text-muted-foreground leading-relaxed">
                   {t("prose.runThisCommandOnAny")}
                 </p>
@@ -547,7 +547,7 @@ export function DeployAgentDialog() {
                     {copiedKey === "systemd" ? "Copied!" : "Copy"}
                   </Button>
                 </div>
-                <pre className="p-4 font-mono text-xs text-sky-600 dark:text-sky-300 overflow-x-auto custom-scrollbar whitespace-pre">
+                <pre className="p-4 font-mono text-xs text-primary overflow-x-auto custom-scrollbar whitespace-pre">
                   {snippets?.systemd_oneliner || "curl -sSL https://.../api/agent/install.sh | sudo bash"}
                 </pre>
               </div>
@@ -556,8 +556,8 @@ export function DeployAgentDialog() {
             {/* TAB 3: DOCKER CONTAINER */}
             <TabsContent value="docker" className="mt-4 space-y-4">
               {keyNotice}
-              <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-xs text-foreground">
-                <p className="font-semibold text-sky-600 dark:text-sky-400">Docker Run Command & Compose</p>
+              <div className="rounded-lg border border-primary bg-accent-subtle p-4 text-xs text-foreground">
+                <p className="font-semibold text-primary">Docker Run Command & Compose</p>
                 <p className="mt-1 text-muted-foreground leading-relaxed">
                   {t("prose.runsTheScanningAgentIn")}
                 </p>
@@ -577,7 +577,7 @@ export function DeployAgentDialog() {
                       {copiedKey === "docker" ? "Copied!" : "Copy"}
                     </Button>
                   </div>
-                  <pre className="p-4 font-mono text-xs text-sky-600 dark:text-sky-300 overflow-x-auto custom-scrollbar whitespace-pre">
+                  <pre className="p-4 font-mono text-xs text-primary overflow-x-auto custom-scrollbar whitespace-pre">
                     {snippets?.docker_run || "docker run -d ..."}
                   </pre>
                 </div>
@@ -605,8 +605,8 @@ export function DeployAgentDialog() {
             {/* TAB 4: KUBERNETES */}
             <TabsContent value="kubernetes" className="mt-4 space-y-4">
               {keyNotice}
-              <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-xs text-foreground">
-                <p className="font-semibold text-sky-600 dark:text-sky-400">{t("ui.kubernetesDeploymentManifest")}</p>
+              <div className="rounded-lg border border-primary bg-accent-subtle p-4 text-xs text-foreground">
+                <p className="font-semibold text-primary dark:text-primary">{t("ui.kubernetesDeploymentManifest")}</p>
                 <p className="mt-1 text-muted-foreground leading-relaxed">
                   {t("prose.deployContinuousScannerAgentsInto")}
                 </p>
@@ -647,7 +647,7 @@ export function DeployAgentDialog() {
                 <p className="px-3.5 pt-3 text-xs leading-relaxed text-muted-foreground">
                   {t("prose.kubernetesSecretAfterApply")}
                 </p>
-                <pre className="p-4 font-mono text-xs text-sky-600 dark:text-sky-300 overflow-x-auto custom-scrollbar whitespace-pre">
+                <pre className="p-4 font-mono text-xs text-primary dark:text-primary overflow-x-auto custom-scrollbar whitespace-pre">
                   {snippets?.kubernetes_secret_command || "printf '%s' ... | kubectl create secret ..."}
                 </pre>
               </div>

@@ -30,7 +30,7 @@ export function PageHeader({
   children?: ReactNode;
 }) {
   const tile: Record<NonNullable<typeof tone>, string> = {
-    sky: "bg-sky-500/10 text-sky-600 border-sky-500/20 dark:text-sky-400",
+    sky: "bg-accent-subtle text-primary border-primary",
     violet: "bg-violet-500/10 text-violet-600 border-violet-500/20 dark:text-violet-400",
     amber: "bg-amber-500/10 text-amber-600 border-amber-500/20 dark:text-amber-400",
     emerald: "bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-400",

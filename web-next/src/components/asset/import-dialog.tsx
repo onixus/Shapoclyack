@@ -62,7 +62,7 @@ const PREVIEW_LIMIT = 200;
 
 const STATUS_CLASS: Record<AssetImportStatus, string> = {
   create: "text-emerald-600 dark:text-emerald-400",
-  update: "text-sky-600 dark:text-sky-400",
+  update: "text-primary",
   unchanged: "text-muted-foreground",
   conflict: "text-amber-600 dark:text-amber-400",
   invalid: "text-red-600 dark:text-red-400",

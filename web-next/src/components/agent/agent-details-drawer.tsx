@@ -117,7 +117,7 @@ export function AgentDetailsDrawer({
         <DialogHeader className="border-b border-border/80 px-6 pt-6 pb-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-500 border border-sky-500/20 shadow-sm">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-subtle text-primary border border-primary shadow-sm">
                 <Server className="h-5 w-5" />
               </div>
               <div>
@@ -182,19 +182,19 @@ export function AgentDetailsDrawer({
               {/* Live System Resource Telemetry */}
               <div>
                 <h4 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">
-                  <Activity className="h-3.5 w-3.5 text-sky-500" />
+                  <Activity className="h-3.5 w-3.5 text-primary" />
                   {t("prose.liveSystemTelemetry")}
                 </h4>
                 <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
                   {/* CPU */}
                   <div className="rounded-xl border border-border bg-card p-3.5">
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <span className="flex items-center gap-1.5 font-medium"><Cpu className="h-3.5 w-3.5 text-sky-500" /> CPU Load</span>
+                      <span className="flex items-center gap-1.5 font-medium"><Cpu className="h-3.5 w-3.5 text-primary" /> CPU Load</span>
                       <span className="font-mono font-bold text-foreground">{cpuPercent}%</span>
                     </div>
                     <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-secondary">
                       <div
-                        className={`h-full transition-all duration-300 ${cpuPercent > 80 ? "bg-rose-500" : cpuPercent > 50 ? "bg-amber-500" : "bg-sky-500"}`}
+                        className={`h-full transition-all duration-300 ${cpuPercent > 80 ? "bg-rose-500" : cpuPercent > 50 ? "bg-amber-500" : "bg-primary"}`}
                         style={{ width: `${Math.min(100, Math.max(0, cpuPercent))}%` }}
                       />
                     </div>
@@ -281,7 +281,7 @@ export function AgentDetailsDrawer({
                   the tenant's jobs this agent may claim. */}
               <div className="space-y-2">
                 <h4 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">
-                  <Layers className="h-3.5 w-3.5 text-sky-500" />
+                  <Layers className="h-3.5 w-3.5 text-primary" />
                   Metadata & Labels
                 </h4>
                 <div className="flex flex-wrap gap-1.5">
@@ -303,7 +303,7 @@ export function AgentDetailsDrawer({
                   {agent.capabilities?.map((cap) => (
                     <span
                       key={cap}
-                      className="rounded-md border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 font-mono text-xs text-sky-700 dark:text-sky-300"
+                      className="rounded-md border border-primary bg-accent-subtle px-2 py-0.5 font-mono text-xs text-primary"
                     >
                       {cap}
                     </span>

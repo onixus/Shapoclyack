@@ -52,7 +52,7 @@ export function TopHeader() {
     user?.role === "admin"
       ? "bg-rose-500/10 text-rose-700 dark:text-rose-400 border-rose-500/30 font-bold"
       : user?.role === "operator"
-        ? "bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/30 font-semibold"
+        ? "bg-accent-subtle text-primary border-primary font-semibold"
         : "bg-muted text-muted-foreground border-border font-medium";
 
   return (
@@ -121,7 +121,7 @@ export function TopHeader() {
               className="text-xs text-foreground focus:bg-muted"
               onClick={() => router.push("/users")}
             >
-              <Shield className="mr-2 h-3.5 w-3.5 text-sky-500" />
+              <Shield className="mr-2 h-3.5 w-3.5 text-primary" />
               {t("header.role", { role: user?.role || "—" })}
             </DropdownMenuItem>
             <DropdownMenuItem

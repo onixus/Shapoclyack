@@ -179,7 +179,7 @@ export function CampaignDetail({ id }: { id: string }) {
         enableSorting: false,
         cell: ({ row }) => (
           <Link href={vulnDetailHref(row.original.vuln_id)} className="group space-y-0.5">
-            <p className="whitespace-nowrap font-mono text-sm font-bold text-sky-600 group-hover:underline dark:text-sky-400">
+            <p className="whitespace-nowrap font-mono text-sm font-bold text-primary group-hover:underline">
               {row.original.cve || row.original.title || row.original.problem_key}
             </p>
             <p className="text-xs text-muted-foreground">
@@ -215,7 +215,7 @@ export function CampaignDetail({ id }: { id: string }) {
         cell: ({ row }) =>
           row.original.ticket_key ? (
             row.original.ticket_url ? (
-              <a href={row.original.ticket_url} target="_blank" rel="noreferrer" className="text-xs text-sky-600 hover:underline dark:text-sky-400">
+              <a href={row.original.ticket_url} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">
                 {row.original.ticket_key}
               </a>
             ) : (
@@ -266,7 +266,7 @@ export function CampaignDetail({ id }: { id: string }) {
 
   return (
     <div className="space-y-6">
-      <Link href="/campaigns" className="inline-flex items-center gap-1 text-xs text-sky-600 hover:underline dark:text-sky-400">
+      <Link href="/campaigns" className="inline-flex items-center gap-1 text-xs text-primary hover:underline">
         <ArrowLeft className="h-3 w-3" /> {t("campaign.detail.back")}
       </Link>
 

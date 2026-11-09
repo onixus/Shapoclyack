@@ -35,6 +35,19 @@
     --sev-medium: 38 95% 29%;
     --sev-low: 224 76% 48%;
     --sev-info: 215 19% 35%;
+    --viz-1: #0284c7;
+    --viz-2: #ea580c;
+    --viz-3: #059669;
+    --viz-4: #7c3aed;
+    --viz-5: #a16207;
+    --viz-6: #db2777;
+    --viz-7: #4f46e5;
+    --viz-8: #0d9488;
+    --apex-on-viz: #ffffff;
+    --apex-map-ocean: #e2e8f0;
+    --apex-map-land: #cbd5e1;
+    --apex-map-stroke: #94a3b8;
+    --apex-map-grid: #cbd5e1;
     --apex-selection-bg: rgba(3, 105, 161, 0.18);
     --apex-wash-accent: rgba(14, 165, 233, 0.10);
     --apex-terminal-bg: #0b1220;
@@ -98,6 +111,19 @@
     --sev-medium: 48 96% 53%;
     --sev-low: 213 94% 68%;
     --sev-info: 215 20% 65%;
+    --viz-1: #0284c7;
+    --viz-2: #ea580c;
+    --viz-3: #059669;
+    --viz-4: #8b5cf6;
+    --viz-5: #a16207;
+    --viz-6: #db2777;
+    --viz-7: #6366f1;
+    --viz-8: #0d9488;
+    --apex-on-viz: #ffffff;
+    --apex-map-ocean: #020617;
+    --apex-map-land: #1e293b;
+    --apex-map-stroke: #334155;
+    --apex-map-grid: #1e293b;
     --apex-selection-bg: rgba(56, 189, 248, 0.30);
     --apex-wash-accent: rgba(56, 189, 248, 0.14);
     --apex-terminal-bg: #030712;
@@ -112,6 +138,50 @@
     --scrollbar-track: #06090e;
   }
 
+  /* Printed reports stay on the light palette even when the screen is dark. */
+  @media print {
+    .dark {
+      color-scheme: light;
+      --apex-canvas: 220 43% 97%;
+      --apex-sunken: 213 36% 95%;
+      --apex-surface-1: 0 0% 100%;
+      --apex-surface-2: 210 40% 96%;
+      --apex-surface-3: 214 32% 91%;
+      --apex-border-subtle: 214 32% 91%;
+      --apex-border-strong: 213 27% 84%;
+      --apex-text-primary: 222 47% 11%;
+      --apex-text-secondary: 215 19% 35%;
+      --apex-text-muted: 214 17% 43%;
+      --apex-text-disabled: 215 20% 65%;
+      --apex-accent: 201 96% 32%;
+      --apex-accent-hover: 201 90% 27%;
+      --apex-accent-subtle: #e0f2fe;
+      --apex-on-accent: 0 0% 100%;
+      --apex-focus-ring: 200 98% 39%;
+      --apex-danger: 345 83% 41%;
+      --apex-danger-solid: 345 83% 41%;
+      --apex-info: 224 76% 48%;
+      --apex-success-subtle: #ecfdf5;
+      --apex-warning-subtle: #fffbeb;
+      --apex-danger-subtle: #fff1f2;
+      --apex-info-subtle: #eff6ff;
+      --sev-critical: 345 83% 41%;
+      --sev-high: 17 88% 40%;
+      --sev-medium: 38 95% 29%;
+      --sev-low: 224 76% 48%;
+      --sev-info: 215 19% 35%;
+      --viz-4: #7c3aed;
+      --viz-7: #4f46e5;
+      --apex-map-ocean: #e2e8f0;
+      --apex-map-land: #cbd5e1;
+      --apex-map-stroke: #94a3b8;
+      --apex-map-grid: #cbd5e1;
+      --control: 216 16% 54%;
+      --warning: 26 90% 37%;
+      --success: 163 94% 24%;
+    }
+  }
+
   * {
     @apply border-border;
     scrollbar-width: thin;
@@ -121,7 +191,7 @@
   /* APEX: depth comes from surfaces, so the page itself is a flat canvas. */
   body {
     @apply bg-background text-foreground antialiased;
-    font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+    font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
   }
 
   ::selection {

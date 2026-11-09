@@ -96,7 +96,7 @@ function CandidateRow({
               )}
               <Badge
                 variant="outline"
-                className="text-xs border-border text-sky-600 dark:text-sky-400 font-mono"
+                className="text-xs border-border text-primary font-mono"
               >
                 {runText(t.locale, "{count}% confidence", {
                   count: Math.round(candidate.confidence * 100),
@@ -143,7 +143,7 @@ function CandidateRow({
               className={`h-7 text-xs font-mono gap-1.5 ${
                 isPromoted
                   ? "hover:border-rose-500 hover:text-rose-600 dark:text-rose-300"
-                  : "hover:border-sky-500 hover:text-sky-600 dark:text-sky-300"
+                  : "hover:border-primary hover:text-primary dark:text-primary"
               }`}
               onClick={(e) => {
                 e.stopPropagation();
@@ -158,7 +158,7 @@ function CandidateRow({
                 </>
               ) : (
                 <>
-                  <PlusCircle className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
+                  <PlusCircle className="h-3.5 w-3.5 text-primary" />
                   {runText(t.locale, "Promote to Scope")}
                 </>
               )}
@@ -284,7 +284,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
-              <Building2 className="h-5 w-5 text-sky-600 dark:text-sky-400" />
+              <Building2 className="h-5 w-5 text-primary" />
               <h2 className="text-base font-bold text-foreground">
                 {primaryOwner?.org_name ||
                   primaryOwner?.registrant_organization ||
@@ -370,7 +370,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
       <Card className="border-border bg-card shadow-md">
         <CardHeader className="py-3.5 px-4 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <Globe className="h-4 w-4 text-sky-600 dark:text-sky-400" />
+            <Globe className="h-4 w-4 text-primary" />
             <CardTitle className="text-xs font-bold uppercase tracking-wider text-foreground">
               {runText(t.locale, "Discovered Co-Owned Domains")} ({candidates.length})
             </CardTitle>

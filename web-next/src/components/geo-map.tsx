@@ -14,7 +14,6 @@ import {
   projectLatitude,
   projectLongitude,
 } from "@/lib/geo/world-map";
-import { useAppearanceStore } from "@/lib/appearance";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -52,6 +51,12 @@ const STATE_LABEL: Record<HostState, string> = {
   clean: "no findings",
 };
 
+// Presentation attributes do not resolve CSS variables; style does.
+const MAP_OCEAN = "var(--apex-map-ocean)";
+const MAP_LAND = "var(--apex-map-land)";
+const MAP_STROKE = "var(--apex-map-stroke)";
+const MAP_GRID = "var(--apex-map-grid)";
+
 type GeoMapProps = {
   locations: GeoLocation[];
   selectedKey: string | null;
@@ -60,11 +65,6 @@ type GeoMapProps = {
 
 export function GeoMap({ locations, selectedKey, onSelect }: GeoMapProps) {
   const t = useT();
-  const theme = useAppearanceStore((s) => s.theme);
-  const ocean = theme === "light" ? "#e2e8f0" : "#020617";
-  const land = theme === "light" ? "#cbd5e1" : "#1e293b";
-  const landStroke = theme === "light" ? "#94a3b8" : "#334155";
-  const grid = theme === "light" ? "#cbd5e1" : "#1e293b";
   const [hovered, setHovered] = useState<GeoLocation | null>(null);
 
   const maxHostCount = useMemo(
@@ -93,10 +93,10 @@ export function GeoMap({ locations, selectedKey, onSelect }: GeoMapProps) {
           role="img"
           aria-label={`World map of ${locations.length} host locations`}
         >
-          <rect width={MAP_WIDTH} height={MAP_HEIGHT} fill={ocean} />
+          <rect width={MAP_WIDTH} height={MAP_HEIGHT} style={{ fill: MAP_OCEAN }} />
           {/* Graticule every 30°: without it an equirectangular map gives no
               sense of scale, and the poles look like the tropics. */}
-          <g stroke={grid} strokeWidth={0.5} fill="none">
+          <g style={{ stroke: MAP_GRID }} strokeWidth={0.5} fill="none">
             {[-150, -120, -90, -60, -30, 0, 30, 60, 90, 120, 150].map((lon) => (
               <line
                 key={`lon-${lon}`}
@@ -116,7 +116,7 @@ export function GeoMap({ locations, selectedKey, onSelect }: GeoMapProps) {
               />
             ))}
           </g>
-          <g fill={land} stroke={landStroke} strokeWidth={0.4}>
+          <g style={{ fill: MAP_LAND, stroke: MAP_STROKE }} strokeWidth={0.4}>
             {LAND_PATHS.map((path, index) => (
               <path key={index} d={path} />
             ))}

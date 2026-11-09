@@ -91,7 +91,7 @@ export function FindingsList({
                           t.locale,
                         )}
                         {item.port ? (
-                          <span className="text-sky-600 dark:text-sky-400 font-normal">
+                          <span className="text-primary font-normal">
                             :{item.port}
                           </span>
                         ) : null}

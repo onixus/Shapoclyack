@@ -37,8 +37,8 @@ import {
   vulnListHref,
 } from "@/lib/vuln-lifecycle";
 
-const RISK_DONUT_COLORS = ["slate", "sky", "amber", "orange", "rose"];
-const SEVERITY_DONUT_COLORS = ["rose", "orange", "amber", "sky", "slate"];
+const RISK_DONUT_COLORS = ["sevinfo", "sevlow", "sevmedium", "sevhigh", "sevcritical"];
+const SEVERITY_DONUT_COLORS = ["sevcritical", "sevhigh", "sevmedium", "sevlow", "sevinfo"];
 
 export default function DashboardPage() {
   const t = useT();
@@ -453,7 +453,7 @@ export default function DashboardPage() {
                   data={criticalityData}
                   index="name"
                   categories={[series.assets]}
-                  colors={["cyan"]}
+                  colors={["viz1"]}
                   showLegend={false}
                   showAnimation={false}
                   yAxisWidth={40}
@@ -508,7 +508,7 @@ export default function DashboardPage() {
             data={riskHistoryTrend}
             index="date"
             categories={[series.open, series.critical, series.breached]}
-            colors={["sky", "rose", "amber"]}
+            colors={["viz1", "viz2", "viz3"]}
             showLegend
             showAnimation={false}
           />
@@ -539,7 +539,7 @@ export default function DashboardPage() {
             data={trend}
             index="date"
             categories={[series.hosts, series.findings]}
-            colors={["cyan", "rose"]}
+            colors={["viz1", "viz2"]}
             showLegend
             showAnimation={false}
           />

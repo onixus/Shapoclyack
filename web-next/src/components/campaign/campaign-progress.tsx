@@ -80,7 +80,7 @@ export function CategoryCards({
             onClick={() => onSelect(active === category ? "" : category)}
             className={cn(
               "rounded-md border border-border bg-card p-3 text-left transition-colors hover:bg-muted",
-              active === category && "ring-2 ring-sky-500",
+              active === category && "ring-2 ring-primary",
             )}
           >
             <div className="flex items-center gap-2 text-xs text-muted-foreground">

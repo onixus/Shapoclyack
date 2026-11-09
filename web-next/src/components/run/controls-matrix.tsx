@@ -62,7 +62,7 @@ function StatusBadge({ status }: { status: ControlStatus | OverallVerdict }) {
       // Some controls passed and others were never evaluated. Deliberately not
       // green: a matrix with holes in it is not a clean bill of health.
       return (
-        <Badge className="bg-sky-500/20 text-sky-600 dark:text-sky-300 border-sky-500/40 gap-1 font-mono">
+        <Badge className="bg-accent-subtle text-primary border-primary gap-1 font-mono">
           <ShieldQuestion className="h-3.5 w-3.5" />
           {runText(t.locale, "PARTIAL")}
         </Badge>
@@ -252,7 +252,7 @@ function ControlRow({ control }: { control: ControlItem }) {
                   >
                     <span className="font-bold text-foreground shrink-0">{f.id}</span>
                     {f.domain && (
-                      <span className="text-sky-600 dark:text-sky-400 shrink-0">[{f.domain}]</span>
+                      <span className="text-primary shrink-0">[{f.domain}]</span>
                     )}
                     <span className="text-muted-foreground grow">{f.detail || ""}</span>
                     <Badge
@@ -287,7 +287,7 @@ export function ControlsMatrix({ runId }: { runId: string }) {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12 text-muted-foreground gap-2 font-mono text-xs">
-        <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+        <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
         {t("prose.evaluatingSecurityControlsMatrix")}
       </div>
     );
@@ -311,7 +311,7 @@ export function ControlsMatrix({ runId }: { runId: string }) {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
-              <Activity className="h-5 w-5 text-sky-600 dark:text-sky-400" />
+              <Activity className="h-5 w-5 text-primary" />
               <h2 className="text-base font-bold text-foreground">
                 {t("ui.organizationSecurityPostureMatrix")}
               </h2>

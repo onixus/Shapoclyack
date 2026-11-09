@@ -33,7 +33,7 @@ function SurfaceCard({ surface }: { surface: Exclude<ScanSurface, "mixed"> }) {
   const Icon = surface === "external" ? Globe2 : Layers;
   const tone =
     surface === "external"
-      ? "border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-400"
+      ? "border-primary bg-accent-subtle text-primary"
       : "border-violet-500/30 bg-violet-500/10 text-violet-600 dark:text-violet-400";
 
   return (
@@ -58,14 +58,12 @@ function SurfaceCard({ surface }: { surface: Exclude<ScanSurface, "mixed"> }) {
         ) : null}
       </div>
 
-      <dl className="grid grid-cols-3 gap-2 text-xs">
-        <div>
-          <dt className="truncate text-xs font-medium text-muted-foreground">
-            {t("dash.ops.lastRun")}
-          </dt>
+      <dl className="grid gap-1.5 text-xs">
+        <div className="flex items-baseline justify-between gap-3">
+          <dt className="text-muted-foreground">{t("dash.ops.lastRun")}</dt>
           <dd
             className={cn(
-              "mt-0.5 font-semibold",
+              "font-semibold",
               stale ? "text-amber-600 dark:text-amber-300" : "text-foreground",
             )}
           >
@@ -76,21 +74,17 @@ function SurfaceCard({ surface }: { surface: Exclude<ScanSurface, "mixed"> }) {
                 : t("kpi.scans.noneYet")}
           </dd>
         </div>
-        <div>
-          <dt className="truncate text-xs font-medium text-muted-foreground">
-            {t("dash.ops.running")}
-          </dt>
-          <dd className="mt-0.5 font-mono font-semibold text-foreground">
+        <div className="flex items-baseline justify-between gap-3">
+          <dt className="text-muted-foreground">{t("dash.ops.running")}</dt>
+          <dd className="font-mono font-semibold text-foreground">
             {canOperate ? (jobs.isLoading ? "…" : `${running}${queued ? ` +${queued}` : ""}`) : "—"}
           </dd>
         </div>
-        <div>
-          <dt className="truncate text-xs font-medium text-muted-foreground">
-            {t("dash.ops.findings")}
-          </dt>
+        <div className="flex items-baseline justify-between gap-3">
+          <dt className="text-muted-foreground">{t("dash.ops.findings")}</dt>
           <dd
             className={cn(
-              "mt-0.5 font-mono font-semibold",
+              "font-mono font-semibold",
               (last?.potential_vulnerabilities ?? 0) > 0
                 ? "text-rose-600 dark:text-rose-400"
                 : "text-foreground",
@@ -140,7 +134,7 @@ function ExposureSplit() {
   if (!split) return null;
   const total = (split.external ?? 0) + (split.internal ?? 0) + (split.unknown ?? 0);
   const rows: Array<{ key: "external" | "internal" | "unknown"; color: string }> = [
-    { key: "external", color: "bg-sky-500" },
+    { key: "external", color: "bg-primary" },
     { key: "internal", color: "bg-violet-500" },
     { key: "unknown", color: "bg-muted-foreground" },
   ];

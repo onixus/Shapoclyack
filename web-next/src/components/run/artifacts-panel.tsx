@@ -227,7 +227,7 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
               {previewPath ? (
                 <Badge
                   variant="secondary"
-                  className="bg-sky-500/20 text-sky-600 dark:text-sky-300 border-sky-500/30 text-xs"
+                  className="bg-accent-subtle text-primary border-primary text-xs"
                 >
                   {runText(t.locale, "PREVIEW")}
                 </Badge>
@@ -236,7 +236,7 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
           </DialogHeader>
           {previewLoading ? (
             <div className="flex items-center justify-center py-8 text-muted-foreground gap-2">
-              <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
               <span className="text-xs">{runText(t.locale, "Loading artifact text\u2026")}</span>
             </div>
           ) : (

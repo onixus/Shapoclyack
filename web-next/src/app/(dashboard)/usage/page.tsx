@@ -321,7 +321,7 @@ export default function UsagePage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-sky-500/20 bg-sky-500/10 text-sky-500 shadow-md">
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-primary bg-accent-subtle text-primary shadow-md">
           <CircleGauge className="h-5 w-5" />
         </div>
         <div>
@@ -410,7 +410,7 @@ export default function UsagePage() {
               <dl className="space-y-1.5 border-t border-border/60 pt-3 text-sm">
                 <div className="flex justify-between gap-3">
                   <dt className="text-muted-foreground">{t("page.usage.enforcement")}</dt>
-                  <dd className="text-right text-foreground">
+                  <dd className="max-w-[65%] text-pretty text-right text-foreground">
                     {data.enforced ? t("page.usage.enforcedOn") : t("page.usage.enforcedOff")}
                   </dd>
                 </div>
@@ -445,7 +445,7 @@ export default function UsagePage() {
                   data={history}
                   index="month"
                   categories={["Scans"]}
-                  colors={["cyan"]}
+                  colors={["viz1"]}
                   showLegend={false}
                   showAnimation={false}
                   yAxisWidth={40}

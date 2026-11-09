@@ -130,7 +130,7 @@ describe("UsagePage", () => {
     expect(await screen.findByText("812")).toBeInTheDocument();
     expect(screen.getAllByText(/812 of 2,000/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/12 of 40/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("2026-09-01 → 2026-10-01").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("2026\u201109\u201101 → 2026\u201110\u201101").length).toBeGreaterThan(0);
     expect(screen.getByText("Contract ACME-2026")).toBeInTheDocument();
     expect(screen.getAllByText("Set for this tenant").length).toBeGreaterThan(0);
     expect(screen.getByText(/40.6%/)).toBeInTheDocument();

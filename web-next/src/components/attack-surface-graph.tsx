@@ -21,11 +21,20 @@ const TOP_PAD = 16;
 const SVG_W_TOPOLOGY = 820;
 const SVG_W_OWNER = 910;
 
-const COUNTRY_PALETTE = [
-  "#2563eb", "#0891b2", "#7c3aed", "#db2777", "#ea580c",
-  "#16a34a", "#ca8a04", "#4f46e5", "#0d9488", "#9333ea",
-];
-const NO_GEO = "#94a3b8";
+const VIZ_COUNT = 8;
+const ACCENT = "hsl(var(--apex-accent))";
+const SURFACE = "hsl(var(--apex-surface-1))";
+const NODE_BORDER = "hsl(var(--apex-border-strong))";
+const NODE_TEXT = "hsl(var(--apex-text-primary))";
+const ON_VIZ = "var(--apex-on-viz)";
+const ON_ACCENT = "hsl(var(--apex-on-accent))";
+const SEV_CRITICAL = "hsl(var(--sev-critical))";
+
+function clusterViz(index: number): string {
+  return `var(--viz-${(index % VIZ_COUNT) + 1})`;
+}
+
+const NO_GEO = "hsl(var(--sev-info))";
 
 export type AttackSurfaceCaps = {
   maxIps: number;
@@ -88,7 +97,7 @@ export function AttackSurfaceGraph({
       new Set(ipHosts.map(clusterValue).filter((c): c is string => Boolean(c))),
     );
     const clusterColor = new Map<string, string>();
-    clusters.forEach((c, i) => clusterColor.set(c, COUNTRY_PALETTE[i % COUNTRY_PALETTE.length]));
+    clusters.forEach((c, i) => clusterColor.set(c, clusterViz(i)));
     const ipColor = new Map(
       ipHosts.map((h) => {
         const cv = clusterValue(h);
@@ -288,7 +297,7 @@ export function AttackSurfaceGraph({
         ) : (
           legend.map(([key, color, label]) => (
             <span key={key} className="flex items-center gap-1.5 font-medium text-foreground">
-              <span className="inline-block h-2.5 w-2.5 rounded-sm shadow-sm" style={{ backgroundColor: color }} />
+              <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: color }} />
               {truncate(label, 28)}
             </span>
           ))
@@ -299,7 +308,7 @@ export function AttackSurfaceGraph({
         </span>
       </div>
 
-      <div className="max-h-[72vh] overflow-auto rounded-xl border border-border bg-muted p-4 shadow-xl">
+      <div className="max-h-[72vh] overflow-auto rounded-xl border border-border bg-muted p-4">
         <svg
           viewBox={`0 0 ${model.svgW} ${model.height}`}
           width="100%"
@@ -314,42 +323,42 @@ export function AttackSurfaceGraph({
         >
           {/* Column headers */}
           {model.clusterMode === "owner" ? (
-            <text x={col.owner} y={10} fill="#38bdf8" fontSize={11} fontWeight={800} letterSpacing={1}>
+            <text x={col.owner} y={10} style={{ fill: ACCENT }} fontSize={11} fontWeight={800} letterSpacing={1}>
               OWNERS
             </text>
           ) : null}
-          <text x={col.host} y={10} fill="#38bdf8" fontSize={11} fontWeight={800} letterSpacing={1}>
+          <text x={col.host} y={10} style={{ fill: ACCENT }} fontSize={11} fontWeight={800} letterSpacing={1}>
             HOSTNAMES
           </text>
-          <text x={col.ip} y={10} fill="#38bdf8" fontSize={11} fontWeight={800} letterSpacing={1}>
+          <text x={col.ip} y={10} style={{ fill: ACCENT }} fontSize={11} fontWeight={800} letterSpacing={1}>
             IP HOSTS
           </text>
-          <text x={col.port} y={10} fill="#38bdf8" fontSize={11} fontWeight={800} letterSpacing={1}>
+          <text x={col.port} y={10} style={{ fill: ACCENT }} fontSize={11} fontWeight={800} letterSpacing={1}>
             OPEN PORTS
           </text>
-          <text x={col.service} y={10} fill="#38bdf8" fontSize={11} fontWeight={800} letterSpacing={1}>
+          <text x={col.service} y={10} style={{ fill: ACCENT }} fontSize={11} fontWeight={800} letterSpacing={1}>
             SERVICES
           </text>
 
           {/* Edges (drawn under nodes with glowing strokes) */}
           {model.clusterMode === "owner" ? (
-            <g stroke="#a78bfa" strokeWidth={1.5} opacity={0.4} fill="none">
+            <g strokeWidth={1.5} opacity={0.4} fill="none" style={{ stroke: "var(--viz-4)" }}>
               {model.edgesOwnerHost.map((e, i) => (
                 <path key={`oe-${i}`} d={`M${e.x1},${e.y1} C${e.x1 + 40},${e.y1} ${e.x2 - 40},${e.y2} ${e.x2},${e.y2}`} />
               ))}
             </g>
           ) : null}
-          <g stroke="#0284c7" strokeWidth={1.5} opacity={0.4} fill="none">
+          <g strokeWidth={1.5} opacity={0.4} fill="none" style={{ stroke: "var(--viz-1)" }}>
             {model.edgesHostIp.map((e, i) => (
               <path key={`he-${i}`} d={`M${e.x1},${e.y1} C${e.x1 + 40},${e.y1} ${e.x2 - 40},${e.y2} ${e.x2},${e.y2}`} />
             ))}
           </g>
-          <g stroke="#f43f5e" strokeWidth={1.5} opacity={0.5} fill="none">
+          <g strokeWidth={1.5} opacity={0.5} fill="none" style={{ stroke: "var(--viz-6)" }}>
             {model.edgesIpPort.map((e, i) => (
               <path key={`pe-${i}`} d={`M${e.x1},${e.y1} C${e.x1 + 40},${e.y1} ${e.x2 - 40},${e.y2} ${e.x2},${e.y2}`} />
             ))}
           </g>
-          <g stroke="#818cf8" strokeWidth={1.5} opacity={0.4} fill="none">
+          <g strokeWidth={1.5} opacity={0.4} fill="none" style={{ stroke: "var(--viz-7)" }}>
             {model.edgesPortService.map((e, i) => (
               <path key={`se-${i}`} d={`M${e.x1},${e.y1} C${e.x1 + 40},${e.y1} ${e.x2 - 40},${e.y2} ${e.x2},${e.y2}`} />
             ))}
@@ -361,8 +370,8 @@ export function AttackSurfaceGraph({
             const color = model.clusterColor.get(group.key) || NO_GEO;
             return (
               <g key={`ow-${group.key}`}>
-                <rect x={col.owner} y={y} width={NODE_W} height={NODE_H} rx={6} fill={color} opacity={0.9} stroke="#1e293b" strokeWidth={1} />
-                <text x={col.owner + 8} y={y + 15} fontSize={10} fontWeight={700} fill="#ffffff">
+                <rect x={col.owner} y={y} width={NODE_W} height={NODE_H} rx={6} opacity={0.9} strokeWidth={1} style={{ fill: color, stroke: NODE_BORDER }} />
+                <text x={col.owner + 8} y={y + 15} fontSize={11} fontWeight={700} style={{ fill: ON_VIZ }}>
                   {truncate(group.label, 18)}
                 </text>
               </g>
@@ -378,16 +387,15 @@ export function AttackSurfaceGraph({
                 width={NODE_W}
                 height={NODE_H}
                 rx={6}
-                fill="#0f172a"
-                stroke="#334155"
                 strokeWidth={1}
+                style={{ fill: SURFACE, stroke: NODE_BORDER }}
               />
               <text
                 x={col.host + 8}
                 y={(model.hostY.get(name) || 0) + 15}
-                fontSize={10}
+                fontSize={11}
                 fontWeight={600}
-                fill="#cbd5e1"
+                style={{ fill: NODE_TEXT }}
               >
                 {truncate(name)}
               </text>
@@ -400,8 +408,8 @@ export function AttackSurfaceGraph({
             const y = model.ipY.get(h.host)!;
             return (
               <g key={`ip-${h.host}`}>
-                <rect x={col.ip} y={y} width={NODE_W} height={NODE_H} rx={6} fill={color} opacity={0.9} stroke="#1e293b" strokeWidth={1} />
-                <text x={col.ip + 8} y={y + 15} fontSize={10} fontWeight={700} fill="#ffffff" fontFamily="monospace">
+                <rect x={col.ip} y={y} width={NODE_W} height={NODE_H} rx={6} opacity={0.9} strokeWidth={1} style={{ fill: color, stroke: NODE_BORDER }} />
+                <text x={col.ip + 8} y={y + 15} fontSize={11} fontWeight={700} style={{ fill: ON_VIZ }} fontFamily="monospace">
                   {truncate(h.host, 18)}
                   {h.vulnerability_count ? ` ⚠${h.vulnerability_count}` : ""}
                 </text>
@@ -418,11 +426,13 @@ export function AttackSurfaceGraph({
                 width={NODE_W}
                 height={NODE_H}
                 rx={6}
-                fill={p.vulns ? "#881337" : "#0f172a"}
-                stroke={p.vulns ? "#f43f5e" : "#334155"}
                 strokeWidth={1}
+                style={{
+                  fill: p.vulns ? SEV_CRITICAL : SURFACE,
+                  stroke: p.vulns ? SEV_CRITICAL : NODE_BORDER,
+                }}
               />
-              <text x={col.port + 8} y={p.y + 15} fontSize={10} fontWeight={700} fill={p.vulns ? "#fecdd3" : "#cbd5e1"} fontFamily="monospace">
+              <text x={col.port + 8} y={p.y + 15} fontSize={11} fontWeight={700} style={{ fill: p.vulns ? ON_ACCENT : NODE_TEXT }} fontFamily="monospace">
                 {p.label}
                 {p.vulns ? ` ⚠${p.vulns}` : ""}
               </text>
@@ -438,11 +448,10 @@ export function AttackSurfaceGraph({
                 width={NODE_W}
                 height={NODE_H}
                 rx={6}
-                fill="#1e1b4b"
-                stroke="#4338ca"
                 strokeWidth={1}
+                style={{ fill: SURFACE, stroke: NODE_BORDER }}
               />
-              <text x={col.service + 8} y={s.y + 15} fontSize={10} fontWeight={600} fill="#e0e7ff">
+              <text x={col.service + 8} y={s.y + 15} fontSize={11} fontWeight={600} style={{ fill: NODE_TEXT }}>
                 {truncate(s.name, 18)}
               </text>
             </g>

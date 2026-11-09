@@ -99,7 +99,7 @@ export function ReportFactoryPanel() {
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      <Section title="Branding" icon={<Palette className="h-4 w-4 text-sky-500" />}>
+      <Section title="Branding" icon={<Palette className="h-4 w-4 text-primary" />}>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1">
             <Label htmlFor="org-name">{t("ui.organisationName")}</Label>
@@ -148,7 +148,7 @@ export function ReportFactoryPanel() {
         </p>
       </Section>
 
-      <Section title="Generate now" icon={<FileBarChart className="h-4 w-4 text-sky-500" />}>
+      <Section title="Generate now" icon={<FileBarChart className="h-4 w-4 text-primary" />}>
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="space-y-1">
             <Label>{t("ui.report")}</Label>
@@ -217,7 +217,7 @@ export function ReportFactoryPanel() {
         </Button>
       </Section>
 
-      <Section title="Templates" icon={<Plus className="h-4 w-4 text-sky-500" />}>
+      <Section title="Templates" icon={<Plus className="h-4 w-4 text-primary" />}>
         <div className="grid gap-3 sm:grid-cols-3">
           <Input
             value={templateName}
@@ -293,7 +293,7 @@ export function ReportFactoryPanel() {
         </ul>
       </Section>
 
-      <Section title="Scheduled delivery" icon={<Plus className="h-4 w-4 text-sky-500" />}>
+      <Section title="Scheduled delivery" icon={<Plus className="h-4 w-4 text-primary" />}>
         <div className="grid gap-3 sm:grid-cols-2">
           <Select value={scheduleTemplate} onValueChange={setScheduleTemplate}>
             <SelectTrigger>
@@ -396,7 +396,7 @@ export function ReportFactoryPanel() {
 
       <Section
         title="Generated reports"
-        icon={<FileBarChart className="h-4 w-4 text-sky-500" />}
+        icon={<FileBarChart className="h-4 w-4 text-primary" />}
       >
         <ul className="space-y-1 text-xs lg:col-span-2">
           {(reports.data ?? []).length === 0 ? (

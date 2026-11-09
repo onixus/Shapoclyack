@@ -99,7 +99,7 @@ function BackToVulnerabilities() {
       className="gap-2 px-0 text-muted-foreground hover:text-foreground hover:bg-transparent"
     >
       <Link href="/vulnerabilities">
-        <ArrowLeft className="h-4 w-4 text-sky-600 dark:text-sky-400" />
+        <ArrowLeft className="h-4 w-4 text-primary" />
         {t("prose.backToVulnerabilityCenter")}
       </Link>
     </Button>
@@ -359,7 +359,7 @@ function VulnerabilityDetailInner() {
                 value={
                   <Link
                     href={assetDetailHref(vuln.asset_id, vuln.tenant_id)}
-                    className="font-mono text-sky-600 dark:text-sky-400 hover:underline"
+                    className="font-mono text-primary hover:underline"
                   >
                     {assetName}
                   </Link>
@@ -378,7 +378,7 @@ function VulnerabilityDetailInner() {
                       href={vuln.ticket_url}
                       target="_blank"
                       rel="noreferrer"
-                      className="font-mono text-sky-600 dark:text-sky-400 hover:underline"
+                      className="font-mono text-primary hover:underline"
                     >
                       {vuln.ticket_key || vuln.ticket_url}
                     </a>
@@ -419,7 +419,7 @@ function VulnerabilityDetailInner() {
                   vuln.first_seen_run_id ? (
                     <Link
                       href={runDetailHref(vuln.first_seen_run_id)}
-                      className="font-mono text-sky-600 dark:text-sky-400 hover:underline"
+                      className="font-mono text-primary hover:underline"
                     >
                       {vuln.first_seen_run_id}
                     </Link>
@@ -434,7 +434,7 @@ function VulnerabilityDetailInner() {
                   vuln.last_seen_run_id ? (
                     <Link
                       href={runDetailHref(vuln.last_seen_run_id)}
-                      className="font-mono text-sky-600 dark:text-sky-400 hover:underline"
+                      className="font-mono text-primary hover:underline"
                     >
                       {vuln.last_seen_run_id}
                     </Link>
@@ -461,7 +461,7 @@ function VulnerabilityDetailInner() {
                     {vt(t.locale, ". Open the")}{" "}
                     <Link
                       href={runDetailHref(vuln.last_seen_run_id)}
-                      className="text-sky-600 dark:text-sky-400 hover:underline"
+                      className="text-primary hover:underline"
                     >
                       {vt(t.locale, "last seeing run")}
                     </Link>{" "}
@@ -730,7 +730,7 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
             variant="outline"
             disabled={verifyMutation.isPending}
             onClick={() => verifyMutation.mutate()}
-            className="w-full border-sky-500/40 bg-sky-50 dark:bg-sky-950/30 text-sky-600 dark:text-sky-300 hover:bg-sky-50 dark:bg-sky-900/40 gap-1.5"
+            className="w-full border-primary bg-accent-subtle text-primary hover:bg-accent-subtle gap-1.5"
           >
             <ShieldCheck className="h-4 w-4" />
             {verifyMutation.isPending ? t("vuln.verifyingInProgress") : t("vuln.verifyBtn")}
@@ -855,7 +855,7 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
             variant="ghost"
             disabled={syncMutation.isPending}
             onClick={() => syncMutation.mutate()}
-            className="text-xs text-sky-600 dark:text-sky-400 hover:text-sky-600 dark:text-sky-300 gap-1 h-7 px-2"
+            className="text-xs text-primary hover:text-primary gap-1 h-7 px-2"
           >
             <RefreshCw className={`h-3 w-3 ${syncMutation.isPending ? "animate-spin" : ""}`} />
             {t("vuln.syncTicketBtn")}
@@ -1013,7 +1013,7 @@ function ExceptionCard({
         <p className="mt-2 text-xs text-muted-foreground">{t("prose.noExceptionBothExpiryAnd")}</p>
       )}
       {pending ? (
-        <p className="mt-2 text-xs text-sky-600 dark:text-sky-300">
+        <p className="mt-2 text-xs text-primary">
           {vt(t.locale, "Requested by")}{" "}
           <span className="font-mono">{vuln.exception_requested_by ?? "—"}</span>{" "}
           {vt(t.locale, "until")} {formatWhen(vuln.exception_requested_until)}{" "}

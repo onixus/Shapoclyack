@@ -35,7 +35,7 @@ function CampaignList() {
             href={`/campaigns?id=${encodeURIComponent(row.original.campaign_id)}`}
             className="space-y-0.5 hover:underline"
           >
-            <span className="block font-semibold text-sky-600 dark:text-sky-400">
+            <span className="block font-semibold text-primary">
               {row.original.name}
             </span>
             <span className="block text-xs text-muted-foreground">
@@ -138,7 +138,7 @@ function CampaignsInner() {
         <>
           <div className="border-b border-border pb-4">
             <div className="flex items-center gap-2.5">
-              <ListChecks className="h-5 w-5 text-sky-600 dark:text-sky-400" />
+              <ListChecks className="h-5 w-5 text-primary" />
               <h1 className="text-2xl font-extrabold tracking-tight">{t("campaign.page.title")}</h1>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">{t("campaign.page.subtitle")}</p>
