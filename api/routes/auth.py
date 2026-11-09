@@ -584,6 +584,7 @@ def _federated_response(
     client_ip: str,
     next_url: str = "",
     allow_redirect: bool = True,
+    saml_subject: saml_service.SamlSubject | None = None,
 ) -> Response:
     """Link a verified provider identity and issue the ordinary console session."""
     try:
@@ -619,15 +620,27 @@ def _federated_response(
     challenge: str | None = None
     opened: sessions_service.OpenedSession | None = None
     try:
+        saml_name_id = saml_subject.name_id if saml_subject else None
+        saml_name_id_format = saml_subject.name_id_format if saml_subject else None
+        saml_session_index = saml_subject.session_index if saml_subject else None
         if mfa_service.is_enabled(settings, token_user.username):
             challenge = create_pre_auth_token(
                 settings,
                 token_user.username,
                 ttl_minutes=mfa_service.PRE_AUTH_TTL_MINUTES,
+                saml_name_id=saml_name_id,
+                saml_name_id_format=saml_name_id_format,
+                saml_session_index=saml_session_index,
             )
             token = ""
         else:
-            token, opened = issue_session(settings, token_user)
+            token, opened = issue_session(
+                settings,
+                token_user,
+                saml_name_id=saml_name_id,
+                saml_name_id_format=saml_name_id_format,
+                saml_session_index=saml_session_index,
+            )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Single sign-on failed") from exc
 
@@ -794,22 +807,64 @@ async def saml_acs(
         completed.identity,
         client_ip=_client_ip(request, settings),
         next_url=completed.next_url,
+        saml_subject=completed.subject,
     )
+
+
+def _end_browser_session(settings: Settings, request: Request, user: TokenUser) -> None:
+    """Revoke the caller's access token and both families this browser holds."""
+    if user.jti is not None and user.expires_at is not None:
+        sessions_service.revoke_token(
+            settings, jti=user.jti, username=user.username, expires_at=user.expires_at
+        )
+    if user.session_id is not None:
+        sessions_service.end_session(settings, user.session_id)
+    presented = request.cookies.get(REFRESH_COOKIE)
+    if presented:
+        sessions_service.end_session_by_refresh_token(settings, presented)
 
 
 @router.get("/auth/saml/logout", dependencies=_AUTHENTICATION)
 def saml_logout(
+    request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
-    _: Annotated[TokenUser, Depends(get_current_user)],
+    user: Annotated[TokenUser, Depends(get_current_user)],
     next_url: Annotated[str | None, Query(alias="next", max_length=512)] = None,
 ) -> Response:
+    """End this console session, then send the browser to the IdP when we can name it.
+
+    The local token and refresh family are revoked before the redirect. A
+    session that was not opened from SAML has no NameID; calling the toolkit
+    without one would send the SP's entity NameID, so that case stays a local
+    logout.
+    """
+    binding = (
+        sessions_service.saml_binding(settings, user.session_id) if user.session_id else None
+    )
+    landing = _safe_next(next_url) or settings.oidc_post_login_redirect or "/"
+    if binding is None:
+        _end_browser_session(settings, request, user)
+        answer = RedirectResponse(landing, status_code=status.HTTP_303_SEE_OTHER)
+        clear_refresh_cookie(answer, settings)
+        return answer
+    name_id, name_id_format, session_index = binding
     try:
-        logout = saml_service.begin_logout(settings, next_url=_safe_next(next_url))
+        logout = saml_service.begin_logout(
+            settings,
+            name_id=name_id,
+            name_id_format=name_id_format,
+            session_index=session_index,
+            family_id=user.session_id or "",
+            next_url=landing,
+        )
     except saml_service.SamlDisabledError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except saml_service.SamlError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
-    return RedirectResponse(logout.authorization_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    _end_browser_session(settings, request, user)
+    answer = RedirectResponse(logout.authorization_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    clear_refresh_cookie(answer, settings)
+    return answer
 
 
 @router.get("/auth/saml/slo", dependencies=_AUTHENTICATION)
@@ -818,29 +873,51 @@ def saml_slo(
     settings: Annotated[Settings, Depends(get_settings)],
     user: Annotated[TokenUser | None, Depends(get_current_user_if_any)],
 ) -> Response:
+    """Finish SLO. End only the session the SAML message names.
+
+    An IdP LogoutRequest ends families stored with that NameID (and
+    SessionIndex, when the request carries one). A LogoutResponse ends the
+    family that started that SP-initiated logout. The refresh cookie is
+    cleared only when it belongs to one of those families.
+    """
     try:
-        destination = saml_service.complete_logout(
-            settings, get_data=dict(request.query_params)
-        )
+        done = saml_service.complete_logout(settings, get_data=dict(request.query_params))
     except saml_service.SamlDisabledError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except saml_service.SamlError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Single logout failed") from exc
-    if user is not None:
-        if user.jti is not None and user.expires_at is not None:
-            sessions_service.revoke_token(
-                settings, jti=user.jti, username=user.username, expires_at=user.expires_at
-            )
-        if user.session_id is not None:
-            sessions_service.end_session(settings, user.session_id)
+    if done.message == "request":
+        revoked = sessions_service.end_saml_sessions(
+            settings,
+            name_id=done.name_id or "",
+            session_indexes=done.session_indexes,
+        )
+    elif done.family_id:
+        sessions_service.end_session(settings, done.family_id)
+        revoked = [done.family_id]
+    else:
+        revoked = []
+    if (
+        user is not None
+        and user.session_id is not None
+        and user.session_id in revoked
+        and user.jti is not None
+        and user.expires_at is not None
+    ):
+        sessions_service.revoke_token(
+            settings, jti=user.jti, username=user.username, expires_at=user.expires_at
+        )
     presented = request.cookies.get(REFRESH_COOKIE)
+    clear_cookie = False
     if presented:
-        sessions_service.end_session_by_refresh_token(settings, presented)
+        family_id = sessions_service.family_id_for_refresh_token(settings, presented)
+        clear_cookie = family_id is not None and family_id in revoked
     answer = RedirectResponse(
-        destination or settings.oidc_post_login_redirect or "/",
+        done.next_url or settings.oidc_post_login_redirect or "/",
         status_code=status.HTTP_303_SEE_OTHER,
     )
-    clear_refresh_cookie(answer, settings)
+    if clear_cookie:
+        clear_refresh_cookie(answer, settings)
     return answer
 
 

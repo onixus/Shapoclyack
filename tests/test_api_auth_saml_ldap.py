@@ -48,7 +48,9 @@ def test_saml_acs_provisions_with_group_role_and_only_its_tenant(tmp_path, monke
         saml_service,
         "complete_login",
         lambda *_args, **_kwargs: saml_service.CompletedSamlLogin(
-            _identity("saml", acme), "/runs"
+            _identity("saml", acme),
+            "/runs",
+            saml_service.SamlSubject(name_id="directory-user-1", session_index="idx-1"),
         ),
     )
 

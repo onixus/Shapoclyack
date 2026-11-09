@@ -1007,8 +1007,12 @@ is fetched over HTTPS through the configured egress proxy, without redirects,
 and cached; the file form supports air-gapped imports. `GET /api/auth/saml/metadata`
 returns the SP metadata to import at the IdP.
 
-The SP requires a signed SAML **Response** (`wantMessagesSigned`) and rejects
-deprecated signing algorithms. With the default
+The SP requires a signed **Assertion** (`wantAssertionsSigned`) and rejects
+deprecated signing algorithms. A signature on the outer Response alone is not
+accepted. `wantMessagesSigned` is off: the usual sign-then-encrypt profile
+(Azure AD, Okta, ADFS) signs the Assertion and then encrypts it, and that flag
+would still demand an outer Response signature those IdPs do not send. The two
+library flags are independent, so they cannot express "either". With the default
 `OCTO_SAML_REQUIRE_ENCRYPTED_ASSERTION=true`, assertions must also be encrypted
 for the SP public key. `OCTO_SAML_SP_X509_CERT` and `OCTO_SAML_SP_PRIVATE_KEY`
 are therefore required for decryption and, by default, sign AuthnRequest,
@@ -1018,12 +1022,26 @@ all-in-one images include the `xmlsec1` runtime used by `python3-saml`.
 
 `GET /api/auth/saml/login` issues an HTTP-Redirect AuthnRequest;
 `POST /api/auth/saml/acs` accepts the HTTP-POST Response. A random RelayState is
-stored only as a hash in `saml_pending_requests` and consumed atomically, while
-the response must name the stored AuthnRequest in `InResponseTo`. Unsolicited
-(IdP-initiated) and replayed sign-ins are refused, and callbacks may land on any
-replica. `GET /api/auth/saml/logout` starts SP-initiated SLO;
-`GET /api/auth/saml/slo` validates both SLO requests and responses and ends the
-local session and refresh cookie.
+stored only as a hash in `saml_pending_requests` and consumed atomically. The
+Response's `InResponseTo` must equal that AuthnRequest id; python3-saml only
+compares the attribute when it is present, so a Response that omits it is
+refused here. The assertion must carry an `Audience` equal to the SP entityID
+(an assertion with no audience is refused; the library skips that check when
+the element is absent). The assertion id is remembered until `NotOnOrAfter`,
+and a second presentation is refused. Unsolicited (IdP-initiated) and replayed
+sign-ins do not become console sessions, and callbacks may land on any replica.
+
+The ACS stores the NameID, its format and the SessionIndex on the console
+session family (or on the short-lived MFA challenge, which writes them when
+the second leg opens the family). `GET /api/auth/saml/logout` revokes that
+access token and its refresh family before redirecting, and the LogoutRequest
+names the stored NameID rather than the SP entity. A session with no NameID
+is ended locally and is not sent to the IdP. `GET /api/auth/saml/slo` validates
+the SAML message before it deletes the pending logout. An IdP LogoutRequest
+ends only families stored with that NameID, and only the named SessionIndex
+values when the request carries any. A LogoutResponse ends only the family
+that started that logout. The refresh cookie is cleared only when it belongs
+to one of those families.
 
 `OCTO_SAML_USERNAME_ATTRIBUTE` defaults to NameID; email, groups and tenant come
 from `OCTO_SAML_EMAIL_ATTRIBUTE`, `OCTO_SAML_GROUPS_ATTRIBUTE` and

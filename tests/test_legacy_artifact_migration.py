@@ -165,6 +165,67 @@ def test_an_old_id_that_cannot_be_tenant_scoped_stays_readable_in_place(settings
     assert store_objects(settings, keys.run_prefix(ref))
 
 
+def test_apply_refuses_assign_when_the_manifest_already_exists(settings, tmp_path, monkeypatch):
+    ref = _write_flat(settings, marker='{"tenant_id": "acme"}')
+    manifest_path = tmp_path / "migration.json"
+    monkeypatch.setattr(migration, "load_settings", lambda: settings)
+
+    assert migration.main(["--manifest", str(manifest_path)]) == 0
+    with pytest.raises(SystemExit) as exc:
+        migration.main(
+            ["--apply", "--manifest", str(manifest_path), "--assign", f"{RUN}=acme"]
+        )
+
+    assert exc.value.code == 2
+    assert store_objects(settings, keys.run_prefix(ref))
+    assert not store_objects(settings, keys.run_prefix(keys.run_ref(RUN, "acme")))
+
+
+def test_a_purge_deletes_only_this_tenants_migration_backup(settings):
+    from api.services.tenant_purge.artifacts import (
+        delete_migration_backups,
+        remaining_migration_backups,
+    )
+
+    _write_flat(settings, marker='{"tenant_id": "acme"}')
+    other = "20260923T110000Z-b1b2c3"
+    _write_flat(settings, other, marker='{"tenant_id": "default"}')
+    migration.apply_migration(settings, migration.build_plan(settings))
+    store = artifact_store.get_store(settings)
+    segment = keys.tenant_segment("acme")
+    store.put_bytes(
+        f"{migration.BACKUP_ROOT}/extra/runs/_tenants/{segment}/run/summary.json", b"acme"
+    )
+    store.put_bytes(
+        f"{migration.BACKUP_ROOT}/extra/runs/_tenants/default/run/summary.json", b"default"
+    )
+
+    removed, unreadable = delete_migration_backups(store, "acme")
+
+    assert unreadable == []
+    assert removed >= 1
+    assert remaining_migration_backups(store, "acme") == []
+    left = store_objects(settings, migration.BACKUP_ROOT)
+    assert any(key.endswith("/tenant.json") and b'"default"' in store.get_bytes(key) for key in left)
+    assert any("/_tenants/default/" in key for key in left)
+    assert not any(f"/_tenants/{segment}/" in key for key in left)
+
+
+def test_an_unreadable_backup_marker_is_not_guessed(settings):
+    from api.services.tenant_purge.artifacts import delete_migration_backups
+
+    store = artifact_store.get_store(settings)
+    prefix = f"{migration.BACKUP_ROOT}/m1/runs/20260923T120000Z-c1c2c3"
+    store.put_bytes(f"{prefix}/tenant.json", b"{not json")
+    store.put_bytes(f"{prefix}/summary.json", b"{}")
+
+    removed, unreadable = delete_migration_backups(store, "acme")
+
+    assert removed == 0
+    assert unreadable == ["20260923T120000Z-c1c2c3"]
+    assert store.exists(f"{prefix}/summary.json")
+
+
 @requires_postgres
 def test_owner_is_checked_against_the_real_tenant_table(tmp_path: Path):
     settings = make_settings(tmp_path)

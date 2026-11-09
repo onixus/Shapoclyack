@@ -350,6 +350,12 @@ def main(argv: list[str] | None = None) -> int:
             manifest = load_manifest(args.manifest)
             rollback_migration(settings, manifest, manifest_path=args.manifest)
         elif args.apply:
+            if args.assign and args.manifest.exists():
+                raise MigrationError(
+                    "--assign cannot be combined with --apply when the manifest "
+                    "already exists; rebuild the plan without --apply, or apply "
+                    "that plan without --assign"
+                )
             manifest = (
                 load_manifest(args.manifest)
                 if args.manifest.exists()

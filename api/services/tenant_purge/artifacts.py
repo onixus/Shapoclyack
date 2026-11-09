@@ -15,7 +15,13 @@ bucket. What belongs to the tenant, and how it is found:
 * **job inputs** — ``job_inputs/{job_id}/`` for every job row the tenant has,
   read before the Postgres step deletes those rows (hence the step order);
 * **reports** — ``reports/{tenant_id}/`` (#292), plus any ``storage_path`` a
-  report row names outside it.
+  report row names outside it;
+* **migration backups** — copies under ``migration-backups/legacy-artifacts/``.
+  A key under ``/_tenants/{segment}/`` belongs to that segment. A flat backup
+  belongs to whoever its copied ``tenant.json`` names. Anything still named
+  as this tenant after the delete fails the step, and so does a backup marker
+  that cannot be read: guessing would either keep the tenant's scan or delete
+  someone else's.
 
 Pod-local copies go too, as far as this replica can see them: the working
 copies of a remote backend (``cache/runs/_tenants/{segment}``) and the job
@@ -41,6 +47,7 @@ from sqlalchemy import select
 from api.db import models
 from api.services import artifact_store
 from api.services.artifact_store import keys, workspace
+from api.services.legacy_artifact_migration import BACKUP_ROOT
 from api.services.tenant_purge.context import PurgeContext
 
 LOG = logging.getLogger("shapoclyack.tenant-purge")
@@ -209,21 +216,100 @@ def _reports(ctx: PurgeContext, store: artifact_store.ArtifactStore) -> None:
             _record(ctx, {"report_objects": removed})
 
 
+def _marker_owner_bytes(raw: bytes) -> str | None:
+    """The tenant a copied ``tenant.json`` names, or None when it cannot be read."""
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    owner = payload.get("tenant_id") if isinstance(payload, dict) else None
+    if not isinstance(owner, str) or not owner.strip():
+        return None
+    return owner.strip()
+
+
+def delete_migration_backups(
+    store: artifact_store.ArtifactStore, tenant_id: str
+) -> tuple[int, list[str]]:
+    """Delete this tenant's legacy-migration copies. Return (removed, unreadable run names).
+
+    Unreadable markers are not deleted: the caller refuses to finish while they
+    remain, for the same reason an unreadable flat ``tenant.json`` blocks a purge.
+    """
+    segment = keys.tenant_segment(tenant_id)
+    scoped = f"/_tenants/{segment}/"
+    removed = 0
+    unreadable: list[str] = []
+    seen: set[str] = set()
+    owned_keys: list[str] = []
+    for entry in store.list_prefix(BACKUP_ROOT):
+        key = entry.key
+        if scoped in key:
+            owned_keys.append(key)
+            continue
+        if "/_tenants/" in key or not key.endswith("/tenant.json"):
+            continue
+        prefix = key[: -len("/tenant.json")]
+        if prefix in seen:
+            continue
+        seen.add(prefix)
+        try:
+            raw = store.get_bytes(key)
+        except artifact_store.ArtifactNotFound:
+            continue
+        owner = _marker_owner_bytes(raw)
+        if owner is None:
+            unreadable.append(prefix.rsplit("/", 1)[-1])
+            continue
+        if owner != tenant_id:
+            continue
+        removed += store.delete_prefix(prefix)
+    if owned_keys:
+        removed += store.delete_keys(owned_keys)
+    return removed, unreadable
+
+
+def remaining_migration_backups(store: artifact_store.ArtifactStore, tenant_id: str) -> list[str]:
+    """Backup keys that still name ``tenant_id`` after :func:`delete_migration_backups`."""
+    segment = keys.tenant_segment(tenant_id)
+    scoped = f"/_tenants/{segment}/"
+    left: list[str] = []
+    for entry in store.list_prefix(BACKUP_ROOT):
+        key = entry.key
+        if scoped in key:
+            left.append(key)
+            continue
+        if "/_tenants/" in key or not key.endswith("/tenant.json"):
+            continue
+        try:
+            raw = store.get_bytes(key)
+        except artifact_store.ArtifactNotFound:
+            continue
+        if _marker_owner_bytes(raw) == tenant_id:
+            left.append(key)
+    return left
+
+
 def run(ctx: PurgeContext) -> dict[str, Any]:
     store = artifact_store.get_store(ctx.settings)
     _tenant_runs(ctx, store)
     unreadable = _flat_runs(ctx, store)
     _job_inputs(ctx, store)
     _reports(ctx, store)
+    ctx.checkpoint()
+    backup_removed, backup_unreadable = delete_migration_backups(store, ctx.tenant_id)
+    if backup_removed:
+        _record(ctx, {"backup_objects": backup_removed})
 
     # The proof: nothing is left under the prefixes that are the tenant's alone.
     segment_left = list(store.list_prefix(keys.tenant_runs_prefix(keys.tenant_segment(ctx.tenant_id))))
     prefix = _report_prefix(ctx.tenant_id)
     reports_left = list(store.list_prefix(prefix)) if prefix is not None else []
-    if segment_left or reports_left:
+    backups_left = remaining_migration_backups(store, ctx.tenant_id)
+    if segment_left or reports_left or backups_left:
         raise RuntimeError(
-            f"{len(segment_left)} run object(s) and {len(reports_left)} report object(s) "
-            "remain after the purge"
+            f"{len(segment_left)} run object(s), {len(reports_left)} report object(s) and "
+            f"{len(backups_left)} migration backup object(s) remain after the purge"
         )
     if unreadable:
         shown = ", ".join(sorted(unreadable)[:5])
@@ -231,6 +317,13 @@ def run(ctx: PurgeContext) -> dict[str, Any]:
             f"{len(unreadable)} flat run(s) have a tenant.json that cannot be read, so "
             f"whether they are this tenant's is unknown: {shown}. Repair or remove "
             "them and retry"
+        )
+    if backup_unreadable:
+        shown = ", ".join(sorted(backup_unreadable)[:5])
+        raise RuntimeError(
+            f"{len(backup_unreadable)} migration backup(s) have a tenant.json that cannot "
+            f"be read, so whether they are this tenant's is unknown: {shown}. Repair or "
+            "remove them and retry"
         )
     return {
         "runs": 0,
