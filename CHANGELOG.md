@@ -14,6 +14,16 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- Pulse 1.5.0 report fields are no longer dropped. Merged `pulse/raw.json`
+  stats keep `complete`, `l4_complete`, `cancelled` and `fatal_error` (numeric
+  counters still sum; rate is still recomputed). A chunk with `complete: false`
+  is logged and is not treated as a set of closed ports. `meta.coverage_complete`
+  is recorded on `adapter.coverage_complete` when a chunk sends it. A TLS row
+  with `certificate_parsed: false` does not become a certificate finding.
+  `client_cert_requested: true` and `alpn.negotiated` are copied onto the
+  posture row. The probe-database check now rejects a `transport`, `alpn` or
+  `http_version` that Pulse would refuse, and compiles a `{alpn}` pattern the
+  way Pulse does (substituted with `h2` at load time).
 - Pulse status checks decode one chunked HTTP body, accept a ClickHouse ping
   body of `Ok.` with one trailing LF or CRLF, walk MongoDB timestamp and regex
   fields, and require a complete Prometheus `"success"` status. The Kubernetes

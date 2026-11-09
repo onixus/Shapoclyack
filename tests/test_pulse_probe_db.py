@@ -92,11 +92,35 @@ def _db(*patterns: str, **probe_extra) -> str:
         (_db("x", ports=[70000]), "ports"),
         (_db("x", payload_hex="abc"), "payload_hex"),
         (_db("x", rarity="high"), "rarity"),
+        (_db("x", transport="sctp"), "transport"),
+        (_db("x", alpn=["h2\n"]), "alpn"),
+        (_db("x", http_version=3), "http_version"),
+        (_db("x", transport="udp", payload="z" * 4097), "UDP payload"),
+        (
+            json.dumps({"version": "x", "probes": [{"name": "t", "matches": [{"pattern": "x", "distro": 1}]}]}),
+            "distro",
+        ),
     ],
 )
 def test_validation_rejects_what_pulse_would_drop(text: str, why: str):
     with pytest.raises(pdb.ProbeDbError, match=why):
         pdb.validate_probe_db_text(text)
+
+
+def test_pulse_15_probe_fields_that_pulse_accepts_are_accepted():
+    text = json.dumps({"version": "x", "probes": [{
+        "name": "t",
+        "transport": "tls",
+        "alpn": ["h2"],
+        "http_version": 2,
+        "matches": [{
+            "pattern": r"^Server: {alpn}$",
+            "distro": "$1",
+            "distro_revision": "4ubuntu0.5",
+        }],
+    }]})
+    version, probes, matches = pdb.validate_probe_db_text(text)
+    assert (version, probes, matches) == ("x", 1, 1)
 
 
 # Verified against a real Rust ``regex`` 1.13.1 compile (Regex::new, default size

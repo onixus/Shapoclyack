@@ -868,6 +868,23 @@ a unicast station address (not zero, broadcast or multicast, as for
 name a single label, and at most 8192 entries, 16 `hostnames[]` per host and
 8 names per source are read. Measurements: [ADR 0002](adr/0002-replacing-nmap-functions.md).
 
+The tagged Pulse v1.5.0 binary still prints `pulse.scan.v2`. It adds
+`stats.complete`, `stats.cancelled`, `stats.fatal_error` and the error
+counters. GenDec main (Cargo version still 1.5.0, after that tag) is the
+document that calls this `pulse.scan.v3` and also adds `meta.coverage_complete`,
+`tls[].certificate_parsed`, `tls[].client_cert_requested` and `tls[].alpn`
+(`offered` / `negotiated`). Merged `pulse/raw.json` keeps the verdicts:
+counters sum, `complete` and `l4_complete` are true only when every chunk that
+reported the key said so, `cancelled` is true if any chunk was, and the first
+`fatal_error` is kept. A chunk with `complete: false` is logged. It is not
+turned into closed ports. `meta.coverage_complete`, when present, is recorded
+on `adapter.coverage_complete` as the AND of the chunks. A TLS row with
+`certificate_parsed: false` does not produce certificate findings.
+`client_cert_requested: true` and a graphic `alpn.negotiated` are copied onto
+the posture row and are not findings. `http2`, `mesh`, `vhosts`, `ptr_names`
+and `san_*` stay on the raw TLS row; the adapter does not ask for
+`--vhosts`, `--san-targets` or `--dns-ptr`.
+
 ### Neighbour table limits
 
 The kernel keeps neighbour (ARP) entries in a table bounded by

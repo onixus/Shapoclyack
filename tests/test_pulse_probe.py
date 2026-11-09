@@ -749,6 +749,49 @@ def test_stats_are_summed_across_chunks_and_rate_recomputed(tmp_path, monkeypatc
     raw = json.loads((tmp_path / "pulse" / "raw.json").read_text(encoding="utf-8"))
     assert raw["stats"] == {"total": 20, "open": 2, "closed": 18, "elapsed_ms": 1000, "rate_pps": 20.0}
     assert [c["key"] for c in raw["chunks"]] == [chunk_key(["10.0.0.1"], [22]), chunk_key(["10.0.0.2"], [22])]
+    assert "coverage_complete" not in raw["adapter"]
+
+
+def test_pulse_15_verdicts_merge_and_a_false_complete_is_logged(tmp_path, monkeypatch, caplog):
+    """Pulse 1.5.0 stats verdicts survive the merge; counters still sum."""
+    caplog.set_level(logging.WARNING)
+    open_row = {
+        "ip": "10.0.0.1", "port": 22, "protocol": "tcp", "state": "open", "open": True, "service": "ssh",
+    }
+    first = json.dumps({
+        "meta": {"schema": "pulse.scan.v3", "coverage_complete": True},
+        "open": [{**open_row, "ip": "10.0.0.1"}],
+        "stats": {
+            "total": 2, "open": 1, "closed": 0, "elapsed_ms": 100, "errors": 1, "incomplete": 1,
+            "complete": False, "l4_complete": True, "cancelled": False, "fatal_error": None, "rate_pps": 10,
+        },
+    })
+    second = json.dumps({
+        "meta": {"schema": "pulse.scan.v3", "coverage_complete": False},
+        "open": [{**open_row, "ip": "10.0.0.2"}],
+        "stats": {
+            "total": 2, "open": 1, "closed": 1, "elapsed_ms": 100, "errors": 0, "incomplete": 0,
+            "complete": True, "l4_complete": True, "cancelled": True, "fatal_error": "scan failed: boom",
+            "rate_pps": 20,
+        },
+    })
+    _run_probe(
+        tmp_path, monkeypatch, [first, second],
+        open_ports=("10.0.0.1:22/tcp", "10.0.0.2:22/tcp"), chunk_hosts=1,
+    )
+    raw = json.loads((tmp_path / "pulse" / "raw.json").read_text(encoding="utf-8"))
+    assert raw["stats"]["total"] == 4
+    assert raw["stats"]["errors"] == 1
+    assert raw["stats"]["incomplete"] == 1
+    assert raw["stats"]["elapsed_ms"] == 200
+    assert raw["stats"]["complete"] is False
+    assert raw["stats"]["l4_complete"] is True
+    assert raw["stats"]["cancelled"] is True
+    assert raw["stats"]["fatal_error"] == "scan failed: boom"
+    assert raw["stats"]["rate_pps"] == 20.0
+    assert raw["adapter"]["coverage_complete"] is False
+    assert "stats.complete is false" in caplog.text
+    assert "fatal_error: scan failed: boom" in caplog.text
 
 
 def test_failed_chunks_are_on_the_record(tmp_path, monkeypatch):
