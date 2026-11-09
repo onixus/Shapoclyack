@@ -22,6 +22,7 @@ owner cannot be read is left alone until it can.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from datetime import UTC, datetime
@@ -43,8 +44,6 @@ def _now() -> datetime:
 
 def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
     """Delete expired PNG files. Returns counts (deleted, errors, kept)."""
-    from api.services.tenants import DEFAULT_TENANT_ID
-
     now = now or _now()
     plan = retention_policy.load_plan(settings, retention_policy.SCREENSHOTS)
     if not plan.active:
@@ -112,9 +111,16 @@ def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
                     "screenshot retention: could not delete %s", entry.key, exc_info=True
                 )
 
-    # The single-run layout has no marker of its own and is the default
-    # tenant's, as every reader of it already assumes.
-    flat_days = plan.days_for(DEFAULT_TENANT_ID)
+    # The single-run layout is output_dir itself. Its explicit marker selects
+    # the retention window; an absent or damaged owner disables deletion (#311).
+    flat_days = 0
+    try:
+        marker = json.loads((Path(settings.output_dir) / workspace.RUN_MARKER).read_text("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        marker = {}
+    flat_owner = marker.get("tenant_id") if isinstance(marker, dict) else None
+    if isinstance(flat_owner, str) and flat_owner.strip():
+        flat_days = plan.days_for(flat_owner.strip())
     deleted_flat, errors_flat, kept_flat = (
         _sweep_flat_layout(settings, moment - flat_days * 86400.0)
         if flat_days > 0

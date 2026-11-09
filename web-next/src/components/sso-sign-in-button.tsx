@@ -19,7 +19,10 @@ import { useT } from "@/lib/i18n";
  * the same status to decide what to say about password sign-in (#315), and
  * fetching it twice on one screen would be two calls for one fact.
  */
-export function SsoSignInButton({ status: given }: { status?: SsoStatus | null } = {}) {
+export function SsoSignInButton({
+  status: given,
+  onLdap,
+}: { status?: SsoStatus | null; onLdap?: () => void } = {}) {
   const t = useT();
   const [fetched, setFetched] = useState<SsoStatus | null>(null);
 
@@ -35,9 +38,13 @@ export function SsoSignInButton({ status: given }: { status?: SsoStatus | null }
   }, [given]);
 
   const status = given === undefined ? fetched : given;
-  const loginUrl = status?.enabled ? status.login_url : null;
+  const providers = status?.providers?.length
+    ? status.providers
+    : status?.enabled
+      ? [{ provider: "oidc" as const, login_url: status.login_url }]
+      : [];
 
-  if (!loginUrl) return null;
+  if (!providers.length) return null;
 
   return (
     <div className="space-y-3">
@@ -46,18 +53,28 @@ export function SsoSignInButton({ status: given }: { status?: SsoStatus | null }
         {t("login.or")}
         <span className="h-px flex-1 bg-border" />
       </div>
-      <Button
-        type="button"
-        variant="outline"
-        className="w-full border-border bg-muted text-foreground"
-        // A full navigation, not a fetch: the provider answers with its own
-        // login page, and an XHR cannot show it to the user.
-        onClick={() => {
-          window.location.href = loginUrl;
-        }}
-      >
-        {t("login.sso")}
-      </Button>
+      {providers.map((provider) => (
+        <Button
+          key={provider.provider}
+          type="button"
+          variant="outline"
+          className="w-full border-border bg-muted text-foreground"
+          onClick={() => {
+            if (provider.provider === "ldap") {
+              onLdap?.();
+            } else {
+              // A full navigation: the IdP answers with its own login page.
+              window.location.href = provider.login_url;
+            }
+          }}
+        >
+          {provider.provider === "saml"
+            ? t("login.saml")
+            : provider.provider === "ldap"
+              ? t("login.ldap")
+              : t("login.oidc")}
+        </Button>
+      ))}
     </div>
   );
 }

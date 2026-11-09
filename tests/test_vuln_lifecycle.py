@@ -145,6 +145,7 @@ def test_default_sla_days_are_strictest_for_critical():
 def _write_run(output_dir: Path, run_id: str, hosts: list[dict], findings: list[dict]) -> None:
     run_dir = output_dir / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "tenant.json").write_text('{"tenant_id": "default"}', encoding="utf-8")
     (run_dir / "alive_hosts.json").write_text(json.dumps(hosts), encoding="utf-8")
     (run_dir / "vulnerabilities.json").write_text(json.dumps(findings), encoding="utf-8")
 

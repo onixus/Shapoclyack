@@ -38,6 +38,7 @@ def _seed_runs(settings_output: Path, count: int) -> None:
             json.dumps({"profile": "balanced", "started_at": "2026-08-01T00:00:00Z"}), encoding="utf-8"
         )
         (run_dir / "summary.json").write_text(json.dumps({"alive_hosts": index}), encoding="utf-8")
+        (run_dir / "tenant.json").write_text('{"tenant_id": "default"}', encoding="utf-8")
 
 
 def _seed_agents(count: int) -> None:

@@ -241,12 +241,17 @@ def test_a_run_from_before_the_upgrade_is_read_by_its_owner_only(pair) -> None:
     assert runs_service.artifact_key(reader, RUN, "summary.json", tenant_id="globex") is None
 
 
-def test_an_unmarked_old_run_still_belongs_to_the_default_tenant(pair) -> None:
+def test_an_unmarked_old_run_has_no_implicit_default_owner(pair) -> None:
     writer, reader = pair
     _write(writer, RUN, alive=3)
 
-    assert _alive(runs_service.get_run_dir(reader, RUN, tenant_id="default")) == 3
+    assert runs_service.get_run_dir(reader, RUN, tenant_id="default") is None
     assert runs_service.get_run_dir(reader, RUN, tenant_id="acme") is None
+    assert runs_service.list_runs(reader, tenant_id="default") == ([], 0)
+    # Only the already cross-tenant platform-admin view may see it, explicitly
+    # labelled with an unknown owner rather than assigned to a customer.
+    page, total = runs_service.list_runs(reader)
+    assert total == 1 and page[0].tenant_id == ""
 
 
 def test_the_owners_copy_wins_over_an_old_one_of_the_same_id(pair) -> None:
@@ -431,13 +436,14 @@ def test_the_flat_single_run_layout_still_reads_when_it_is_all_there_is(tmp_path
     settings = make_settings(tmp_path)
     settings.output_dir.mkdir(parents=True, exist_ok=True)
     (settings.output_dir / "summary.json").write_text('{"alive_hosts": 9}', encoding="utf-8")
+    (settings.output_dir / "tenant.json").write_text('{"tenant_id": "default"}', encoding="utf-8")
     assert _alive(runs_service.get_run_dir(settings, "default", tenant_id="default")) == 9
 
 
 def test_a_run_id_scanned_twice_by_one_tenant_stays_that_tenants(tmp_path: Path) -> None:
     """A custom run id reused: the scanner writes the flat directory again, and
-    the second scan must land in the tenant's run, not stay flat and unmarked
-    -- which reads as the default tenant's."""
+    the second scan must land in the tenant's run, not stay flat with unknown
+    owner metadata that no tenant may read (#311)."""
     settings = make_settings(tmp_path)
     flat = settings.output_dir / "runs" / RUN
     for name in ("first.json", "second.json"):
@@ -507,6 +513,7 @@ def test_the_flat_single_run_layout_does_not_serve_other_families(tmp_path: Path
     reports.mkdir(parents=True)
     (reports / "r1.pdf").write_bytes(b"%PDF")
     (settings.output_dir / "summary.json").write_text('{"alive_hosts": 9}', encoding="utf-8")
+    (settings.output_dir / "tenant.json").write_text('{"tenant_id": "default"}', encoding="utf-8")
 
     assert _alive(runs_service.get_run_dir(settings, "default", tenant_id="default")) == 9
     assert (
@@ -519,7 +526,7 @@ def test_the_flat_single_run_layout_does_not_serve_other_families(tmp_path: Path
 
 def test_a_merge_that_fails_leaves_the_scan_marked_not_default(tmp_path: Path, monkeypatch) -> None:
     """The second scan under a reused run id could not be merged: it stays
-    flat, and must not stay flat *unmarked* -- that is the default tenant's."""
+    flat, and must be marked explicitly rather than left without an owner."""
     import shutil
 
     settings = make_settings(tmp_path)
