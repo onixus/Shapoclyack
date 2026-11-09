@@ -1023,13 +1023,15 @@ all-in-one images include the `xmlsec1` runtime used by `python3-saml`.
 `GET /api/auth/saml/login` issues an HTTP-Redirect AuthnRequest;
 `POST /api/auth/saml/acs` accepts the HTTP-POST Response. A random RelayState is
 stored only as a hash in `saml_pending_requests` and consumed atomically. The
-assertion's own `SubjectConfirmationData/@InResponseTo` must equal that
+assertion's bearer `SubjectConfirmationData/@InResponseTo` must equal that
 AuthnRequest id. python3-saml only compares `InResponseTo` on the Response
 element, and only when that attribute is present, so a value supplied on the
-unsigned wrapper is ignored here. Every `AudienceRestriction` inside the
-assertion must name the SP entityID. An assertion with no audience is refused;
-the library skips that check when the element is absent, and an `Audience`
-outside the assertion (including in `Extensions`) does not count. The assertion
+unsigned wrapper is ignored here. Every `AudienceRestriction` that is a direct
+child of the assertion's `Conditions` must name the SP entityID. An assertion
+with no audience is refused; the library skips that check when the element is
+absent. An `Audience` outside that path does not count, including one in
+`Extensions` or in `ds:Object` under the assertion's `ds:Signature`: the
+enveloped signature does not cover the signature element. The assertion
 id is remembered until `NotOnOrAfter`, and a second presentation is refused.
 Unsolicited (IdP-initiated) and replayed sign-ins do not become console
 sessions, and callbacks may land on any replica.

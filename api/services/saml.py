@@ -97,6 +97,7 @@ class _PendingRequest:
 
 _ASSERTION_NS = "urn:oasis:names:tc:SAML:2.0:assertion"
 _PROTOCOL_NS = "urn:oasis:names:tc:SAML:2.0:protocol"
+_BEARER_METHOD = "urn:oasis:names:tc:SAML:2.0:cm:bearer"
 
 
 @dataclass
@@ -576,8 +577,20 @@ def _one_assertion(xml: str | None) -> etree._Element | None:
     return assertions[0]
 
 
+def _direct_children(parent: etree._Element | None, namespace: str, tag: str) -> list[etree._Element]:
+    """Children of ``parent`` only. ``.//`` would also match inside ``ds:Signature``.
+
+    The signature element sits in the assertion, and the enveloped transform
+    removes it before the digest, so anything planted in ``ds:Object`` after
+    signing is not what the IdP signed.
+    """
+    if parent is None:
+        return []
+    return list(parent.findall(f"{{{namespace}}}{tag}"))
+
+
 def _assertion_confirms_request(assertion: etree._Element | None, request_id: str) -> bool:
-    """True when the assertion's own SubjectConfirmationData names this request.
+    """True when a bearer SubjectConfirmationData on the assertion names this request.
 
     python3-saml compares InResponseTo only on the Response element, and only
     when that attribute is present. A signed assertion that omits it is not a
@@ -585,27 +598,35 @@ def _assertion_confirms_request(assertion: etree._Element | None, request_id: st
     """
     if assertion is None or not request_id:
         return False
-    for node in assertion.findall(f".//{{{_ASSERTION_NS}}}SubjectConfirmationData"):
-        if (node.get("InResponseTo") or "").strip() == request_id:
+    subjects = _direct_children(assertion, _ASSERTION_NS, "Subject")
+    subject = subjects[0] if len(subjects) == 1 else None
+    for confirmation in _direct_children(subject, _ASSERTION_NS, "SubjectConfirmation"):
+        if confirmation.get("Method") != _BEARER_METHOD:
+            continue
+        data = _direct_children(confirmation, _ASSERTION_NS, "SubjectConfirmationData")
+        if len(data) == 1 and (data[0].get("InResponseTo") or "").strip() == request_id:
             return True
     return False
 
 
 def _assertion_allows_audience(assertion: etree._Element | None, entity_id: str) -> bool:
-    """True when every AudienceRestriction in the assertion names this SP.
+    """True when every AudienceRestriction under Conditions names this SP.
 
     No restriction is a refusal: python3-saml skips the check in that case.
     Restrictions combine by AND; audiences inside one restriction by OR.
     """
     if assertion is None or not entity_id:
         return False
-    restrictions = assertion.findall(f".//{{{_ASSERTION_NS}}}AudienceRestriction")
+    conditions = _direct_children(assertion, _ASSERTION_NS, "Conditions")
+    if len(conditions) != 1:
+        return False
+    restrictions = _direct_children(conditions[0], _ASSERTION_NS, "AudienceRestriction")
     if not restrictions:
         return False
     for restriction in restrictions:
         audiences = {
             node.text.strip()
-            for node in restriction.findall(f"{{{_ASSERTION_NS}}}Audience")
+            for node in _direct_children(restriction, _ASSERTION_NS, "Audience")
             if node.text and node.text.strip()
         }
         if entity_id not in audiences:
