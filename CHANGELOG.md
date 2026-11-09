@@ -23,6 +23,10 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- Pulse plugin phase 7: twelve read-only checks for CouchDB, Nomad, InfluxDB,
+  NATS, Neo4j Bolt, RabbitMQ Management, GitLab, Harbor, Portainer, SonarQube,
+  Keycloak and Rancher. The checks parse one bounded status or negotiation
+  response and do not attempt login, writes, object enumeration or graph queries.
 - Pulse plugin phase 1: read-only unauthenticated status checks for ClickHouse
   `/ping`, MongoDB `isMaster`, etcd `/version` and Docker Engine `/version`.
   Queries, database/document reads and daemon operations are not performed.

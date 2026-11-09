@@ -65,6 +65,18 @@ installed sensor or fleet acceptance.
 | `shapo_x11_noauth` | X11 initial connection accepted without authorisation | MEDIUM; no screen, input or window access is attempted | Separate anonymous-access check |
 | `shapo_http_headers` | Missing `X-Content-Type-Options` and frame/CSP protection on selected plain-HTTP statuses | LOW; HTTPS, HSTS and CSP quality are not assessed | Separate header check |
 | `shapo_ollama_tags` | Unauthenticated Ollama model listing | LOW; generation, pull and chat are not used | Separate listing-access check |
+| `shapo_couchdb_root` | Unauthenticated CouchDB welcome document | LOW; databases, users and writes are not accessed | Separate status-access check |
+| `shapo_nomad_status` | Unauthenticated Nomad leader status | LOW; jobs, nodes and peers are not queried | Separate status-access check |
+| `shapo_influx_health` | InfluxDB ping with a product header and, when present, version document | LOW; queries, writes and credentials are not used | Separate status-access check |
+| `shapo_nats_info` | NATS CONNECT/PING accepted without credentials | LOW; subscribe and publish are not attempted | Separate anonymous-access check |
+| `shapo_neo4j_discovery` | Neo4j Bolt version selection | LOW protocol confirmation; no HELLO, LOGON or graph query | Separate protocol check |
+| `shapo_rabbitmq_mgmt` | Unauthenticated RabbitMQ management `whoami` | LOW; overview, queues and users are not read | Separate status-access check |
+| `shapo_gitlab_health` | Exact unauthenticated GitLab health response | LOW; readiness, projects and users are not queried | Separate status-access check |
+| `shapo_harbor_health` | Parsed Harbor health document | LOW; projects, repositories and image catalog are not read | Separate status-access check |
+| `shapo_portainer_status` | Parsed Portainer system status | LOW; endpoints, stacks and updates are not accessed | Separate status-access check |
+| `shapo_sonarqube_status` | Parsed SonarQube system status | LOW; health, components and migration are not accessed | Separate status-access check |
+| `shapo_keycloak_realm` | Unauthenticated administrative realm listing | LOW; users and clients are not read | Separate listing-access check |
+| `shapo_rancher_status` | Exact unauthenticated Rancher ping response | LOW; clusters and nodes are not queried | Separate status-access check |
 
 The two exposure plugins still claim reachability only. Negotiation and
 inventory observations do not establish relay/exploitability, trusted identity,

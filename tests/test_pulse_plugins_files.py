@@ -1439,3 +1439,267 @@ def test_x11_noauth_first_reply_byte_decides_and_setup_is_empty(stub, tmp_path, 
         assert seen is None and not errors.strip()
     else:
         assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --------------------------------------------------------------------------
+# Phase 7 (docs/pulse-plugin-phases.ru.md): twelve single-request status checks.
+# Every HTTP plugin sends one raw GET (Host: shapoclyack.invalid,
+# Connection: close); 401/403 and redirects are silent, any other parsed
+# status without the finding condition is a plugin error. Evidence is a static
+# phrase about the parse and must not carry reply values.
+# --------------------------------------------------------------------------
+
+#: (id, plugin, service, request target, stub reply, expected outcome).
+#: Docs criteria: couchdb wants the exact "Welcome" value plus a version key;
+#: nomad accepts any single JSON string (or the empty string) but no HTML;
+#: influx answers 204 only with X-Influxdb-Version in the headers, or 200 with
+#: the header and a JSON version key; rabbitmq wants both whoami keys;
+#: gitlab and rancher want an exact body; harbor accepts healthy and unhealthy
+#: alike; portainer's keys are case-sensitive; sonarqube's status enum rejects
+#: UPSTREAM; keycloak wants a JSON array, an empty one included.
+HTTP_PHASE_7_CASES = [
+    ("p7-couchdb-welcome", "shapo_couchdb_root", "couchdb", "/",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"couchdb":"Welcome","version":"3.3.3","uuid":"d3adbeef-cafe","git_sha":"abc123"}'),
+     "finding"),
+    ("p7-couchdb-chunked", "shapo_couchdb_root", "couchdb", "/",
+     _chunked_http_reply("200 OK", b"Content-Type: application/json",
+                         body=b'{"couchdb":"Welcome","version":"0"}', content_length=2),
+     "finding"),
+    ("p7-couchdb-refused", "shapo_couchdb_root", "couchdb", "/",
+     _http_reply("401 Unauthorized"), "clean"),
+    ("p7-couchdb-ok-only", "shapo_couchdb_root", "couchdb", "/",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"ok":true}'), "error"),
+    ("p7-couchdb-long-welcome", "shapo_couchdb_root", "couchdb", "/",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"couchdb":"WelcomeBack","version":"0"}'), "error"),
+    ("p7-nomad-leader", "shapo_nomad_status", "nomad", "/v1/status/leader",
+     _http_reply("200 OK", body=b'"127.0.0.1:4647"'), "finding"),
+    ("p7-nomad-leader-crlf", "shapo_nomad_status", "nomad", "/v1/status/leader",
+     _http_reply("200 OK", body=b'"10.20.30.40:4647"\r\n'), "finding"),
+    ("p7-nomad-empty-string", "shapo_nomad_status", "nomad", "/v1/status/leader",
+     _http_reply("200 OK", body=b'""'), "finding"),
+    ("p7-nomad-refused", "shapo_nomad_status", "nomad", "/v1/status/leader",
+     _http_reply("403 Forbidden"), "clean"),
+    ("p7-nomad-html", "shapo_nomad_status", "nomad", "/v1/status/leader",
+     _http_reply("200 OK", b"Content-Type: text/html", body=b"<html>leader</html>"), "error"),
+    ("p7-nomad-object", "shapo_nomad_status", "nomad", "/v1/status/leader",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"leader":"x"}'), "error"),
+    ("p7-influx-204-header", "shapo_influx_health", "influxdb", "/ping",
+     _http_reply("204 No Content", b"X-Influxdb-Version: 2.7.5"), "finding"),
+    ("p7-influx-204-lower-header", "shapo_influx_health", "influxdb", "/ping",
+     _http_reply("204 No Content", b"x-influxdb-version: 2.7.5"), "finding"),
+    ("p7-influx-200-json", "shapo_influx_health", "influxdb", "/ping",
+     _http_reply("200 OK", b"X-Influxdb-Version: 2.7.5", body=b'{"version":"2.7.5"}'), "finding"),
+    ("p7-influx-refused", "shapo_influx_health", "influxdb", "/ping",
+     _http_reply("401 Unauthorized"), "clean"),
+    ("p7-influx-204-no-header", "shapo_influx_health", "influxdb", "/ping",
+     _http_reply("204 No Content"), "error"),
+    ("p7-influx-200-no-version", "shapo_influx_health", "influxdb", "/ping",
+     _http_reply("200 OK", b"X-Influxdb-Version: 2.7.5", body=b"{}"), "error"),
+    ("p7-influx-200-version-in-html", "shapo_influx_health", "influxdb", "/ping",
+     _http_reply("200 OK", b"X-Influxdb-Version: 2.7.5", body=b'<p>"version":"2.7.5"</p>'), "error"),
+    ("p7-rabbitmq-whoami", "shapo_rabbitmq_mgmt", "rabbitmq-mgmt", "/api/whoami",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"name":"svc-mq-user-7","tags":"administrator"}'), "finding"),
+    ("p7-rabbitmq-refused", "shapo_rabbitmq_mgmt", "rabbitmq-mgmt", "/api/whoami",
+     _http_reply("401 Unauthorized"), "clean"),
+    ("p7-rabbitmq-html", "shapo_rabbitmq_mgmt", "rabbitmq-mgmt", "/api/whoami",
+     _http_reply("200 OK", b"Content-Type: text/html", body=b"<html>login</html>"), "error"),
+    ("p7-rabbitmq-name-only", "shapo_rabbitmq_mgmt", "rabbitmq-mgmt", "/api/whoami",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"name":"svc-mq-user-7"}'),
+     "error"),
+    ("p7-gitlab-ok", "shapo_gitlab_health", "gitlab", "/-/health",
+     _http_reply("200 OK", body=b"GitLab OK"), "finding"),
+    ("p7-gitlab-ok-lf", "shapo_gitlab_health", "gitlab", "/-/health",
+     _http_reply("200 OK", body=b"GitLab OK\n"), "finding"),
+    ("p7-gitlab-ok-crlf", "shapo_gitlab_health", "gitlab", "/-/health",
+     _http_reply("200 OK", body=b"GitLab OK\r\n"), "finding"),
+    ("p7-gitlab-redirect", "shapo_gitlab_health", "gitlab", "/-/health",
+     _http_reply("302 Found", b"Location: https://gitlab.example/users/sign_in"), "clean"),
+    ("p7-gitlab-bare-ok", "shapo_gitlab_health", "gitlab", "/-/health",
+     _http_reply("200 OK", body=b"OK"), "error"),
+    ("p7-harbor-healthy", "shapo_harbor_health", "harbor", "/api/v2.0/health",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"status":"healthy"}'),
+     "finding"),
+    ("p7-harbor-unhealthy", "shapo_harbor_health", "harbor", "/api/v2.0/health",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"status":"unhealthy"}'),
+     "finding"),
+    ("p7-harbor-refused", "shapo_harbor_health", "harbor", "/api/v2.0/health",
+     _http_reply("401 Unauthorized"), "clean"),
+    ("p7-harbor-healthyish", "shapo_harbor_health", "harbor", "/api/v2.0/health",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"status":"healthyish"}'),
+     "error"),
+    ("p7-harbor-space-in-status", "shapo_harbor_health", "harbor", "/api/v2.0/health",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"status":"heal thy"}'),
+     "error"),
+    ("p7-portainer-status", "shapo_portainer_status", "portainer", "/api/system/status",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"Version":"0.3.1","InstanceID":"9f2c-demo-id"}'), "finding"),
+    ("p7-portainer-refused", "shapo_portainer_status", "portainer", "/api/system/status",
+     _http_reply("401 Unauthorized"), "clean"),
+    ("p7-portainer-lowercase", "shapo_portainer_status", "portainer", "/api/system/status",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"version":"0"}'), "error"),
+    ("p7-sonarqube-up", "shapo_sonarqube_status", "sonarqube", "/api/system/status",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"status":"UP"}'), "finding"),
+    ("p7-sonarqube-migration", "shapo_sonarqube_status", "sonarqube", "/api/system/status",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"status":"DB_MIGRATION_RUNNING"}'),
+     "finding"),
+    ("p7-sonarqube-refused", "shapo_sonarqube_status", "sonarqube", "/api/system/status",
+     _http_reply("401 Unauthorized"), "clean"),
+    ("p7-sonarqube-upstream", "shapo_sonarqube_status", "sonarqube", "/api/system/status",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"status":"UPSTREAM"}'),
+     "error"),
+    ("p7-keycloak-empty", "shapo_keycloak_realm", "keycloak", "/admin/realms",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b"[]"), "finding"),
+    ("p7-keycloak-list", "shapo_keycloak_realm", "keycloak", "/admin/realms",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'[{"realm":"internal-corp","id":"internal-corp"}]'), "finding"),
+    ("p7-keycloak-refused", "shapo_keycloak_realm", "keycloak", "/admin/realms",
+     _http_reply("401 Unauthorized"), "clean"),
+    ("p7-keycloak-object", "shapo_keycloak_realm", "keycloak", "/admin/realms",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"realm":"master"}'), "error"),
+    ("p7-rancher-pong", "shapo_rancher_status", "rancher", "/ping",
+     _http_reply("200 OK", body=b"pong"), "finding"),
+    ("p7-rancher-pong-lf", "shapo_rancher_status", "rancher", "/ping",
+     _http_reply("200 OK", body=b"pong\n"), "finding"),
+    ("p7-rancher-pong-crlf", "shapo_rancher_status", "rancher", "/ping",
+     _http_reply("200 OK", body=b"pong\r\n"), "finding"),
+    ("p7-rancher-redirect", "shapo_rancher_status", "rancher", "/ping",
+     _http_reply("302 Found", b"Location: https://rancher.example/ping"), "clean"),
+    ("p7-rancher-pong-extra", "shapo_rancher_status", "rancher", "/ping",
+     _http_reply("200 OK", body=b"pong-extra"), "error"),
+]
+
+
+@needs_pulse
+@pytest.mark.parametrize(("plugin", "service", "target", "reply", "expect"),
+                         [case[1:] for case in HTTP_PHASE_7_CASES],
+                         ids=[case[0] for case in HTTP_PHASE_7_CASES])
+def test_http_status_plugins_of_phase_7(plugin, service, target, reply, expect, stub, tmp_path):
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin(plugin, service, server, tmp_path)
+    seen = finding(lines)
+    request = server.received[-1]
+    assert request.startswith(f"GET {target} HTTP/1.1\r\n".encode()), request
+    assert b"Host: shapoclyack.invalid\r\n" in request
+    assert b"Connection: close\r\n" in request
+    if expect == "finding":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    elif expect == "clean":
+        assert seen is None and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+#: (id, plugin, service, request target, stub reply, reply values the evidence must not leak).
+#: Every plugin in this table has a static evidence phrase by contract; the
+#: banned strings are values only present in the stub reply.
+EVIDENCE_PHASE_7_CASES = [
+    ("p7-ev-couchdb", "shapo_couchdb_root", "couchdb", "/",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"couchdb":"Welcome","version":"3.3.3","uuid":"d3adbeef-cafe","git_sha":"abc123"}'),
+     ("3.3.3", "d3adbeef", "abc123")),
+    ("p7-ev-nomad", "shapo_nomad_status", "nomad", "/v1/status/leader",
+     _http_reply("200 OK", body=b'"10.20.30.40:4647"'), ("10.20.30.40", "4647")),
+    ("p7-ev-influx-204", "shapo_influx_health", "influxdb", "/ping",
+     _http_reply("204 No Content", b"X-Influxdb-Version: 2.7.5"), ("2.7.5",)),
+    ("p7-ev-influx-200", "shapo_influx_health", "influxdb", "/ping",
+     _http_reply("200 OK", b"X-Influxdb-Version: 2.7.5", body=b'{"version":"2.7.5"}'), ("2.7.5",)),
+    ("p7-ev-rabbitmq", "shapo_rabbitmq_mgmt", "rabbitmq-mgmt", "/api/whoami",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"name":"svc-mq-user-7","tags":"administrator"}'),
+     ("svc-mq-user-7", "administrator")),
+    ("p7-ev-portainer", "shapo_portainer_status", "portainer", "/api/system/status",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"Version":"0.3.1","InstanceID":"9f2c-demo-id"}'), ("0.3.1", "9f2c-demo-id")),
+    ("p7-ev-sonarqube", "shapo_sonarqube_status", "sonarqube", "/api/system/status",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"status":"UP","id":"123abc","version":"10.5.1"}'), ("123abc", "10.5.1")),
+    ("p7-ev-harbor", "shapo_harbor_health", "harbor", "/api/v2.0/health",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"status":"healthy","components":[{"name":"comp-trivy-7","error":"boom-detail-9"}]}'),
+     ("comp-trivy-7", "boom-detail-9")),
+    ("p7-ev-keycloak", "shapo_keycloak_realm", "keycloak", "/admin/realms",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'[{"realm":"internal-corp"}]'),
+     ("internal-corp",)),
+]
+
+
+@needs_pulse
+@pytest.mark.parametrize(("plugin", "service", "target", "reply", "banned"),
+                         [case[1:] for case in EVIDENCE_PHASE_7_CASES],
+                         ids=[case[0] for case in EVIDENCE_PHASE_7_CASES])
+def test_phase_7_evidence_is_a_static_phrase_without_reply_values(plugin, service, target, reply,
+                                                                  banned, stub, tmp_path):
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin(plugin, service, server, tmp_path)
+    seen = finding(lines)
+    assert seen and seen[0] == "LOW" and not errors.strip(), errors
+    for value in banned:
+        assert value not in seen[2], f"evidence leaks {value!r}: {seen[2]}"
+
+
+# --- shapo_nats_info: CONNECT without credentials, PING, one PONG line ------
+
+
+#: The documented exchange: CONNECT carries no user/pass/token keys, then PING.
+_NATS_CONNECT = b'CONNECT {"verbose":false,"pedantic":false,"lang":"shapo","version":"1","protocol":1}\r\nPING\r\n'
+
+
+@needs_pulse
+@pytest.mark.parametrize(("reply", "expect", "banned"), [
+    (b"PONG\r\n", "finding", ()),
+    (b'INFO {"server_id":"SRV7X","version":"2.10.4","host":"10.0.0.9","port":4222,"client_id":99}\r\nPONG\r\n',
+     "finding", ("SRV7X", "10.0.0.9", "2.10.4")),
+    (b"-ERR 'Authorization Violation'\r\n", "clean", ()),
+    (b'-ERR "Authentication Timeout"\r\n', "clean", ()),
+    (b'INFO {"server_id":"SRV7X"}\r\n', "error", ()),
+    (b'-ERR "Unknown Protocol Operation"\r\n', "error", ()),
+    (b'PONG\r\n-ERR "Unknown Protocol Operation"\r\n', "error", ()),
+    (b"", "error", ()),
+], ids=["pong", "info-then-pong", "authorization-violation", "authentication-timeout",
+        "info-without-pong", "other-err", "pong-with-other-err", "empty"])
+def test_nats_info_pongs_after_an_unauthenticated_connect_and_ping(reply, expect, banned, stub,
+                                                                   tmp_path):
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_nats_info", "nats", server, tmp_path)
+    seen = finding(lines)
+    assert server.received == [_NATS_CONNECT], server.received
+    if expect == "finding":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+        for value in banned:
+            assert value not in seen[2], f"evidence leaks {value!r}: {seen[2]}"
+    elif expect == "clean":
+        assert seen is None and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --- shapo_neo4j_discovery: one Bolt version offer, the first 4 bytes decide --
+
+#: magic 6060b017, then Bolt 5.4, 5.0, 4.4, 4.0 as big-endian version ints.
+_NEO4J_BOLT_OFFER = "6060b01700000405000000050000040400000004"
+
+
+@needs_pulse
+@pytest.mark.parametrize(("reply", "expect"), [
+    (bytes.fromhex("00000404"), "finding"),
+    (bytes.fromhex("000001ff"), "finding"),  # the manifest marker is also a server choice
+    (bytes.fromhex("00000000"), "clean"),
+    (bytes.fromhex("000004"), "error"),
+    (b"", "error"),
+], ids=["bolt-4.4-chosen", "manifest-marker", "zero-version", "three-bytes", "empty"])
+def test_neo4j_discovery_offers_four_bolt_versions_in_one_hex_write(reply, expect, stub, tmp_path):
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_neo4j_discovery", "neo4j", server, tmp_path)
+    seen = finding(lines)
+    assert server.received[-1].hex() == _NEO4J_BOLT_OFFER, (
+        "one probe_send_hex: magic, then versions 5.4, 5.0, 4.4, 4.0 big-endian"
+    )
+    if expect == "finding":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    elif expect == "clean":
+        assert seen is None and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
