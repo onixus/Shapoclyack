@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Suspense, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Globe2 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -18,14 +19,25 @@ import { useRunHosts, useRuns, useRunVulns } from "@/hooks/use-runs";
 import { HOSTS_FETCH_LIMIT, VULN_FETCH_LIMIT } from "@/lib/config/constants";
 import { aggregateGeo } from "@/lib/geo/aggregate";
 import { pickLatestRun } from "@/lib/run-data";
+import { RunViews } from "@/components/view-tabs";
 import { cn } from "@/lib/utils";
 
 const RUN_PICKER_LIMIT = 50;
 
 export default function GeoPage() {
+  return (
+    <Suspense fallback={<p className="text-sm text-muted-foreground">…</p>}>
+      <GeoInner />
+    </Suspense>
+  );
+}
+
+function GeoInner() {
   const t = useT();
+  const router = useRouter();
+  const pinned = (useSearchParams().get("runId") || "").trim();
   const runsQuery = useRuns(undefined, { limit: RUN_PICKER_LIMIT });
-  const [selectedRun, setSelectedRun] = useState<string>("");
+  const [selectedRun, setSelectedRun] = useState<string>(pinned);
   const [selectedLocation, setSelectedLocation] = useState<string | null>(null);
 
   const runs = useMemo(() => runsQuery.data?.items ?? [], [runsQuery.data]);
@@ -59,6 +71,7 @@ export default function GeoPage() {
           </div>
           <div>
             <h1 className="text-2xl font-extrabold tracking-tight text-foreground">{t("page.geo.title")}</h1>
+            <RunViews runId={runId} current="map" />
             <p className="text-xs text-muted-foreground">
               {t("page.geo.subtitle")}
             </p>
@@ -70,6 +83,7 @@ export default function GeoPage() {
           onValueChange={(value) => {
             setSelectedRun(value);
             setSelectedLocation(null);
+            router.replace(`/geo?runId=${encodeURIComponent(value)}`);
           }}
         >
           <SelectTrigger className="w-72 border-border bg-card text-foreground">

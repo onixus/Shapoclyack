@@ -10,6 +10,7 @@ import { RelatedDomainsPanel } from "@/components/run/related-domains";
 import { useRuns } from "@/hooks/use-runs";
 import { pickLatestRun, runDetailHref } from "@/lib/run-data";
 import { orgProfileHref } from "@/components/org-profile/posture-tile";
+import { RunViews } from "@/components/view-tabs";
 import { useT } from "@/lib/i18n";
 
 /**
@@ -59,6 +60,7 @@ function OrgProfileInner() {
             {t("page.orgProfile.title")}
           </h1>
           <p className="mt-1 text-xs text-muted-foreground">{t("page.orgProfile.subtitle")}</p>
+          <RunViews runId={runId} current="profile" />
         </div>
 
         {runs.length > 0 ? (

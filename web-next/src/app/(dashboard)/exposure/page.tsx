@@ -26,6 +26,7 @@ import {
   ASSET_STATUS,
   RISK_LEVEL_STATUS,
 } from "@/lib/config/statuses";
+import { AssetViews } from "@/components/view-tabs";
 import { assetDetailHref } from "@/lib/vuln-lifecycle";
 
 export default function ExposurePage() {
@@ -128,6 +129,7 @@ export default function ExposurePage() {
             <h1 className="text-2xl font-extrabold tracking-tight text-foreground">{t("page.exposure.title")}</h1>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">{t("page.exposure.subtitle")}</p>
+          <AssetViews current="declared" />
         </div>
       </div>
 

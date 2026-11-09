@@ -90,6 +90,12 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- The console menu keeps one entry per question. Board, campaigns and KEV are
+  tabs on Vulnerabilities; declared internet exposure is a tab on Assets; a
+  run's graph, organisation profile and map are tabs on that run. Scans are one
+  page, with the external and internal launch buttons setting the perimeter.
+  Own MFA is in the account menu. The journal is shown only with `audit.read`.
+  Old addresses stay where they were.
 - The console finishes the APEX surface pass
   ([#603](https://github.com/onixus/Shapoclyack/issues/603)). The theme
   preference is `apex.theme` (`dark`, `light` or `system`), Inter and

@@ -21,6 +21,7 @@ import { useRunReport } from "@/hooks/use-run-report";
 import { scanModeLabel } from "@/lib/scan-labels";
 import { ScanTechnicalDetails } from "@/components/scans/scan-technical-details";
 import { formatLocation } from "@/lib/run-data";
+import { RunViews } from "@/components/view-tabs";
 
 export default function RunDetailPage() {
   const t = useT();
@@ -74,6 +75,7 @@ function RunDetailInner() {
     return (
       <div className="space-y-4">
         <BackToRuns />
+        <RunViews runId="" current="result" />
         <Alert
           variant="destructive"
           className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
@@ -121,6 +123,7 @@ function RunDetailInner() {
           {runText(t.locale, "Run")}{" "}
           <span className="text-primary">{report.detail.run_id}</span>
         </h1>
+        <RunViews runId={report.detail.run_id} current="result" />
         <p className="text-xs text-muted-foreground">
           {runText(
             t.locale,

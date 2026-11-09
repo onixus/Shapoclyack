@@ -50,6 +50,7 @@ import {
 } from "@/lib/config/statuses";
 import { normalizeSeverity, SEVERITIES } from "@/lib/run-data";
 import { assetDetailHref, findingLabel, SLA_STATES, VULN_STATES, vulnDetailHref } from "@/lib/vuln-lifecycle";
+import { FindingViews } from "@/components/view-tabs";
 
 const FILTER_ALL = "all";
 const OPEN_WORKING_SET = "open";
@@ -525,6 +526,7 @@ function VulnerabilitiesInner() {
               </>
             ) : null}
           </p>
+          <FindingViews current="list" />
         </div>
       </div>
 

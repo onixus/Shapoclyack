@@ -120,11 +120,17 @@ committing the files. See [Demo screenshot hygiene](#demo-screenshot-hygiene).
 
 ## Application shell
 
-The sidebar is grouped, not flat: **Overview**, **Risk & remediation**,
-**External surface** (external scans, exposure, attack surface, org profile,
-geo), **Internal surface** (internal scans, endpoints, sensors), **Operations**
-(all jobs, runs, schedules, reports, wordlists), **Insights**, and
-**Administration**. Groups collapse and remember it per browser
+The sidebar is grouped, not flat: **Overview**, **Risk work** (vulnerabilities,
+compliance), **Inventory** (assets, devices), **Scanning** (scans, runs, the AI
+operator, schedules, sensors, wordlists, reports), **Program** (outcomes,
+quotas), and **Administration**. A second view of the same question is a tab,
+not another item: the vulnerability board, campaigns and KEV sit on
+Vulnerabilities; operator-declared internet exposure sits on Assets; a run's
+graph, organisation profile and map sit on that run. External and internal
+launch stay as the two buttons above the menu and open `/scans/external` and
+`/scans/internal`. Own MFA is in the account menu, at `/security`, not in the
+sidebar. The journal, retention and tokens are shown only with the permission
+the API already requires. Groups collapse and remember it per browser
 (`shapoclyack.nav.collapsed`); a collapsed group still shows the current page.
 Entries below the signed-in role are hidden — presentation only, the API
 enforces every request (`src/lib/config/nav.ts`). Panels gated on a *named*

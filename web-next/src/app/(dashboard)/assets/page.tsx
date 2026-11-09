@@ -19,6 +19,7 @@ import { SavedViews } from "@/components/saved-views";
 import { DataTable } from "@/components/data-table";
 import { AssetBulkContext } from "@/components/asset/bulk-context";
 import { AssetImportButton } from "@/components/asset/import-dialog";
+import { AssetViews } from "@/components/view-tabs";
 import { useT } from "@/lib/i18n";
 import { pluralForm } from "@/lib/plural";
 import { useRelativeTime } from "@/lib/i18n/datetime";
@@ -254,6 +255,7 @@ function AssetsInner() {
             {t("page.assets.subtitle")}
             {assetsQuery.isFetching ? " · Refreshing inventory stream…" : ""}
           </p>
+          <AssetViews current="list" />
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" asChild>

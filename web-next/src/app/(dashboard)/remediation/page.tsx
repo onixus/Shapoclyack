@@ -75,6 +75,7 @@ import {
 import { queryKeys } from "@/lib/query-keys";
 import { SEVERITY_STATUS, VULN_LIFECYCLE_STATUS } from "@/lib/config/statuses";
 import { normalizeSeverity } from "@/lib/run-data";
+import { FindingViews } from "@/components/view-tabs";
 import {
   BOARD_CLOSED_LIMIT,
   BOARD_OPEN_LIMIT,
@@ -297,6 +298,7 @@ export default function RemediationPage() {
               </span>
             </div>
             <p className="mt-0.5 text-xs text-muted-foreground">{t("page.remediation.subtitle")}</p>
+            <FindingViews current="board" />
           </div>
         </div>
 
