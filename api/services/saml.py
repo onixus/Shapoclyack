@@ -241,6 +241,10 @@ def sp_settings(settings: Settings) -> dict[str, Any]:
             # two flags are independent: they cannot express "either". Requiring
             # the Assertion signature accepts that profile. A Response signature
             # alone is not enough.
+            #
+            # The same flag is what makes python3-saml accept an unsigned
+            # LogoutRequest. SLO does not use it: complete_logout requires the
+            # HTTP-Redirect Signature query parameter on its own.
             "wantMessagesSigned": False,
             "wantAssertionsSigned": True,
             "wantAssertionsEncrypted": settings.saml_require_encrypted_assertion,
@@ -390,14 +394,15 @@ def complete_login(
     if auth.get_errors() or not auth.is_authenticated():
         logger.warning("SAML response refused: %s", ",".join(auth.get_errors()))
         raise SamlError("SAML response validation failed")
-    # python3-saml compares InResponseTo only when the attribute is present, so
-    # an IdP-initiated Response (the attribute omitted) is otherwise accepted
-    # and bound to whatever fresh RelayState the caller still holds.
-    in_response_to = auth.get_last_response_in_response_to()
-    if not in_response_to or in_response_to != pending.request_id:
+    # python3-saml reads InResponseTo from the Response element and skips the
+    # audience check when the assertion has no AudienceRestriction. Both of
+    # those nodes sit outside the assertion signature when only the assertion
+    # is signed, so an unsigned wrapper can supply them. Read them from the
+    # assertion itself.
+    assertion = _one_assertion(auth.get_last_response_xml())
+    if not _assertion_confirms_request(assertion, pending.request_id):
         raise SamlError("SAML response is not a reply to this login")
-    audiences = _assertion_audiences(auth.get_last_response_xml())
-    if not settings.saml_sp_entity_id or settings.saml_sp_entity_id not in audiences:
+    if not _assertion_allows_audience(assertion, settings.saml_sp_entity_id):
         raise SamlError("SAML response audience is not this service provider")
     _remember_assertion(
         settings,
@@ -490,6 +495,11 @@ def complete_logout(settings: Settings, *, get_data: dict[str, Any]) -> Complete
     pending row belongs to the SP-initiated logout that is still in flight.
     """
     relay_state = str(get_data.get("RelayState") or "")
+    if "SAMLResponse" in get_data or "SAMLRequest" in get_data:
+        # Before process_slo. A missing Signature is not an error for the
+        # library while wantMessagesSigned is false, and the request branch
+        # ends sessions as soon as this function returns.
+        _require_redirect_signature(get_data)
     if "SAMLResponse" in get_data:
         if not relay_state:
             raise SamlError("SAML logout response has no RelayState")
@@ -530,23 +540,77 @@ def _run_slo(auth: OneLogin_Saml2_Auth, *, request_id: str | None) -> str | None
     return destination or None
 
 
-def _assertion_audiences(xml: str | None) -> set[str]:
-    """Audience values in a Response. The library does not store them on Auth.
+def _require_redirect_signature(get_data: dict[str, Any]) -> None:
+    """Reject an HTTP-Redirect SLO message that carries no Signature.
 
-    An assertion with no AudienceRestriction is not accepted: python3-saml
-    skips the audience check when the element is absent.
+    python3-saml still verifies a signature when one is present. It returns
+    success when the parameter is absent and ``wantMessagesSigned`` is false.
+    """
+    signature = get_data.get("Signature")
+    if not isinstance(signature, str) or not signature.strip():
+        raise SamlError("SAML logout message is not signed")
+
+
+def _parse_saml(xml: str | bytes) -> etree._Element:
+    parser = etree.XMLParser(resolve_entities=False, no_network=True, huge_tree=False)
+    payload = xml.encode("utf-8") if isinstance(xml, str) else xml
+    return etree.fromstring(payload, parser)
+
+
+def _one_assertion(xml: str | None) -> etree._Element | None:
+    """The single assertion in a response, or None.
+
+    Login reads audience and InResponseTo from this element only. An Audience
+    or InResponseTo on the Response, in Extensions, or on a second assertion
+    is not covered by the assertion signature.
     """
     if not xml:
-        return set()
+        return None
     try:
-        root = etree.fromstring(xml.encode("utf-8") if isinstance(xml, str) else xml)
+        root = _parse_saml(xml)
     except etree.XMLSyntaxError:
-        return set()
-    found: set[str] = set()
-    for node in root.findall(f".//{{{_ASSERTION_NS}}}Audience"):
-        if node.text and node.text.strip():
-            found.add(node.text.strip())
-    return found
+        return None
+    assertions = root.findall(f".//{{{_ASSERTION_NS}}}Assertion")
+    if len(assertions) != 1:
+        return None
+    return assertions[0]
+
+
+def _assertion_confirms_request(assertion: etree._Element | None, request_id: str) -> bool:
+    """True when the assertion's own SubjectConfirmationData names this request.
+
+    python3-saml compares InResponseTo only on the Response element, and only
+    when that attribute is present. A signed assertion that omits it is not a
+    reply to this login.
+    """
+    if assertion is None or not request_id:
+        return False
+    for node in assertion.findall(f".//{{{_ASSERTION_NS}}}SubjectConfirmationData"):
+        if (node.get("InResponseTo") or "").strip() == request_id:
+            return True
+    return False
+
+
+def _assertion_allows_audience(assertion: etree._Element | None, entity_id: str) -> bool:
+    """True when every AudienceRestriction in the assertion names this SP.
+
+    No restriction is a refusal: python3-saml skips the check in that case.
+    Restrictions combine by AND; audiences inside one restriction by OR.
+    """
+    if assertion is None or not entity_id:
+        return False
+    restrictions = assertion.findall(f".//{{{_ASSERTION_NS}}}AudienceRestriction")
+    if not restrictions:
+        return False
+    for restriction in restrictions:
+        audiences = {
+            node.text.strip()
+            for node in restriction.findall(f"{{{_ASSERTION_NS}}}Audience")
+            if node.text and node.text.strip()
+        }
+        if entity_id not in audiences:
+            return False
+    return True
 
 
 def _remember_assertion(settings: Settings, assertion_id: str | None, not_on_or_after: Any) -> None:
@@ -594,7 +658,7 @@ def _logout_request_subject(xml: str | None) -> tuple[str, tuple[str, ...]]:
     if not xml:
         return "", ()
     try:
-        root = etree.fromstring(xml.encode("utf-8") if isinstance(xml, str) else xml)
+        root = _parse_saml(xml)
     except etree.XMLSyntaxError:
         return "", ()
     name = root.find(f".//{{{_ASSERTION_NS}}}NameID")

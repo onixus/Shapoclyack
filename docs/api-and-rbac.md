@@ -1023,13 +1023,16 @@ all-in-one images include the `xmlsec1` runtime used by `python3-saml`.
 `GET /api/auth/saml/login` issues an HTTP-Redirect AuthnRequest;
 `POST /api/auth/saml/acs` accepts the HTTP-POST Response. A random RelayState is
 stored only as a hash in `saml_pending_requests` and consumed atomically. The
-Response's `InResponseTo` must equal that AuthnRequest id; python3-saml only
-compares the attribute when it is present, so a Response that omits it is
-refused here. The assertion must carry an `Audience` equal to the SP entityID
-(an assertion with no audience is refused; the library skips that check when
-the element is absent). The assertion id is remembered until `NotOnOrAfter`,
-and a second presentation is refused. Unsolicited (IdP-initiated) and replayed
-sign-ins do not become console sessions, and callbacks may land on any replica.
+assertion's own `SubjectConfirmationData/@InResponseTo` must equal that
+AuthnRequest id. python3-saml only compares `InResponseTo` on the Response
+element, and only when that attribute is present, so a value supplied on the
+unsigned wrapper is ignored here. Every `AudienceRestriction` inside the
+assertion must name the SP entityID. An assertion with no audience is refused;
+the library skips that check when the element is absent, and an `Audience`
+outside the assertion (including in `Extensions`) does not count. The assertion
+id is remembered until `NotOnOrAfter`, and a second presentation is refused.
+Unsolicited (IdP-initiated) and replayed sign-ins do not become console
+sessions, and callbacks may land on any replica.
 
 The ACS stores the NameID, its format and the SessionIndex on the console
 session family (or on the short-lived MFA challenge, which writes them when
@@ -1037,7 +1040,11 @@ the second leg opens the family). `GET /api/auth/saml/logout` revokes that
 access token and its refresh family before redirecting, and the LogoutRequest
 names the stored NameID rather than the SP entity. A session with no NameID
 is ended locally and is not sent to the IdP. `GET /api/auth/saml/slo` validates
-the SAML message before it deletes the pending logout. An IdP LogoutRequest
+the SAML message before it deletes the pending logout. Logout uses the
+HTTP-Redirect binding, so the message must carry a `Signature` query parameter
+even though `wantMessagesSigned` is off for login: without that parameter
+python3-saml accepts the message, and an unsigned LogoutRequest would end every
+session stored for its NameID. An IdP LogoutRequest
 ends only families stored with that NameID, and only the named SessionIndex
 values when the request carries any. A LogoutResponse ends only the family
 that started that logout. The refresh cookie is cleared only when it belongs
