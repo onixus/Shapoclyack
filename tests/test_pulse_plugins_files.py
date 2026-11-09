@@ -723,8 +723,19 @@ def _assert_unknown_assessment(result: subprocess.CompletedProcess, plugin: str)
 
 # Binary protocol fixtures force the already-tested applicability input; the
 # loopback listener uses an ephemeral port, never a real SMB/RDP endpoint.
-def _run_binary_plugin(name, service_name, server, tmp_path):
+def _run_binary_plugin(name, service_name, server, tmp_path, *, unnamed_stub=False):
     source = (pulse_plugins.PLUGINS_DIR / f"{name}.rhai").read_text()
+    if unnamed_stub:
+        # Keep probe_send on Pulse's port global (the stub). Only the gate
+        # additionally accepts that ephemeral port, as if it were 7687.
+        opened = source.replace(
+            "unnamed && port == 7687",
+            f"unnamed && (port == 7687 || port == {server.port})",
+            1,
+        )
+        assert opened != source, "unnamed 7687 gate was not in the plugin"
+        source = opened
+        service_name = ""
     source = source.replace("fn run() {", f'fn run() {{ let service = "{service_name}";', 1)
     script = tmp_path / f"{name}.rhai"
     script.write_text(source)
@@ -1692,7 +1703,9 @@ _NEO4J_BOLT_OFFER = "6060b01700000405000000050000040400000004"
 ], ids=["bolt-4.4-chosen", "manifest-marker", "zero-version", "three-bytes", "empty"])
 def test_neo4j_discovery_offers_four_bolt_versions_in_one_hex_write(reply, expect, stub, tmp_path):
     server = stub(b"", lambda _request: reply)
-    lines, errors = _run_binary_plugin("shapo_neo4j_discovery", "neo4j", server, tmp_path)
+    lines, errors = _run_binary_plugin(
+        "shapo_neo4j_discovery", "", server, tmp_path, unnamed_stub=True,
+    )
     seen = finding(lines)
     assert server.received[-1].hex() == _NEO4J_BOLT_OFFER, (
         "one probe_send_hex: magic, then versions 5.4, 5.0, 4.4, 4.0 big-endian"
@@ -1703,3 +1716,12 @@ def test_neo4j_discovery_offers_four_bolt_versions_in_one_hex_write(reply, expec
         assert seen is None and not errors.strip()
     else:
         assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+@needs_pulse
+def test_neo4j_http_service_does_not_offer_bolt(stub, tmp_path):
+    # probes.json names this service from an HTTP "neo4j_version" document.
+    server = stub(b"", lambda _request: b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+    lines, errors = _run_binary_plugin("shapo_neo4j_discovery", "neo4j", server, tmp_path)
+    assert finding(lines) is None and not errors.strip(), errors
+    assert all(request.hex() != _NEO4J_BOLT_OFFER for request in server.received)

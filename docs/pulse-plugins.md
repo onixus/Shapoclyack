@@ -69,7 +69,7 @@ installed sensor or fleet acceptance.
 | `shapo_nomad_status` | Unauthenticated Nomad leader status | LOW; jobs, nodes and peers are not queried | Separate status-access check |
 | `shapo_influx_health` | InfluxDB ping with a product header and, when present, version document | LOW; queries, writes and credentials are not used | Separate status-access check |
 | `shapo_nats_info` | NATS CONNECT/PING accepted without credentials | LOW; subscribe and publish are not attempted | Separate anonymous-access check |
-| `shapo_neo4j_discovery` | Neo4j Bolt version selection | LOW protocol confirmation; no HELLO, LOGON or graph query | Separate protocol check |
+| `shapo_neo4j_discovery` | Neo4j Bolt version selection on an unnamed port 7687 | LOW protocol confirmation; no HELLO, LOGON or graph query | Separate protocol check |
 | `shapo_rabbitmq_mgmt` | Unauthenticated RabbitMQ management `whoami` | LOW; overview, queues and users are not read | Separate status-access check |
 | `shapo_gitlab_health` | Exact unauthenticated GitLab health response | LOW; readiness, projects and users are not queried | Separate status-access check |
 | `shapo_harbor_health` | Parsed Harbor health document | LOW; projects, repositories and image catalog are not read | Separate status-access check |

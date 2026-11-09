@@ -27,6 +27,9 @@ All notable changes to Shapoclyack are documented in this file.
   NATS, Neo4j Bolt, RabbitMQ Management, GitLab, Harbor, Portainer, SonarQube,
   Keycloak and Rancher. The checks parse one bounded status or negotiation
   response and do not attempt login, writes, object enumeration or graph queries.
+  Neo4j Bolt runs only on an unnamed port 7687. GitLab is named from the
+  `_gitlab_session` cookie on `GET /`, and Keycloak from the welcome or
+  administration-console title.
 - Pulse plugin phase 1: read-only unauthenticated status checks for ClickHouse
   `/ping`, MongoDB `isMaster`, etcd `/version` and Docker Engine `/version`.
   Queries, database/document reads and daemon operations are not performed.

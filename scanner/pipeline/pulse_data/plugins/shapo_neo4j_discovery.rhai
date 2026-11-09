@@ -4,12 +4,13 @@
 // 4.0 in one frame. Any non-zero answer means the server picked a version;
 // an all-zero four-byte answer is a refusal. HELLO, LOGON, RUN and PULL are
 // never sent, so there is no login and no graph request.
+// service "neo4j" is the HTTP "neo4j_version" document, so it is not a Bolt gate.
 fn name() { "shapo_neo4j_discovery" }
 fn description() { "Detect Neo4j Bolt servers that answer the version handshake without authentication." }
 fn ports() { [] }
 fn run() {
     let unnamed = service == "" || service == "unknown";
-    if !(service == "neo4j" || (unnamed && port == 7687)) { return; }
+    if !(unnamed && port == 7687) { return; }
     let reply = probe_send_hex(port, "6060b01700000405000000050000040400000004", 1500).to_lower();
     if reply.len() == 0 { throw "empty Bolt handshake reply"; }
     if reply.len() % 2 != 0 || reply.len() > 32768 { throw "malformed Bolt handshake reply"; }

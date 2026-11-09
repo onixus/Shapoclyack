@@ -661,8 +661,9 @@ python3 -m pytest tests/test_nmap_pulse_corpus.py::test_every_shipped_plugin_is_
 
 ### shapo_neo4j_discovery — `done`
 
-- Сервис: `neo4j`. Порт без имени: `7687`. Это рукопожатие Bolt, не HTTP
-  `GET /` и не порт `7474`. Порт `7473` не добавлять.
+- Сервис: нет. `neo4j` в пробе — это HTTP-документ с `neo4j_version`, не Bolt.
+  Порт без имени: `7687`. Это рукопожатие Bolt, не HTTP `GET /` и не порт
+  `7474`. Порт `7473` не добавлять.
 - Запрос: один `probe_send_hex`. Байты, подряд: magic `6060b017`, затем четыре
   версии big-endian, minor в третьем байте и major в четвёртом:
   `00000405` (5.4), `00000005` (5.0), `00000404` (4.4), `00000004` (4.0).
@@ -675,6 +676,7 @@ python3 -m pytest tests/test_nmap_pulse_corpus.py::test_every_shipped_plugin_is_
 - Evidence: сервер выбрал версию Bolt. Запрос графа не отправлялся.
 - Не делать: второй кадр с выбором версии, `HELLO`, `LOGON`, `RUN`, `PULL`.
 - Тест: `00000404`; `00000000`; три байта. Запрос сверить по hex выше.
+  Ответ `HTTP/1.1 400` при сервисе `neo4j` находки не даёт и Bolt не шлёт.
 
 ### shapo_rabbitmq_mgmt — `done`
 
@@ -693,7 +695,9 @@ python3 -m pytest tests/test_nmap_pulse_corpus.py::test_every_shipped_plugin_is_
 
 ### shapo_gitlab_health — `done`
 
-- Сервис: `gitlab`. Безымянного порта нет.
+- Сервис: `gitlab`. Безымянного порта нет. Проба `http-get-api` ставит его
+  и по title страницы входа, и по cookie `_gitlab_session` на `GET /`:
+  штатный ответ корня — редирект на `/users/sign_in` без этого title.
 - Запрос: `GET /-/health`.
 - Находка `LOW`: статус `200` и тело ровно `GitLab OK`, `GitLab OK\n` или
   `GitLab OK\r\n`.
@@ -748,7 +752,10 @@ python3 -m pytest tests/test_nmap_pulse_corpus.py::test_every_shipped_plugin_is_
 ### shapo_keycloak_realm — `done`
 
 - Сервис: `keycloak`. Безымянного порта нет. Порт `8080` не занимать:
-  его уже берёт Jenkins.
+  его уже берёт Jenkins. Проба ставит сервис по `<title>Welcome to Keycloak</title>`
+  или `<title>Keycloak Administration Console</title>`. Точный
+  `<title>Keycloak</title>` этим страницам не равен. Редирект `302` на
+  `/admin/` без title сервис не ставит: проба по `Location` не ходит.
 - Запрос: `GET /admin/realms`.
 - Находка `LOW`: статус `200`, и первый непробельный символ тела — `[`.
   Пустой массив `[]` тоже находка.
@@ -796,6 +803,7 @@ python3 -m pytest tests/test_nmap_pulse_corpus.py::test_every_shipped_plugin_is_
 
 | Дата | Куда | Что добавлено |
 |---|---|---|
+| 2026-11-09 | фаза 7 | `shapo_neo4j_discovery` больше не гейтится на сервис `neo4j`: это HTTP JSON, Bolt остаётся на безымянном порту `7687`. GitLab узнаётся по cookie `_gitlab_session` на `GET /`, Keycloak — по title приветствия и консоли. |
 | 2026-11-09 | фаза 7 | Реализованы все 12 проверок с реестрами, stub-тестами и документацией; полный прогон Pulse 1.4.0 зелёный. В каталоге 50 плагинов. |
 | 2026-11-09 | фаза 7 | Волна для написания: 12 пунктов с одним путём. Остальные заготовки фазы 6 закрыты как `blocked` (проба не ставит сервис, путь не единственный, тело пустое или запрос перечисляет объекты). |
 | 2026-11-09 | фазы 1–3 | `shapo_git_daemon` снят с поставки и помечен `blocked`: фиксированный путь даёт только ERR. LDAP шлёт present-фильтр `objectClass`. ClickHouse принимает `Ok.` с одним LF или CRLF. MongoDB обходит timestamp и regex. У Kubernetes нет безымянного порта `6443`. Читатели HTTP фаз 2 разбирают один chunked-ответ. Prometheus требует полное значение `success`. Обрезанный блок заголовков HTTP — ошибка. В каталоге 38 плагинов. |

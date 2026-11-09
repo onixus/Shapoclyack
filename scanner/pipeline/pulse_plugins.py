@@ -232,7 +232,7 @@ APPLICABILITY: dict[str, dict[str, Any]] = {
     "shapo_nomad_status": {"services": {"nomad"}, "banner": (), "ports": {4646}},
     "shapo_influx_health": {"services": {"influxdb"}, "banner": (), "ports": {8086}},
     "shapo_nats_info": {"services": {"nats"}, "banner": (), "ports": {4222}},
-    "shapo_neo4j_discovery": {"services": {"neo4j"}, "banner": (), "ports": {7687}},
+    "shapo_neo4j_discovery": {"services": set(), "banner": (), "ports": {7687}},
     "shapo_rabbitmq_mgmt": {"services": {"rabbitmq-mgmt"}, "banner": (), "ports": {15672}},
     "shapo_gitlab_health": {"services": {"gitlab"}, "banner": (), "ports": set()},
     "shapo_harbor_health": {"services": {"harbor"}, "banner": (), "ports": set()},
