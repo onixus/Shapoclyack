@@ -234,6 +234,13 @@ answers the SSLRequest with the single byte `N` or `S`; the stock rule wants
 `postgresql` from the port table only. Now it reports the product; the version
 is not on the wire before authentication. A pooler that speaks the PostgreSQL
 protocol answers the same way and is reported as PostgreSQL too.
+`http-get-api` also has three matches after the upstream list. GitLab's
+unauthenticated `GET /` is a redirect whose body does not contain the sign-in
+title; the session cookie `_gitlab_session` is on that response. Keycloak's
+welcome page title is `Welcome to Keycloak`, and the administration console
+title is `Keycloak Administration Console`. A `302` to `/admin/` with neither
+title still does not name the service, because the probe does not follow
+`Location`.
 
 What the database cannot do: Samba/SMB. The stand's Samba answers an SMB2
 negotiate with a dialect, a GUID and the generic SPNEGO hint, and no product or

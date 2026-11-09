@@ -350,6 +350,41 @@ def test_the_postgres_rule_is_ours_and_the_stock_database_misses_it():
     assert probe["payload_hex"] == "0000000804d2162f"
 
 
+def test_gitlab_and_keycloak_root_replies_are_named_after_the_upstream_rules_miss():
+    # GitLab's unauthenticated GET / is a redirect. The sign-in title is on the
+    # next page, which this probe does not fetch. The session cookie is on the
+    # redirect itself (config/initializers/session_store.rb, key _gitlab_session).
+    # Keycloak's welcome template renders "Welcome to Keycloak"; the admin
+    # console title is "Keycloak Administration Console". Neither is the exact
+    # upstream <title>Keycloak</title>.
+    db = _load(pp.PROBE_DB)
+    stock = _load(UPSTREAM)
+    gitlab_redirect = (
+        "HTTP/1.1 302 Found\r\n"
+        "Location: http://gitlab.example/users/sign_in\r\n"
+        "Set-Cookie: _gitlab_session=abc; path=/; HttpOnly\r\n"
+        "\r\n"
+        "<html><body>You are being redirected.</body></html>"
+    )
+    welcome = "HTTP/1.1 200 OK\r\n\r\n<title>Welcome to Keycloak</title>"
+    console = "HTTP/1.1 200 OK\r\n\r\n<title>Keycloak Administration Console</title>"
+    assert emulate(stock, "http-get-api", gitlab_redirect) is None
+    assert emulate(stock, "http-get-api", welcome) is None
+    assert emulate(stock, "http-get-api", console) is None
+    assert emulate(db, "http-get-api", gitlab_redirect)["service"] == "gitlab"
+    # A GDK postfix is not the production cookie key, so it stays unnamed.
+    assert emulate(db, "http-get-api", "Set-Cookie: _gitlab_session_abc123=dev; path=/\r\n") is None
+    assert emulate(db, "http-get-api", welcome)["service"] == "keycloak"
+    assert emulate(db, "http-get-api", console)["service"] == "keycloak"
+    assert emulate(db, "http-get-api", "<title>Sign in · GitLab</title>")["service"] == "gitlab"
+    assert emulate(db, "http-get-api", "<title>Keycloak</title>")["service"] == "keycloak"
+    assert emulate(db, "http-get-api", "<title>Welcome to the lab</title>") is None
+    assert emulate(db, "http-get-api", "the cookie is named _gitlab_session") is None
+    neo = 'HTTP/1.1 200 OK\r\n\r\n{"neo4j_version":"5.20.0"}'
+    assert emulate(db, "http-get-api", neo)["service"] == "neo4j"
+    assert emulate(db, "http-get-api", "HTTP/1.1 400 Bad Request\r\n\r\n") is None
+
+
 def test_the_emulator_treats_dollar_as_end_of_text_like_rust():
     db = {"probes": [{"name": "p", "matches": [{"pattern": "^[NS]$", "service": "s", "product": "P"}]}]}
     assert emulate(db, "p", "N") is not None
