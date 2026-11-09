@@ -34,17 +34,21 @@ WORKDIR /app
 # also preserve GSSAPI/FIDO/PKCS11 and interactive sftp support.
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends fonts-dejavu-core libssl3t64 zlib1g libfido2-1 libgssapi-krb5-2 libedit2; \
+    apt-get install -y --no-install-recommends fonts-dejavu-core libssl3t64 zlib1g libfido2-1 libgssapi-krb5-2 libedit2 xmlsec1; \
     # Security updates the pinned base digest does not carry yet: Debian has
     # published them, python:3.12-slim has not been rebuilt on top. Upgrade
     # only the named packages, and assert the version so a no-op upgrade fails
     # here rather than at the Trivy gate. Drop a line once a base bump covers it.
     apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0; \
     dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libpcre2-8-0)" ge '10.46-1~deb13u3'; \
-    apt-get install -y --no-install-recommends --only-upgrade apt libapt-pkg7.0; \
+    # CVE-2026-109518 (apt hard-link reuse) and zlib CVE-2026-76844 /
+    # CVE-2026-85091. The pinned slim digest still ships apt 3.0.3 and
+    # zlib 1.3.1-1+b1.
+    apt-get install -y --no-install-recommends --only-upgrade apt libapt-pkg7.0 zlib1g; \
     for pkg in apt libapt-pkg7.0; do \
         dpkg --compare-versions "$(dpkg-query -W -f='${Version}' "$pkg")" ge '3.0.4'; \
     done; \
+    dpkg --compare-versions "$(dpkg-query -W -f='${Version}' zlib1g)" ge '1:1.3.dfsg+really1.3.1-1+deb13u1'; \
     rm -rf /var/lib/apt/lists/*
 # Copy only client binaries, helpers, config and provenance; no vulnerable
 # distro copy, SSH server, host keys or privileged signing helper ships.

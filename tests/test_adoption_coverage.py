@@ -19,6 +19,7 @@ it exists to catch.
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
@@ -27,6 +28,7 @@ from api.db import models
 from api.db.engine import get_session
 from api.services import adoption, vuln_states
 from api.services import vulnerabilities as vulns
+from api.services.artifact_store import keys, workspace
 from tests.conftest import requires_postgres
 from tests.test_vuln_lifecycle import _FINDINGS, _HOSTS, _seed, _settings, _write_run
 
@@ -837,8 +839,15 @@ def test_coverage_never_reaches_into_another_tenant(tmp_path):
 
     settings, tenant_id = _seed(tmp_path)
     other = tenants_service.create_tenant(tenant_id="ten_neighbour", name="Neighbour")["tenant_id"]
-    # The neighbour has the same host, scanned, and an approval covering it.
-    assets_service.upsert_assets_from_run(settings, tenant_id=other, run_id="run-1")
+    # The neighbour has the same host, scanned from its own tenant-scoped run,
+    # and an approval covering it. Reusing the default tenant's flat run would
+    # intentionally be refused by the ownership check added in #311.
+    other_run_id = "run-neighbour"
+    other_run = workspace.scratch_run_dir(settings, keys.run_ref(other_run_id, other))
+    other_run.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(settings.output_dir / "runs" / "run-1", other_run)
+    (other_run / "tenant.json").write_text(json.dumps({"tenant_id": other}), encoding="utf-8")
+    assets_service.upsert_assets_from_run(settings, tenant_id=other, run_id=other_run_id)
     _scope(settings, other, [("allow", "cidr", "10.0.0.0/29")])
     # This tenant's own asset was never scan-ingested and it approved nothing.
     with get_session(settings.postgres_url) as session:

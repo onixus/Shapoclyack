@@ -1,6 +1,6 @@
 import { useAppearanceStore } from "@/lib/appearance";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScanLauncher, scopeFill } from "@/components/scans/scan-launcher";
@@ -181,6 +181,19 @@ describe("ScanLauncher", () => {
     expect(start.mock.calls[0][0].surface).toBeUndefined();
   });
 
+  it("requires a target and does not promise server-default files", () => {
+    useAppearanceStore.setState({ locale: "en" });
+    const start = vi.spyOn(apiModule, "startScan").mockResolvedValue(job());
+    renderLauncher("external");
+    expect(screen.getByText(/never uses server defaults/i)).toBeInTheDocument();
+    expect(screen.queryByText(/default input files/i)).not.toBeInTheDocument();
+    const form = screen.getByRole("button", { name: /Start scan/ }).closest("form");
+    expect(form).not.toBeNull();
+    fireEvent.submit(form!);
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(start).not.toHaveBeenCalled();
+  });
+
   it("warns when private ranges are typed into the external launcher", async () => {
     renderLauncher("external");
     const user = userEvent.setup();
@@ -329,5 +342,17 @@ describe("ScanLauncher", () => {
     await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
     expect(start.mock.calls[0][0].agent_group).toBeUndefined();
     expect(groups).not.toHaveBeenCalled();
+  });
+
+  it("requires explicit targets instead of launching server defaults", async () => {
+    const start = vi.spyOn(apiModule, "startScan").mockResolvedValue(job());
+    renderLauncher("external");
+    const user = userEvent.setup();
+
+    const launch = screen.getByRole("button", { name: /Start scan/ });
+    expect(launch).toBeDisabled();
+    expect(screen.getByText(/the console never uses server defaults/)).toBeInTheDocument();
+    await user.click(launch);
+    expect(start).not.toHaveBeenCalled();
   });
 });

@@ -42,6 +42,7 @@ export default function LoginPage() {
   const [code, setCode] = useState("");
   const [useRecovery, setUseRecovery] = useState(false);
   const [sso, setSso] = useState<SsoStatus | null>(null);
+  const [loginProvider, setLoginProvider] = useState<"local" | "ldap">("local");
   // Read after mount: the server render has no `window`, and a button that
   // appears on hydration is better than a hydration mismatch.
   const [keySupported, setKeySupported] = useState(false);
@@ -102,7 +103,7 @@ export default function LoginPage() {
     setSubmitting(true);
     setError(null);
     try {
-      const step = await login(username, password);
+      const step = await login(username, password, loginProvider);
       if (step.status === "mfa-required") {
         setChallenge({ token: step.mfaToken, expiresIn: step.expiresIn, username });
         setCode("");
@@ -279,10 +280,14 @@ export default function LoginPage() {
               </label>
               {error ? <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{error}</p> : null}
               <Button type="submit" className="w-full" disabled={submitting}>
-                {submitting ? t("login.submitting") : t("login.submit")}
+                {submitting
+                  ? t("login.submitting")
+                  : loginProvider === "ldap"
+                    ? t("login.ldap")
+                    : t("login.submit")}
               </Button>
             </form>
-            <SsoSignInButton status={sso} />
+            <SsoSignInButton status={sso} onLdap={() => setLoginProvider("ldap")} />
           </>
         )}
       </section>

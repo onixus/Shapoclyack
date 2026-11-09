@@ -79,6 +79,7 @@ def test_legacy_output_dir_screenshots(tmp_path: Path):
     settings = make_settings(tmp_path, screenshot_retention_days=7)
     shots = settings.output_dir / "screenshots"
     shots.mkdir(parents=True)
+    (settings.output_dir / "tenant.json").write_text('{"tenant_id": "default"}', encoding="utf-8")
     png = shots / "legacy.png"
     png.write_bytes(PNG)
     _age(png, days=10)
@@ -86,3 +87,17 @@ def test_legacy_output_dir_screenshots(tmp_path: Path):
     stats = sweep(settings, now=datetime.now(UTC))
     assert stats["deleted"] == 1
     assert not png.exists()
+
+
+def test_legacy_output_dir_without_an_owner_is_not_pruned_as_default(tmp_path: Path):
+    settings = make_settings(tmp_path, screenshot_retention_days=7)
+    shots = settings.output_dir / "screenshots"
+    shots.mkdir(parents=True)
+    png = shots / "unknown.png"
+    png.write_bytes(PNG)
+    _age(png, days=10)
+
+    stats = sweep(settings, now=datetime.now(UTC))
+
+    assert stats["deleted"] == 0
+    assert png.exists()

@@ -54,7 +54,7 @@ class LocalLoginRefused(PermissionError):
 
 def policy_applies(settings: Settings) -> bool:
     """Whether ``OCTO_LOCAL_LOGIN`` has anything to say on this installation."""
-    return oidc_service.is_enabled(settings) and settings.local_login != "enabled"
+    return bool(oidc_service.public_config(settings)["providers"]) and settings.local_login != "enabled"
 
 
 def is_break_glass_account(settings: Settings, username: str) -> bool:

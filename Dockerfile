@@ -46,11 +46,11 @@ ARG NAABU_VERSION=v2.6.1
 #                      verification bypass); nuclei
 #   grpc     v1.83.2   CVE-2026-84304, CVE-2026-84445 (DoS); nuclei
 #   utls     v1.8.2    CVE-2026-27017; dnsx
-#   x/net    v0.62.0   CVE-2026-78661 (html parser DoS) plus CVE-2026-78669
+#   x/net    v0.62.0   CVE-2026-78661 (html parser DoS) and CVE-2026-78669
 #                      (HTTP/2 SETTINGS flood DoS); all three tools. The
-#                      stdlib half of CVE-2026-78667 needs Go >= 1.26.9; the
-#                      go-tools digest carries 1.26.10 for CVE-2026-111943
-#                      (crypto/x509 CA trust mitigation)
+#                      stdlib half of 78669 and CVE-2026-78667 need
+#                      Go >= 1.26.9; the go-tools digest carries 1.26.10
+#                      for CVE-2026-111943 (crypto/x509 CA trust mitigation)
 #   kin-openapi v0.149.0
 #                      CVE-2026-100349, -100351, -100352, -100353, -100354
 #                      (HIGH: DoS and an auth bypass; fixed across 0.146.0-
@@ -268,10 +268,14 @@ RUN set -eux; \
     for pkg in curl libcurl3t64-gnutls libcurl4t64; do \
         dpkg --compare-versions "$(dpkg-query -W -f='${Version}' "$pkg")" ge '8.14.1-2+deb13u7'; \
     done; \
-    apt-get install -y --no-install-recommends --only-upgrade apt libapt-pkg7.0; \
+    # CVE-2026-109518 (apt hard-link reuse) and zlib CVE-2026-76844 /
+    # CVE-2026-85091. The pinned slim digest still ships apt 3.0.3 and
+    # zlib 1.3.1-1+b1.
+    apt-get install -y --no-install-recommends --only-upgrade apt libapt-pkg7.0 zlib1g; \
     for pkg in apt libapt-pkg7.0; do \
         dpkg --compare-versions "$(dpkg-query -W -f='${Version}' "$pkg")" ge '3.0.4'; \
     done; \
+    dpkg --compare-versions "$(dpkg-query -W -f='${Version}' zlib1g)" ge '1:1.3.dfsg+really1.3.1-1+deb13u1'; \
     rm -rf /var/lib/apt/lists/*
 
 # Pulse CLI for service_probe.backend=pulse|hybrid (GenDec release; see docs/pulse-backend.md).

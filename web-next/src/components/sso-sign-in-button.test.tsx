@@ -50,4 +50,26 @@ describe("SsoSignInButton", () => {
     await userEvent.click(button);
     expect(assigned).toEqual(["/api/auth/oidc/login"]);
   });
+
+  it("offers SAML as a redirect and LDAP as a form provider", async () => {
+    const onLdap = vi.fn();
+    render(
+      <SsoSignInButton
+        onLdap={onLdap}
+        status={{
+          enabled: true,
+          login_url: "/api/auth/oidc/login",
+          local_login: "enabled",
+          providers: [
+            { provider: "saml", login_url: "/api/auth/saml/login" },
+            { provider: "ldap", login_url: "/api/auth/ldap/login" },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Sign in with SAML" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Sign in with LDAP / Active Directory" }));
+    expect(onLdap).toHaveBeenCalledOnce();
+  });
 });

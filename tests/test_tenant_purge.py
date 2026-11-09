@@ -760,8 +760,11 @@ def _seed_runs(settings: Settings) -> None:
         )
         _write(store, keys.job_input(f"{tenant_id}:jobs:job_id", "targets.txt"), b"10.0.0.1\n")
         _write(store, keys.report_key(tenant_id, "rpt_0000000000000001.pdf"), b"%PDF")
-    # A flat run with no marker is the default tenant's, and stays.
-    _write(store, keys.run_artifact(keys.run_ref("legacy-unmarked"), "summary.json"))
+    # A known default-tenant run stays. Unknown owner metadata is tested by the
+    # fail-closed migration and must not be silently treated as this tenant's.
+    unmarked = keys.run_ref("legacy-default")
+    _write(store, keys.run_artifact(unmarked, "summary.json"))
+    _write(store, keys.run_artifact(unmarked, "tenant.json"), b'{"tenant_id": "default"}')
 
 
 def _run_keys(store: artifact_store.ArtifactStore, tenant_id: str) -> list[str]:
@@ -789,7 +792,7 @@ def test_the_artifact_step_empties_the_tenants_runs_reports_and_inputs_on_a_volu
     store = artifact_store.get_store(settings)
     assert _run_keys(store, VICTIM) == []
     assert len(_run_keys(store, NEIGHBOUR)) == 6
-    assert store.exists("runs/legacy-unmarked/summary.json")
+    assert store.exists("runs/legacy-default/summary.json")
     # The segment directory itself is gone, not just its files.
     assert not (settings.output_dir / "runs" / "_tenants" / VICTIM).exists()
     assert (settings.output_dir / "runs" / "_tenants" / NEIGHBOUR).is_dir()

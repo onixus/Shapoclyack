@@ -291,6 +291,9 @@ def open_session(
     username: str,
     mfa_verified_at: datetime | None = None,
     mfa_method: str | None = None,
+    saml_name_id: str | None = None,
+    saml_name_id_format: str | None = None,
+    saml_session_index: str | None = None,
 ) -> OpenedSession:
     """Open a session family for a completed sign-in and issue its first refresh token.
 
@@ -326,6 +329,9 @@ def open_session(
                 last_used_at=now,
                 mfa_verified_at=_naive(mfa_verified_at),
                 mfa_method=mfa_method if mfa_verified_at is not None else None,
+                saml_name_id=saml_name_id or None,
+                saml_name_id_format=saml_name_id_format or None,
+                saml_session_index=saml_session_index or None,
             )
         )
         session.flush()
@@ -442,6 +448,62 @@ def end_session(settings: Settings, family_id: str, *, reason: str = END_LOGOUT)
             )
             .values(revoked_at=_now(), revoked_reason=reason)
         )
+
+
+def family_id_for_refresh_token(settings: Settings, refresh_token: str) -> str | None:
+    """The family a refresh cookie names, or None when the cookie is unknown."""
+    with get_session(settings.postgres_url) as session:
+        token = session.get(models.RefreshToken, _digest(refresh_token))
+        return token.family_id if token is not None else None
+
+
+def saml_binding(settings: Settings, family_id: str) -> tuple[str, str, str] | None:
+    """NameID, its format and SessionIndex stored for one live-or-ended family.
+
+    None when the family is missing or was not opened from SAML. Logout reads
+    this before it ends the family: ending the row does not clear the columns.
+    """
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.SessionFamily, family_id)
+        if row is None or not row.saml_name_id:
+            return None
+        return (row.saml_name_id, row.saml_name_id_format or "", row.saml_session_index or "")
+
+
+def end_saml_sessions(
+    settings: Settings,
+    *,
+    name_id: str,
+    session_indexes: tuple[str, ...] = (),
+) -> list[str]:
+    """End live families opened with this SAML NameID. Return the ids just ended.
+
+    A LogoutRequest that names SessionIndex values ends only those sessions.
+    One that does not ends every live family of that NameID. Families of any
+    other NameID are left alone, including the browser that happened to call SLO.
+    """
+    if not name_id:
+        return []
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        stmt = select(models.SessionFamily.family_id).where(
+            models.SessionFamily.saml_name_id == name_id,
+            models.SessionFamily.revoked_at.is_(None),
+        )
+        if session_indexes:
+            stmt = stmt.where(models.SessionFamily.saml_session_index.in_(session_indexes))
+        family_ids = list(session.execute(stmt).scalars())
+        if not family_ids:
+            return []
+        session.execute(
+            update(models.SessionFamily)
+            .where(
+                models.SessionFamily.family_id.in_(family_ids),
+                models.SessionFamily.revoked_at.is_(None),
+            )
+            .values(revoked_at=now, revoked_reason=END_LOGOUT)
+        )
+        return family_ids
 
 
 def end_session_by_refresh_token(settings: Settings, refresh_token: str) -> None:

@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from scanner.pipeline.config_schema import (
     DiscoveryConfig,
     IcmpDiscoveryConfig,
@@ -12,10 +14,18 @@ from scanner.pipeline.config_schema import (
 from scanner.pipeline.discover import host_discovery
 from scanner.pipeline.icmp_discover import icmp_ping_filter, parse_fping_output
 from scanner.pipeline.probe_ladder import (
+    _reset_host_syn_state,
     merge_discovery_stats,
     parse_naabu_host_lines,
     run_probe_ladder,
 )
+
+
+@pytest.fixture(autouse=True)
+def _fresh_host_syn_state():
+    _reset_host_syn_state()
+    yield
+    _reset_host_syn_state()
 
 
 def test_parse_fping_output_a_flag_ips():
@@ -185,3 +195,353 @@ def test_icmp_ping_filter_runs_one_explicit_command_per_address_family(
     assert len(commands) == 2
     assert any("-4" in command for command in commands)
     assert any("-6" in command for command in commands)
+
+
+def test_naabu_host_discovery_cross_checks_empty_syn_with_connect(tmp_path: Path, monkeypatch):
+    from scanner.pipeline.probe_ladder import naabu_host_discovery
+
+    commands: list[list[str]] = []
+
+    def fake_run_command(command, **kwargs):
+        commands.append(command)
+        result = MagicMock()
+        result.stdout = (
+            "203.0.113.10:80\n203.0.113.11:443\n"
+            if "-Pn" in command
+            else ""
+        )
+        return result
+
+    monkeypatch.setattr("scanner.pipeline.probe_ladder.run_command", fake_run_command)
+    alive = naabu_host_discovery(
+        ["203.0.113.10", "203.0.113.11"],
+        tmp_path,
+        rate=100,
+        timeout=30,
+        retries=1,
+        tag="external",
+        scope_members=["203.0.113.0/24"],
+    )
+
+    assert alive == ["203.0.113.10", "203.0.113.11"]
+    assert len(commands) == 2
+    assert "-sn" in commands[0]
+    assert all(flag in commands[1] for flag in ["-Pn", "-s", "c", "-p", "80,443"])
+    assert (tmp_path / "discover" / "external.naabu.alive.txt").read_text(
+        encoding="utf-8"
+    ) == "203.0.113.10\n203.0.113.11\n"
+
+
+def test_naabu_host_discovery_does_not_connect_to_excluded_ports(tmp_path: Path, monkeypatch):
+    from scanner.pipeline.probe_ladder import naabu_host_discovery
+
+    commands: list[list[str]] = []
+
+    def fake_run_command(command, **kwargs):
+        commands.append(command)
+        result = MagicMock()
+        result.stdout = ""
+        return result
+
+    monkeypatch.setattr("scanner.pipeline.probe_ladder.run_command", fake_run_command)
+    alive = naabu_host_discovery(
+        ["203.0.113.10"],
+        tmp_path,
+        rate=100,
+        timeout=30,
+        retries=1,
+        tag="excluded",
+        scope_members=["203.0.113.10"],
+        exclude_ports=[80, 443],
+    )
+
+    assert alive == []
+    assert len(commands) == 1
+    assert "-sn" in commands[0]
+
+
+def test_failed_syn_is_not_an_empty_batch_when_connect_finds_nobody(
+    tmp_path: Path, monkeypatch
+):
+    from scanner.pipeline.probe_ladder import naabu_host_discovery
+
+    commands: list[list[str]] = []
+
+    def fake_run_command(command, **kwargs):
+        commands.append(command)
+        if "-Pn" in command:
+            result = MagicMock()
+            result.stdout = ""
+            return result
+        raise OSError("naabu: no CAP_NET_RAW")
+
+    monkeypatch.setattr("scanner.pipeline.probe_ladder.run_command", fake_run_command)
+    with pytest.raises(OSError, match="CAP_NET_RAW"):
+        naabu_host_discovery(
+            ["203.0.113.10"],
+            tmp_path,
+            rate=100,
+            timeout=30,
+            retries=0,
+            tag="failed",
+            scope_members=["203.0.113.10"],
+        )
+
+    assert any("-Pn" in command for command in commands)
+    assert not (tmp_path / "discover" / "failed.naabu.alive.txt").exists()
+
+
+def test_failed_syn_with_both_probe_ports_excluded_does_not_connect(
+    tmp_path: Path, monkeypatch
+):
+    from scanner.pipeline.probe_ladder import naabu_host_discovery
+
+    commands: list[list[str]] = []
+
+    def fake_run_command(command, **kwargs):
+        commands.append(command)
+        raise OSError("naabu: no CAP_NET_RAW")
+
+    monkeypatch.setattr("scanner.pipeline.probe_ladder.run_command", fake_run_command)
+    with pytest.raises(OSError, match="CAP_NET_RAW"):
+        naabu_host_discovery(
+            ["203.0.113.10"],
+            tmp_path,
+            rate=100,
+            timeout=30,
+            retries=0,
+            tag="excluded-fail",
+            scope_members=["203.0.113.10"],
+            exclude_ports=[80, 443],
+        )
+
+    assert len(commands) == 1
+    assert "-sn" in commands[0]
+    assert "-Pn" not in commands[0]
+
+
+def test_failed_syn_keeps_connect_hosts_and_skips_syn_afterwards(
+    tmp_path: Path, monkeypatch
+):
+    from scanner.pipeline.probe_ladder import naabu_host_discovery
+
+    calls = {"syn": 0, "connect": 0}
+
+    def fake_run_command(command, **kwargs):
+        result = MagicMock()
+        if "-Pn" in command:
+            calls["connect"] += 1
+            result.stdout = "203.0.113.10:80\n"
+            return result
+        calls["syn"] += 1
+        raise OSError("naabu: no CAP_NET_RAW")
+
+    monkeypatch.setattr("scanner.pipeline.probe_ladder.run_command", fake_run_command)
+    kwargs = dict(rate=100, timeout=30, retries=0, scope_members=["203.0.113.0/24"])
+    first = naabu_host_discovery(["203.0.113.10"], tmp_path, tag="batch-a", **kwargs)
+    second = naabu_host_discovery(["203.0.113.11"], tmp_path, tag="batch-b", **kwargs)
+
+    assert first == ["203.0.113.10"]
+    assert second == ["203.0.113.10"]
+    assert calls == {"syn": 1, "connect": 2}
+
+
+def test_connect_cross_check_failure_keeps_the_empty_syn_result(
+    tmp_path: Path, monkeypatch
+):
+    from scanner.pipeline.probe_ladder import naabu_host_discovery
+
+    def fake_run_command(command, **kwargs):
+        if "-Pn" in command:
+            raise OSError("connect naabu failed")
+        result = MagicMock()
+        result.stdout = ""
+        return result
+
+    monkeypatch.setattr("scanner.pipeline.probe_ladder.run_command", fake_run_command)
+    alive = naabu_host_discovery(
+        ["203.0.113.10"],
+        tmp_path,
+        rate=100,
+        timeout=30,
+        retries=0,
+        tag="cross-fail",
+        scope_members=["203.0.113.10"],
+    )
+
+    assert alive == []
+
+
+def test_agreed_empty_cross_check_trusts_syn_for_later_batches(
+    tmp_path: Path, monkeypatch
+):
+    from scanner.pipeline.probe_ladder import naabu_host_discovery
+
+    calls = {"syn": 0, "connect": 0}
+
+    def fake_run_command(command, **kwargs):
+        result = MagicMock()
+        result.stdout = ""
+        if "-Pn" in command:
+            calls["connect"] += 1
+        else:
+            calls["syn"] += 1
+        return result
+
+    monkeypatch.setattr("scanner.pipeline.probe_ladder.run_command", fake_run_command)
+    kwargs = dict(rate=100, timeout=30, retries=0, scope_members=["203.0.113.10"])
+    assert (
+        naabu_host_discovery(["203.0.113.10"], tmp_path, tag="empty-a", **kwargs) == []
+    )
+    assert (
+        naabu_host_discovery(["203.0.113.10"], tmp_path, tag="empty-b", **kwargs) == []
+    )
+    assert calls == {"syn": 2, "connect": 1}
+
+
+def _listed_hosts(command: list[str]) -> str:
+    return Path(command[command.index("-list") + 1]).read_text(encoding="utf-8")
+
+
+def test_partial_syn_connects_only_the_hosts_it_missed(tmp_path: Path, monkeypatch):
+    from scanner.pipeline.probe_ladder import naabu_host_discovery
+
+    commands: list[list[str]] = []
+
+    def fake_run_command(command, **kwargs):
+        commands.append(command)
+        result = MagicMock()
+        if "-Pn" in command:
+            assert _listed_hosts(command) == "2001:db8::2\n"
+            result.stdout = "[2001:db8::2]:443\n"
+        else:
+            result.stdout = "2001:db8::1\n"
+        return result
+
+    monkeypatch.setattr("scanner.pipeline.probe_ladder.run_command", fake_run_command)
+    alive = naabu_host_discovery(
+        ["2001:db8:0:0:0:0:0:1", "2001:db8::2"],
+        tmp_path,
+        rate=100,
+        timeout=30,
+        retries=0,
+        tag="partial",
+        scope_members=["2001:db8::/32"],
+    )
+
+    assert alive == ["2001:db8::1", "2001:db8::2"]
+    assert len(commands) == 2
+    assert "-sn" in commands[0]
+    assert all(flag in commands[1] for flag in ["-Pn", "-s", "c", "-p", "80,443"])
+
+
+def test_partial_syn_does_not_connect_when_both_probe_ports_are_excluded(
+    tmp_path: Path, monkeypatch
+):
+    from scanner.pipeline.probe_ladder import naabu_host_discovery
+
+    commands: list[list[str]] = []
+
+    def fake_run_command(command, **kwargs):
+        commands.append(command)
+        result = MagicMock()
+        result.stdout = "203.0.113.10\n"
+        return result
+
+    monkeypatch.setattr("scanner.pipeline.probe_ladder.run_command", fake_run_command)
+    alive = naabu_host_discovery(
+        ["203.0.113.10", "203.0.113.11"],
+        tmp_path,
+        rate=100,
+        timeout=30,
+        retries=0,
+        tag="partial-excluded",
+        scope_members=["203.0.113.0/24"],
+        exclude_ports=[80, 443],
+    )
+
+    assert alive == ["203.0.113.10"]
+    assert len(commands) == 1
+    assert "-sn" in commands[0]
+    assert "-Pn" not in commands[0]
+
+
+def test_partial_syn_does_not_connect_a_miss_outside_scope(tmp_path: Path, monkeypatch):
+    from scanner.pipeline.probe_ladder import naabu_host_discovery
+
+    commands: list[list[str]] = []
+
+    def fake_run_command(command, **kwargs):
+        commands.append(command)
+        result = MagicMock()
+        result.stdout = "203.0.113.10\n"
+        return result
+
+    monkeypatch.setattr("scanner.pipeline.probe_ladder.run_command", fake_run_command)
+    alive = naabu_host_discovery(
+        ["203.0.113.10", "203.0.113.11"],
+        tmp_path,
+        rate=100,
+        timeout=30,
+        retries=0,
+        tag="partial-scope",
+        scope_members=["203.0.113.10"],
+    )
+
+    assert alive == ["203.0.113.10"]
+    assert len(commands) == 1
+
+
+def test_a_trusted_syn_still_connects_hosts_it_misses(tmp_path: Path, monkeypatch):
+    from scanner.pipeline.probe_ladder import naabu_host_discovery
+
+    calls = {"syn": 0, "connect": 0}
+
+    def fake_run_command(command, **kwargs):
+        result = MagicMock()
+        listed = _listed_hosts(command)
+        if "-Pn" in command:
+            calls["connect"] += 1
+            assert "203.0.113.21" in listed
+            assert "203.0.113.20" not in listed
+            result.stdout = "203.0.113.21:80\n"
+            return result
+        calls["syn"] += 1
+        result.stdout = (
+            "203.0.113.10\n" if "203.0.113.10" in listed else "203.0.113.20\n"
+        )
+        return result
+
+    monkeypatch.setattr("scanner.pipeline.probe_ladder.run_command", fake_run_command)
+    kwargs = dict(rate=100, timeout=30, retries=0, scope_members=["203.0.113.0/24"])
+    assert naabu_host_discovery(["203.0.113.10"], tmp_path, tag="full", **kwargs) == [
+        "203.0.113.10"
+    ]
+    assert naabu_host_discovery(
+        ["203.0.113.20", "203.0.113.21"], tmp_path, tag="partial", **kwargs
+    ) == ["203.0.113.20", "203.0.113.21"]
+    assert calls == {"syn": 2, "connect": 1}
+
+
+def test_failed_pending_connect_keeps_the_syn_hosts(tmp_path: Path, monkeypatch):
+    from scanner.pipeline.probe_ladder import naabu_host_discovery
+
+    def fake_run_command(command, **kwargs):
+        if "-Pn" in command:
+            raise OSError("connect naabu failed")
+        result = MagicMock()
+        result.stdout = "203.0.113.10\n"
+        return result
+
+    monkeypatch.setattr("scanner.pipeline.probe_ladder.run_command", fake_run_command)
+    alive = naabu_host_discovery(
+        ["203.0.113.10", "203.0.113.11"],
+        tmp_path,
+        rate=100,
+        timeout=30,
+        retries=0,
+        tag="pending-fail",
+        scope_members=["203.0.113.0/24"],
+    )
+
+    assert alive == ["203.0.113.10"]
