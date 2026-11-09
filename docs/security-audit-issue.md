@@ -1,132 +1,138 @@
-# Security Audit: Remediation Recommendations (3 Issues)
+# Security Audit: что в заметке было неверно (3 Issues)
 
-> Результат аудита безопасности (ветка `main`, коммит `5ee0ad1`). Ниже — три issue
-> с рекомендациями, отранжированных по приоритету. Каждый пункт содержит ссылку на
-> конкретный код, обоснование и критерий приёмки.
+> Разбор заметки против `main` на `5ee0ad1`. Ниже не план «внедрить исходные
+> критерии приёмки»: часть из них описывает код, которого нет, или чинит не ту
+> ветку. Для каждого пункта — что в коде уже есть и какой остаток настоящий.
 
 ---
 
-## Issue #1 — [HIGH] TLS-верификация отключена при HTTPS-подтверждении subdomain takeover
+## Issue #1 — [HIGH] `verify=False` при HTTPS-подтверждении subdomain takeover
 
 **Компонент:** `scanner/pipeline/takeover.py`
-**Место:** строка 430 (`_confirm_all`)
+**Место:** `_confirm_all`, клиент с `verify=False` (около строки 430)
 
-```python
-async with httpx.AsyncClient(
-    headers={"User-Agent": USER_AGENT},
-    verify=False,          # ← TLS не проверяется
-    follow_redirects=False,
-    trust_env=False,
-) as client:
-```
+`verify=False` в коде есть, и docstring модуля (строки 30–38) прямо говорит,
+зачем: у незанятого имени у провайдера нет сертификата на это имя. MITM на
+этом запросе может подменить тело и сдвинуть вердикт в любую сторону. Это
+реальный зазор.
 
-**Обоснование.** Docstring модуля (строки 30–38) сознательно обосновывает `verify=False`:
-у незанятого ресурса у провайдера нет сертификата под имя жертвы. Это верная причина для
-*первичного* запроса, но отключение проверки на всём клиенте открывает MITM на этапе
-подтверждения уязвимости: злоумышленник, контролирующий путь, может подменить ответ
-провайдера как в сторону ложного «vulnerable» (фейковые finding'и, паника у клиента),
-так и в сторону ложного «claimed» (реальный takeover скрывается). Ответ подтверждения —
-это security-relevant вывод, и он не должен основываться на непроверенном соединении.
+**Что в рекомендации неверно.** Продолжать проверку только при
+`CERTIFICATE_UNKNOWN` / unknown-ca и помечать hostname mismatch как
+inconclusive — это наоборот.
 
-**Рекомендация.**
-1. Не отключать верификацию глобально: использовать `verify=True` по умолчанию.
-2. Для случая «нет сертификата под имя» различать ошибки: `ssl.SSLCertVerificationError`
-   с кодом `CERTIFICATE_UNKNOWN`/unknown-ca допустим и означает «сертификат провайдера не
-   подходит имени» — это сигнал продолжать проверку по HTTP-отпечатку; любые прочие TLS-
-   ошибки (handshake failure, expired, hostname mismatch при валидном CA-chain) должны
-   помечать попытку как inconclusive, а не vulnerable.
-3. Альтернатива проще: подтвердить takeover только по DNS-признаку (NXDOMAIN target) либо
-   по HTTP-ответу на порту 80; HTTPS-запрос с непроверенным TLS использовать как
-   дополнительный сигнал пониженной достоверности, фиксируя в finding флаг
-   `tls_verified: false`.
-4. Добавить регрессионный тест: mock-провайдер с самоподписанным сертификатом → finding
-   получает `tls_verified: false`; MITM-сценарий (другой fingerprint при том же имени) →
-   статус inconclusive.
+Обычный ответ провайдера на чужое имя — сертификат публичного CA на *своё*
+имя. OpenSSL в этом случае отвечает `CERTIFICATE_VERIFY_FAILED` с
+`Hostname mismatch`, а не unknown-ca. Если считать mismatch inconclusive,
+стадия перестаёт видеть как раз ту страницу, ради которой HTTPS-запрос
+существует. unknown-ca как раз не отличает провайдера с частным CA от MITM,
+и по нему нельзя принимать «vulnerable».
 
-**Критерий приёмки:** в `_confirm_all` нет unconditional `verify=False`; каждый finding из
-takeover-стадии несёт поле `tls_verified`; CI-тест покрывает оба сценария.
+**Что делать, если HTTPS-подтверждение остаётся.**
+
+1. Проверять цепочку по системному trust store.
+2. Не требовать, чтобы имя в сертификате совпало с именем жертвы. Совпадение
+   цепочки с публичным CA и чужое имя — это сертификат провайдера; тело такого
+   ответа можно сверять с отпечатком.
+3. Цепочка, которая не сошлась (unknown-ca, обрыв handshake), не даёт
+   вердикт vulnerable по HTTPS-телу. Остаются DNS NXDOMAIN и ответ на порту 80.
+4. Не оставлять unconditional `verify=False` и не помечать непроверенное тело
+   флагом `tls_verified: false`, если этот флаг всё ещё кормит положительный
+   finding.
+
+**Критерий приёмки:** положительный takeover по HTTPS берётся только из тела,
+полученного при проверке цепочки; hostname mismatch при доверенной цепочке
+по-прежнему доходит до сверки отпечатка; unknown-ca и обрыв handshake сами по
+себе не дают `vulnerable`.
 
 ---
 
-## Issue #2 — [HIGH] Прод-валидация API не проверяет SQLite-fallback и placeholder-секреты; Helm-секреты формально опциональны
+## Issue #2 — [HIGH] Прод уже отказывается стартовать; дыра — пароль бэкапа ClickHouse
 
-**Компоненты:** `api/settings.py`, `k8s/scripts/validate-kustomize.sh`, `charts/shapoclyack/values.yaml`
-**Места:**
-- `api/settings.py:2048` — дефолт CORS `"*"` (см. также Issue #3);
-- `api/settings.py` (~2056) — `postgres_url_env` хранится только локально, для сообщения об ошибке;
-- `charts/shapoclyack/values.yaml:144-148` — `existingSecrets.*` пустые строки по умолчанию;
-  защита держится только на `devPlaceholders: false` + отказе рендера;
-- `k8s/shapoclyack/overlays/prod-ha/kustomization.yaml:12` — декларировано «fail loudly rather
-  than defaults that fail quietly», но `validate-kustomize.sh` не grep'ит rendered-манифесты на
-  публичные dev-placeholder'ы из kustomize base.
+**Компоненты:** `api/settings.py`, `charts/shapoclyack/templates/validate.yaml`,
+`k8s/shapoclyack/base/kustomization.yaml`
 
-**Обоснование.** Postgres — жёсткая зависимость (tenants, users, assets, jobs, agents, webhooks).
-SQLite-fallback подменяет отсутствующий `OCTO_POSTGRES_URL` локальным файлом: runtime-отказ
-(`settings.py:~1760`) есть, но статической проверки в CI/deploy-пайплайне прод-оверлея нет —
-mis-deploy заметят только по потере данных мульти-тенантности. Аналогично с секретами: если
-оператор задаст `devPlaceholders: true` «временно» или создаст Secret со значением из примера,
-ни один валидатор это не поймает — плейсхолдеры публично опубликованы в репозитории.
+Исходная заметка описывает отсутствие проверок, которые уже стоят в
+`_validate_production` (не `_strict_problems`). `OCTO_ENV` по умолчанию
+`prod` (`_resolve_env`). При `OCTO_ENV=prod` старт бросает
+`InsecureConfigurationError`, если:
 
-**Рекомендация.**
-1. В `k8s/scripts/validate-kustomize.sh` для оверлеев `prod-*` добавить проверки
-   `kustomize build | grep`:
-   - отсутствие строк-плейсхолдеров БД/NATS/ClickHouse/JWT из base (захардкодить список
-     значений-маркеров, синхронизировать с `k8s/shapoclyack/examples/api-secrets.example.yaml`);
-   - отсутствие `OCTO_POSTGRES_URL` со значением `sqlite:` / пустым;
-   - наличие всех ключей Secret, на которые ссылаются deployment'ы (`secretKeyRef`), иначе
-     `kubectl apply` падает только при старте пода.
-2. В Helm-чарте сделать `existingSecrets.postgres/clickhouse/nats/jwt` обязательными через
-   `required` в шаблонах (сейчас отказ основан на значении флага `devPlaceholders` — флаг
-   легче случайно включить, чем забыть обязательное поле).
-3. Зафиксировать контракт: значения из `api-secrets.example.yaml` добавить в CI-таргет
-   (`make ci-*` / Jenkinsfile publish), чтобы PR с новым плейсхолдером в base не прошёл без
-   обновления списка детекта.
+- `OCTO_POSTGRES_URL` пуст (тогда подставляется локальный SQLite) или явно
+  указывает на SQLite;
+- `OCTO_JWT_SECRET` пуст или равен `DEFAULT_JWT_SECRET`
+  (`shapoclyack-dev-secret-change-me`), в том числе когда этот литерал лежит
+  в `OCTO_JWT_SECRET_PREVIOUS`;
+- `OCTO_POSTGRES_URL`, `OCTO_CLICKHOUSE_URL` или `OCTO_NATS_URL` содержат
+  литерал из `DEFAULT_DATA_PLANE_SECRETS`;
+- в CORS есть `*` (см. Issue #3).
 
-**Критерий приёмки:** `validate-kustomize.sh prod-ha` падает на (а) placeholder-пароле,
-(б) `sqlite:` URL, (в) висячем `secretKeyRef`; helm template без `existingSecrets.jwt`
-падает с `required`-ошибкой даже при `devPlaceholders=true` для prod-values.
+Оверлей `prod-ha` не рендерит sqlite URL: workload'ы ссылаются на Secret через
+`secretKeyRef`.
 
----
+Helm уже отказывает в рендере. `templates/validate.yaml` вызывает `fail`,
+если пусты `existingSecrets.api`, `postgres`, `clickhouse`, `clickhouseBackup`
+или `nats`, и при этом не включены `devPlaceholders` и
+`externalSecrets.enabled`. Ключ JWT — `existingSecrets.api` (в Secret поле
+`jwt_secret`), а не `existingSecrets.jwt`. `devPlaceholders=true` — явный
+путь для одноразового стенда; API при этом всё равно требует `OCTO_ENV=dev`,
+иначе `_validate_production` не пустит те же плейсхолдеры.
 
-## Issue #3 — [MEDIUM] Дефолт `OCTO_API_CORS` = `"*"` вместо явного отказа от конфигурации
+**Настоящий остаток.** Пароль `shapoclyack-dev-clickhouse-backup-change-me`
+(литерал в `k8s/shapoclyack/base/kustomization.yaml` и в Secret чарта
+`shapoclyack-clickhouse-backup`) не входит в `DEFAULT_DATA_PLANE_SECRETS`.
+Его и некуда подставить в эту проверку: `_shipped_data_plane_secrets` смотрит
+только три URL, а пароль бэкапа живёт в CronJob и в API не приходит. Прод-API
+может стартовать, пока бэкап ClickHouse всё ещё на опубликованном пароле.
 
-**Компонент:** `api/settings.py`
-**Место:** строки 2048–2049
+**Что делать.**
 
-```python
-origins = os.environ.get("OCTO_API_CORS", "*").strip()
-cors = [part.strip() for part in origins.split(",") if part.strip()] or ["*"]
-```
+1. Ловить этот литерал в рендере прод-оверлея и чарта (kustomize/helm), а не
+   описывать `_validate_production` как отсутствующую.
+2. Не переименовывать ключ в `existingSecrets.jwt` и не заставлять
+   `required` ронять `devPlaceholders=true`: этот флаг и есть документированный
+   выход для стенда, а прод закрывает API отдельно.
 
-**Обоснование.** Строгий режим (`_strict_problems`, ~1746) корректно refuses `"*"` в prod —
-но защита существует только потому, что дефолт небезопасен. Три пути открыть API любому
-origin: не задать переменную, задать пустое значение (ветвление `or ["*"]`), задать
-`"*", https://x` (детект ловит любой `"*"` в списке — верно, но сам дефолт провоцирует).
-Безопаснее «fail closed»: незаданный CORS должен означать «никаких внешних origins», а
-консоль работает за тем же origin (same-origin запросы CORS не требуют).
-
-**Рекомендация.**
-1. Сменить дефолт на пустой список: `os.environ.get("OCTO_API_CORS", "")` → `cors == []`
-   (CORSMiddleware с `allow_origins=[]` пропускает только same-origin).
-2. Сохранить обратную совместимость для dev: в `compose.*.yml` и оверлее `dev` явно выставить
-   `OCTO_API_CORS=*`; в strict-валидации сообщение переформулировать с «default when unset»
-   на «explicitly set to *».
-3. Убрать ветвление `or ["*"]` (пустая строка → пустой список, а не wildcard).
-4. Обновить `docs/operations.md` и комментарий в `api/app.py:498` (CORS-safelist для
-   кастомных заголовков консоли), чтобы документация не противоречила новому дефолту.
-
-**Критерий приёмки:** контейнер API без `OCTO_API_CORS` отвечает 403 на preflight с чужого
-origin; dev-compose поднимается с `*`; тесты `tests/` на settings обновлены; ни один prod
-манифест не полагается на implicit wildcard.
+**Критерий приёмки:** рендер `prod-ha` и helm template без
+`devPlaceholders` не содержат `shapoclyack-dev-clickhouse-backup-change-me`.
+Пустой `existingSecrets.api` по-прежнему валит рендер. `devPlaceholders=true`
+по-прежнему рендерится и по-прежнему не стартует API при `OCTO_ENV=prod`.
 
 ---
 
-## Сводка приоритетов
+## Issue #3 — [MEDIUM] Wildcard CORS в проде уже отказ старта, не 403
 
-| # | Риск | Severity | Блок | Оценка усилий |
-|---|------|----------|------|---------------|
-| 1 | MITM на подтверждении takeover | HIGH | scanner | S–M |
-| 2 | Плейсхолдеры/fallback в проде | HIGH | deploy/CI | M |
-| 3 | Wildcard CORS по умолчанию | MEDIUM | api | S |
+**Компонент:** `api/settings.py` (`load_settings`), проверка в
+`_validate_production`
 
-Рекомендуемый порядок: #3 (быстрый, снижает surface) → #2 (защита деплоя) → #1 (требуется дизайн статуса `inconclusive`).
+Незаданная, пустая и `"*"` переменная `OCTO_API_CORS` становятся
+`cors_origins=["*"]` (дефолт аргумента `os.environ.get` и ветка `or ["*"]`,
+плюс дефолт поля `Settings`). Это так.
+
+Дальше заметка расходится с кодом.
+
+- Отказ делает `_validate_production` (~1744), не `_strict_problems`. Любой
+  список, в котором есть `"*"`, при `OCTO_ENV=prod` не даёт процессу
+  стартовать. Wildcard достижим только при `OCTO_ENV=dev`.
+- `CORSMiddleware` в `api/app.py` создаётся с `allow_credentials=True`.
+  Starlette на preflight с origin вне списка отвечает **400**, не 403.
+
+Менять дефолт на пустой список — отдельное ужесточение dev-стенда, а не
+закрытие прода. Прод это состояние и так не запускает.
+
+**Критерий приёмки, если дефолт всё же меняют:** процесс с `OCTO_ENV=prod` и
+`OCTO_API_CORS=*` по-прежнему не стартует; dev-compose, которому нужен
+wildcard, задаёт его явно; чужой credentialed preflight получает 400.
+Критерий «403 на preflight» этому стеку не соответствует.
+
+---
+
+## Сводка
+
+| # | Что было в заметке | Что в коде |
+|---|---|---|
+| 1 | mismatch = inconclusive, продолжать только unknown-ca | mismatch — нормальный сертификат провайдера; unknown-ca не доказательство |
+| 2 | нет проверки SQLite, JWT и Helm-секретов; ключ `existingSecrets.jwt` | `_validate_production` и `validate.yaml` это уже закрывают; ключ — `existingSecrets.api`; не закрыт пароль бэкапа ClickHouse |
+| 3 | дефолт `*` надо убрать, иначе прод открыт; preflight 403 | прод с `*` не стартует; preflight вне списка — 400 |
+
+Порядок, если брать остаток: пароль бэкапа ClickHouse, затем дизайн HTTPS-
+подтверждения takeover (цепочка да, имя жертвы нет). Смена дефолта CORS прода
+не закрывает.
