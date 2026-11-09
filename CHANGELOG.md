@@ -14,6 +14,19 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- Pulse plugin phase 1: read-only unauthenticated status checks for ClickHouse
+  `/ping`, MongoDB `isMaster`, etcd `/version` and Docker Engine `/version`.
+  Queries, database/document reads and daemon operations are not performed.
+- Pulse plugin phase 2: read-only unauthenticated status checks for Prometheus,
+  Grafana, Jenkins, Consul, Vault and the Kubernetes API. Metrics, dashboards,
+  jobs, catalog/KV data, secrets and API objects are not read.
+- Pulse plugin phase 3: bounded Kafka ApiVersions, anonymous MQTT CONNECT,
+  AMQP 0-9-1 connection.start, LDAP RootDSE and Git upload-pack advertisement
+  checks. Authentication, publishing, object transfer and directory subtree
+  searches remain out of scope.
+- Pulse plugin phase 4: WinRM challenge confirmation, X11 setup acceptance,
+  plain-HTTP browser hardening headers and unauthenticated Ollama model listing.
+  No credentials, post-setup X11 requests or model generation are used.
 - AI operator provider `xai` (`OCTO_OPERATOR_PROVIDER`) for the xAI chat API at
   the fixed base `https://api.x.ai/v1`. It uses the same opt-in, bearer key and
   public-host checks as the other hosted providers, and a different base URL is

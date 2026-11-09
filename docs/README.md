@@ -125,6 +125,7 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | [Troubleshooting](troubleshooting.md) | Startup, authentication, scanner, broker, database, UI diagnostics |
 | [Pulse backend](pulse-backend.md) | Pulse service-probe backend (the only one) and the Nmap comparison corpus |
 | [Pulse plugins](pulse-plugins.md) | Rhai plugins passed to Pulse with `--script-dir` (SSH algorithms, anonymous FTP, cleartext services): contract, limits, receipt, verification (#544) |
+| [Фазы плагинов Pulse](pulse-plugin-phases.ru.md) 🇷🇺 | Working backlog for new Rhai checks: writing rules, phases, and items still to fill in |
 | [Migrating off Nmap](nmap-migration.md) | #548: which Nmap settings are now refused and what replaces them, which old data is still read, and the known gaps (TLS suite grades, four SMB/RDP checks, pinned Pulse inputs) |
 | [Speed benchmark](benchmark-speed.md) | Isolated farm and method for measuring port discovery speed and recall against masscan; known naabu SYN/libpcap finding |
 | [Exact Naabu → Pulse endpoints](pulse-endpoints.md) | The exact-endpoint planner and resume between port discovery and Pulse (#448) |
