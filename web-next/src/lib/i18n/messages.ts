@@ -210,9 +210,6 @@ export const en = {
   "login.failed": "Login failed",
   "login.or": "or",
   "login.sso": "Sign in with SSO",
-  "login.oidc": "Sign in with SSO",
-  "login.saml": "Sign in with SAML",
-  "login.ldap": "Sign in with LDAP / Active Directory",
 
   "auth.loading": "Loading session…",
   "auth.redirecting": "Redirecting to login…",
@@ -1688,7 +1685,6 @@ export const en = {
   "launcher.fillReason.denied": "denied",
   "launcher.fillReason.invalid": "unreadable",
   "launcher.fillFailed": "Could not read the scope: {error}",
-  "launcher.defaultsHint": "Empty targets fall back to the server's default input files.",
   "launcher.targetsRequired": "Enter at least one target; the console never uses server defaults.",
   "launcher.detected": "Targets suggest: {surface}",
   "launcher.detectedNone": "No targets typed yet",
@@ -1698,8 +1694,6 @@ export const en = {
   "launcher.starting": "Starting…",
   "launcher.confirmTitle": "Start {surface} scan — {intent} / {mode}?",
   "launcher.confirmTitleAny": "Start scan — {intent} / {mode}?",
-  "launcher.confirmNoTargets":
-    "No custom targets — the scanner uses the server's configured target inputs.",
   "launcher.confirmTargets": "{domains} domains · {ranges} ranges. Execution starts immediately.",
   "launcher.confirm": "Confirm & launch",
   "jobs.cancel": "Cancel job",
@@ -2599,9 +2593,6 @@ export const ru: Record<MsgKey, string> = {
   "login.failed": "Не удалось войти",
   "login.or": "или",
   "login.sso": "Войти через SSO",
-  "login.oidc": "Войти через SSO",
-  "login.saml": "Войти через SAML",
-  "login.ldap": "Войти через LDAP / Active Directory",
 
   "auth.loading": "Загрузка сессии…",
   "auth.redirecting": "Переход на страницу входа…",
@@ -4069,7 +4060,6 @@ export const ru: Record<MsgKey, string> = {
   "launcher.fillReason.denied": "запрещено",
   "launcher.fillReason.invalid": "не читается",
   "launcher.fillFailed": "Не удалось прочитать область: {error}",
-  "launcher.defaultsHint": "Пустые цели — берутся входные файлы сервера по умолчанию.",
   "launcher.targetsRequired":
     "Укажите хотя бы одну цель; UI не использует серверные цели по умолчанию.",
   "launcher.detected": "Цели указывают на: {surface}",
@@ -4080,7 +4070,6 @@ export const ru: Record<MsgKey, string> = {
   "launcher.starting": "Запуск…",
   "launcher.confirmTitle": "Запустить {surface} скан — {intent} / {mode}?",
   "launcher.confirmTitleAny": "Запустить скан — {intent} / {mode}?",
-  "launcher.confirmNoTargets": "Свои цели не заданы — сканер использует входные файлы сервера.",
   "launcher.confirmTargets": "{domains} доменов · {ranges} диапазонов. Исполнение начнётся сразу.",
   "launcher.confirm": "Подтвердить и запустить",
   "jobs.cancel": "Отменить задание",
