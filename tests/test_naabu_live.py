@@ -16,7 +16,7 @@ import subprocess
 
 import pytest
 
-from scanner.pipeline.probe_ladder import build_naabu_sn_command
+from scanner.pipeline.probe_ladder import build_naabu_connect_command, build_naabu_sn_command
 
 LIVE = os.environ.get("OCTO_NAABU_LIVE", "").strip()
 
@@ -51,6 +51,17 @@ def test_the_built_host_discovery_command_starts(targets_file, exclude_ports):
     before a packet is sent, and the stage reads that as a dead estate."""
     result = _run(
         build_naabu_sn_command(targets_file, rate=1000, retries=1, exclude_ports=exclude_ports)
+    )
+    assert result.returncode == 0, result.stderr
+    assert "FTL" not in result.stderr
+
+
+def test_the_connect_cross_check_command_starts(targets_file):
+    """The fallback argv is a real naabu invocation, not only a list the unit
+    test can spell. A flag the binary rejects fails the image smoke stage
+    instead of the first container scan."""
+    result = _run(
+        build_naabu_connect_command(targets_file, probe_ports=[80, 443], rate=1000, retries=1)
     )
     assert result.returncode == 0, result.stderr
     assert "FTL" not in result.stderr

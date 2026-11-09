@@ -258,10 +258,12 @@ export function ScanLauncher({
 
   function onSubmit(event: FormEvent) {
     event.preventDefault();
+    if (noTargets) return;
     setConfirmOpen(true);
   }
 
   function startConfirmed() {
+    if (noTargets) return;
     const body: StartScanBody = {
       mode,
       intent: intent || null,
@@ -680,11 +682,17 @@ export function ScanLauncher({
           </dl>
           <ScanTechnicalDetails intent={intent} mode={mode} backend={serviceBackend} />
           <div className="h-px bg-border" />
-          <Button type="submit" disabled={mutation.isPending} className="w-full font-semibold">
+          <Button
+            type="submit"
+            disabled={mutation.isPending || noTargets}
+            className="w-full font-semibold"
+          >
             <Play className="fill-current" aria-hidden />
             {mutation.isPending ? t("launcher.starting") : t("launcher.start")}
           </Button>
-          <p className="text-xs text-muted-foreground">{t("launcher.defaultsHint")}</p>
+          {noTargets ? (
+            <p className="text-xs text-muted-foreground">{t("launcher.targetsRequired")}</p>
+          ) : null}
         </aside>
       </div>
 
@@ -704,9 +712,7 @@ export function ScanLauncher({
                   })}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {noTargets
-                ? t("launcher.confirmNoTargets")
-                : t("launcher.confirmTargets", { domains: domainCount, ranges: rangeCount })}
+              {t("launcher.confirmTargets", { domains: domainCount, ranges: rangeCount })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
