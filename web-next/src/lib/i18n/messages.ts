@@ -210,6 +210,9 @@ export const en = {
   "login.failed": "Login failed",
   "login.or": "or",
   "login.sso": "Sign in with SSO",
+  "login.oidc": "Sign in with SSO",
+  "login.saml": "Sign in with SAML",
+  "login.ldap": "Sign in with LDAP / Active Directory",
 
   "auth.loading": "Loading session…",
   "auth.redirecting": "Redirecting to login…",
@@ -2593,6 +2596,9 @@ export const ru: Record<MsgKey, string> = {
   "login.failed": "Не удалось войти",
   "login.or": "или",
   "login.sso": "Войти через SSO",
+  "login.oidc": "Войти через SSO",
+  "login.saml": "Войти через SAML",
+  "login.ldap": "Войти через LDAP / Active Directory",
 
   "auth.loading": "Загрузка сессии…",
   "auth.redirecting": "Переход на страницу входа…",
