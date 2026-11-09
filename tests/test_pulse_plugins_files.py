@@ -992,3 +992,450 @@ def test_direct_smb_signing_short_headers_are_unknown_before_field_access(size, 
     lines, errors = _run_binary_plugin("shapo_smb_signing", "smb", server, tmp_path)
     assert finding(lines) is None and "plugin error — shapo_smb_signing:" in errors
     assert "Function not found" not in errors and "index out of bounds" not in errors.lower()
+
+
+# --------------------------------------------------------------------------
+# Phases 1-4 (docs/pulse-plugin-phases.ru.md): one request, one parsed reply.
+# Service injection via _run_binary_plugin passes the gate on the stub's
+# ephemeral port; every plugin here makes exactly one exchange, so the stub
+# sees exactly one request (the bare banner grab writes nothing).
+# --------------------------------------------------------------------------
+
+
+def _http_reply(status: str, *headers: bytes, body: bytes = b"") -> bytes:
+    """A complete minimal HTTP response; Content-Length always matches the body."""
+    head = f"HTTP/1.1 {status}\r\n".encode()
+    for header in headers:
+        head += header + b"\r\n"
+    return head + b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
+
+
+def _chunked_http_reply(
+    status: str, *headers: bytes, body: bytes = b"", content_length: int | None = None
+) -> bytes:
+    """One complete chunked HTTP response.
+
+    Content-Length is omitted unless the caller passes one. A length that does
+    not match the raw chunk bytes shows that chunked framing wins.
+    """
+    chunk = f"{len(body):x}\r\n".encode() + body + b"\r\n0\r\n\r\n"
+    head = f"HTTP/1.1 {status}\r\n".encode()
+    for header in headers:
+        head += header + b"\r\n"
+    head += b"Transfer-Encoding: chunked\r\n"
+    if content_length is not None:
+        head += b"Content-Length: " + str(content_length).encode() + b"\r\n"
+    return head + b"\r\n" + chunk
+
+
+#: (id, plugin, service, request target, stub reply, expected outcome).
+#: Docs criteria: clickhouse wants X-ClickHouse with an Ok. body; prometheus and
+#: grafana treat a wrong 200 body as a parse error, not a finding; jenkins must
+#: stay silent on a 403 even with X-Jenkins; vault answers 503 without Vault
+#: JSON fields only as an error; kube and ollama treat a wrong 200 JSON as an
+#: error, never as clean.
+HTTP_PHASE_CASES = [
+    ("clickhouse-ok", "shapo_clickhouse_ping", "clickhouse", "/ping",
+     _http_reply("200 OK", b"X-ClickHouse-Summary: {}", body=b"Ok.\n"), "finding"),
+    ("clickhouse-chunked", "shapo_clickhouse_ping", "clickhouse", "/ping",
+     _chunked_http_reply("200 OK", b"X-ClickHouse-Summary: {}", body=b"Ok.\n", content_length=2),
+     "finding"),
+    ("clickhouse-crlf", "shapo_clickhouse_ping", "clickhouse", "/ping",
+     _http_reply("200 OK", b"X-ClickHouse-Summary: {}", body=b"Ok.\r\n"), "finding"),
+    ("clickhouse-trailing-junk", "shapo_clickhouse_ping", "clickhouse", "/ping",
+     _http_reply("200 OK", b"X-ClickHouse-Summary: {}", body=b"Ok.junk"), "error"),
+    ("clickhouse-refused", "shapo_clickhouse_ping", "clickhouse", "/ping",
+     _http_reply("401 Unauthorized"), "clean"),
+    ("clickhouse-garbage", "shapo_clickhouse_ping", "clickhouse", "/ping",
+     b"NO CARRIER, this is not HTTP\r\n", "error"),
+    ("etcd-ok", "shapo_etcd_version", "etcd", "/version",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"etcdserver":"3.5.9","etcdcluster":"3.5.9"}'), "finding"),
+    ("etcd-refused", "shapo_etcd_version", "etcd", "/version",
+     _http_reply("401 Unauthorized"), "clean"),
+    ("etcd-truncated", "shapo_etcd_version", "etcd", "/version",
+     b'HTTP/1.1 200 OK\r\nContent-Length: 40\r\n\r\n{"etcdserver": "3.5.9"', "error"),
+    ("docker-ok", "shapo_docker_version", "docker", "/version",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"Version":"25.0.1","ApiVersion":"1.44","Engine":{"Version":"25.0.1","ApiType":"ce"}}'),
+     "finding"),
+    ("docker-refused", "shapo_docker_version", "docker", "/version",
+     _http_reply("401 Unauthorized"), "clean"),
+    ("docker-truncated", "shapo_docker_version", "docker", "/version",
+     b'HTTP/1.1 200 OK\r\nContent-Length: 21\r\n\r\n{"ApiVersi', "error"),
+    ("prometheus-ok", "shapo_prometheus_ready", "prometheus", "/api/v1/status/buildinfo",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"status":"success","data":{"version":"2.47.0","revision":"abc1234"}}'), "finding"),
+    ("prometheus-spaced-success", "shapo_prometheus_ready", "prometheus", "/api/v1/status/buildinfo",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"status": "success", "data": {}}'),
+     "finding"),
+    ("prometheus-chunked", "shapo_prometheus_ready", "prometheus", "/api/v1/status/buildinfo",
+     _chunked_http_reply("200 OK", b"Content-Type: application/json", body=b'{"status":"success","data":{}}'),
+     "finding"),
+    ("prometheus-refused", "shapo_prometheus_ready", "prometheus", "/api/v1/status/buildinfo",
+     _http_reply("401 Unauthorized"), "clean"),
+    ("prometheus-healthy-word", "shapo_prometheus_ready", "prometheus", "/api/v1/status/buildinfo",
+     _http_reply("200 OK", b"Content-Type: text/plain", body=b"Healthy"), "error"),
+    ("prometheus-successful", "shapo_prometheus_ready", "prometheus", "/api/v1/status/buildinfo",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"status":"successful"}'), "error"),
+    ("prometheus-success-extra", "shapo_prometheus_ready", "prometheus", "/api/v1/status/buildinfo",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"status":"success extra"}'), "error"),
+    ("prometheus-truncated-chunk", "shapo_prometheus_ready", "prometheus", "/api/v1/status/buildinfo",
+     b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n8\r\n{\"sta", "error"),
+    ("grafana-ok", "shapo_grafana_health", "grafana", "/api/health",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"database":"ok","commit":"f2a5a52fee","version":"10.1.5"}'), "finding"),
+    ("grafana-refused", "shapo_grafana_health", "grafana", "/api/health",
+     _http_reply("401 Unauthorized"), "clean"),
+    ("grafana-plain-ok", "shapo_grafana_health", "grafana", "/api/health",
+     _http_reply("200 OK", body=b"ok"), "error"),
+    ("jenkins-ok", "shapo_jenkins_anonymous", "jenkins", "/whoAmI/api/json",
+     _http_reply("200 OK", b"X-Jenkins: 2.440",
+                 body=b'{"_class":"hudson.model.Hudson","authenticated":false,"authorities":["anonymous"]}'),
+     "finding"),
+    ("jenkins-forbidden-with-x-jenkins", "shapo_jenkins_anonymous", "jenkins", "/whoAmI/api/json",
+     _http_reply("403 Forbidden", b"X-Jenkins: 2.440"), "clean"),
+    ("jenkins-chunked-forbidden", "shapo_jenkins_anonymous", "jenkins", "/whoAmI/api/json",
+     _chunked_http_reply("403 Forbidden", b"X-Jenkins: 2.440", body=b"no"), "clean"),
+    ("jenkins-garbage", "shapo_jenkins_anonymous", "jenkins", "/whoAmI/api/json",
+     b"\x16\x03\x01 not http at all\r\n", "error"),
+    ("consul-ok", "shapo_consul_status", "consul", "/v1/status/leader",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'"127.0.0.1:8300"'), "finding"),
+    ("consul-refused", "shapo_consul_status", "consul", "/v1/status/leader",
+     _http_reply("403 Forbidden"), "clean"),
+    ("consul-html", "shapo_consul_status", "consul", "/v1/status/leader",
+     _http_reply("200 OK", b"Content-Type: text/html", body=b"<html><body>leader</body></html>"), "error"),
+    ("vault-ok", "shapo_vault_health", "vault", "/v1/sys/health",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"initialized":true,"sealed":false}'),
+     "finding"),
+    ("vault-refused", "shapo_vault_health", "vault", "/v1/sys/health",
+     _http_reply("403 Forbidden"), "clean"),
+    ("vault-503-not-json", "shapo_vault_health", "vault", "/v1/sys/health",
+     _http_reply("503 Service Unavailable", body=b"upstream connect error or disconnect"), "error"),
+    ("kube-ok", "shapo_kube_version", "k8s-api", "/version",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"major":"1","minor":"28","gitVersion":"v1.28.2","platform":"linux/amd64"}'), "finding"),
+    ("kube-refused", "shapo_kube_version", "k8s-api", "/version",
+     _http_reply("401 Unauthorized"), "clean"),
+    ("kube-empty-object", "shapo_kube_version", "k8s-api", "/version",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b"{}"), "error"),
+    ("ollama-ok", "shapo_ollama_tags", "ollama", "/api/tags",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"models":[]}'), "finding"),
+    ("ollama-refused", "shapo_ollama_tags", "ollama", "/api/tags",
+     _http_reply("401 Unauthorized"), "clean"),
+    ("ollama-wrong-json", "shapo_ollama_tags", "ollama", "/api/tags",
+     _http_reply("200 OK", b"Content-Type: application/json", body=b'{"error":"models disabled"}'), "error"),
+]
+
+
+@needs_pulse
+@pytest.mark.parametrize(("plugin", "service", "target", "reply", "expect"),
+                         [case[1:] for case in HTTP_PHASE_CASES], ids=[case[0] for case in HTTP_PHASE_CASES])
+def test_http_status_plugins_of_phases_1_2_and_4(plugin, service, target, reply, expect, stub, tmp_path):
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin(plugin, service, server, tmp_path)
+    seen = finding(lines)
+    request = server.received[-1]
+    assert request.startswith(f"GET {target} HTTP/1.1\r\n".encode()), request
+    assert b"Host: shapoclyack.invalid\r\n" in request
+    assert b"Connection: close\r\n" in request
+    if expect == "finding":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    elif expect == "clean":
+        assert seen is None and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --- shapo_winrm_http: the 401 needs both the challenge and the product mark ---
+
+
+@needs_pulse
+@pytest.mark.parametrize(("reply", "expect"), [
+    (_http_reply("401 Unauthorized", b"Server: Microsoft-HTTPAPI/2.0", b"WWW-Authenticate: Negotiate"), "finding"),
+    (_http_reply("401 Unauthorized", b"Server: nginx/1.24.0"), "clean"),
+    (b"\x16\x03\x01\x00garbage-not-http", "error"),
+], ids=["401-with-challenge-and-httpapi", "401-without-signatures", "not-http"])
+def test_winrm_http_challenge_needs_both_signatures_and_shapes_the_post(reply, expect, stub, tmp_path):
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_winrm_http", "winrm", server, tmp_path)
+    seen = finding(lines)
+    request = server.received[-1]
+    assert request.startswith(b"POST /wsman HTTP/1.1\r\n"), request
+    assert b"Host: shapoclyack.invalid\r\n" in request
+    assert b"Connection: close\r\n" in request
+    assert b"Content-Length: 0\r\n" in request
+    assert b"Content-Type: application/soap+xml\r\n" in request
+    if expect == "finding":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    elif expect == "clean":
+        assert seen is None and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --- shapo_http_headers: one HEAD, two missing hardening header groups -------
+
+
+@needs_pulse
+@pytest.mark.parametrize(("reply", "expect"), [
+    (_http_reply("200 OK", b"Server: stub/1.0"), "finding"),
+    (_http_reply("200 OK", b"X-Content-Type-Options: nosniff", b"Content-Security-Policy: default-src 'self'"),
+     "clean"),
+    (_http_reply("500 Internal Server Error"), "clean"),
+    (b"this is not http\r\n", "error"),
+    (b"HTTP/1.1 200 OK\r\nServer: stub", "error"),
+], ids=["200-missing-both-groups", "200-with-both-groups", "500-outside-the-status-list", "not-http",
+        "truncated-headers"])
+def test_http_headers_reports_missing_hardening_headers_on_head(reply, expect, stub, tmp_path):
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_http_headers", "http", server, tmp_path)
+    seen = finding(lines)
+    request = server.received[-1]
+    assert request.startswith(b"HEAD / HTTP/1.1\r\n"), request
+    assert b"Host: shapoclyack.invalid\r\n" in request
+    assert b"Connection: close\r\n" in request
+    if expect == "finding":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    elif expect == "clean":
+        assert seen is None and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --------------------------------------------------------------------------
+# Phase 1: shapo_mongodb_hello -- one legacy OP_QUERY isMaster, BSON answer.
+# --------------------------------------------------------------------------
+
+
+def _bson_doc(elements) -> bytes:
+    body = b""
+    for kind, name, value in elements:
+        body += bytes([kind]) + name.encode() + b"\x00"
+        if kind == 0x01:  # double
+            body += struct.pack("<d", value)
+        elif kind == 0x02:  # string
+            raw = value.encode()
+            body += struct.pack("<i", len(raw) + 1) + raw + b"\x00"
+        elif kind == 0x08:  # bool
+            body += b"\x01" if value else b"\x00"
+        elif kind == 0x10:  # int32
+            body += struct.pack("<i", value)
+        elif kind == 0x0B:  # regex: pattern and options, each a C string
+            pattern, options = value
+            body += pattern.encode() + b"\x00" + options.encode() + b"\x00"
+        elif kind == 0x11:  # timestamp, eight raw bytes
+            if len(value) != 8:
+                raise ValueError("BSON timestamp must be 8 bytes")
+            body += value
+        else:
+            raise ValueError(f"unsupported BSON element kind {kind:#x}")
+    return struct.pack("<i", len(body) + 5) + body + b"\x00"
+
+
+def _mongo_wire_reply(request: bytes, doc: bytes) -> bytes:
+    """One legacy OP_REPLY (the plugin sends OP_QUERY), echoing the request id."""
+    assert struct.unpack_from("<i", request, 12)[0] == 2004, "the plugin sends a legacy OP_QUERY hello"
+    request_id = struct.unpack_from("<i", request, 4)[0]
+    body = struct.pack("<iqii", 0, 0, 0, 1) + doc
+    return struct.pack("<iiii", 16 + len(body), 0, request_id, 1) + body
+
+
+@needs_pulse
+@pytest.mark.parametrize("case", ["hello-ok", "auth-error", "truncated"])
+def test_mongodb_hello_parses_the_bson_answer_or_raises(stub, tmp_path, case):
+    def reply(request: bytes) -> bytes:
+        if case == "hello-ok":
+            # ok is the double 1.0, which is not eight zero bytes. operationTime
+            # is a top-level timestamp. note is a regex of two C strings.
+            doc = _bson_doc([
+                (0x08, "ismaster", True),
+                (0x01, "ok", 1.0),
+                (0x11, "operationTime", b"\x01\x00\x00\x00\x02\x00\x00\x00"),
+                (0x0B, "note", ("a", "i")),
+                (0x10, "maxBsonObjectSize", 16777216),
+            ])
+        elif case == "auth-error":
+            doc = _bson_doc([(0x01, "ok", 0.0), (0x02, "errmsg", "not authorized on admin to execute command"),
+                             (0x10, "code", 13)])
+        else:
+            return _mongo_wire_reply(request, _bson_doc([(0x08, "ismaster", True)]))[:-3]
+        return _mongo_wire_reply(request, doc)
+
+    server = stub(b"", reply)
+    lines, errors = _run_binary_plugin("shapo_mongodb_hello", "mongodb", server, tmp_path)
+    seen = finding(lines)
+    assert server.received[-1].hex() == (
+        "3a0000005348415000000000d40700000000000061646d696e2e24636d6400"
+        "0000000001000000130000001069734d6173746572000100000000"
+    ), "one legacy OP_QUERY isMaster on admin.$cmd with request id SHAP"
+    if case == "hello-ok":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    elif case == "auth-error":
+        assert seen is None and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --------------------------------------------------------------------------
+# Phase 3: brokers and catalogs -- exact binary frames.
+# --------------------------------------------------------------------------
+
+
+def _kafka_apiversions_reply(request: bytes, error_code: int, cut: int | None = None) -> bytes:
+    """ApiVersions v0: frame length, correlation id, error code, one api (0, 0..8)."""
+    body = request[8:12] + struct.pack(">h", error_code) + struct.pack(">i", 1) + struct.pack(">hhh", 0, 0, 8)
+    frame = struct.pack(">I", len(body)) + body
+    return frame if cut is None else frame[:cut]
+
+
+@needs_pulse
+@pytest.mark.parametrize("case", ["error-code-zero", "nonzero-code-unverified", "shorter-than-header"])
+def test_kafka_apiversions_accepts_only_a_verified_zero_error_code(stub, tmp_path, case):
+    error_code = 1 if case == "nonzero-code-unverified" else 0
+    cut = 3 if case == "shorter-than-header" else None
+
+    def reply(request: bytes) -> bytes:
+        return _kafka_apiversions_reply(request, error_code, cut)
+
+    server = stub(b"", reply)
+    lines, errors = _run_binary_plugin("shapo_kafka_apiversions", "kafka", server, tmp_path)
+    seen = finding(lines)
+    assert server.received[-1].hex() == "0000000f00120000534841500005736861706f", (
+        "frame length 15, ApiVersions v0, correlation id SHAP, client id shapo"
+    )
+    if case == "error-code-zero":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+@needs_pulse
+@pytest.mark.parametrize(("reply", "expect"), [
+    (b"\x20\x02\x00\x00", "finding"),
+    (b"\x20\x02\x00\x05", "clean"),
+    (b"\x20\x02\x00", "error"),
+], ids=["connack-accepted", "connack-not-authorized", "truncated-connack"])
+def test_mqtt_anonymous_connect_is_level_4_clean_session_without_credentials(reply, expect, stub, tmp_path):
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_mqtt_anonymous", "mqtt", server, tmp_path)
+    seen = finding(lines)
+    assert server.received[-1].hex() == "101100044d5154540402003c0005736861706f", (
+        "CONNECT at level 4, clean session, keepalive 60, client id shapo, no credentials"
+    )
+    if expect == "finding":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    elif expect == "clean":
+        assert seen is None and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+_AMQP_START_PAYLOAD = (b"\x00\x0a\x00\x0a"  # class 10 (connection), method 10 (start)
+                       + b"\x00\x09"  # AMQP 0-9-1
+                       + b"\x00\x00\x00\x00"  # empty server-properties table
+                       + b"\x00\x00\x00\x0ePLAIN AMQPLAIN"
+                       + b"\x00\x00\x00\x05en_US")
+_AMQP_START = b"\x01\x00\x00" + struct.pack(">I", len(_AMQP_START_PAYLOAD)) + _AMQP_START_PAYLOAD + b"\xce"
+
+
+@needs_pulse
+@pytest.mark.parametrize(("reply", "expect"), [
+    (_AMQP_START, "finding"),
+    (b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", "error"),
+    (_AMQP_START[:12], "error"),
+], ids=["connection-start", "http-instead-of-amqp", "truncated-frame"])
+def test_amqp_start_confirms_the_protocol_without_logging_in(reply, expect, stub, tmp_path):
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_amqp_start", "amqp", server, tmp_path)
+    seen = finding(lines)
+    assert server.received[-1] == b"AMQP\x00\x00\x09\x01", "the whole exchange is the protocol header"
+    if expect == "finding":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+#: The documented access-refusal result codes: insufficientAccessRights (50) or
+#: invalidCredentials (49). The plugin records 49 and 50; keep one fixture code.
+_LDAP_REFUSAL_CODE = 50
+
+
+def _ldap_message_id(request: bytes) -> bytes:
+    pos = 2 + (request[1] & 0x7F if request[1] & 0x80 else 0)
+    assert request[pos] == 0x02, "LDAPMessage must open with the messageID INTEGER"
+    size = request[pos + 1]
+    return request[pos + 2: pos + 2 + size]
+
+
+def _ldap_rootdse_response(request: bytes, result_code: int, entry: bool) -> bytes:
+    """Separate LDAPMessage sequences for the optional entry and SearchResultDone."""
+    mid = _ber(2, _ldap_message_id(request))
+    messages = []
+    if entry:
+        attribute = _ber(0x30, _ber(4, b"supportedLDAPVersion") + _ber(0x31, _ber(4, b"3")))
+        result = _ber(0x64, _ber(4, b"") + _ber(0x30, attribute))
+        messages.append(_ber(0x30, mid + result))
+    done = _ber(0x65, _ber(0x0A, bytes([result_code])) + _ber(4, b"") + _ber(4, b""))
+    messages.append(_ber(0x30, mid + done))
+    return b"".join(messages)
+
+
+@needs_pulse
+@pytest.mark.parametrize("case", ["entry-ok", "insufficient-access-rights", "truncated-ber"])
+def test_ldap_rootdse_base_search_parses_ber_or_raises(stub, tmp_path, case):
+    def reply(request: bytes) -> bytes:
+        if case == "entry-ok":
+            return _ldap_rootdse_response(request, 0, entry=True)
+        if case == "insufficient-access-rights":
+            return _ldap_rootdse_response(request, _LDAP_REFUSAL_CODE, entry=False)
+        return _ldap_rootdse_response(request, 0, entry=True)[:-3]
+
+    server = stub(b"", reply)
+    lines, errors = _run_binary_plugin("shapo_ldap_rootdse", "ldap", server, tmp_path)
+    seen = finding(lines)
+    assert server.received[-1].hex() == (
+        "304b020101634604000a01000a0100020100020100010100870b6f626a656374436c617373"
+        "30260414737570706f727465644c44415056657273696f6e040e6e616d696e67436f6e7465787473"
+    ), "one base SearchRequest: present filter objectClass, two naming attributes"
+    if case == "entry-ok":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    elif case == "insufficient-access-rights":
+        assert seen is None and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --------------------------------------------------------------------------
+# Phase 4: shapo_x11_noauth -- the first reply byte decides, MEDIUM on success.
+# --------------------------------------------------------------------------
+
+
+def _x11_success() -> bytes:
+    return b"\x01" + b"\x00" * 5 + b"\x00\x00"  # accepted, no additional data
+
+
+def _x11_refusal() -> bytes:
+    # Refused: status 0, reason length 8, two additional 8-byte blocks total 16 bytes.
+    return b"\x00\x08" + b"\x00" * 4 + b"\x02\x00" + b"no auth!"
+
+
+@needs_pulse
+@pytest.mark.parametrize(("reply", "expect"), [
+    (_x11_success(), "finding"),
+    (_x11_refusal(), "clean"),
+    (b"", "error"),
+], ids=["success", "refusal", "empty"])
+def test_x11_noauth_first_reply_byte_decides_and_setup_is_empty(stub, tmp_path, reply, expect):
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_x11_noauth", "x11", server, tmp_path)
+    seen = finding(lines)
+    assert server.received[-1].hex() == "6c000b000000000000000000", (
+        "little-endian 11.0 setup with zero-length authorisation name and data"
+    )
+    if expect == "finding":
+        assert seen and seen[0] == "MEDIUM" and not errors.strip()
+    elif expect == "clean":
+        assert seen is None and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors

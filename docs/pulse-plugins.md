@@ -3,9 +3,11 @@
 Rhai plugins that Shapoclyack hands to Pulse with `--script-dir`
 ([ADR 0002](adr/0002-replacing-nmap-functions.md), [#544](https://github.com/onixus/Shapoclyack/issues/544)).
 Content covers weak SSH advertisements, verified Ed25519 host-key
-observations, anonymous FTP, cleartext capabilities, plain HTTP TRACE,
-SMB dialect/signing and MS17-010 status hypotheses, RDP negotiation/type2
-inventory, VNC security advertisements, and standalone UDP SNMP inventory.
+observations, anonymous FTP, cleartext capabilities, plain HTTP TRACE and
+security headers, unauthenticated service status/listing endpoints, broker and
+directory negotiation, SMB dialect/signing and MS17-010 status hypotheses,
+RDP negotiation/type2 inventory, VNC security advertisements, X11 setup
+acceptance, and standalone UDP SNMP inventory.
 The files live in `scanner/pipeline/pulse_data/plugins/`, where an enrichment
 volume mounted over `scanner/data` cannot hide them.
 
@@ -45,6 +47,24 @@ installed sensor or fleet acceptance.
 | `shapo_memcached_stats` | Unauthenticated TCP Memcached `stats` response | LOW statistics disclosure; no item access, writes or UDP test | Separately reports the stats access check |
 | `shapo_rsync_modules` | Unauthenticated list of rsync daemon modules | LOW listing disclosure; module access and files are not checked | Nuclei `rsync-list-modules`, narrowed to a complete protocol reply |
 | `shapo_zookeeper_envi` | Unauthenticated ZooKeeper `envi` diagnostic | LOW environment disclosure; znode access is not checked | Nuclei `exposed-zookeeper`, narrowed to the diagnostic |
+| `shapo_clickhouse_ping` | Complete unauthenticated ClickHouse HTTP `/ping` response | LOW; queries and the native protocol are not checked | Separate status-access check |
+| `shapo_mongodb_hello` | Parsed unauthenticated MongoDB `hello` response | LOW; databases and documents are not read | Separate status-access check |
+| `shapo_etcd_version` | Parsed unauthenticated etcd `/version` response | LOW; key-value ranges and writes are not checked | Separate status-access check |
+| `shapo_docker_version` | Parsed unauthenticated Docker Engine `/version` response | LOW; containers, images and mounts are not accessed | Separate status-access check |
+| `shapo_prometheus_ready` | Unauthenticated Prometheus build information | LOW; metrics and PromQL are not queried | Separate status-access check |
+| `shapo_grafana_health` | Unauthenticated Grafana health response | LOW; dashboards and administration are not accessed | Separate status-access check |
+| `shapo_jenkins_anonymous` | Anonymous Jenkins `whoAmI` response | LOW; jobs, login and console script are not used | Separate anonymous-access check |
+| `shapo_consul_status` | Unauthenticated Consul leader status | LOW; catalog, ACL tokens and key-value data are not read | Separate status-access check |
+| `shapo_vault_health` | Parsed Vault health response without credentials | LOW; secrets, tokens, init and unseal are not used | Separate status-access check |
+| `shapo_kube_version` | Unauthenticated Kubernetes API `/version` response | LOW; API objects, exec and kubelet are not accessed | Separate status-access check |
+| `shapo_kafka_apiversions` | Successful Kafka ApiVersions negotiation | LOW; topics, produce and fetch are not used | Separate protocol check |
+| `shapo_mqtt_anonymous` | MQTT CONNECT accepted without credentials | LOW; subscribe and publish are not attempted | Separate anonymous-access check |
+| `shapo_amqp_start` | AMQP 0-9-1 `connection.start` response | LOW protocol confirmation only; no login or queue operation | Separate protocol check |
+| `shapo_ldap_rootdse` | Parsed anonymous LDAP RootDSE search entry | LOW; users, subtree search and bind are not attempted | Separate read-only directory check |
+| `shapo_winrm_http` | WinRM authentication challenge with both protocol indicators | LOW; credentials and SOAP commands are not used | Separate service confirmation |
+| `shapo_x11_noauth` | X11 initial connection accepted without authorisation | MEDIUM; no screen, input or window access is attempted | Separate anonymous-access check |
+| `shapo_http_headers` | Missing `X-Content-Type-Options` and frame/CSP protection on selected plain-HTTP statuses | LOW; HTTPS, HSTS and CSP quality are not assessed | Separate header check |
+| `shapo_ollama_tags` | Unauthenticated Ollama model listing | LOW; generation, pull and chat are not used | Separate listing-access check |
 
 The two exposure plugins still claim reachability only. Negotiation and
 inventory observations do not establish relay/exploitability, trusted identity,
@@ -246,6 +266,10 @@ No database migration: `vulnerabilities.detectors` is JSON and the detector name
 a string.
 
 ## Writing or changing a plugin
+
+The phased backlog, the gate shape the tests parse, and the checks still to
+write are in [Фазы плагинов Pulse](pulse-plugin-phases.ru.md). This section
+is the contract those phases follow.
 
 - Name the file `shapo_<what>.rhai` and make `name()` return the same string: it is
   the `cve_id` suffix and the detector reference. A test fails otherwise.
