@@ -702,7 +702,7 @@ function VulnerabilitiesInner() {
                   {t("problems.drill.clear")}
                 </Button>
                 {driftQuery.data?.drift?.differs ? (
-                  <span role="status" className="text-amber-600 dark:text-amber-400">
+                  <span role="status" className="text-warning">
                     {driftQuery.data.drift.changed_since_as_of > 0
                       ? t("problems.drill.drift", {
                           expected: driftQuery.data.drift.expected_instances,

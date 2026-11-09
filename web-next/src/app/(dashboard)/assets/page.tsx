@@ -153,7 +153,7 @@ function AssetsInner() {
           <span className="tabular-nums text-foreground">
             {row.original.open_findings.toLocaleString()}
             {row.original.unassigned_findings > 0 ? (
-              <span className="ml-1 text-xs text-amber-600 dark:text-amber-400">
+              <span className="ml-1 text-xs text-warning">
                 {" · "}
                 {t("page.assets.unassignedSuffix", { count: row.original.unassigned_findings })}
               </span>

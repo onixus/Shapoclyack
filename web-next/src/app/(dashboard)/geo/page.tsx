@@ -66,7 +66,7 @@ function GeoInner() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shadow-md">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-success/20 bg-success-subtle text-success">
             <Globe2 className="h-5 w-5" />
           </div>
           <div>
@@ -100,7 +100,7 @@ function GeoInner() {
       </div>
 
       {error ? (
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
+        <Alert variant="destructive" className="border-danger/40 bg-danger-subtle text-danger">
           <AlertDescription>{(error as Error).message}</AlertDescription>
         </Alert>
       ) : null}
@@ -114,7 +114,7 @@ function GeoInner() {
         </div>
       ) : isLoading ? (
         <div className="flex items-center justify-center gap-2 py-16 text-muted-foreground">
-          <span className="h-4 w-4 animate-spin rounded-full border-2 border-emerald-400 border-t-transparent" />
+          <span className="h-4 w-4 animate-spin rounded-full border-2 border-success border-t-transparent" />
           <span className="text-sm">{t("loading.geo")}</span>
         </div>
       ) : (
@@ -138,7 +138,7 @@ function GeoInner() {
           </div>
 
           {hostsTruncated || findingsTruncated ? (
-            <Alert className="border-amber-500/40 bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-200">
+            <Alert className="border-warning/40 bg-warning-subtle text-warning">
               <AlertDescription className="text-xs">
                 This run is larger than one page of the run API.{" "}
                 {hostsTruncated
@@ -277,7 +277,7 @@ function GeoInner() {
                   >
                     {host.host}
                     {host.findingCount > 0 ? (
-                      <span className="ml-1.5 text-rose-600 dark:text-rose-400">{host.findingCount}</span>
+                      <span className="ml-1.5 text-danger">{host.findingCount}</span>
                     ) : null}
                   </li>
                 ))}

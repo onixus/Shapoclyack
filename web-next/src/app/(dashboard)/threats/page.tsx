@@ -116,7 +116,7 @@ export default function ThreatsPage() {
         </div>
       </div>
 
-      <Alert className="border-rose-500/40 bg-rose-50 text-rose-900 dark:bg-rose-950/20 dark:text-rose-100">
+      <Alert className="border-danger/40 bg-danger-subtle text-danger">
         <AlertDescription className="text-xs">
           {t("page.threats.alert")}
         </AlertDescription>

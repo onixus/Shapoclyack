@@ -164,7 +164,7 @@ function AssetDetailInner() {
         <BackToAssets />
         <Alert
           variant="destructive"
-          className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+          className="border-danger/40 bg-danger-subtle text-danger"
         >
           <AlertDescription>{t("asset.missingParam")}</AlertDescription>
         </Alert>
@@ -179,7 +179,7 @@ function AssetDetailInner() {
           <BackToAssets />
           <Alert
             variant="destructive"
-            className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+            className="border-danger/40 bg-danger-subtle text-danger"
           >
             <AlertDescription>{(detailQuery.error as Error).message}</AlertDescription>
           </Alert>
@@ -289,7 +289,7 @@ function AssetDetailInner() {
       </div>
 
       {unassigned > 0 || breached > 0 ? (
-        <Alert className="border-amber-500/30 bg-amber-50 dark:bg-amber-950/20 text-amber-900 dark:text-amber-100">
+        <Alert className="border-warning/30 bg-warning-subtle text-warning">
           <AlertDescription className="text-xs">
             {t("asset.alert.requiredNow", {
               what: [
@@ -452,7 +452,7 @@ function AssetDetailInner() {
                           </td>
                           <td className="px-3.5 py-3 font-mono text-foreground">{v.port || "—"}</td>
                           <td className="px-3.5 py-3">
-                            <span className="rounded bg-rose-500/20 px-1.5 py-0.5 font-bold tabular-nums text-rose-600 dark:text-rose-300 border border-rose-500/30">
+                            <span className="rounded bg-danger-subtle px-1.5 py-0.5 font-bold tabular-nums text-danger border border-danger/30">
                               {v.cvss4 ?? v.cvss ?? "—"}
                             </span>
                           </td>
@@ -1078,7 +1078,7 @@ function EditCard({ asset }: { asset: AssetDetail }) {
               <Button
                 variant="outline"
                 size="sm"
-                className="border-rose-500/40 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:bg-rose-950/60"
+                className="border-danger/40 text-danger hover:bg-danger-subtle dark:bg-danger-subtle"
               >
                 {assetText(t.locale, "Decommission")}
               </Button>
@@ -1098,7 +1098,7 @@ function EditCard({ asset }: { asset: AssetDetail }) {
                 </AlertDialogCancel>
                 <AlertDialogAction
                   onClick={() => update.mutate({ status: "decommissioned" })}
-                  className="bg-rose-600 text-foreground hover:bg-rose-500"
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                 >
                   {t("asset.decommissionConfirm")}
                 </AlertDialogAction>

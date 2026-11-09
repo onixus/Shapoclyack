@@ -135,6 +135,7 @@ export function ReportFactoryPanel() {
         <Button
           className="mt-3"
           size="sm"
+          variant="outline"
           disabled={saveBranding.isPending}
           onClick={() =>
             saveBranding.mutate({
@@ -255,6 +256,7 @@ export function ReportFactoryPanel() {
         <Button
           className="mt-3"
           size="sm"
+          variant="outline"
           disabled={
             !templateName ||
             createTemplate.isPending ||
@@ -345,6 +347,7 @@ export function ReportFactoryPanel() {
         <Button
           className="mt-3"
           size="sm"
+          variant="outline"
           disabled={!scheduleTemplate || !scheduleName || createSchedule.isPending}
           onClick={() =>
             createSchedule.mutate(
@@ -422,7 +425,7 @@ export function ReportFactoryPanel() {
                     : "—"}
                 </span>{" "}
                 {report.status === "failed" ? (
-                  <span className="text-rose-600 dark:text-rose-400">{report.error}</span>
+                  <span className="text-danger">{report.error}</span>
                 ) : (
                   <span className="text-muted-foreground">{deliverySummary(report)}</span>
                 )}

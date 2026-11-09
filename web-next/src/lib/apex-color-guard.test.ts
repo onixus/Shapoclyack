@@ -4,8 +4,8 @@ import { describe, expect, it } from "vitest";
 
 /**
  * #603: component source uses APEX tokens. Raw palette utilities and hex
- * colours belong in globals.css (and in the Tremor safelist, which lives
- * outside src). A branding field may still show a hex example via placeholder.
+ * colours belong in globals.css. A branding field may still show a hex
+ * example via placeholder.
  */
 
 const SRC = path.resolve(__dirname, "..");
@@ -14,9 +14,8 @@ const CLASS_UTILITY =
   "(?:bg|text|border(?:-[trblxy])?|ring|fill|stroke|from|to|via|outline|decoration|caret|placeholder|divide)";
 const VARIANT = "(?:[A-Za-z0-9_[\\]&=:-]+:)*";
 
-const SKY = new RegExp(`(?:^|[^\\w-])${VARIANT}${CLASS_UTILITY}-sky-\\d{2,3}(?:/\\d+)?`);
 const RAW_PALETTE = new RegExp(
-  `(?:^|[^\\w-])${VARIANT}${CLASS_UTILITY}-(?:slate|gray)-\\d{2,3}(?:/\\d+)?`,
+  `(?:^|[^\\w-])${VARIANT}${CLASS_UTILITY}-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\\d{2,3}(?:/\\d+)?`,
 );
 const TINY_TYPE = /text-\[1[01]px\]/;
 const HEX = /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6})\b/;
@@ -47,8 +46,7 @@ function violations(file: string): string[] {
   lines.forEach((line, index) => {
     const visible = line.replace(PLACEHOLDER, "");
     const checks: [RegExp, string][] = [
-      [SKY, "sky palette utility"],
-      [RAW_PALETTE, "slate/gray palette utility"],
+      [RAW_PALETTE, "raw palette utility"],
       [TINY_TYPE, "text size below the APEX scale"],
       [HEX, "hex colour"],
       [NUMERIC_COLOR, "numeric rgb()/hsl()"],

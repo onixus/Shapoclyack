@@ -54,7 +54,7 @@ function CampaignList() {
           <div className="space-y-0.5">
             <StatusBadge value={row.original.status} map={CAMPAIGN_STATUS} />
             {row.original.past_due ? (
-              <p className="text-xs text-rose-600 dark:text-rose-400">{t("campaign.pastDue")}</p>
+              <p className="text-xs text-danger">{t("campaign.pastDue")}</p>
             ) : null}
           </div>
         ),

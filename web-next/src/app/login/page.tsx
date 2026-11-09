@@ -210,7 +210,7 @@ export default function LoginPage() {
                 required
               />
             </label>
-            {error ? <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{error}</p> : null}
+            {error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}
             <Button type="submit" className="w-full" disabled={submitting}>
               {submitting ? t("login.mfa.submitting") : t("login.mfa.submit")}
             </Button>
@@ -247,12 +247,12 @@ export default function LoginPage() {
         ) : (
           <>
             {localLogin === "disabled" ? (
-              <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
+              <p className="rounded-md border border-warning/40 bg-warning-subtle p-3 text-xs text-warning">
                 {t("login.localDisabled")}
               </p>
             ) : null}
             {localLogin === "break-glass" ? (
-              <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
+              <p className="rounded-md border border-warning/40 bg-warning-subtle p-3 text-xs text-warning">
                 {t("login.localBreakGlass")}
               </p>
             ) : null}
@@ -278,7 +278,7 @@ export default function LoginPage() {
                   required
                 />
               </label>
-              {error ? <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{error}</p> : null}
+              {error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}
               <Button type="submit" className="w-full" disabled={submitting}>
                 {submitting
                   ? t("login.submitting")

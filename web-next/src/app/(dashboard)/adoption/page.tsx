@@ -135,7 +135,7 @@ export default function AdoptionPage() {
       </div>
 
       {error ? (
-        <p className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600 dark:text-rose-400">
+        <p className="rounded-lg border border-danger/30 bg-danger-subtle px-4 py-3 text-sm text-danger">
           {(error as Error).message}
         </p>
       ) : null}
@@ -424,11 +424,11 @@ export default function AdoptionPage() {
                           missing
                         </Badge>
                       ) : dataset.stale ? (
-                        <Badge variant="outline" className="border-amber-500/30 text-amber-600 dark:text-amber-400">
+                        <Badge variant="outline" className="border-warning/30 text-warning">
                           {dataset.age_days} d, stale
                         </Badge>
                       ) : (
-                        <Badge variant="outline" className="border-emerald-500/30 text-emerald-600 dark:text-emerald-400">
+                        <Badge variant="outline" className="border-success/30 text-success">
                           {dataset.age_days} d
                         </Badge>
                       )}

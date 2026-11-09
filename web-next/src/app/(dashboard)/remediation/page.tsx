@@ -119,45 +119,45 @@ const STAGE_META: Record<
     title: "Acknowledged",
     description: "Confirmed & scoped findings",
     accentColor: "amber",
-    topBorder: "border-t-amber-500",
-    badgeBg: "bg-amber-500/10 dark:bg-amber-500/20",
-    badgeText: "text-amber-800 dark:text-amber-300",
+    topBorder: "border-t-warning",
+    badgeBg: "bg-warning-subtle",
+    badgeText: "text-warning",
     icon: CheckCircle2,
   },
   PLANNED: {
     title: "Planned",
     description: "Scheduled for remediation sprint",
     accentColor: "indigo",
-    topBorder: "border-t-indigo-500",
-    badgeBg: "bg-indigo-500/10 dark:bg-indigo-500/20",
-    badgeText: "text-indigo-800 dark:text-indigo-300",
+    topBorder: "border-t-viz4",
+    badgeBg: "bg-muted",
+    badgeText: "text-viz4",
     icon: Calendar,
   },
   FIXING: {
     title: "Fixing",
     description: "Patch or config in development",
     accentColor: "orange",
-    topBorder: "border-t-orange-500",
-    badgeBg: "bg-orange-500/10 dark:bg-orange-500/20",
-    badgeText: "text-orange-800 dark:text-orange-300",
+    topBorder: "border-t-viz2",
+    badgeBg: "bg-muted",
+    badgeText: "text-viz2",
     icon: Wrench,
   },
   VERIFYING: {
     title: "Verifying",
     description: "Testing fix & rescan validation",
     accentColor: "violet",
-    topBorder: "border-t-violet-500",
-    badgeBg: "bg-violet-500/10 dark:bg-violet-500/20",
-    badgeText: "text-violet-800 dark:text-violet-300",
+    topBorder: "border-t-viz7",
+    badgeBg: "bg-muted",
+    badgeText: "text-viz7",
     icon: ShieldCheck,
   },
   CLOSED: {
     title: "Closed",
     description: "Verified remediated or exception",
     accentColor: "emerald",
-    topBorder: "border-t-emerald-500",
-    badgeBg: "bg-emerald-500/10 dark:bg-emerald-500/20",
-    badgeText: "text-emerald-800 dark:text-emerald-300",
+    topBorder: "border-t-success",
+    badgeBg: "bg-success-subtle",
+    badgeText: "text-success",
     icon: Shield,
   },
 };
@@ -308,7 +308,7 @@ export default function RemediationPage() {
             size="sm"
             variant="outline"
             onClick={() => setIsActivitySheetOpen(true)}
-            className="gap-1.5 border-border bg-card text-xs font-semibold shadow-sm"
+            className="gap-1.5 border-border bg-card text-xs font-semibold"
           >
             <History className="h-3.5 w-3.5 text-primary" />
             Audit Trail
@@ -335,55 +335,55 @@ export default function RemediationPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-3 rounded-xl border border-rose-500/20 bg-rose-500/5 p-3 shadow-sm">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-rose-500/20 text-rose-600 dark:text-rose-400 font-bold text-xs">
+        <div className="flex items-center gap-3 rounded-xl border border-sevcritical/30 bg-danger-subtle p-3">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-danger-subtle text-sevcritical font-bold text-xs">
             {criticalCount}
           </div>
           <div>
-            <p className="text-overline uppercase text-rose-700 dark:text-rose-300 font-semibold">{t("ui.criticalRisk")}</p>
-            <p className="text-sm font-bold text-rose-900 dark:text-rose-200">{criticalCount} critical</p>
+            <p className="text-overline uppercase text-sevcritical font-semibold">{t("ui.criticalRisk")}</p>
+            <p className="text-sm font-bold text-sevcritical">{criticalCount} critical</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3 rounded-xl border border-orange-500/20 bg-orange-500/5 p-3 shadow-sm">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-orange-500/20 text-orange-600 dark:text-orange-400 font-bold text-xs">
+        <div className="flex items-center gap-3 rounded-xl border border-sevhigh/30 bg-warning-subtle p-3">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-warning-subtle text-sevhigh font-bold text-xs">
             {highCount}
           </div>
           <div>
-            <p className="text-overline uppercase text-orange-700 dark:text-orange-300 font-semibold">{t("ui.highRisk")}</p>
-            <p className="text-sm font-bold text-orange-900 dark:text-orange-200">{highCount} high</p>
+            <p className="text-overline uppercase text-sevhigh font-semibold">{t("ui.highRisk")}</p>
+            <p className="text-sm font-bold text-sevhigh">{highCount} high</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3 rounded-xl border border-rose-500/20 bg-rose-500/5 p-3 shadow-sm">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-rose-500/20 text-rose-600 dark:text-rose-400 font-bold text-xs">
+        <div className="flex items-center gap-3 rounded-xl border border-danger/20 bg-danger-subtle p-3">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-danger-subtle text-danger font-bold text-xs">
             {breachedCount}
           </div>
           <div>
-            <p className="text-overline uppercase text-rose-700 dark:text-rose-300 font-semibold">SLA Breached</p>
-            <p className="text-sm font-bold text-rose-900 dark:text-rose-200">{breachedCount} overdue</p>
+            <p className="text-overline uppercase text-danger font-semibold">SLA Breached</p>
+            <p className="text-sm font-bold text-danger">{breachedCount} overdue</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 shadow-sm">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500/20 text-amber-600 dark:text-amber-400 font-bold text-xs">
+        <div className="flex items-center gap-3 rounded-xl border border-warning/20 bg-warning-subtle p-3">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-warning-subtle text-warning font-bold text-xs">
             {dueSoonCount}
           </div>
           <div>
-            <p className="text-overline uppercase text-amber-700 dark:text-amber-300 font-semibold">SLA Due Soon</p>
-            <p className="text-sm font-bold text-amber-900 dark:text-amber-200">{dueSoonCount} approaching</p>
+            <p className="text-overline uppercase text-warning font-semibold">SLA Due Soon</p>
+            <p className="text-sm font-bold text-warning">{dueSoonCount} approaching</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3 shadow-sm">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-bold text-xs">
+        <div className="flex items-center gap-3 rounded-xl border border-success/20 bg-success-subtle p-3">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-success-subtle text-success font-bold text-xs">
             <ShieldCheck className="h-4 w-4" />
           </div>
           <div>
-            <p className="text-overline uppercase text-emerald-700 dark:text-emerald-300 font-semibold">
+            <p className="text-overline uppercase text-success font-semibold">
               {t("vuln.verificationRate")}
             </p>
-            <p className="text-sm font-bold text-emerald-900 dark:text-emerald-200">
+            <p className="text-sm font-bold text-success">
               {verificationRate.toFixed(0)}% ·{" "}
               {t("vuln.verifiedClosedCount", { count: verifiedClosedCount })}
             </p>
@@ -478,7 +478,7 @@ export default function RemediationPage() {
       ) : null}
 
       {truncated ? (
-        <Alert className="border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200">
+        <Alert className="border-warning/30 bg-warning-subtle text-warning">
           <AlertDescription className="text-xs">
             Showing top {BOARD_OPEN_LIMIT} open and {BOARD_CLOSED_LIMIT} closed findings on Kanban. Open{" "}
             <Link href="/vulnerabilities" className="font-semibold text-primary underline">
@@ -590,10 +590,10 @@ function KanbanColumn({
   return (
     <div
       className={cn(
-        "flex min-w-0 flex-col rounded-2xl border bg-muted/40 text-card-foreground shadow-sm transition-all duration-200",
+        "flex min-w-0 flex-col rounded-2xl border bg-muted/40 text-card-foreground transition-colors duration-200",
         meta.topBorder,
         isDropTarget
-          ? "border-primary ring-2 ring-primary/30 bg-primary/5 shadow-md"
+          ? "border-primary ring-2 ring-primary/30 bg-primary/5"
           : "border-border/80",
       )}
       onDragOver={(e) => {
@@ -676,12 +676,14 @@ function KanbanCard({
 
   const sevBorderColor =
     normSev === "critical"
-      ? "border-l-rose-500"
+      ? "border-l-sevcritical"
       : normSev === "high"
-      ? "border-l-orange-500"
+      ? "border-l-sevhigh"
       : normSev === "medium"
-      ? "border-l-amber-500"
-      : "border-l-primary";
+      ? "border-l-sevmedium"
+      : normSev === "low"
+      ? "border-l-sevlow"
+      : "border-l-sevinfo";
 
   return (
     <div
@@ -695,10 +697,10 @@ function KanbanCard({
       }}
       onClick={onSelect}
       className={cn(
-        "group relative flex cursor-grab flex-col gap-2 rounded-xl border border-l-4 bg-card p-3.5 transition-all duration-150 active:cursor-grabbing hover:-translate-y-0.5 hover:shadow-md",
+        "group relative flex cursor-grab flex-col gap-2 rounded-xl border border-l-4 bg-card p-3.5 transition-colors duration-150 active:cursor-grabbing",
         sevBorderColor,
         selected
-          ? "ring-2 ring-primary border-primary bg-primary/5 shadow-md"
+          ? "ring-2 ring-primary border-primary bg-primary/5"
           : "border-border hover:border-primary/40",
       )}
     >
@@ -719,9 +721,9 @@ function KanbanCard({
           {vuln.in_kev && (
             <span
               title="Known Exploited Vulnerability (CISA KEV)"
-              className="flex items-center gap-0.5 rounded bg-rose-500/15 px-1.5 py-0.5 font-mono text-xs font-bold text-rose-700 dark:text-rose-400 border border-rose-500/30"
+              className="flex items-center gap-0.5 rounded bg-danger-subtle px-1.5 py-0.5 font-mono text-xs font-bold text-danger border border-danger/30"
             >
-              <Flame className="h-3 w-3 text-rose-500" />
+              <Flame className="h-3 w-3 text-danger" />
               KEV
             </span>
           )}
@@ -751,8 +753,8 @@ function KanbanCard({
         <StatusBadge value={normSev} map={SEVERITY_STATUS} />
         <SlaIndicator slaState={vuln.sla_state} dueAt={vuln.due_at} showDue={false} />
         {vuln.machine_verified ? (
-          <span className="flex items-center gap-0.5 rounded bg-emerald-500/15 px-1.5 py-0.5 font-mono text-xs font-semibold text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
-            <ShieldCheck className="h-3 w-3 text-emerald-500" />
+          <span className="flex items-center gap-0.5 rounded bg-success-subtle px-1.5 py-0.5 font-mono text-xs font-semibold text-success border border-success/30">
+            <ShieldCheck className="h-3 w-3 text-success" />
             {t("vuln.machineVerified")}
           </span>
         ) : null}
@@ -843,8 +845,8 @@ function VulnerabilityDrawer({
             <StatusBadge value={vuln.state} map={VULN_LIFECYCLE_STATUS} />
             <StatusBadge value={normSev} map={SEVERITY_STATUS} />
             {vuln.in_kev && (
-              <span className="flex items-center gap-1 rounded bg-rose-500/20 px-2 py-0.5 font-mono text-xs font-bold text-rose-600 dark:text-rose-400">
-                <Flame className="h-3.5 w-3.5 text-rose-500" />
+              <span className="flex items-center gap-1 rounded bg-danger-subtle px-2 py-0.5 font-mono text-xs font-bold text-danger">
+                <Flame className="h-3.5 w-3.5 text-danger" />
                 CISA KEV
               </span>
             )}

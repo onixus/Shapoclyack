@@ -61,11 +61,11 @@ const SOURCES: readonly AssetImportSource[] = ["cmdb", "ad", "other"];
 const PREVIEW_LIMIT = 200;
 
 const STATUS_CLASS: Record<AssetImportStatus, string> = {
-  create: "text-emerald-600 dark:text-emerald-400",
+  create: "text-success",
   update: "text-primary",
   unchanged: "text-muted-foreground",
-  conflict: "text-amber-600 dark:text-amber-400",
-  invalid: "text-red-600 dark:text-red-400",
+  conflict: "text-warning",
+  invalid: "text-danger",
 };
 
 const STATUS_LABEL: Record<AssetImportStatus, MsgKey> = {
@@ -272,7 +272,7 @@ export function AssetImportDialog({
           </div>
 
           {preview.error ? (
-            <p className="text-xs text-red-600 dark:text-red-400">
+            <p className="text-xs text-danger">
               {(preview.error as Error).message}
             </p>
           ) : null}

@@ -78,7 +78,7 @@ function RunDetailInner() {
         <RunViews runId="" current="result" />
         <Alert
           variant="destructive"
-          className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+          className="border-danger/40 bg-danger-subtle text-danger"
         >
           <AlertDescription>{t("ui.missingRunidQueryParameter")}</AlertDescription>
         </Alert>
@@ -92,7 +92,7 @@ function RunDetailInner() {
         <BackToRuns />
         <Alert
           variant="destructive"
-          className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+          className="border-danger/40 bg-danger-subtle text-danger"
         >
           <AlertDescription>
             {report.error instanceof Error

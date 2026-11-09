@@ -104,7 +104,7 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
   }
 
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading configuration…</p>;
-  if (error) return <p className="text-sm text-rose-700">{(error as Error).message}</p>;
+  if (error) return <p className="text-sm text-danger">{(error as Error).message}</p>;
   if (!data) return null;
 
   const overrideCount = paths.filter(isOverridden).length;
@@ -118,7 +118,7 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
         {overrideCount > 0 ? (
           <Badge
             variant="secondary"
-            className="bg-amber-500/20 text-amber-600 dark:text-amber-300 border-amber-500/30 font-mono text-xs"
+            className="bg-warning-subtle text-warning border-warning/30 font-mono text-xs"
           >
             {overrideCount} {systemText(t.locale, "overridden")}
           </Badge>
@@ -172,7 +172,7 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
                       >
                         {t.locale === "ru" ? configLabel(t.locale, path) : leaf}
                         {isOverridden(path) ? (
-                          <span className="ml-1 text-amber-600 dark:text-amber-400 font-bold">
+                          <span className="ml-1 text-warning font-bold">
                             •
                           </span>
                         ) : null}

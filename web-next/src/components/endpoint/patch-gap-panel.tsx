@@ -9,7 +9,7 @@ import { useT } from "@/lib/i18n";
 
 /** Severity tone, readable on both themes.
  *
- * The single-class version (``text-rose-600 dark:text-rose-400`` and friends) was written when
+ * The single-class version (``text-danger dark:text-danger`` and friends) was written when
  * there was only a dark one: a 400-weight colour on a white card is a pale
  * word an operator has to lean in to read, which is exactly what these are
  * meant not to be. */
@@ -44,7 +44,7 @@ function CopyButton({ value, label }: { value: string; label: string }) {
       }}
     >
       {copied ? (
-        <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+        <Check className="h-3 w-3 text-success" />
       ) : (
         <Copy className="h-3 w-3" />
       )}
@@ -70,7 +70,7 @@ export function PatchGapPanel({ tenantId = "default" }: { tenantId?: string }) {
     <section className="rounded-xl border border-border bg-card p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <PackageCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+          <PackageCheck className="h-4 w-4 text-success" />
           <h2 className="text-sm font-semibold text-foreground">{t("patchGap.title")}</h2>
         </div>
         <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
@@ -79,7 +79,7 @@ export function PatchGapPanel({ tenantId = "default" }: { tenantId?: string }) {
             {t("patchGap.packages")}
           </span>
           <span>
-            <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+            <span className="font-semibold text-success">
               {data.cves_closed_by_upgrade}
             </span>{" "}
             {t("patchGap.cvesClosed")}
@@ -90,7 +90,7 @@ export function PatchGapPanel({ tenantId = "default" }: { tenantId?: string }) {
           </span>
           {data.unfixed_findings > 0 ? (
             <span
-              className="flex items-center gap-1 text-amber-600 dark:text-amber-400"
+              className="flex items-center gap-1 text-warning"
               title={t("patchGap.unfixedHint")}
             >
               <ShieldAlert className="h-3 w-3" />
@@ -118,7 +118,7 @@ export function PatchGapPanel({ tenantId = "default" }: { tenantId?: string }) {
                   : t.label(device.worst_severity)}
               </span>
               <span>{t("patchGap.packagesOn", { count: device.packages_to_upgrade })}</span>
-              <span className="text-emerald-600 dark:text-emerald-400">
+              <span className="text-success">
                 {t("patchGap.closes", { count: device.cves_closed_by_upgrade })}
               </span>
             </span>
@@ -143,7 +143,7 @@ export function DevicePatchGapCard({ gap }: { gap: import("@/lib/api").DevicePat
     <section className="rounded-xl border border-border bg-card p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="flex items-center gap-2 text-sm font-semibold text-foreground">
-          <PackageCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+          <PackageCheck className="h-4 w-4 text-success" />
           {t("patchGap.title")}
         </h2>
         {gap.combined_upgrade_command ? (
@@ -170,7 +170,7 @@ export function DevicePatchGapCard({ gap }: { gap: import("@/lib/api").DevicePat
                     ? "Незначительная"
                     : t.label(item.worst_severity)}
                 </span>
-                <span className="text-emerald-600 dark:text-emerald-400">
+                <span className="text-success">
                   {t("patchGap.closes", { count: item.cve_count })}
                 </span>
               </span>
@@ -180,7 +180,7 @@ export function DevicePatchGapCard({ gap }: { gap: import("@/lib/api").DevicePat
               {/* No target means the published fixes could not be ordered; naming
                   one would promise a fix that may not close every CVE below. */}
               {item.target_version ? (
-                <span className="text-emerald-600 dark:text-emerald-400">
+                <span className="text-success">
                   {item.target_version}
                 </span>
               ) : (
@@ -199,7 +199,7 @@ export function DevicePatchGapCard({ gap }: { gap: import("@/lib/api").DevicePat
 
       {t.locale === "ru" && <SystemTechnicalDetails data={gap} />}
       {gap.unfixed_findings > 0 ? (
-        <p className="mt-3 flex items-start gap-1.5 text-xs leading-relaxed text-amber-600 dark:text-amber-400/90">
+        <p className="mt-3 flex items-start gap-1.5 text-xs leading-relaxed text-warning dark:text-warning/90">
           <ShieldAlert className="mt-0.5 h-3 w-3 shrink-0" />
           {t("patchGap.unfixedDetail", { count: gap.unfixed_findings })}
         </p>

@@ -257,7 +257,7 @@ export function CampaignDetail({ id }: { id: string }) {
   if (campaign.isLoading) return <p className="text-sm text-muted-foreground">{t("campaign.loading")}</p>;
   if (campaign.error || !data) {
     return (
-      <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">
+      <p role="alert" className="text-sm text-danger">
         {campaign.error?.message ?? t("campaign.notFound")}
       </p>
     );
@@ -276,7 +276,7 @@ export function CampaignDetail({ id }: { id: string }) {
             <h1 className="text-2xl font-extrabold tracking-tight">{data.name}</h1>
             <StatusBadge value={data.status} map={CAMPAIGN_STATUS} />
             {data.past_due ? (
-              <span className="text-xs font-medium text-rose-600 dark:text-rose-400">{t("campaign.pastDue")}</span>
+              <span className="text-xs font-medium text-danger">{t("campaign.pastDue")}</span>
             ) : null}
           </div>
           <p className="text-xs text-muted-foreground">

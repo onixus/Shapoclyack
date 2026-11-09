@@ -86,7 +86,7 @@ export default function WordlistsPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-subtle text-primary border border-primary shadow-md">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-subtle text-primary border border-primary">
             <BookText className="h-5 w-5" />
           </div>
           <div>
@@ -169,7 +169,7 @@ export default function WordlistsPage() {
 
       <div className="rounded-xl border border-border bg-card">
         {error ? (
-          <p className="p-6 text-xs text-rose-600 dark:text-rose-400">{error.message}</p>
+          <p className="p-6 text-xs text-danger">{error.message}</p>
         ) : isLoading ? (
           <p className="p-6 text-xs text-muted-foreground">Loading wordlists…</p>
         ) : wordlists.length === 0 ? (
@@ -211,7 +211,7 @@ export default function WordlistsPage() {
                       variant="ghost"
                       size="sm"
                       onClick={() => setPendingDelete(wl)}
-                      className="text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 hover:text-rose-600 dark:text-rose-300"
+                      className="text-danger hover:bg-danger-subtle hover:text-danger"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
@@ -242,7 +242,7 @@ export default function WordlistsPage() {
                 if (pendingDelete) remove.mutate(pendingDelete.wordlist_id);
                 setPendingDelete(null);
               }}
-              className="bg-rose-600 text-foreground hover:bg-rose-500"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Delete
             </AlertDialogAction>

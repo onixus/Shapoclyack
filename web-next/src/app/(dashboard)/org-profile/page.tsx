@@ -104,7 +104,7 @@ function OrgProfileInner() {
 
       {runId ? (
         <>
-          <p className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
+          <p className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning-subtle p-3 text-xs text-warning">
             <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             {t("page.orgProfile.disclaimer")}
           </p>

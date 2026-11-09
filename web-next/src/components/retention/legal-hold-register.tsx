@@ -26,7 +26,7 @@ export function LegalHoldRegister() {
         <p className="text-xs text-muted-foreground">{t("retention.register.hint")}</p>
       </div>
       {error ? (
-        <p className="text-sm text-rose-500" role="alert">
+        <p className="text-sm text-danger" role="alert">
           {error instanceof Error ? error.message : t("retention.register.loadFailed")}
         </p>
       ) : isLoading || !data ? null : data.length === 0 ? (

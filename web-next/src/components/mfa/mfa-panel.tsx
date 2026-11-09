@@ -109,9 +109,9 @@ export function MfaPanel() {
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           {status.enabled ? (
-            <ShieldCheck className="h-4 w-4 text-emerald-500" />
+            <ShieldCheck className="h-4 w-4 text-success" />
           ) : status.required ? (
-            <ShieldAlert className="h-4 w-4 text-amber-500" />
+            <ShieldAlert className="h-4 w-4 text-warning" />
           ) : (
             <ShieldOff className="h-4 w-4 text-muted-foreground" />
           )}
@@ -144,7 +144,7 @@ export function MfaPanel() {
       {recoveryCodes ? (
         <div
           role="alert"
-          className="space-y-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4"
+          className="space-y-3 rounded-lg border border-warning/40 bg-warning-subtle p-4"
         >
           <h3 className="text-sm font-semibold text-foreground">{t("mfa.recovery.title")}</h3>
           <p className="text-xs text-muted-foreground">{t("mfa.recovery.description")}</p>

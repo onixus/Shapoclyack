@@ -180,7 +180,7 @@ function VulnerabilityDetailInner() {
         <BackToVulnerabilities />
         <Alert
           variant="destructive"
-          className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+          className="border-danger/40 bg-danger-subtle text-danger"
         >
           <AlertDescription>{t("ui.missingVulnidQueryParameter")}</AlertDescription>
         </Alert>
@@ -195,7 +195,7 @@ function VulnerabilityDetailInner() {
           <BackToVulnerabilities />
           <Alert
             variant="destructive"
-            className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+            className="border-danger/40 bg-danger-subtle text-danger"
           >
             <AlertDescription>{(detailQuery.error as Error).message}</AlertDescription>
           </Alert>
@@ -228,7 +228,7 @@ function VulnerabilityDetailInner() {
               <StatusBadge value={vuln.state} map={VULN_LIFECYCLE_STATUS} />
               <SlaIndicator slaState={vuln.sla_state} dueAt={vuln.due_at} />
               {vuln.machine_verified ? (
-                <Badge className="bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border-emerald-500/40 flex items-center gap-1 text-xs">
+                <Badge className="bg-success-subtle text-success border-success/40 flex items-center gap-1 text-xs">
                   <ShieldCheck className="h-3 w-3" /> {t("vuln.machineVerified")}
                 </Badge>
               ) : null}
@@ -247,7 +247,7 @@ function VulnerabilityDetailInner() {
                 <StatusBadge value={vuln.match_confidence} map={RETRO_MATCH_CONFIDENCE} />
               ) : null}
               {vuln.fp_suppressed ? (
-                <Badge className="bg-amber-500/20 text-amber-600 dark:text-amber-300 border-amber-500/40 flex items-center gap-1 text-xs">
+                <Badge className="bg-warning-subtle text-warning border-warning/40 flex items-center gap-1 text-xs">
                   <EyeOff className="h-3 w-3" />
                   {t("vuln.fp.suppressedUntil", { when: formatWhen(vuln.fp_suppress_until) })}
                 </Badge>
@@ -483,7 +483,7 @@ function VulnerabilityDetailInner() {
                   {vt(t.locale, "Loading events\u2026")}
                 </p>
               ) : eventsQuery.error ? (
-                <p className="text-xs text-rose-600 dark:text-rose-300">
+                <p className="text-xs text-danger">
                   {(eventsQuery.error as Error).message}
                 </p>
               ) : (
@@ -820,8 +820,8 @@ function CommentCard({ vulnId }: { vulnId: string }) {
         <Button
           type="submit"
           size="sm"
+          variant="outline"
           disabled={mutation.isPending}
-          className="bg-indigo-600 hover:bg-indigo-500"
         >
           {mutation.isPending ? vt(t.locale, "Posting\u2026") : vt(t.locale, "Add comment")}
         </Button>
@@ -869,7 +869,7 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
         // A link that has stopped working — a renamed key, a revoked token —
         // is otherwise only in the worker's log, which is where "why is this
         // finding not updating?" goes unanswered.
-        <p className="mt-2 rounded-md border border-amber-300 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/40 px-2 py-1 text-xs text-amber-600 dark:text-amber-300">
+        <p className="mt-2 rounded-md border border-warning/30 dark:border-warning/60 bg-warning-subtle px-2 py-1 text-xs text-warning">
           {vt(t.locale, "Last read failed:")} {vuln.ticket_sync_error}
         </p>
       ) : null}
@@ -993,12 +993,12 @@ function ExceptionCard({
           ) : null}
         </p>
       ) : lapsed ? (
-        <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">
+        <p className="mt-2 text-xs text-warning">
           {vt(t.locale, "The acceptance lapsed on")} {formatWhen(vuln.exception_until)}{" "}
           {vt(t.locale, "and the finding is back under its deadline.")}
         </p>
       ) : vuln.exception_state === "exception_rejected" ? (
-        <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">
+        <p className="mt-2 text-xs text-warning">
           Last request rejected
           {vuln.exception_decided_by ? (
             <>
@@ -1045,7 +1045,7 @@ function ExceptionCard({
             size="sm"
             disabled={decideMutation.isPending}
             onClick={() => decideMutation.mutate({ decision: "approve" })}
-            className="bg-emerald-600 hover:bg-emerald-500"
+            variant="outline"
           >
             {vt(t.locale, "Approve")}
           </Button>
@@ -1094,7 +1094,7 @@ function ExceptionCard({
               type="submit"
               size="sm"
               disabled={setMutation.isPending}
-              className="bg-indigo-600 hover:bg-indigo-500"
+              variant="outline"
             >
               {setMutation.isPending
                 ? vt(t.locale, "Saving\u2026")
@@ -1130,7 +1130,7 @@ function ExceptionCard({
         <div className="mt-4 border-t border-border pt-3">
           {confirmRevoke ? (
             <div className="space-y-2">
-              <p className="text-xs text-amber-600 dark:text-amber-300">
+              <p className="text-xs text-warning">
                 Revoking the acceptance signed by{" "}
                 <span className="font-mono">{vuln.exception_by ?? "—"}</span>{" "}
                 {vt(t.locale, "until")} {formatWhen(vuln.exception_until)} puts this finding back
@@ -1143,7 +1143,7 @@ function ExceptionCard({
                   size="sm"
                   disabled={clearMutation.isPending}
                   onClick={() => clearMutation.mutate()}
-                  className="bg-rose-600 hover:bg-rose-500"
+                  className="bg-destructive hover:bg-destructive/90"
                 >
                   {clearMutation.isPending
                     ? vt(t.locale, "Revoking\u2026")
@@ -1260,7 +1260,7 @@ function FalsePositiveCard({ vuln }: { vuln: TrackedVulnerability }) {
             type="submit"
             size="sm"
             disabled={setMutation.isPending}
-            className="bg-amber-600 hover:bg-amber-500"
+            variant="outline"
           >
             {setMutation.isPending ? t("vuln.fp.saving") : t("vuln.fp.markBtn")}
           </Button>

@@ -101,8 +101,8 @@ export function SessionExpiryBanner() {
       role="status"
       className={
         expired
-          ? "flex items-center justify-between gap-3 border-b border-rose-500/40 bg-rose-500/10 px-4 py-2 text-xs text-rose-900 dark:text-rose-200 md:px-6"
-          : "flex items-center justify-between gap-3 border-b border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-900 dark:text-amber-200 md:px-6"
+          ? "flex items-center justify-between gap-3 border-b border-danger/40 bg-danger-subtle px-4 py-2 text-xs text-danger md:px-6"
+          : "flex items-center justify-between gap-3 border-b border-warning/40 bg-warning-subtle px-4 py-2 text-xs text-warning md:px-6"
       }
     >
       <span>

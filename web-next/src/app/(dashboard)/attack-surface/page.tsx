@@ -52,7 +52,7 @@ function AttackSurfaceInner() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-subtle text-primary border border-primary shadow-md">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-subtle text-primary border border-primary">
             <Network className="h-5 w-5" />
           </div>
           <div>
@@ -118,7 +118,7 @@ function AttackSurfaceInner() {
       </div>
 
       {error ? (
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
+        <Alert variant="destructive" className="border-danger/40 bg-danger-subtle text-danger">
           <AlertDescription>{(error as Error).message}</AlertDescription>
         </Alert>
       ) : null}

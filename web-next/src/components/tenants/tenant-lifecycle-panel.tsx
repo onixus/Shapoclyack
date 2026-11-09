@@ -52,7 +52,7 @@ function StepRow({ step }: { step: TenantDeletionStep }) {
       <td className="py-1.5 text-xs text-muted-foreground">
         {summary ? <p>{summary}</p> : null}
         {step.last_error ? (
-          <p className={step.state === "failed" ? "text-rose-500" : undefined}>
+          <p className={step.state === "failed" ? "text-danger" : undefined}>
             {step.last_error}
           </p>
         ) : null}
@@ -111,7 +111,7 @@ export function TenantLifecyclePanel({ tenantId }: { tenantId: string }) {
 
   if (error) {
     return (
-      <p className="text-sm text-rose-500" role="alert">
+      <p className="text-sm text-danger" role="alert">
         {error instanceof Error ? error.message : t("lifecycle.loadFailed")}
       </p>
     );
@@ -155,11 +155,11 @@ export function TenantLifecyclePanel({ tenantId }: { tenantId: string }) {
 
       {hold ? (
         <div
-          className="space-y-1 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3"
+          className="space-y-1 rounded-lg border border-warning/40 bg-warning-subtle p-3"
           role="status"
         >
           <p className="flex items-center gap-2 font-semibold text-foreground">
-            <Gavel className="h-4 w-4 text-amber-500" />
+            <Gavel className="h-4 w-4 text-warning" />
             {t("lifecycle.hold", { since: when(hold.set_at) })}
           </p>
           <p className="text-xs text-foreground">
@@ -189,7 +189,7 @@ export function TenantLifecyclePanel({ tenantId }: { tenantId: string }) {
           <p className="text-xs text-muted-foreground">{t("lifecycle.suspendHint")}</p>
           <Button
             type="button"
-            className="gap-2 bg-amber-600 text-foreground hover:bg-amber-500"
+            className="gap-2 bg-warning-subtle text-warning hover:bg-warning-subtle"
             disabled={!reason.trim() || suspend.isPending}
             onClick={() => suspend.mutate({ reason: reason.trim(), revoke_credentials: revoke })}
           >
@@ -219,7 +219,7 @@ export function TenantLifecyclePanel({ tenantId }: { tenantId: string }) {
         <div className="space-y-1 border-t border-border pt-3">
           <Button
             type="button"
-            className="gap-2 bg-rose-600 text-foreground hover:bg-rose-500"
+            className="gap-2 bg-destructive text-destructive-foreground hover:bg-destructive/90"
             disabled={hold != null}
             onClick={() => setConfirming("delete")}
           >
@@ -233,7 +233,7 @@ export function TenantLifecyclePanel({ tenantId }: { tenantId: string }) {
       ) : null}
 
       {deletion && status === "pending_deletion" ? (
-        <div className="space-y-2 rounded-lg border border-rose-500/40 bg-rose-500/5 p-3">
+        <div className="space-y-2 rounded-lg border border-danger/40 bg-danger-subtle p-3">
           <p className="text-foreground">
             {t("lifecycle.pending", {
               who: deletion.requested_by,
@@ -257,7 +257,7 @@ export function TenantLifecyclePanel({ tenantId }: { tenantId: string }) {
             </Button>
             <Button
               type="button"
-              className="gap-2 bg-rose-600 text-foreground hover:bg-rose-500"
+              className="gap-2 bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={hold != null || !graceOver}
               onClick={() => setConfirming("approve")}
             >
@@ -276,7 +276,7 @@ export function TenantLifecyclePanel({ tenantId }: { tenantId: string }) {
               : t("lifecycle.purging", { who: deletion.approved_by ?? "—" })}
           </p>
           {deletion.last_error ? (
-            <p className="text-xs text-rose-500" role="alert">
+            <p className="text-xs text-danger" role="alert">
               {deletion.last_error}
             </p>
           ) : null}
@@ -339,7 +339,7 @@ export function TenantLifecyclePanel({ tenantId }: { tenantId: string }) {
             </AlertDialogCancel>
             <Button
               type="button"
-              className="bg-rose-600 text-foreground hover:bg-rose-500"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={
                 typed !== tenantId ||
                 (confirming === "delete" && !reason.trim()) ||
