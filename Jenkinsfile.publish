@@ -55,6 +55,26 @@ def checkSigningKey() {
   }
 }
 
+// Полный NVD CPE кладётся в контекст сборки до docker build. Скрипт — из
+// ревизии пайплайна (.release-tooling): у старого тега его нет, и вызов из
+// дерева тега падает с 127 до docker buildx. DRY_RUN сборку пропускает, но
+// post { always } всё равно вызывает --restore, так что и он должен находить
+// скрипт. root у скрипта — каталог, где он лежит, поэтому набор и бэкап сида
+// задаются на дерево тега. Иначе harvest уехал бы в .release-tooling, а образ
+// скопировал бы сид.
+def stageReleaseNvdCpe(String mode) {
+  if (mode != '' && mode != '--restore') {
+    error('stageReleaseNvdCpe: only --restore is allowed')
+  }
+  def cmd = '.release-tooling/scripts/stage-release-nvd-cpe.sh' + (mode ? ' ' + mode : '')
+  withEnv([
+    "OCTO_NVD_CPE_RELEASE_DEST=${env.WORKSPACE}/scanner/data/nvd-cpe/nvd-cpe-ranges.json",
+    "OCTO_NVD_CPE_RELEASE_BACKUP=${env.WORKSPACE}/.publish/nvd-cpe-seed.json",
+  ]) {
+    sh cmd
+  }
+}
+
 def MATRIX = [
   [name: 'scanner',      dockerfile: 'Dockerfile',            image: 'ghcr.io/onixus/shapoclyack-scanner'],
   [name: 'api',          dockerfile: 'Dockerfile.api',        image: 'ghcr.io/onixus/shapoclyack-api'],
@@ -235,7 +255,7 @@ pipeline {
           // Dockerfile сделало бы каждую сборку и прогон тестов многочасовыми.
           // DRY_RUN образ получает сид из git и ничего не публикует.
           if (!params.DRY_RUN) {
-            sh 'scripts/stage-release-nvd-cpe.sh'
+            stageReleaseNvdCpe('')
           } else {
             echo "DRY_RUN: полный набор NVD CPE не скачивается; образы получат сид из git."
           }
@@ -332,8 +352,11 @@ pipeline {
       }
       post {
         always {
-          // Вернуть сид в рабочую копию. Сам набор в git не коммитится.
-          sh 'scripts/stage-release-nvd-cpe.sh --restore'
+          // Вернуть сид в рабочую копию, в том числе после DRY_RUN (бэкапа нет,
+          // скрипт тогда ничего не делает). Сам набор в git не коммитится.
+          script {
+            stageReleaseNvdCpe('--restore')
+          }
         }
       }
     }

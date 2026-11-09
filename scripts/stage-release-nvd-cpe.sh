@@ -3,8 +3,11 @@
 #
 # Unit tests load the committed 8-product seed. Fetching inside an image build
 # or a test run walks NVD for hours, so neither does. Jenkinsfile.publish calls
-# this once per real release, then builds. --restore puts the seed bytes back
-# so the job workspace does not keep the harvest.
+# the copy in .release-tooling (the pipeline revision, so an older tag still
+# has the script) once per real release, then builds. root below is that copy's
+# tree, so the job sets OCTO_NVD_CPE_RELEASE_DEST and OCTO_NVD_CPE_RELEASE_BACKUP
+# onto the tag checkout. --restore puts the seed bytes back so the job
+# workspace does not keep the harvest.
 #
 # After installation the same harvest is the client's, with their own key:
 #   NVD_API_KEY=... OCTO_NVD_CPE_FETCH_ENABLED=true \

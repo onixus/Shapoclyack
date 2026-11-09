@@ -71,11 +71,28 @@ def test_image_builds_do_not_harvest_nvd_cpe():
 
 
 def test_release_stages_the_dataset_before_the_image_build():
+    """The harvest script comes from the pipeline revision, and writes the tag tree.
+
+    Jenkinsfile.publish checks the tag out over the workspace. A tag cut before
+    this script exists has no scripts/stage-release-nvd-cpe.sh, so a bare call
+    exits 127 before docker buildx, and DRY_RUN still fails in post. The script's
+    root is the directory it lives in, so running the .release-tooling copy
+    without the dest/backup overrides would harvest beside the tooling and the
+    image would still COPY the seed.
+    """
     text = (ROOT / "Jenkinsfile.publish").read_text(encoding="utf-8")
     stage = text.split("stage('Build & push')", 1)[1].split("stage('Sensor bundle')", 1)[0]
-    assert stage.index("scripts/stage-release-nvd-cpe.sh") < stage.index("docker buildx build")
-    assert "scripts/stage-release-nvd-cpe.sh --restore" in stage
-    assert "params.DRY_RUN" in stage
+    harvest, post = stage.split("post {", 1)
+    assert harvest.index("stageReleaseNvdCpe('')") < harvest.index("docker buildx build")
+    assert "if (!params.DRY_RUN)" in harvest
+    assert "stageReleaseNvdCpe('--restore')" in post
+    calls = re.findall(r"(\S*)scripts/stage-release-nvd-cpe\.sh", text)
+    assert calls
+    assert all(prefix.endswith(".release-tooling/") for prefix in calls)
+    helper = text.split("def stageReleaseNvdCpe(", 1)[1].split("\ndef ", 1)[0]
+    assert "OCTO_NVD_CPE_RELEASE_DEST=${env.WORKSPACE}/scanner/data/nvd-cpe/nvd-cpe-ranges.json" in helper
+    assert "OCTO_NVD_CPE_RELEASE_BACKUP=${env.WORKSPACE}/.publish/nvd-cpe-seed.json" in helper
+    assert ".release-tooling/scanner" not in helper
 
 
 @pytest.mark.parametrize("name", DOCKERFILES)
