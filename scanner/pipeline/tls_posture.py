@@ -508,6 +508,18 @@ def findings_from_pulse_tls(
         else:
             san_str = str(san) if san else None
 
+        # Pulse 1.5.0 (schema on GenDec main): certificate_parsed false means
+        # self_signed and expired were not observed. They must not become findings,
+        # and a present date must not be read as a parsed certificate. Absent
+        # (the pinned v1.4.0 binary) keeps the old "fields present => parsed".
+        certificate_parsed = row.get("certificate_parsed")
+        cert_unknown = certificate_parsed is False
+        if certificate_parsed is True:
+            parse_ok = True
+        elif cert_unknown:
+            parse_ok = False
+        else:
+            parse_ok = bool(subject_cn or issuer_cn or not_after_dt)
         cert = {
             "subject": subject_cn,
             "issuer": issuer_cn,
@@ -518,12 +530,17 @@ def findings_from_pulse_tls(
             "not_after_raw": str(not_after_raw) if not_after_raw else None,
             "not_before": not_before_dt.isoformat() if not_before_dt else None,
             "not_after": not_after_dt.isoformat() if not_after_dt else None,
-            "parse_ok": bool(subject_cn or issuer_cn or not_after_dt),
+            "parse_ok": parse_ok,
         }
+        if isinstance(certificate_parsed, bool):
+            cert["certificate_parsed"] = certificate_parsed
 
         issues: list[dict[str, Any]] = []
-        # Prefer explicit Pulse flags, recompute days against *our* now for consistency
-        if row.get("expired") or (not_after_dt is not None and not_after_dt < now):
+        # Prefer explicit Pulse flags, recompute days against *our* now for consistency.
+        # An unparsed certificate has no expiry or self-signature to report.
+        if cert_unknown:
+            pass
+        elif row.get("expired") or (not_after_dt is not None and not_after_dt < now):
             days = None
             if not_after_dt is not None:
                 days = (not_after_dt - now).days
@@ -558,7 +575,7 @@ def findings_from_pulse_tls(
                         "detail": f"expires in {days_left}d ({not_after_raw})",
                     }
                 )
-        if not_before_dt is not None and not_before_dt > now:
+        if not cert_unknown and not_before_dt is not None and not_before_dt > now:
             issues.append(
                 {
                     "kind": "cert_not_yet_valid",
@@ -567,7 +584,7 @@ def findings_from_pulse_tls(
                 }
             )
 
-        if row.get("self_signed"):
+        if not cert_unknown and row.get("self_signed"):
             issues.append(
                 {
                     "kind": "self_signed",
@@ -656,6 +673,19 @@ def findings_from_pulse_tls(
             if isinstance(weak_accepted, list)
             else [],
         }
+        # A CertificateRequest is an observation, not proof that a client
+        # certificate is required, and not an exposure finding.
+        if row.get("client_cert_requested") is True:
+            by_key[key]["client_cert_requested"] = True
+        alpn = row.get("alpn")
+        negotiated_alpn = alpn.get("negotiated") if isinstance(alpn, dict) else None
+        if (
+            isinstance(negotiated_alpn, str)
+            and negotiated_alpn
+            and len(negotiated_alpn) <= 255
+            and all(33 <= ord(char) <= 126 for char in negotiated_alpn)
+        ):
+            by_key[key]["alpn"] = negotiated_alpn
 
     # Merge finding_class=tls rows that might not have a tls[] entry (rare)
     for f in artifact.get("findings") or []:
