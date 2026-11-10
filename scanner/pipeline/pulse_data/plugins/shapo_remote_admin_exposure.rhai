@@ -38,23 +38,10 @@ fn run() {
         return;
     }
 
-    // VNC is confirmed from the RFB greeting. An RDP or VNC label that came
-    // only from the port number is an open-port guess, so it stays unconfirmed.
-    let summary = "Exposure only: " + label + " answers on port " + port + ". Network-level authentication, encryption and password policy were not checked.";
-    let evidence = "Port " + port + " open (service: " + service + ")";
-    if label == "VNC" && banner.to_lower().starts_with("rfb ") {
-        return #{
-            title: "Remote administration service reachable (" + label + ")",
-            severity: "LOW",
-            summary: summary,
-            evidence: evidence
-        };
-    }
     return #{
         title: "Remote administration service reachable (" + label + ")",
         severity: "LOW",
-        requires_confirmation: true,
-        summary: summary,
-        evidence: evidence
+        summary: "Exposure only: " + label + " answers on port " + port + ". Network-level authentication, encryption and password policy were not checked.",
+        evidence: "Port " + port + " open (service: " + service + ")"
     };
 }
