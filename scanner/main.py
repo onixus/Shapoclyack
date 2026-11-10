@@ -79,7 +79,7 @@ from scanner.pipeline.report_diff import resolve_previous_run_dir, write_report_
 from scanner.pipeline.resolve import resolve_fqdns
 from scanner.pipeline import scan_scope
 from scanner.pipeline.run_context import resolve_run_paths, write_run_meta
-from scanner.pipeline.stage_timing import StageTimer
+from scanner.pipeline.stage_timing import StageTimer, stage_outcome
 from scanner.pipeline.utils import load_json, load_yaml, read_lines, save_json, setup_logging, write_lines
 
 # Active run timer (set for the duration of _run_pipeline). ContextVar so the
@@ -193,7 +193,11 @@ def _run_stage(stage: str, func, timer: StageTimer | None = None):  # type: igno
 
     active = timer if timer is not None else _STAGE_TIMER.get()
     if active is not None:
-        return active.run(stage, _call)
+        result = active.run(stage, _call)
+        outcome = stage_outcome(result)
+        if outcome is not None:
+            active.annotate(stage, outcome[0], outcome[1])
+        return result
     return _call()
 
 

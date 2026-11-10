@@ -1521,11 +1521,13 @@ def _run_pulse_probe(
     # Mark report preference: explicit flag, else OCTO_SERVICE_BACKEND env.
     sync_report_primary_marker(pulse_dir, report_primary)
 
+    cve_ids = sum(1 for row in all_cves if getattr(row, "cve_id", None))
     logging.info(
-        "pulse_probe done: %s services, %s os, %s cves, %s tls%s",
+        "pulse_probe done: %s services, %s os, %s findings (%s with a CVE id), %s tls%s",
         len(deduped),
         len(all_os),
         len(all_cves),
+        cve_ids,
         len(tls_deduped),
         " (OS detection skipped: no raw sockets)" if os_detect_degraded else "",
     )

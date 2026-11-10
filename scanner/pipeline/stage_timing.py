@@ -20,6 +20,28 @@ T = TypeVar("T")
 logger = logging.getLogger(__name__)
 
 
+def stage_outcome(result: Any) -> tuple[str, str] | None:
+    """Status the timing record should show for a stage that returned normally.
+
+    A disabled or empty control stage says so with ``skipped_reason``. Nuclei
+    keeps partial matches and still returns when coverage did not complete;
+    that return is not a successful stage. ``None`` leaves the record ``ok``.
+    """
+    if not isinstance(result, dict):
+        return None
+    coverage = result.get("coverage")
+    if isinstance(coverage, dict) and coverage.get("ran") is False:
+        detail = str(result.get("skipped_reason") or "coverage_not_counted")
+        returncode = coverage.get("returncode")
+        if isinstance(returncode, int) and returncode != 0:
+            detail = f"{detail}; returncode={returncode}"
+        return "incomplete", detail
+    reason = result.get("skipped_reason")
+    if reason:
+        return "skipped", str(reason)
+    return None
+
+
 def process_resources() -> dict[str, float] | None:
     """CPU-seconds and peak memory of this scan and of the tools it ran (#337).
 
@@ -52,7 +74,7 @@ def process_resources() -> dict[str, float] | None:
 class StageRecord:
     name: str
     duration_sec: float
-    status: str = "ok"  # ok | skipped | error
+    status: str = "ok"  # ok | incomplete | skipped | error
     detail: str = ""
 
 
@@ -88,6 +110,23 @@ class StageTimer:
         logger.info("stage %s finished in %.3fs%s", name, elapsed, f" ({detail})" if detail else "")
         return result
 
+    def annotate(self, name: str, status: str, detail: str = "") -> None:
+        """Correct the latest record after the stage returned a partial result.
+
+        ``run`` records ``ok`` as soon as the function returns. A nuclei pass
+        that exits non-zero, or a control stage that was switched off, still
+        returns. The pipeline keeps going; the timing file must not call that
+        ``ok``.
+        """
+        with self._lock:
+            for record in reversed(self.records):
+                if record.name == name:
+                    record.status = status
+                    if detail:
+                        record.detail = detail[:200]
+                    logger.info("stage %s recorded as %s%s", name, status, f" ({record.detail})" if record.detail else "")
+                    return
+
     def skip(self, name: str, reason: str = "checkpoint") -> None:
         self._append(StageRecord(name=name, duration_sec=0.0, status="skipped", detail=reason))
         logger.info("stage %s skipped (%s)", name, reason)
@@ -100,7 +139,7 @@ class StageTimer:
             snapshot = list(self.records)
         total_stages = round(sum(r.duration_sec for r in snapshot if r.status != "skipped"), 3)
         ranked = sorted(
-            [r for r in snapshot if r.status == "ok"],
+            [r for r in snapshot if r.status in {"ok", "incomplete"}],
             key=lambda r: r.duration_sec,
             reverse=True,
         )

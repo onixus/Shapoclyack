@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from scanner.pipeline.stage_timing import StageTimer, process_resources
+from scanner.pipeline.stage_timing import StageTimer, process_resources, stage_outcome
 
 
 def test_run_records_duration(tmp_path: Path) -> None:
@@ -39,6 +39,17 @@ def test_run_records_error_then_reraises() -> None:
 
     assert timer.records[0].status == "error"
     assert timer.records[0].name == "broken"
+
+
+def test_incomplete_coverage_is_not_recorded_as_ok() -> None:
+    timer = StageTimer()
+    timer.run("nuclei", lambda: {"coverage": {"ran": False, "returncode": 1}})
+    timer.annotate("nuclei", *stage_outcome({"coverage": {"ran": False, "returncode": 1}, "skipped_reason": "nuclei_run_failed"}))
+    assert timer.records[0].status == "incomplete"
+    assert "returncode=1" in timer.records[0].detail
+    assert timer.as_dict()["top_stages"][0]["name"] == "nuclei"
+    assert stage_outcome({"skipped_reason": "mail_posture.disabled"}) == ("skipped", "mail_posture.disabled")
+    assert stage_outcome({"coverage": {"ran": True, "returncode": 0}}) is None
 
 
 def test_skip_and_write_json(tmp_path: Path) -> None:

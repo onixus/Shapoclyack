@@ -40,7 +40,24 @@ def test_empty_context_requires_abstention_and_never_leaks_scan_arguments():
     assert planner.output_schema(request)["properties"]["tool"]["enum"] == ["abstain"]
     assert planner.validate_output('{"tool":"abstain"}', request)["status"] == "unsupported"
     request = planner.PlanRequest(request="scan", context={"scan": {"ranges": "192.0.2.77", "ports": "443"}})
-    assert "192.0.2.77" not in json.dumps(planner.build_prompt(request))
+    prompt = json.dumps(planner.build_prompt(request))
+    assert "192.0.2.77" not in prompt
+    assert "prepare_scan" in prompt and "bound_scan" in prompt
+
+
+def test_prepare_scan_stays_available_only_when_named_targets_are_the_bound_scan():
+    bound = {"scan": {"domains": "scanme.nmap.org", "ports": "80"}}
+    matched = planner.PlanRequest(request="prepare a scan of scanme.nmap.org port 80", context=bound)
+    assert "prepare_scan" in planner.available_tools(matched)
+    # The user's own words stay. The bound target list is not copied in beside them.
+    assert json.dumps(planner.build_prompt(matched)).count("scanme.nmap.org") == 1
+    other = planner.PlanRequest(request="prepare a scan of evil.example port 22", context=bound)
+    assert "prepare_scan" not in planner.available_tools(other)
+    inside = planner.PlanRequest(
+        request="scan 192.0.2.10",
+        context={"scan": {"ranges": "192.0.2.0/24", "ports": "1-1024"}},
+    )
+    assert "prepare_scan" in planner.available_tools(inside)
 
 
 @pytest.mark.parametrize("body", [

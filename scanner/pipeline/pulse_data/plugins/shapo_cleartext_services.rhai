@@ -101,11 +101,25 @@ fn run() {
     }
 
     if kind == "telnet" {
+        // The service name is often only the IANA label of an open port. A
+        // banner is the proof this check has; without one the row stays
+        // unconfirmed and is not a high finding.
+        if banner.len() > 0 {
+            return #{
+                title: "Telnet service exposed",
+                severity: "HIGH",
+                confidence: 90,
+                summary: "Telnet sends the login and every command in cleartext and has no TLS mode.",
+                evidence: "Telnet banner on port " + port + ": " + clip(banner, 120)
+            };
+        }
         return #{
             title: "Telnet service exposed",
-            severity: "HIGH",
-            summary: "Telnet sends the login and every command in cleartext and has no TLS mode.",
-            evidence: "Telnet service on port " + port
+            severity: "LOW",
+            confidence: 45,
+            requires_confirmation: true,
+            summary: "Port 23 is labeled telnet, but no telnet banner was read. A cleartext login was not confirmed.",
+            evidence: "No telnet banner on port " + port
         };
     }
 
