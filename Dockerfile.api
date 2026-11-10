@@ -109,6 +109,9 @@ COPY --from=web-build /web/out /app/web/dist
 # an image whose required data is missing or is a stub, which is the case that
 # would have the risk model scoring blind.
 ARG ENRICHMENT_STRICT=0
+# The NVD CPE file copied above is whatever the build context had. A release
+# puts the full dataset there first (scripts/stage-release-nvd-cpe.sh). This
+# RUN does not call NVD: that harvest is not part of an image build.
 RUN set -eu; \
     python3 scripts/nvd_snapshot.py verify /opt/shapoclyack/seed-data/cvss4/cvss4.json; \
     refreshed=""; failed=""; \

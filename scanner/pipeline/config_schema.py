@@ -1131,8 +1131,10 @@ class TlsPostureConfig(BaseModel):
     ``enumerate_ciphers`` requests Pulse raw ClientHello enumeration (GenDec#34).
     Observed suites are graded A-F; unknown key exchanges retain an upper-bound
     grade. Enumeration is bounded to 30 seconds per endpoint and remains partial
-    on inconclusive responses. Default off; the Pulse binary must support
-    ``--tls-enum``. Certificate and legacy-version probing also remain available.
+    on inconclusive responses. Off when this section is omitted. Shipped
+    ``scanner/config/default.yaml`` and the k8s scanner configs turn both
+    switches on because pinned Pulse 1.4.0 supports ``--tls-enum``.
+    Certificate and legacy-version probing also remain available.
 
     ``max_targets`` caps endpoints per run (truncated flag past the cap).
     Findings are reported only (``tls_posture.json``) -- never merged into

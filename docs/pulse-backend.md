@@ -499,8 +499,9 @@ in ADR 0002, section "TLS (#545)", not in the recorded fixtures.
 ### Cipher suites and A-F grades on the Pulse path
 
 Signed/pinned Pulse v1.4.0 provides `--tls-enum`, requested only when both
-`tls_posture.enabled` and `tls_posture.enumerate_ciphers` are true (the latter
-is off by default). Dockerfiles/workflows/checksum pins select v1.4.0 after
+`tls_posture.enabled` and `tls_posture.enumerate_ciphers` are true. The schema
+default is off when the section is omitted. Shipped `default.yaml` and the k8s
+scanner configs turn both on. Dockerfiles/workflows/checksum pins select v1.4.0 after
 workflow identity and all four archive digests were verified. Released CLI
 fixtures do not establish installed sensor acceptance.
 
@@ -700,9 +701,10 @@ tls_posture:
   hostname_mismatch: true       # default true
 ```
 
-Cipher enumeration/grading is available with signed/pinned Pulse v1.4.0,
-with the opt-in settings and evidence limits above. The default/pinned 1.3.0
-binary does not acquire it from a config change. Key size and signature
+Cipher enumeration/grading is on in the shipped scanner configs because the
+pinned binary is Pulse v1.4.0. The evidence limits above still apply. A sensor
+that is still running Pulse 1.3.0 must set `enumerate_ciphers: false`: that
+binary has no `--tls-enum`. Key size and signature
 algorithm on the stdlib probe path still need `cryptography` (both images).
 
 ## CVE stack without nmap-vulners (Phase 4.2)
@@ -717,10 +719,13 @@ Default path (no nmap required):
 | Nuclei (network, SMB) | scanner, after the web sweep | `nuclei.network_templates: true` (default) | `nuclei.json` `coverage.network` + findings with `"pass": "network"` |
 | CVSS4 enrich | scanner/API | `enrichment.cvss4.enabled` | scores on `vulnerabilities.json` |
 
-`retro_match` is primary by design, not by size: the shipped
-`scanner/data/nvd-cpe/nvd-cpe-ranges.json` is a seed of 8 products and 23 CVEs, and the real
-dataset is opt-in (`scripts/fetch-nvd-cpe.py --full`,
-[Retro CVE matching](retro-cve-matching.md#the-dataset--apiservicescpe_rangespy)). On the
+`retro_match` is primary by design, not by size: the file in git,
+`scanner/data/nvd-cpe/nvd-cpe-ranges.json`, is a seed of 8 products and 23 CVEs.
+A release harvests the full corpus before the image build
+(`scripts/stage-release-nvd-cpe.sh`); the build itself only copies the file.
+Unit tests keep the seed. After installation the client's `NVD_API_KEY` can
+run `scripts/fetch-nvd-cpe.py --full`. Runtime refresh stays opt-in
+([Retro CVE matching](retro-cve-matching.md#the-dataset--apiservicescpe_rangespy)). On the
 reference corpus the seed yields 5 range hits on 3 endpoints where Nmap's `vulners` named 428
 (host, port, CVE) triples and `pulse --cve` 3. Where each Nmap `vuln` script goes, and the
 Nuclei network pass: [NSE vuln coverage](nse-vuln-coverage.md).

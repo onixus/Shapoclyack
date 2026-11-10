@@ -377,8 +377,8 @@ pass the key through build arguments or enable shell tracing around it.
 Without a nonempty secret, refresh uses NVD's anonymous rate limit.
 GitHub Actions accepts the repository secret `NVD_API_KEY` for both image CI
 and publication; an absent secret leaves the anonymous path available. Jenkins
-accepts the build-client file through `NVD_API_KEY_FILE`, configured outside
-the repository, or the default `/run/secrets/nvd_api_key` on its build agent.
+looks for the key file in `NVD_API_KEY_FILE`, then `/run/secrets/nvd_api_key`,
+then `$HOME/.nvd-api-key`. The file stays outside the repository.
 Protect that file with mode `0600`; temporary provisioning must remove it after
 the build. Runtime refresh jobs still need their own `NVD_API_KEY`.
 BuildKit secret changes do not invalidate cached enrichment layers: use a fresh
@@ -446,8 +446,17 @@ python3 scripts/fetch-bdu-fstec.py --source vulxml.zip
 The dataset [retro CVE matching](retro-cve-matching.md) re-asks about stored
 service fingerprints: NVD's per-CVE product/version windows, compacted, in the
 same directory, envelope and manifest as the overlays above (manifest key
-`nvd_cpe`, floor `5000` products, not required). Opt-in like the advisory
-feeds below, with a flag of its own.
+`nvd_cpe`, floor `5000` products, not required). The file in git is the
+8-product seed, and unit tests load that seed. A real release runs
+`scripts/stage-release-nvd-cpe.sh` before `docker build`, so the image copies
+a full dataset that was already on disk. Image builds and tests do not call
+NVD. After installation the client's own key refreshes the copy:
+
+```bash
+NVD_API_KEY=... OCTO_NVD_CPE_FETCH_ENABLED=true python3 scripts/fetch-nvd-cpe.py --full
+```
+
+The daily refresh stays incremental and opt-in.
 
 | Variable | Default | Purpose |
 |---|---|---|

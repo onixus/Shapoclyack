@@ -218,6 +218,9 @@ ARG ADVISORY_FETCH=1
 # Builds consume the parked, checksummed NVD snapshot, independent of layer cache.
 # Runtime refresh remains enabled. Opt in only for a deliberate live build.
 ARG NVD_FETCH=0
+# The NVD CPE dataset is not fetched here. A release copies the file
+# scripts/stage-release-nvd-cpe.sh wrote into this context; unit tests keep
+# the committed seed. An image build that downloaded it would run for hours.
 # Optional NVD key is available only to this enrichment step, never an image ENV.
 RUN --mount=type=secret,id=nvd_api_key,required=false \
     set -eu; \

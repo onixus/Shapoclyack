@@ -428,6 +428,28 @@ def test_l2_config_rejects_ipv6_network():
         load_config(raw)
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "scanner/config/default.yaml",
+        "k8s/shapoclyack/base/config/k8s.yaml",
+        "charts/shapoclyack/files/scanner-config/k8s.yaml",
+    ],
+)
+def test_shipped_configs_grade_tls_ciphers(path):
+    import yaml
+
+    cfg = AppConfig.model_validate(yaml.safe_load(Path(path).read_text(encoding="utf-8")))
+    assert cfg.tls_posture.enabled is True
+    assert cfg.tls_posture.enumerate_ciphers is True
+
+
+def test_omitted_tls_posture_stays_off():
+    cfg = load_config(_minimal_config())
+    assert cfg.tls_posture.enabled is False
+    assert cfg.tls_posture.enumerate_ciphers is False
+
+
 def test_default_yaml_l2_is_safe_and_disabled():
     import yaml
 
