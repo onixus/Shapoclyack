@@ -98,7 +98,7 @@ export function TenantRolesPanel({
       </div>
 
       {catalogueQuery.error ? (
-        <p className="text-sm text-rose-500" role="alert">
+        <p className="text-sm text-danger" role="alert">
           {catalogueQuery.error instanceof Error ? catalogueQuery.error.message : null}
         </p>
       ) : catalogueQuery.isLoading ? (
@@ -337,7 +337,7 @@ function RoleDialog({
             )}
           </fieldset>
           {conflict ? (
-            <p className="text-xs text-rose-500" role="alert">
+            <p className="text-xs text-danger" role="alert">
               {conflict}
             </p>
           ) : null}

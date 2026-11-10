@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Suspense, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Network } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useT } from "@/lib/i18n";
@@ -15,14 +16,25 @@ import { AttackSurfaceGraph } from "@/components/attack-surface-graph";
 import { useRunHosts, useRunPorts, useRuns } from "@/hooks/use-runs";
 import { uniqueOwnershipGroups, type GraphGroupBy } from "@/lib/attack-surface";
 import { pickLatestRun } from "@/lib/run-data";
+import { RunViews } from "@/components/view-tabs";
 
 const RUN_PICKER_LIMIT = 50;
 
 export default function AttackSurfacePage() {
+  return (
+    <Suspense fallback={<p className="text-sm text-muted-foreground">…</p>}>
+      <AttackSurfaceInner />
+    </Suspense>
+  );
+}
+
+function AttackSurfaceInner() {
   const t = useT();
+  const router = useRouter();
+  const pinned = (useSearchParams().get("runId") || "").trim();
   // Run picker only needs the newest runs, so one page is enough (P3.3).
   const runsQuery = useRuns(undefined, { limit: RUN_PICKER_LIMIT });
-  const [selected, setSelected] = useState<string>("");
+  const [selected, setSelected] = useState<string>(pinned);
   const [groupBy, setGroupBy] = useState<GraphGroupBy>("topology");
   const [ownerKey, setOwnerKey] = useState<string>("all");
 
@@ -40,11 +52,12 @@ export default function AttackSurfacePage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20 shadow-md">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-subtle text-primary border border-primary">
             <Network className="h-5 w-5" />
           </div>
           <div>
             <h1 className="text-2xl font-extrabold tracking-tight text-foreground">{t("page.attack.title")}</h1>
+            <RunViews runId={runId} current="graph" />
             <p className="text-xs text-muted-foreground">
               {groupBy === "owner" ? t("page.attack.ownerHint") : t("page.attack.topologyHint")}
               {runsQuery.isFetching ? t("common.refreshing") : ""}
@@ -83,7 +96,13 @@ export default function AttackSurfacePage() {
               </SelectContent>
             </Select>
           ) : null}
-          <Select value={runId} onValueChange={setSelected}>
+          <Select
+            value={runId}
+            onValueChange={(value) => {
+              setSelected(value);
+              router.replace(`/attack-surface?runId=${encodeURIComponent(value)}`);
+            }}
+          >
             <SelectTrigger className="w-72 bg-card border-border text-foreground">
               <SelectValue placeholder={t("page.geo.selectRun")} />
             </SelectTrigger>
@@ -99,7 +118,7 @@ export default function AttackSurfacePage() {
       </div>
 
       {error ? (
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
+        <Alert variant="destructive" className="border-danger/40 bg-danger-subtle text-danger">
           <AlertDescription>{(error as Error).message}</AlertDescription>
         </Alert>
       ) : null}
@@ -111,7 +130,7 @@ export default function AttackSurfacePage() {
         </div>
       ) : isLoading ? (
         <div className="flex items-center justify-center py-16 text-muted-foreground gap-2">
-          <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+          <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
           <span className="text-sm">{t("common.loading")}</span>
         </div>
       ) : (

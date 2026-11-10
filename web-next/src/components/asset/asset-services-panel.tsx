@@ -58,7 +58,7 @@ export function AssetServicesPanel({
       {servicesQuery.isLoading ? (
         <p className="text-xs text-muted-foreground">{t("services.loading")}</p>
       ) : servicesQuery.error ? (
-        <p className="text-xs text-rose-600 dark:text-rose-400">
+        <p className="text-xs text-danger">
           {(servicesQuery.error as Error).message}
         </p>
       ) : services.length === 0 ? (
@@ -178,19 +178,19 @@ function ServiceRow({
               <Count
                 label={t("services.counts.vulnerable")}
                 value={counts.vulnerable ?? 0}
-                className="text-rose-600 dark:text-rose-400"
+                className="text-danger"
               />
               <Count label={t("services.counts.fixed")} value={counts.fixed ?? 0} />
               <Count label={t("services.counts.notAffected")} value={counts.not_affected ?? 0} />
               <Count
                 label={t("services.counts.possible")}
                 value={counts.possible ?? 0}
-                className="text-amber-700 dark:text-amber-300"
+                className="text-warning"
               />
               <Count
                 label={t("services.counts.unfixed")}
                 value={counts.unfixed ?? 0}
-                className="text-amber-700 dark:text-amber-300"
+                className="text-warning"
               />
             </div>
             {service.possible_cves.length ? (

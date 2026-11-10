@@ -29,14 +29,14 @@ export function JobMaintenanceWait({ job, compact = false }: { job: JobInfo; com
   if (compact) {
     return (
       <span role="img" aria-label={reason} title={description}>
-        <Hourglass className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+        <Hourglass className="h-3.5 w-3.5 shrink-0 text-warning" />
       </span>
     );
   }
   return (
     <div
       role="status"
-      className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200"
+      className="mt-3 rounded-lg border border-warning/30 bg-warning-subtle px-3 py-2 text-xs text-warning"
     >
       <p className="font-semibold">{reason}</p>
       {detail ? (

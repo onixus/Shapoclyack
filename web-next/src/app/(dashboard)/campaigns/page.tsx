@@ -13,6 +13,7 @@ import { useCampaigns } from "@/hooks/use-campaigns";
 import { usePagination } from "@/hooks/use-pagination";
 import type { Campaign } from "@/lib/campaigns";
 import { CAMPAIGN_STATUS } from "@/lib/config/statuses";
+import { FindingViews } from "@/components/view-tabs";
 import { useT } from "@/lib/i18n";
 import { useRelativeTime } from "@/lib/i18n/datetime";
 
@@ -35,7 +36,7 @@ function CampaignList() {
             href={`/campaigns?id=${encodeURIComponent(row.original.campaign_id)}`}
             className="space-y-0.5 hover:underline"
           >
-            <span className="block font-semibold text-sky-600 dark:text-sky-400">
+            <span className="block font-semibold text-primary">
               {row.original.name}
             </span>
             <span className="block text-xs text-muted-foreground">
@@ -53,7 +54,7 @@ function CampaignList() {
           <div className="space-y-0.5">
             <StatusBadge value={row.original.status} map={CAMPAIGN_STATUS} />
             {row.original.past_due ? (
-              <p className="text-xs text-rose-600 dark:text-rose-400">{t("campaign.pastDue")}</p>
+              <p className="text-xs text-danger">{t("campaign.pastDue")}</p>
             ) : null}
           </div>
         ),
@@ -132,13 +133,14 @@ function CampaignsInner() {
   const id = (useSearchParams().get("id") || "").trim();
   return (
     <div className="space-y-6">
+      <FindingViews current="campaigns" />
       {id ? (
         <CampaignDetail id={id} />
       ) : (
         <>
           <div className="border-b border-border pb-4">
             <div className="flex items-center gap-2.5">
-              <ListChecks className="h-5 w-5 text-sky-600 dark:text-sky-400" />
+              <ListChecks className="h-5 w-5 text-primary" />
               <h1 className="text-2xl font-extrabold tracking-tight">{t("campaign.page.title")}</h1>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">{t("campaign.page.subtitle")}</p>

@@ -159,13 +159,13 @@ export function SarifViewerDialog({
         <DialogHeader className="border-b border-border pb-4 flex flex-row items-center justify-between">
           <div>
             <div className="flex items-center gap-2.5">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-info-subtle text-info border border-info/20">
                 <ShieldAlert className="h-4 w-4" />
               </div>
               <div>
                 <DialogTitle className="text-base font-bold text-foreground font-mono">
                   {runText(t.locale, "SARIF 2.1.0 Security Report")} ·{" "}
-                  <span className="text-sky-600 dark:text-sky-400">{runId}</span>
+                  <span className="text-primary">{runId}</span>
                 </DialogTitle>
                 <p className="text-xs text-muted-foreground">
                   {driver?.name || "Shapoclyack Engine"}{" "}
@@ -203,35 +203,35 @@ export function SarifViewerDialog({
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2.5 rounded-lg bg-rose-50 dark:bg-rose-950/20 p-2.5 border border-rose-300 dark:border-rose-900/30">
-            <AlertCircle className="h-4 w-4 text-rose-600 dark:text-rose-400" />
+          <div className="flex items-center gap-2.5 rounded-lg bg-danger-subtle p-2.5 border border-danger/30">
+            <AlertCircle className="h-4 w-4 text-danger" />
             <div>
-              <p className="text-overline uppercase font-bold text-rose-600 dark:text-rose-400">
+              <p className="text-overline uppercase font-bold text-danger">
                 {t("ui.errorsHighcrit")}
               </p>
-              <p className="text-sm font-bold font-mono text-rose-600 dark:text-rose-300">
+              <p className="text-sm font-bold font-mono text-danger">
                 {counts.errors.toLocaleString()}
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/20 p-2.5 border border-amber-300 dark:border-amber-900/30">
-            <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+          <div className="flex items-center gap-2.5 rounded-lg bg-warning-subtle p-2.5 border border-warning/30">
+            <AlertTriangle className="h-4 w-4 text-warning" />
             <div>
-              <p className="text-overline uppercase font-bold text-amber-600 dark:text-amber-400">
+              <p className="text-overline uppercase font-bold text-warning">
                 {t("ui.warningsMedium")}
               </p>
-              <p className="text-sm font-bold font-mono text-amber-600 dark:text-amber-300">
+              <p className="text-sm font-bold font-mono text-warning">
                 {counts.warnings.toLocaleString()}
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2.5 rounded-lg bg-sky-50 dark:bg-sky-950/20 p-2.5 border border-sky-300 dark:border-sky-900/30">
-            <Info className="h-4 w-4 text-sky-600 dark:text-sky-400" />
+          <div className="flex items-center gap-2.5 rounded-lg bg-accent-subtle p-2.5 border border-primary">
+            <Info className="h-4 w-4 text-primary" />
             <div>
-              <p className="text-overline uppercase font-bold text-sky-600 dark:text-sky-400">
+              <p className="text-overline uppercase font-bold text-primary">
                 {runText(t.locale, "Notes & Rules")}
               </p>
-              <p className="text-sm font-bold font-mono text-sky-600 dark:text-sky-300">
+              <p className="text-sm font-bold font-mono text-primary">
                 {runText(t.locale, "{notes} notes · {rules} rules", {
                   notes: counts.notes,
                   rules: counts.rules,
@@ -251,21 +251,21 @@ export function SarifViewerDialog({
             <TabsList className="bg-card border border-border p-1">
               <TabsTrigger
                 value="findings"
-                className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300 gap-1.5"
+                className="text-xs font-semibold data-[state=active]:bg-accent-subtle data-[state=active]:text-primary dark:text-primary gap-1.5"
               >
                 <ShieldAlert className="h-3.5 w-3.5" />
                 {runText(t.locale, "Findings")} ({counts.total})
               </TabsTrigger>
               <TabsTrigger
                 value="rules"
-                className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300 gap-1.5"
+                className="text-xs font-semibold data-[state=active]:bg-accent-subtle data-[state=active]:text-primary dark:text-primary gap-1.5"
               >
                 <BookOpen className="h-3.5 w-3.5" />
                 {runText(t.locale, "Rules Catalog")} ({counts.rules})
               </TabsTrigger>
               <TabsTrigger
                 value="raw"
-                className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300 gap-1.5"
+                className="text-xs font-semibold data-[state=active]:bg-accent-subtle data-[state=active]:text-primary dark:text-primary gap-1.5"
               >
                 <Code2 className="h-3.5 w-3.5" />
                 {runText(t.locale, "Raw JSON")}
@@ -330,10 +330,10 @@ export function SarifViewerDialog({
                           variant="outline"
                           className={
                             lvl === "error"
-                              ? "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/30 font-bold font-mono text-xs"
+                              ? "bg-danger-subtle text-danger border-danger/30 font-bold font-mono text-xs"
                               : lvl === "warning"
-                                ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30 font-bold font-mono text-xs"
-                                : "bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/30 font-bold font-mono text-xs"
+                                ? "bg-warning-subtle text-warning border-warning/30 font-bold font-mono text-xs"
+                                : "bg-accent-subtle text-primary border-primary font-bold font-mono text-xs"
                           }
                         >
                           {t.locale === "ru"
@@ -354,7 +354,7 @@ export function SarifViewerDialog({
                         {cve && (
                           <Badge
                             variant="secondary"
-                            className="bg-muted text-rose-600 dark:text-rose-300 font-mono text-xs"
+                            className="bg-muted text-danger font-mono text-xs"
                           >
                             {cve}
                           </Badge>
@@ -363,7 +363,7 @@ export function SarifViewerDialog({
                           <Badge
                             key={cwe}
                             variant="secondary"
-                            className="bg-muted text-sky-600 dark:text-sky-300 font-mono text-xs"
+                            className="bg-muted text-primary font-mono text-xs"
                           >
                             {cwe}
                           </Badge>
@@ -382,7 +382,7 @@ export function SarifViewerDialog({
                         <span className="text-muted-foreground font-semibold">
                           {runText(t.locale, "Target URI")}:
                         </span>
-                        <span className="text-sky-600 dark:text-sky-300 truncate">
+                        <span className="text-primary truncate">
                           {locationUri}
                         </span>
                       </div>
@@ -418,7 +418,7 @@ export function SarifViewerDialog({
                     <div className="flex items-center gap-2">
                       <Badge
                         variant="outline"
-                        className="font-mono text-xs text-sky-600 dark:text-sky-400 border-sky-500/30"
+                        className="font-mono text-xs text-primary border-primary"
                       >
                         {runText(t.locale, "RULE")}
                       </Badge>

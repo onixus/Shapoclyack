@@ -43,28 +43,28 @@ import {
 const HISTORY_MONTHS = 12;
 
 const TONE_BAR: Record<UsageTone, string> = {
-  ok: "bg-emerald-500",
-  near: "bg-amber-500",
-  over: "bg-rose-500",
+  ok: "bg-success",
+  near: "bg-warning",
+  over: "bg-danger",
 };
 
 const TONE_TEXT: Record<UsageTone, string> = {
   ok: "text-foreground",
-  near: "text-amber-500",
-  over: "text-rose-500",
+  near: "text-warning",
+  over: "text-danger",
 };
 
 function ToneBadge({ tone, t }: { tone: UsageTone; t: Translate }) {
   if (tone === "over") {
     return (
-      <Badge variant="outline" className="border-rose-500/30 text-rose-600 dark:text-rose-400">
+      <Badge variant="outline" className="border-danger/30 text-danger">
         {t("page.usage.overLimit")}
       </Badge>
     );
   }
   if (tone === "near") {
     return (
-      <Badge variant="outline" className="border-amber-500/30 text-amber-600 dark:text-amber-400">
+      <Badge variant="outline" className="border-warning/30 text-warning">
         {t("page.usage.nearLimit")}
       </Badge>
     );
@@ -152,7 +152,7 @@ function QuotaEditor({
   const { data, isLoading, error } = useTenantQuota(row.tenant_id);
 
   if (error) {
-    return <p className="text-xs text-rose-600 dark:text-rose-400">{(error as Error).message}</p>;
+    return <p className="text-xs text-danger">{(error as Error).message}</p>;
   }
   if (isLoading || !data) {
     return <p className="text-xs text-muted-foreground">{t("page.usage.loading")}</p>;
@@ -321,7 +321,7 @@ export default function UsagePage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-sky-500/20 bg-sky-500/10 text-sky-500 shadow-md">
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-primary bg-accent-subtle text-primary">
           <CircleGauge className="h-5 w-5" />
         </div>
         <div>
@@ -335,7 +335,7 @@ export default function UsagePage() {
       </div>
 
       {error ? (
-        <p className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600 dark:text-rose-400">
+        <p className="rounded-lg border border-danger/30 bg-danger-subtle px-4 py-3 text-sm text-danger">
           {(error as Error).message}
         </p>
       ) : null}
@@ -410,7 +410,7 @@ export default function UsagePage() {
               <dl className="space-y-1.5 border-t border-border/60 pt-3 text-sm">
                 <div className="flex justify-between gap-3">
                   <dt className="text-muted-foreground">{t("page.usage.enforcement")}</dt>
-                  <dd className="text-right text-foreground">
+                  <dd className="max-w-[65%] text-pretty text-right text-foreground">
                     {data.enforced ? t("page.usage.enforcedOn") : t("page.usage.enforcedOff")}
                   </dd>
                 </div>
@@ -445,7 +445,7 @@ export default function UsagePage() {
                   data={history}
                   index="month"
                   categories={["Scans"]}
-                  colors={["cyan"]}
+                  colors={["viz1"]}
                   showLegend={false}
                   showAnimation={false}
                   yAxisWidth={40}
@@ -464,7 +464,7 @@ export default function UsagePage() {
           </h2>
           <p className="text-xs text-muted-foreground">{t("page.usage.fleetHint")}</p>
           {fleet.error ? (
-            <p className="text-sm text-rose-600 dark:text-rose-400">{(fleet.error as Error).message}</p>
+            <p className="text-sm text-danger">{(fleet.error as Error).message}</p>
           ) : fleet.isLoading ? (
             <p className="text-sm text-muted-foreground">{t("page.usage.loading")}</p>
           ) : fleetRows.length === 0 ? (
@@ -486,7 +486,7 @@ export default function UsagePage() {
                       key={row.tenant_id}
                       className={
                         row.assets.over_limit || row.scans.over_limit
-                          ? "border-t border-border/60 bg-rose-500/5"
+                          ? "border-t border-border/60 bg-danger-subtle"
                           : "border-t border-border/60"
                       }
                     >

@@ -203,7 +203,7 @@ export function ServiceTokensPanel({
       {issued?.token ? (
         <div
           role="alert"
-          className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4"
+          className="space-y-2 rounded-lg border border-warning/40 bg-warning-subtle p-4"
         >
           <p className="text-sm font-semibold">{t("ui.copyThisTokenNowItIs")}</p>
           <code className="block break-all rounded bg-background/60 p-2 font-mono text-xs">
@@ -223,7 +223,7 @@ export function ServiceTokensPanel({
         </p>
       ) : null}
       {error ? (
-        <p className="text-sm text-rose-500">
+        <p className="text-sm text-danger">
           {error instanceof Error ? error.message : "Failed to load service tokens"}
         </p>
       ) : null}

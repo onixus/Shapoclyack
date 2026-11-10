@@ -50,6 +50,9 @@ instead of reintroducing the old patterns.
 - Table headers are sentence case: no `uppercase tracking-wider`.
 - Numbers in tables and KPIs use `tabular-nums`; IPs, ports, CVEs, hashes and
   commands use `font-mono`.
+- UI text is Inter and `font-mono` is JetBrains Mono. The files live in
+  `web-next/src/app/fonts` (SIL OFL 1.1) and are served from the build.
+  Do not load a font CDN.
 - Always merge classes with `cn()`. It registers the APEX sizes with
   tailwind-merge; plain `twMerge` would read `text-body-sm` as a colour and
   drop it next to `text-muted-foreground`.
@@ -102,7 +105,12 @@ instead of reintroducing the old patterns.
 ## Where the values live
 
 - Token values for both themes: `web-next/src/app/globals.css`
-  (`--apex-*`, `--sev-*`).
+  (`--apex-*`, `--sev-*`, `--viz-*`).
+- Theme preference: `apex.theme` in `localStorage` (`dark`, `light`, or
+  `system`), default `dark`. A legacy `shapoclyack.theme` of `light` or
+  `dark` is copied across once. The painted theme is `data-theme` on
+  `<html>` together with the `.dark` or `.light` class, set before first
+  paint. Locale stays `shapoclyack.locale`.
 - Tailwind names: `web-next/tailwind.config.ts`.
 - Status maps and tones: `web-next/src/lib/config/statuses.ts`.
 - Source of truth for the tokens: the APEX design system (`tokens.json`);

@@ -165,7 +165,7 @@ export function RetentionWindows({
                           }
                         />
                         {error ? (
-                          <p className="text-xs text-rose-500" role="alert">
+                          <p className="text-xs text-danger" role="alert">
                             {error}
                           </p>
                         ) : null}
@@ -182,7 +182,7 @@ export function RetentionWindows({
                     {daysLabel(item.effective_days, t)}
                     {item.out_of_bounds ? (
                       <p
-                        className="text-xs font-normal text-amber-600 dark:text-amber-400"
+                        className="text-xs font-normal text-warning"
                         title={t("retention.storedOutOfBoundsHint", {
                           days: item.override_days ?? 0,
                           min: item.min_days,

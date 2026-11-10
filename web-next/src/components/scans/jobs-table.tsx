@@ -201,7 +201,7 @@ export function JobsTable({
                 aria-label={t("jobs.assetUpsertError")}
                 title={`${t("jobs.assetUpsertError")}: ${row.original.asset_upsert_error}`}
               >
-                <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-warning" />
               </span>
             ) : null}
             {row.original.agent_group_unavailable ? (
@@ -212,7 +212,7 @@ export function JobsTable({
                   group: row.original.agent_group ?? "",
                 })}
               >
-                <UserX className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                <UserX className="h-3.5 w-3.5 shrink-0 text-warning" />
               </span>
             ) : null}
             {row.original.sensor_unavailable ? (
@@ -221,12 +221,12 @@ export function JobsTable({
                 aria-label={t("jobs.sensorUnavailable")}
                 title={t("jobs.sensorUnavailableHint")}
               >
-                <UserX className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                <UserX className="h-3.5 w-3.5 shrink-0 text-warning" />
               </span>
             ) : null}
             {row.original.attempts && row.original.attempts > 1 ? (
               <span
-                className="font-mono text-xs text-amber-600 dark:text-amber-300"
+                className="font-mono text-xs text-warning"
                 title={t("jobs.attemptsHint")}
               >
                 ×{row.original.attempts}
@@ -397,7 +397,7 @@ export function JobsTable({
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7 text-rose-600 hover:bg-rose-500/10 hover:text-rose-700 dark:text-rose-400"
+                className="h-7 w-7 text-danger hover:bg-danger-subtle hover:text-danger"
                 aria-label={t("jobs.cancel")}
                 title={t("jobs.cancel")}
                 onClick={() => setCancelTarget(row.original)}
@@ -410,7 +410,7 @@ export function JobsTable({
                 role="img"
                 aria-label={t("jobs.stopping")}
                 title={t("jobs.stopping")}
-                className="text-amber-600 dark:text-amber-300"
+                className="text-warning"
               >
                 <Hourglass className="h-3.5 w-3.5" />
               </span>
@@ -533,7 +533,7 @@ export function JobsTable({
           <AlertDialogFooter>
             <AlertDialogCancel>{t("jobs.keepJob")}</AlertDialogCancel>
             <AlertDialogAction
-              className="bg-rose-600 text-foreground hover:bg-rose-500"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => {
                 if (cancelTarget) cancel.mutate(cancelTarget.job_id);
                 setCancelTarget(null);

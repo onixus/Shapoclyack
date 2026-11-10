@@ -117,7 +117,7 @@ export function AgentDetailsDrawer({
         <DialogHeader className="border-b border-border/80 px-6 pt-6 pb-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-500 border border-sky-500/20 shadow-sm">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-subtle text-primary border border-primary">
                 <Server className="h-5 w-5" />
               </div>
               <div>
@@ -152,9 +152,9 @@ export function AgentDetailsDrawer({
             <div className="space-y-5">
               {/* Outdated Warning & Upgrade Trigger */}
               {isOutdated && (
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200">
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-warning/30 bg-warning-subtle p-3 text-xs text-warning">
                   <div className="flex items-center gap-2">
-                    <ArrowUpCircle className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                    <ArrowUpCircle className="h-4 w-4 text-warning shrink-0" />
                     <span>
                       Update available: Current <strong>v{agent.version}</strong> &rarr; Latest <strong>v{agent.latest_version || "—"}</strong>
                       <span className="block opacity-80">
@@ -166,7 +166,7 @@ export function AgentDetailsDrawer({
                     size="sm"
                     disabled={upgradeMutation.isPending || agent.upgrade_requested}
                     onClick={handleUpgrade}
-                    className="h-7 bg-amber-600 px-3 text-xs font-semibold text-foreground hover:bg-amber-500"
+                    className="h-7 bg-warning-subtle px-3 text-xs font-semibold text-warning hover:bg-warning-subtle"
                   >
                     {upgradeMutation.isPending ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -182,19 +182,19 @@ export function AgentDetailsDrawer({
               {/* Live System Resource Telemetry */}
               <div>
                 <h4 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">
-                  <Activity className="h-3.5 w-3.5 text-sky-500" />
+                  <Activity className="h-3.5 w-3.5 text-primary" />
                   {t("prose.liveSystemTelemetry")}
                 </h4>
                 <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
                   {/* CPU */}
                   <div className="rounded-xl border border-border bg-card p-3.5">
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <span className="flex items-center gap-1.5 font-medium"><Cpu className="h-3.5 w-3.5 text-sky-500" /> CPU Load</span>
+                      <span className="flex items-center gap-1.5 font-medium"><Cpu className="h-3.5 w-3.5 text-primary" /> CPU Load</span>
                       <span className="font-mono font-bold text-foreground">{cpuPercent}%</span>
                     </div>
                     <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-secondary">
                       <div
-                        className={`h-full transition-all duration-300 ${cpuPercent > 80 ? "bg-rose-500" : cpuPercent > 50 ? "bg-amber-500" : "bg-sky-500"}`}
+                        className={`h-full transition-all duration-300 ${cpuPercent > 80 ? "bg-danger" : cpuPercent > 50 ? "bg-warning" : "bg-primary"}`}
                         style={{ width: `${Math.min(100, Math.max(0, cpuPercent))}%` }}
                       />
                     </div>
@@ -203,14 +203,14 @@ export function AgentDetailsDrawer({
                   {/* Memory */}
                   <div className="rounded-xl border border-border bg-card p-3.5">
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <span className="flex items-center gap-1.5 font-medium"><Database className="h-3.5 w-3.5 text-indigo-500" /> Memory</span>
+                      <span className="flex items-center gap-1.5 font-medium"><Database className="h-3.5 w-3.5 text-info" /> Memory</span>
                       <span className="font-mono font-bold text-foreground">
                         {metrics.memory_used_mb ? `${metrics.memory_used_mb}MB` : `${memPercent}%`}
                       </span>
                     </div>
                     <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-secondary">
                       <div
-                        className={`h-full transition-all duration-300 ${memPercent > 85 ? "bg-rose-500" : "bg-indigo-500"}`}
+                        className={`h-full transition-all duration-300 ${memPercent > 85 ? "bg-danger" : "bg-info"}`}
                         style={{ width: `${Math.min(100, Math.max(0, memPercent))}%` }}
                       />
                     </div>
@@ -219,14 +219,14 @@ export function AgentDetailsDrawer({
                   {/* Disk */}
                   <div className="rounded-xl border border-border bg-card p-3.5">
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <span className="flex items-center gap-1.5 font-medium"><HardDrive className="h-3.5 w-3.5 text-emerald-500" /> Disk Free</span>
+                      <span className="flex items-center gap-1.5 font-medium"><HardDrive className="h-3.5 w-3.5 text-success" /> Disk Free</span>
                       <span className="font-mono font-bold text-foreground">
                         {metrics.disk_free_gb ? `${metrics.disk_free_gb}GB` : "—"}
                       </span>
                     </div>
                     <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-secondary">
                       <div
-                        className="h-full bg-emerald-500 transition-all duration-300"
+                        className="h-full bg-success transition-all duration-300"
                         style={{ width: `${Math.min(100, Math.max(0, 100 - diskPercent))}%` }}
                       />
                     </div>
@@ -250,18 +250,18 @@ export function AgentDetailsDrawer({
 
               {/* Active Job Details */}
               {agent.current_job_id ? (
-                <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-3.5">
+                <div className="rounded-xl border border-info/30 bg-info-subtle p-3.5">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <Play className="h-4 w-4 animate-pulse text-indigo-500 shrink-0" />
-                      <span className="text-xs font-semibold text-indigo-950 dark:text-indigo-200">Executing Job:</span>
-                      <code className="rounded bg-background px-2 py-0.5 font-mono text-xs text-indigo-600 dark:text-indigo-300 border border-indigo-500/30">
+                      <Play className="h-4 w-4 animate-pulse text-info shrink-0" />
+                      <span className="text-xs font-semibold text-info">Executing Job:</span>
+                      <code className="rounded bg-background px-2 py-0.5 font-mono text-xs text-info border border-info/30">
                         {agent.current_job_id}
                       </code>
                     </div>
                     <Link
                       href={`/runs/view?id=${agent.current_job_id}`}
-                      className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline"
+                      className="text-xs font-semibold text-info hover:underline"
                     >
                       View Scan &rarr;
                     </Link>
@@ -281,13 +281,13 @@ export function AgentDetailsDrawer({
                   the tenant's jobs this agent may claim. */}
               <div className="space-y-2">
                 <h4 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">
-                  <Layers className="h-3.5 w-3.5 text-sky-500" />
+                  <Layers className="h-3.5 w-3.5 text-primary" />
                   Metadata & Labels
                 </h4>
                 <div className="flex flex-wrap gap-1.5">
                   <span
                     data-testid="agent-group"
-                    className="rounded-md border border-indigo-500/30 bg-indigo-500/10 px-2 py-0.5 font-mono text-xs text-indigo-700 dark:text-indigo-300"
+                    className="rounded-md border border-info/30 bg-info-subtle px-2 py-0.5 font-mono text-xs text-info"
                   >
                     <span className="text-muted-foreground">group:</span>{" "}
                     {agent.agent_group || "none (claims ungrouped jobs only)"}
@@ -303,7 +303,7 @@ export function AgentDetailsDrawer({
                   {agent.capabilities?.map((cap) => (
                     <span
                       key={cap}
-                      className="rounded-md border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 font-mono text-xs text-sky-700 dark:text-sky-300"
+                      className="rounded-md border border-primary bg-accent-subtle px-2 py-0.5 font-mono text-xs text-primary"
                     >
                       {cap}
                     </span>
@@ -318,7 +318,7 @@ export function AgentDetailsDrawer({
                   own reported status (#308). */}
               <div className="space-y-2 border-t border-border/80 pt-4">
                 <h4 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">
-                  <ShieldAlert className="h-3.5 w-3.5 text-amber-500" />
+                  <ShieldAlert className="h-3.5 w-3.5 text-warning" />
                   Sensor State
                 </h4>
                 {lifecycle === "active" ? (
@@ -326,7 +326,7 @@ export function AgentDetailsDrawer({
                     {t("prose.activeThisAgentMayClaim")}
                   </p>
                 ) : (
-                  <p className="text-xs text-amber-700 dark:text-amber-300">
+                  <p className="text-xs text-warning">
                     {agent.lifecycle_message || `This sensor is ${lifecycle}.`}
                   </p>
                 )}
@@ -369,7 +369,7 @@ export function AgentDetailsDrawer({
                       variant="outline"
                       disabled={statusMutation.isPending}
                       onClick={() => handleLifecycle("quarantined")}
-                      className="h-8 border-rose-500/40 px-3 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-500/10"
+                      className="h-8 border-danger/40 px-3 text-xs text-danger hover:bg-danger-subtle"
                     >
                       Quarantine
                     </Button>
@@ -384,14 +384,14 @@ export function AgentDetailsDrawer({
                     size="sm"
                     variant="outline"
                     onClick={() => setConfirmDelete(true)}
-                    className="gap-1.5 border-rose-500/40 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 hover:text-rose-700 dark:hover:text-rose-600 dark:text-rose-300"
+                    className="gap-1.5 border-danger/40 text-xs text-danger hover:bg-danger-subtle hover:text-danger"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                     Deregister Sensor
                   </Button>
                 ) : (
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs text-rose-600 dark:text-rose-400 font-semibold">Confirm removal of {agentId}?</span>
+                    <span className="text-xs text-danger font-semibold">Confirm removal of {agentId}?</span>
                     {/* Off by default, as on the API: one key commonly
                         provisions a whole fleet. Without it the host still
                         holds the key and re-registers on its next poll. */}
@@ -410,7 +410,7 @@ export function AgentDetailsDrawer({
                     {revokeKey && otherAgentsOnKey > 0 ? (
                       <span
                         role="alert"
-                        className="w-full text-xs font-semibold text-rose-600 dark:text-rose-400"
+                        className="w-full text-xs font-semibold text-danger"
                       >
                         This key also provisioned {otherAgentsOnKey} other{" "}
                         {otherAgentsOnKey === 1 ? "registration" : "registrations"} (sensors or
@@ -422,7 +422,7 @@ export function AgentDetailsDrawer({
                       size="sm"
                       disabled={deleteMutation.isPending}
                       onClick={handleDelete}
-                      className="h-7 bg-rose-600 px-2.5 text-xs text-foreground hover:bg-rose-500"
+                      className="h-7 bg-destructive px-2.5 text-xs text-destructive-foreground hover:bg-destructive/90"
                     >
                       {deleteMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Yes, Delete"}
                     </Button>

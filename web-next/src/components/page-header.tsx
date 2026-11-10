@@ -30,11 +30,11 @@ export function PageHeader({
   children?: ReactNode;
 }) {
   const tile: Record<NonNullable<typeof tone>, string> = {
-    sky: "bg-sky-500/10 text-sky-600 border-sky-500/20 dark:text-sky-400",
-    violet: "bg-violet-500/10 text-violet-600 border-violet-500/20 dark:text-violet-400",
-    amber: "bg-amber-500/10 text-amber-600 border-amber-500/20 dark:text-amber-400",
-    emerald: "bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-400",
-    rose: "bg-rose-500/10 text-rose-600 border-rose-500/20 dark:text-rose-400",
+    sky: "bg-accent-subtle text-primary border-primary",
+    violet: "bg-info-subtle text-info border-info/20",
+    amber: "bg-warning-subtle text-warning border-warning/20",
+    emerald: "bg-success-subtle text-success border-success/20",
+    rose: "bg-danger-subtle text-danger border-danger/20",
     slate: "bg-muted text-muted-foreground border-border",
   };
   return (
@@ -44,7 +44,7 @@ export function PageHeader({
           {Icon ? (
             <div
               className={cn(
-                "mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border shadow-sm",
+                "mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border",
                 tile[tone],
               )}
             >

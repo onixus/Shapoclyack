@@ -47,7 +47,7 @@ export function WebhookSecretDialog({
           <DialogDescription>{t("integrations.secret.body")}</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4">
+        <div className="space-y-3 rounded-lg border border-warning/40 bg-warning-subtle p-4">
           <code className="block break-all rounded bg-background/60 p-2 font-mono text-xs text-foreground">
             {secret}
           </code>
@@ -66,7 +66,7 @@ export function WebhookSecretDialog({
             }}
           >
             {copied ? (
-              <Check className="h-3.5 w-3.5 text-emerald-500" />
+              <Check className="h-3.5 w-3.5 text-success" />
             ) : (
               <Copy className="h-3.5 w-3.5" />
             )}

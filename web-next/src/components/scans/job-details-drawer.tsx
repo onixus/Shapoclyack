@@ -153,7 +153,7 @@ export function JobDetailsDrawer({
 
         <JobMaintenanceWait job={current} />
         {current.error ? (
-          <div className="mt-4 flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-800 dark:text-rose-200">
+          <div className="mt-4 flex items-start gap-2 rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-xs text-danger">
             <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <div>
               <p className="font-semibold">{t("jobs.error")}</p>
@@ -164,7 +164,7 @@ export function JobDetailsDrawer({
         {current.sensor_unavailable ? (
           <div
             role="status"
-            className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200"
+            className="mt-3 flex items-start gap-2 rounded-lg border border-warning/30 bg-warning-subtle px-3 py-2 text-xs text-warning"
           >
             <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <div>
@@ -174,7 +174,7 @@ export function JobDetailsDrawer({
           </div>
         ) : null}
         {current.asset_upsert_error ? (
-          <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+          <div className="mt-3 flex items-start gap-2 rounded-lg border border-warning/30 bg-warning-subtle px-3 py-2 text-xs text-warning">
             <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <div>
               <p className="font-semibold">{t("jobs.assetUpsertError")}</p>
@@ -201,7 +201,7 @@ export function JobDetailsDrawer({
               <span
                 className={
                   current.attempts && current.attempts > 1
-                    ? "font-semibold text-amber-600 dark:text-amber-300"
+                    ? "font-semibold text-warning"
                     : ""
                 }
               >
@@ -253,7 +253,7 @@ export function JobDetailsDrawer({
                 <span className="inline-flex items-center gap-1.5">
                   <span className="font-mono">{current.agent_group}</span>
                   {current.agent_group_unavailable ? (
-                    <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-300">
+                    <span className="inline-flex items-center gap-1 text-warning">
                       <TriangleAlert className="h-3.5 w-3.5 shrink-0" />
                       {t("jobs.agentGroupUnavailable")}
                     </span>
@@ -286,7 +286,7 @@ export function JobDetailsDrawer({
             ) : null}
             {refused.length > 0 ? (
               <Row label={t("jobs.promotedRefused")}>
-                <span className="font-mono text-amber-700 dark:text-amber-300">
+                <span className="font-mono text-warning">
                   {refused.join(", ")}
                 </span>
               </Row>

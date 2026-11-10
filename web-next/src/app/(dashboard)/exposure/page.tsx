@@ -26,6 +26,7 @@ import {
   ASSET_STATUS,
   RISK_LEVEL_STATUS,
 } from "@/lib/config/statuses";
+import { AssetViews } from "@/components/view-tabs";
 import { assetDetailHref } from "@/lib/vuln-lifecycle";
 
 export default function ExposurePage() {
@@ -124,14 +125,15 @@ export default function ExposurePage() {
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div>
           <div className="flex items-center gap-2.5">
-            <Radar className="h-5 w-5 text-sky-600 dark:text-sky-400" />
+            <Radar className="h-5 w-5 text-primary" />
             <h1 className="text-2xl font-extrabold tracking-tight text-foreground">{t("page.exposure.title")}</h1>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">{t("page.exposure.subtitle")}</p>
+          <AssetViews current="declared" />
         </div>
       </div>
 
-      <Alert className="border-sky-500/30 bg-sky-50 dark:bg-sky-950/20 text-sky-900 dark:text-sky-100">
+      <Alert className="border-primary bg-accent-subtle text-primary">
         <AlertDescription className="text-xs">
           {t("page.exposure.alert")}
         </AlertDescription>

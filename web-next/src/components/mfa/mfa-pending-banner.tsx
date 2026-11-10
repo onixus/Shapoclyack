@@ -35,7 +35,7 @@ export function MfaPendingBanner() {
   return (
     <div
       role="alert"
-      className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-900 dark:text-amber-200 md:px-6"
+      className="flex flex-wrap items-center justify-between gap-3 border-b border-warning/40 bg-warning-subtle px-4 py-2 text-xs text-warning md:px-6"
     >
       <span className="flex items-center gap-2">
         <ShieldAlert className="h-4 w-4 shrink-0" />

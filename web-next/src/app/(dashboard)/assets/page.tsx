@@ -19,6 +19,7 @@ import { SavedViews } from "@/components/saved-views";
 import { DataTable } from "@/components/data-table";
 import { AssetBulkContext } from "@/components/asset/bulk-context";
 import { AssetImportButton } from "@/components/asset/import-dialog";
+import { AssetViews } from "@/components/view-tabs";
 import { useT } from "@/lib/i18n";
 import { pluralForm } from "@/lib/plural";
 import { useRelativeTime } from "@/lib/i18n/datetime";
@@ -152,7 +153,7 @@ function AssetsInner() {
           <span className="tabular-nums text-foreground">
             {row.original.open_findings.toLocaleString()}
             {row.original.unassigned_findings > 0 ? (
-              <span className="ml-1 text-xs text-amber-600 dark:text-amber-400">
+              <span className="ml-1 text-xs text-warning">
                 {" · "}
                 {t("page.assets.unassignedSuffix", { count: row.original.unassigned_findings })}
               </span>
@@ -245,7 +246,7 @@ function AssetsInner() {
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div>
           <div className="flex items-center gap-2.5">
-            <Server className="h-5 w-5 text-sky-600 dark:text-sky-400" />
+            <Server className="h-5 w-5 text-primary" />
             <h1 className="text-2xl font-extrabold tracking-tight text-foreground">
               {t("page.assets.title")}
             </h1>
@@ -254,6 +255,7 @@ function AssetsInner() {
             {t("page.assets.subtitle")}
             {assetsQuery.isFetching ? " · Refreshing inventory stream…" : ""}
           </p>
+          <AssetViews current="list" />
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" asChild>

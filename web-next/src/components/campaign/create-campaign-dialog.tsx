@@ -125,7 +125,7 @@ export function CreateCampaignDialog({
             {preview.isPending ? (
               <p className="text-xs text-muted-foreground">…</p>
             ) : preview.error ? (
-              <p role="alert" className="text-xs text-rose-600 dark:text-rose-400">
+              <p role="alert" className="text-xs text-danger">
                 {preview.error.message}
               </p>
             ) : data ? (
@@ -138,7 +138,7 @@ export function CreateCampaignDialog({
                   })}
                 </p>
                 {data.already_in_other_campaigns ? (
-                  <p className="text-amber-600 dark:text-amber-400">
+                  <p className="text-warning">
                     {t("campaign.dialog.elsewhere", { count: data.already_in_other_campaigns })}
                   </p>
                 ) : null}
@@ -166,7 +166,7 @@ export function CreateCampaignDialog({
               </div>
             ) : null}
             {stale ? (
-              <p role="alert" className="text-xs text-rose-600 dark:text-rose-400">
+              <p role="alert" className="text-xs text-danger">
                 {t("campaign.dialog.stale")}
               </p>
             ) : null}

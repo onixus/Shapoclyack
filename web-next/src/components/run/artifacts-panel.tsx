@@ -97,7 +97,7 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
       {pdfReport ? (
         <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-border bg-card p-4">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20 shadow-md">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border bg-muted text-foreground">
               <FileText className="h-5 w-5" />
             </div>
             <div>
@@ -110,7 +110,8 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
           <Button
             onClick={() => handleDownload(pdfReport)}
             disabled={busyPath === pdfReport}
-            className="bg-rose-600 hover:bg-rose-500 text-foreground font-semibold text-xs gap-2"
+            variant="outline"
+            className="font-semibold text-xs gap-2"
           >
             <Download className="h-4 w-4" />
             {busyPath === pdfReport
@@ -121,9 +122,9 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
       ) : null}
 
       {sarifReport ? (
-        <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-indigo-500/30 bg-indigo-50 dark:bg-indigo-950/20 p-4 shadow-lg backdrop-blur">
+        <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-info/30 bg-info-subtle p-4">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 shadow-md">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-info-subtle text-info border border-info/20">
               <ShieldAlert className="h-5 w-5" />
             </div>
             <div>
@@ -133,7 +134,7 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
                 </p>
                 <Badge
                   variant="outline"
-                  className="font-mono text-xs text-indigo-600 dark:text-indigo-300 border-indigo-500/30 bg-indigo-500/10"
+                  className="font-mono text-xs text-info border-info/30 bg-info-subtle"
                 >
                   SARIF 2.1.0
                 </Badge>
@@ -147,7 +148,8 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
             <Button
               onClick={openSarifViewer}
               disabled={busyPath === "sarif.json"}
-              className="bg-indigo-600 hover:bg-indigo-500 text-foreground font-semibold text-xs gap-1.5"
+              variant="outline"
+              className="font-semibold text-xs gap-1.5"
             >
               <Eye className="h-4 w-4" />
               {t("prose.viewSarifFindings")}
@@ -156,7 +158,7 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
               variant="outline"
               onClick={() => handleDownload("sarif.json")}
               disabled={busyPath === "sarif.json"}
-              className="border-indigo-500/30 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-800 dark:text-indigo-200 hover:bg-indigo-50 dark:bg-indigo-900/50 text-xs gap-1.5"
+              className="border-info/30 bg-info-subtle text-info hover:bg-info-subtle text-xs gap-1.5"
             >
               <Download className="h-4 w-4" />
               {runText(t.locale, "Download JSON")}
@@ -227,7 +229,7 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
               {previewPath ? (
                 <Badge
                   variant="secondary"
-                  className="bg-sky-500/20 text-sky-600 dark:text-sky-300 border-sky-500/30 text-xs"
+                  className="bg-accent-subtle text-primary border-primary text-xs"
                 >
                   {runText(t.locale, "PREVIEW")}
                 </Badge>
@@ -236,7 +238,7 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
           </DialogHeader>
           {previewLoading ? (
             <div className="flex items-center justify-center py-8 text-muted-foreground gap-2">
-              <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
               <span className="text-xs">{runText(t.locale, "Loading artifact text\u2026")}</span>
             </div>
           ) : (

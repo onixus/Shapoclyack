@@ -50,6 +50,7 @@ import {
 } from "@/lib/config/statuses";
 import { normalizeSeverity, SEVERITIES } from "@/lib/run-data";
 import { assetDetailHref, findingLabel, SLA_STATES, VULN_STATES, vulnDetailHref } from "@/lib/vuln-lifecycle";
+import { FindingViews } from "@/components/view-tabs";
 
 const FILTER_ALL = "all";
 const OPEN_WORKING_SET = "open";
@@ -185,7 +186,7 @@ function VulnerabilitiesInner() {
             href={vulnDetailHref(row.original.vuln_id, row.original.tenant_id)}
             className="group space-y-0.5"
           >
-            <div className="flex items-center gap-1.5 font-mono font-bold text-sky-600 dark:text-sky-400 group-hover:text-sky-600 dark:text-sky-300 group-hover:underline">
+            <div className="flex items-center gap-1.5 font-mono font-bold text-primary group-hover:text-primary group-hover:underline">
               <span>{vulnerabilityName(row.original, t.locale)}</span>
               <ArrowUpRight className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100" />
             </div>
@@ -266,7 +267,7 @@ function VulnerabilitiesInner() {
         cell: ({ row }) => (
           <Link
             href={assetDetailHref(row.original.asset_id, row.original.tenant_id)}
-            className="font-mono text-xs text-foreground hover:text-sky-600 dark:text-sky-300 hover:underline"
+            className="font-mono text-xs text-foreground hover:text-primary dark:text-primary hover:underline"
           >
             {row.original.asset_id}
           </Link>
@@ -288,7 +289,7 @@ function VulnerabilitiesInner() {
             asChild
             variant="outline"
             size="sm"
-            className="h-7 text-xs border-border bg-card text-sky-600 dark:text-sky-400 hover:bg-muted hover:text-foreground"
+            className="h-7 text-xs border-border bg-card text-primary hover:bg-muted hover:text-foreground"
           >
             <Link href={vulnDetailHref(row.original.vuln_id, row.original.tenant_id)}>
               {t("common.view")}
@@ -503,7 +504,7 @@ function VulnerabilitiesInner() {
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div>
           <div className="flex items-center gap-2.5">
-            <ShieldAlert className="h-5 w-5 text-sky-600 dark:text-sky-400" />
+            <ShieldAlert className="h-5 w-5 text-primary" />
             <h1 className="text-2xl font-extrabold tracking-tight text-foreground">
               {t("page.vulns.title")}
             </h1>
@@ -517,7 +518,7 @@ function VulnerabilitiesInner() {
                 Filtered to asset{" "}
                 <Link
                   href={assetDetailHref(assetId)}
-                  className="font-mono text-sky-600 dark:text-sky-400 hover:underline"
+                  className="font-mono text-primary hover:underline"
                 >
                   {assetId}
                 </Link>
@@ -525,6 +526,7 @@ function VulnerabilitiesInner() {
               </>
             ) : null}
           </p>
+          <FindingViews current="list" />
         </div>
       </div>
 
@@ -700,7 +702,7 @@ function VulnerabilitiesInner() {
                   {t("problems.drill.clear")}
                 </Button>
                 {driftQuery.data?.drift?.differs ? (
-                  <span role="status" className="text-amber-600 dark:text-amber-400">
+                  <span role="status" className="text-warning">
                     {driftQuery.data.drift.changed_since_as_of > 0
                       ? t("problems.drill.drift", {
                           expected: driftQuery.data.drift.expected_instances,

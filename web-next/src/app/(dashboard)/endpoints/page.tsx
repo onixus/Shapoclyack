@@ -298,7 +298,7 @@ export default function EndpointsPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-sky-500/20 bg-sky-500/10 text-sky-600 dark:text-sky-400 shadow-md">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-primary bg-accent-subtle text-primary">
             <Laptop className="h-5 w-5" />
           </div>
           <div>
@@ -310,7 +310,7 @@ export default function EndpointsPage() {
         </div>
         <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
           <span>{t("common.devices", { count: raw.length })}</span>
-          <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+          <span className="font-semibold text-success">
             {t("common.linked", { count: linked })}
           </span>
           {conflicts > 0 ? (
@@ -319,7 +319,7 @@ export default function EndpointsPage() {
             </span>
           ) : null}
           {stale > 0 ? (
-            <span className="font-semibold text-amber-600 dark:text-amber-400">
+            <span className="font-semibold text-warning">
               {t("page.endpoints.staleCount", { count: stale })}
             </span>
           ) : null}
@@ -328,7 +328,7 @@ export default function EndpointsPage() {
             size="sm"
             onClick={() => setStaleOnly((v) => !v)}
             className={`h-8 text-xs ${
-              staleOnly ? "border-amber-500/60 text-amber-600 dark:text-amber-300" : ""
+              staleOnly ? "border-warning/60 text-warning" : ""
             }`}
           >
             {staleOnly

@@ -45,7 +45,7 @@ export default function RetentionPage() {
       {!canRead ? (
         <p className="text-sm text-muted-foreground">{t("retention.denied")}</p>
       ) : error ? (
-        <p className="text-sm text-rose-500" role="alert">
+        <p className="text-sm text-danger" role="alert">
           {error instanceof Error ? error.message : t("retention.loadFailed")}
         </p>
       ) : isLoading || !data ? (

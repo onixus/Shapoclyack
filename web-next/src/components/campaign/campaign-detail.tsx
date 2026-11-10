@@ -179,7 +179,7 @@ export function CampaignDetail({ id }: { id: string }) {
         enableSorting: false,
         cell: ({ row }) => (
           <Link href={vulnDetailHref(row.original.vuln_id)} className="group space-y-0.5">
-            <p className="whitespace-nowrap font-mono text-sm font-bold text-sky-600 group-hover:underline dark:text-sky-400">
+            <p className="whitespace-nowrap font-mono text-sm font-bold text-primary group-hover:underline">
               {row.original.cve || row.original.title || row.original.problem_key}
             </p>
             <p className="text-xs text-muted-foreground">
@@ -215,7 +215,7 @@ export function CampaignDetail({ id }: { id: string }) {
         cell: ({ row }) =>
           row.original.ticket_key ? (
             row.original.ticket_url ? (
-              <a href={row.original.ticket_url} target="_blank" rel="noreferrer" className="text-xs text-sky-600 hover:underline dark:text-sky-400">
+              <a href={row.original.ticket_url} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">
                 {row.original.ticket_key}
               </a>
             ) : (
@@ -257,7 +257,7 @@ export function CampaignDetail({ id }: { id: string }) {
   if (campaign.isLoading) return <p className="text-sm text-muted-foreground">{t("campaign.loading")}</p>;
   if (campaign.error || !data) {
     return (
-      <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">
+      <p role="alert" className="text-sm text-danger">
         {campaign.error?.message ?? t("campaign.notFound")}
       </p>
     );
@@ -266,7 +266,7 @@ export function CampaignDetail({ id }: { id: string }) {
 
   return (
     <div className="space-y-6">
-      <Link href="/campaigns" className="inline-flex items-center gap-1 text-xs text-sky-600 hover:underline dark:text-sky-400">
+      <Link href="/campaigns" className="inline-flex items-center gap-1 text-xs text-primary hover:underline">
         <ArrowLeft className="h-3 w-3" /> {t("campaign.detail.back")}
       </Link>
 
@@ -276,7 +276,7 @@ export function CampaignDetail({ id }: { id: string }) {
             <h1 className="text-2xl font-extrabold tracking-tight">{data.name}</h1>
             <StatusBadge value={data.status} map={CAMPAIGN_STATUS} />
             {data.past_due ? (
-              <span className="text-xs font-medium text-rose-600 dark:text-rose-400">{t("campaign.pastDue")}</span>
+              <span className="text-xs font-medium text-danger">{t("campaign.pastDue")}</span>
             ) : null}
           </div>
           <p className="text-xs text-muted-foreground">

@@ -181,13 +181,13 @@ export function ScanScopePanel({ tenantId }: { tenantId: string }) {
           {t("scanScope.current")}
         </p>
         {error ? (
-          <p className="text-sm text-rose-500" role="alert">
+          <p className="text-sm text-danger" role="alert">
             {error instanceof Error ? error.message : t("scanScope.loadFailed")}
           </p>
         ) : isLoading ? (
           <p className="text-sm text-muted-foreground">{t("scanScope.loading")}</p>
         ) : (entries ?? []).length === 0 ? (
-          <p className="text-sm text-amber-500">{t("scanScope.currentEmpty")}</p>
+          <p className="text-sm text-warning">{t("scanScope.currentEmpty")}</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
@@ -286,7 +286,7 @@ export function ScanScopePanel({ tenantId }: { tenantId: string }) {
                   </Button>
                 </div>
                 {warning ? (
-                  <p className="text-xs text-amber-500" role="status">
+                  <p className="text-xs text-warning" role="status">
                     {warning}
                   </p>
                 ) : null}
@@ -307,13 +307,13 @@ export function ScanScopePanel({ tenantId }: { tenantId: string }) {
         </Button>
 
         {rows.length === 0 ? (
-          <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm" role="alert">
+          <p className="rounded-lg border border-warning/40 bg-warning-subtle p-3 text-sm" role="alert">
             {t("scanScope.emptyWarning")}
           </p>
         ) : null}
 
         {errors.length > 0 ? (
-          <ul className="space-y-1 text-sm text-rose-500" role="alert">
+          <ul className="space-y-1 text-sm text-danger" role="alert">
             {errors.map((message) => (
               <li key={message}>{message}</li>
             ))}
@@ -338,7 +338,7 @@ export function ScanScopePanel({ tenantId }: { tenantId: string }) {
         </p>
         <p className="text-xs text-muted-foreground">{t("scanScope.promotedHint")}</p>
         {promotedQuery.error ? (
-          <p className="text-sm text-rose-500" role="alert">
+          <p className="text-sm text-danger" role="alert">
             {promotedQuery.error instanceof Error
               ? promotedQuery.error.message
               : t("scanScope.promotedFailed")}

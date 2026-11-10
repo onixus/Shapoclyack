@@ -88,7 +88,7 @@ export function SecurityKeysPanel() {
     <section className="max-w-xl space-y-4 rounded-xl border border-border bg-card p-5">
       <div className="space-y-1">
         <div className="flex items-center gap-2">
-          <KeyRound className="h-4 w-4 text-sky-500" />
+          <KeyRound className="h-4 w-4 text-primary" />
           <h2 className="text-lg font-semibold text-foreground">{t("mfa.keys.title")}</h2>
         </div>
         <p className="text-sm text-muted-foreground">{t("mfa.keys.description")}</p>

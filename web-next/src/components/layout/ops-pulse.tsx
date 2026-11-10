@@ -36,7 +36,7 @@ export function OpsPulse({ className }: { className?: string }) {
         className={cn(
           "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold transition-colors",
           running > 0
-            ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+            ? "border-warning/30 bg-warning-subtle text-warning"
             : "border-border bg-muted text-muted-foreground hover:text-foreground",
         )}
         data-testid="pulse-jobs"
@@ -53,8 +53,8 @@ export function OpsPulse({ className }: { className?: string }) {
           className={cn(
             "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold transition-colors",
             online === 0
-              ? "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300"
-              : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+              ? "border-danger/30 bg-danger-subtle text-danger"
+              : "border-success/30 bg-success-subtle text-success",
           )}
           data-testid="pulse-agents"
         >
