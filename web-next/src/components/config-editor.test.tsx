@@ -122,7 +122,12 @@ describe("ConfigEditor Pulse plugin repositories", () => {
       "service_probe.pulse.plugins_dir": "",
       "service_probe.pulse.plugin_sources": [],
     } as unknown as typeof CONFIG.defaults;
-    CONFIG.effective = { ...CONFIG.defaults };
+    // The fixture's effective value also carries the NVD key. A spread of the
+    // plugin defaults is a different shape, so the assignment needs the same cast.
+    CONFIG.effective = {
+      "service_probe.pulse.plugins_dir": "",
+      "service_probe.pulse.plugin_sources": [],
+    } as unknown as typeof CONFIG.effective;
   }
 
   function restore() {
