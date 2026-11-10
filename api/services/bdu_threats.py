@@ -1,7 +1,7 @@
 """FSTEC Threat Bank (БДУ УБИ — thrlist.xlsx) parser and enrichment overlay.
 
 Parses official thrlist.xlsx published at https://bdu.fstec.ru/files/documents/thrlist.xlsx
-without relying on external dependencies (using zipfile and xml.etree.ElementTree).
+without relying on a spreadsheet library (zipfile plus defusedxml).
 """
 
 from __future__ import annotations
@@ -16,9 +16,9 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO
-import xml.etree.ElementTree as ET
 
 from defusedxml import ElementTree as SafeET
+from defusedxml.ElementTree import ParseError
 from defusedxml.common import DefusedXmlException
 
 DEFAULT_DATABASE = Path("scanner/data/bdu/threats-overlay.json")
@@ -68,7 +68,7 @@ def parse_xlsx(stream: BinaryIO) -> tuple[dict[str, dict[str, Any]], str | None]
         with archive.open("xl/sharedStrings.xml") as ss_file:
             try:
                 ss_tree = SafeET.parse(ss_file)
-            except (ET.ParseError, DefusedXmlException) as exc:
+            except (ParseError, DefusedXmlException) as exc:
                 raise ValueError(f"invalid sharedStrings XML in thrlist.xlsx: {exc}") from exc
 
             for si in ss_tree.iter():
@@ -80,7 +80,7 @@ def parse_xlsx(stream: BinaryIO) -> tuple[dict[str, dict[str, Any]], str | None]
         with archive.open("xl/worksheets/sheet1.xml") as sheet_file:
             try:
                 sheet_tree = SafeET.parse(sheet_file)
-            except (ET.ParseError, DefusedXmlException) as exc:
+            except (ParseError, DefusedXmlException) as exc:
                 raise ValueError(f"invalid sheet1.xml in thrlist.xlsx: {exc}") from exc
 
             rows: list[dict[str, str]] = []
