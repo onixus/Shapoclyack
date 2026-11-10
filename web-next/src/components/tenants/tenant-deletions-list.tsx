@@ -53,7 +53,7 @@ export function TenantDeletionsList() {
       </p>
       <p className="text-xs text-muted-foreground">{t("deletions.hint")}</p>
       {error ? (
-        <p className="text-sm text-rose-500" role="alert">
+        <p className="text-sm text-danger" role="alert">
           {error instanceof Error ? error.message : t("deletions.loadFailed")}
         </p>
       ) : isLoading || !data ? null : data.length === 0 ? (
@@ -102,7 +102,7 @@ export function TenantDeletionsList() {
                       <p>{t("deletions.skipped", { stores: skipped.join(", ") })}</p>
                     ) : null}
                     {deletion.state !== "completed" && deletion.last_error ? (
-                      <p className="text-rose-500">{deletion.last_error}</p>
+                      <p className="text-danger">{deletion.last_error}</p>
                     ) : null}
                   </td>
                 </tr>

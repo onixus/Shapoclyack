@@ -13,6 +13,7 @@ import { useCampaigns } from "@/hooks/use-campaigns";
 import { usePagination } from "@/hooks/use-pagination";
 import type { Campaign } from "@/lib/campaigns";
 import { CAMPAIGN_STATUS } from "@/lib/config/statuses";
+import { FindingViews } from "@/components/view-tabs";
 import { useT } from "@/lib/i18n";
 import { useRelativeTime } from "@/lib/i18n/datetime";
 
@@ -53,7 +54,7 @@ function CampaignList() {
           <div className="space-y-0.5">
             <StatusBadge value={row.original.status} map={CAMPAIGN_STATUS} />
             {row.original.past_due ? (
-              <p className="text-xs text-rose-600 dark:text-rose-400">{t("campaign.pastDue")}</p>
+              <p className="text-xs text-danger">{t("campaign.pastDue")}</p>
             ) : null}
           </div>
         ),
@@ -132,6 +133,7 @@ function CampaignsInner() {
   const id = (useSearchParams().get("id") || "").trim();
   return (
     <div className="space-y-6">
+      <FindingViews current="campaigns" />
       {id ? (
         <CampaignDetail id={id} />
       ) : (

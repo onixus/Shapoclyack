@@ -113,7 +113,7 @@ export default function UsersPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border/80 pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-primary bg-accent-subtle text-primary shadow-sm">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-primary bg-accent-subtle text-primary">
             <UserCog className="h-5 w-5" />
           </div>
           <div>
@@ -431,7 +431,7 @@ function UsersTab({ t, signedInAs }: { t: Translate; signedInAs: string }) {
             <div className="flex items-center gap-2">
               <span className="text-sm text-foreground">{row.original.email}</span>
               {row.original.email_verified ? (
-                <span className="text-overline uppercase text-emerald-600 dark:text-emerald-400">
+                <span className="text-overline uppercase text-success">
                   {t("users.emailVerified")}
                 </span>
               ) : null}
@@ -470,7 +470,7 @@ function UsersTab({ t, signedInAs }: { t: Translate; signedInAs: string }) {
           <div className="flex items-center gap-2">
             <StatusBadge value={accountStatus(row.original)} map={ACCOUNT_STATUS} />
             {row.original.has_password ? null : (
-              <span className="text-overline uppercase text-amber-600 dark:text-amber-400">
+              <span className="text-overline uppercase text-warning">
                 {t("users.noPassword")}
               </span>
             )}
@@ -580,7 +580,7 @@ function UsersTab({ t, signedInAs }: { t: Translate; signedInAs: string }) {
           <AlertDialogFooter>
             <AlertDialogCancel>{t("users.action.cancel")}</AlertDialogCancel>
             <AlertDialogAction
-              className="bg-amber-600 text-foreground hover:bg-amber-500"
+              className="bg-warning-subtle text-warning hover:bg-warning-subtle"
               onClick={() => {
                 if (mfaTarget) resetMfa.mutate(mfaTarget.username);
                 setMfaTarget(null);
@@ -606,7 +606,7 @@ function UsersTab({ t, signedInAs }: { t: Translate; signedInAs: string }) {
           <AlertDialogFooter>
             <AlertDialogCancel>{t("users.action.cancel")}</AlertDialogCancel>
             <AlertDialogAction
-              className="bg-rose-600 text-foreground hover:bg-rose-500"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => {
                 if (deleteTarget) remove.mutate(deleteTarget.username);
                 setDeleteTarget(null);
@@ -801,7 +801,7 @@ function ProvisioningKeysTab({ t, tenantId }: { t: Translate; tenantId: string }
       </p>
 
       {error ? (
-        <p className="text-sm text-rose-500" role="alert">
+        <p className="text-sm text-danger" role="alert">
           {error instanceof Error ? error.message : null}
         </p>
       ) : null}
@@ -840,7 +840,7 @@ function ProvisioningKeysTab({ t, tenantId }: { t: Translate; tenantId: string }
                         executor stops taking scans (#338). */}
                     {key.expires_at ? formatMoment(key.expires_at) : t("users.keys.neverExpires")}
                     {key.expires_soon ? (
-                      <span className="ml-2 text-overline font-semibold uppercase text-amber-600 dark:text-amber-300">
+                      <span className="ml-2 text-overline font-semibold uppercase text-warning">
                         {t("users.keys.expiresSoon")}
                       </span>
                     ) : null}

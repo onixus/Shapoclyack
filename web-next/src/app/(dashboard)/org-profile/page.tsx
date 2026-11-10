@@ -10,6 +10,7 @@ import { RelatedDomainsPanel } from "@/components/run/related-domains";
 import { useRuns } from "@/hooks/use-runs";
 import { pickLatestRun, runDetailHref } from "@/lib/run-data";
 import { orgProfileHref } from "@/components/org-profile/posture-tile";
+import { RunViews } from "@/components/view-tabs";
 import { useT } from "@/lib/i18n";
 
 /**
@@ -59,6 +60,7 @@ function OrgProfileInner() {
             {t("page.orgProfile.title")}
           </h1>
           <p className="mt-1 text-xs text-muted-foreground">{t("page.orgProfile.subtitle")}</p>
+          <RunViews runId={runId} current="profile" />
         </div>
 
         {runs.length > 0 ? (
@@ -102,7 +104,7 @@ function OrgProfileInner() {
 
       {runId ? (
         <>
-          <p className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
+          <p className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning-subtle p-3 text-xs text-warning">
             <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             {t("page.orgProfile.disclaimer")}
           </p>

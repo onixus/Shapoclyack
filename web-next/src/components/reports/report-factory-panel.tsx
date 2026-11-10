@@ -31,6 +31,7 @@ import {
 } from "@/hooks/use-report-factory";
 import { toast } from "sonner";
 import { downloadGeneratedReport, type GeneratedReportInfo } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 type Kind = "executive" | "technical" | "compliance";
 type Format = "pdf" | "html" | "json" | "csv" | "xlsx";
@@ -39,13 +40,15 @@ function Section({
   title,
   icon,
   children,
+  className,
 }: {
   title: string;
   icon: React.ReactNode;
   children: React.ReactNode;
+  className?: string;
 }) {
   return (
-    <div className="rounded-xl border border-border bg-card">
+    <div className={cn("rounded-xl border border-border bg-card", className)}>
       <div className="flex items-center gap-2 border-b border-border px-4 py-3">
         {icon}
         <h2 className="text-sm font-bold text-foreground">{title}</h2>
@@ -132,6 +135,7 @@ export function ReportFactoryPanel() {
         <Button
           className="mt-3"
           size="sm"
+          variant="outline"
           disabled={saveBranding.isPending}
           onClick={() =>
             saveBranding.mutate({
@@ -252,6 +256,7 @@ export function ReportFactoryPanel() {
         <Button
           className="mt-3"
           size="sm"
+          variant="outline"
           disabled={
             !templateName ||
             createTemplate.isPending ||
@@ -342,6 +347,7 @@ export function ReportFactoryPanel() {
         <Button
           className="mt-3"
           size="sm"
+          variant="outline"
           disabled={!scheduleTemplate || !scheduleName || createSchedule.isPending}
           onClick={() =>
             createSchedule.mutate(
@@ -397,8 +403,9 @@ export function ReportFactoryPanel() {
       <Section
         title="Generated reports"
         icon={<FileBarChart className="h-4 w-4 text-primary" />}
+        className="lg:col-span-2"
       >
-        <ul className="space-y-1 text-xs lg:col-span-2">
+        <ul className="space-y-1 text-xs">
           {(reports.data ?? []).length === 0 ? (
             <li className="text-muted-foreground">{t("ui.nothingGeneratedYet")}</li>
           ) : null}
@@ -418,7 +425,7 @@ export function ReportFactoryPanel() {
                     : "—"}
                 </span>{" "}
                 {report.status === "failed" ? (
-                  <span className="text-rose-600 dark:text-rose-400">{report.error}</span>
+                  <span className="text-danger">{report.error}</span>
                 ) : (
                   <span className="text-muted-foreground">{deliverySummary(report)}</span>
                 )}

@@ -19,9 +19,9 @@ export const SCAN_SURFACES: readonly ScanSurface[] = ["external", "internal", "m
 const INFO_ACCENT =
   "bg-accent-subtle text-primary border border-primary font-semibold";
 const INFO_VIOLET =
-  "bg-violet-500/10 text-violet-800 dark:bg-violet-500/20 dark:text-violet-300 border border-violet-500/30 font-semibold";
+  "bg-info-subtle text-info border border-info/30 font-semibold";
 const INFO_AMBER =
-  "bg-amber-500/10 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300 border border-amber-500/30 font-semibold";
+  "bg-warning-subtle text-warning border border-warning/30 font-semibold";
 const MUTED = "bg-muted text-muted-foreground border border-border font-medium";
 
 export const SCAN_SURFACE_STATUS: Record<SurfaceFilter, StatusStyle> = {

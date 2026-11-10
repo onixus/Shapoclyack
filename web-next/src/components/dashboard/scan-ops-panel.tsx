@@ -34,7 +34,7 @@ function SurfaceCard({ surface }: { surface: Exclude<ScanSurface, "mixed"> }) {
   const tone =
     surface === "external"
       ? "border-primary bg-accent-subtle text-primary"
-      : "border-violet-500/30 bg-violet-500/10 text-violet-600 dark:text-violet-400";
+      : "border-info/30 bg-info-subtle text-info";
 
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4">
@@ -64,7 +64,7 @@ function SurfaceCard({ surface }: { surface: Exclude<ScanSurface, "mixed"> }) {
           <dd
             className={cn(
               "font-semibold",
-              stale ? "text-amber-600 dark:text-amber-300" : "text-foreground",
+              stale ? "text-warning" : "text-foreground",
             )}
           >
             {runs.isLoading
@@ -86,7 +86,7 @@ function SurfaceCard({ surface }: { surface: Exclude<ScanSurface, "mixed"> }) {
             className={cn(
               "font-mono font-semibold",
               (last?.potential_vulnerabilities ?? 0) > 0
-                ? "text-rose-600 dark:text-rose-400"
+                ? "text-danger"
                 : "text-foreground",
             )}
           >
@@ -135,7 +135,7 @@ function ExposureSplit() {
   const total = (split.external ?? 0) + (split.internal ?? 0) + (split.unknown ?? 0);
   const rows: Array<{ key: "external" | "internal" | "unknown"; color: string }> = [
     { key: "external", color: "bg-primary" },
-    { key: "internal", color: "bg-violet-500" },
+    { key: "internal", color: "bg-viz4" },
     { key: "unknown", color: "bg-muted-foreground" },
   ];
   return (

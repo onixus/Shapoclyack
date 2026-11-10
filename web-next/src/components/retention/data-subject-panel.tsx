@@ -63,7 +63,7 @@ export function DataSubjectPanel({ currentUsername }: { currentUsername: string 
         </Button>
         <Button
           type="button"
-          className="gap-2 bg-rose-600 text-foreground hover:bg-rose-500"
+          className="gap-2 bg-destructive text-destructive-foreground hover:bg-destructive/90"
           disabled={!subject || isSelf || erase.isPending}
           onClick={() => {
             setTyped("");
@@ -75,7 +75,7 @@ export function DataSubjectPanel({ currentUsername }: { currentUsername: string 
         </Button>
       </div>
       {isSelf ? (
-        <p className="text-xs text-amber-500">{t("retention.dsar.notSelf")}</p>
+        <p className="text-xs text-warning">{t("retention.dsar.notSelf")}</p>
       ) : null}
       {erase.data && !erase.isPending ? (
         <p className="text-xs text-muted-foreground" role="status">
@@ -107,7 +107,7 @@ export function DataSubjectPanel({ currentUsername }: { currentUsername: string 
             </AlertDialogCancel>
             <Button
               type="button"
-              className="bg-rose-600 text-foreground hover:bg-rose-500"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={typed.trim() !== subject || erase.isPending}
               onClick={() => {
                 erase.mutate(subject);

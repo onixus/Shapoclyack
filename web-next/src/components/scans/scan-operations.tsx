@@ -66,7 +66,7 @@ export function SurfaceTabs({ current }: { current: OperationsSurface }) {
             className={cn(
               "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors",
               active
-                ? "bg-card text-foreground shadow-sm"
+                ? "bg-card text-foreground"
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
@@ -148,7 +148,7 @@ function RecentRuns({ surface }: { surface: OperationsSurface }) {
                     <dd
                       className={cn(
                         "font-mono text-sm font-bold",
-                        vulns > 0 ? "text-rose-600 dark:text-rose-400" : "text-foreground",
+                        vulns > 0 ? "text-danger" : "text-foreground",
                       )}
                     >
                       {vulns.toLocaleString()}
@@ -295,7 +295,7 @@ function ScanOperationsInner({ surface }: { surface: OperationsSurface }) {
       {noSensor ? (
         <div
           role="status"
-          className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200"
+          className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning-subtle px-3 py-2 text-xs text-warning"
         >
           <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <p>

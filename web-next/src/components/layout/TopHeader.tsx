@@ -50,7 +50,7 @@ export function TopHeader() {
 
   const roleColor =
     user?.role === "admin"
-      ? "bg-rose-500/10 text-rose-700 dark:text-rose-400 border-rose-500/30 font-bold"
+      ? "bg-danger-subtle text-danger border-danger/30 font-bold"
       : user?.role === "operator"
         ? "bg-accent-subtle text-primary border-primary font-semibold"
         : "bg-muted text-muted-foreground border-border font-medium";
@@ -73,7 +73,7 @@ export function TopHeader() {
         <Button
           type="button"
           variant="outline"
-          className="h-9 gap-2 border-border bg-card px-2.5 text-muted-foreground shadow-sm hover:text-foreground md:px-3"
+          className="h-9 gap-2 border-border bg-card px-2.5 text-muted-foreground hover:text-foreground md:px-3"
           aria-label={t("header.commandPalette")}
           title={`${t("header.commandPalette")} (${t("header.commandHint")})`}
           onClick={() => palette.setOpen(true)}
@@ -91,7 +91,7 @@ export function TopHeader() {
           <DropdownMenuTrigger asChild>
             <Button
               variant="outline"
-              className="gap-2.5 border-border bg-card text-foreground shadow-sm hover:bg-muted"
+              className="gap-2.5 border-border bg-card text-foreground hover:bg-muted"
             >
               <div className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-muted-foreground">
                 <UserRound className="h-3.5 w-3.5" />
@@ -128,7 +128,7 @@ export function TopHeader() {
               className="cursor-pointer text-xs text-foreground focus:bg-muted"
               onClick={() => router.push("/security")}
             >
-              <ShieldCheck className="mr-2 h-3.5 w-3.5 text-emerald-500" />
+              <ShieldCheck className="mr-2 h-3.5 w-3.5 text-success" />
               {t("header.security")}
             </DropdownMenuItem>
             <DropdownMenuSeparator className="bg-border" />
@@ -136,12 +136,12 @@ export function TopHeader() {
               onClick={() => void onRevokeAllSessions()}
               className="cursor-pointer text-xs text-foreground focus:bg-muted"
             >
-              <MonitorX className="mr-2 h-3.5 w-3.5 text-amber-500" />
+              <MonitorX className="mr-2 h-3.5 w-3.5 text-warning" />
               {t("header.endAllSessions")}
             </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => void onLogout()}
-              className="cursor-pointer text-xs font-medium text-rose-600 focus:bg-rose-500/10 dark:text-rose-400"
+              className="cursor-pointer text-xs font-medium text-danger focus:bg-danger-subtle"
             >
               <LogOut className="mr-2 h-3.5 w-3.5" />
               {t("header.signOut")}

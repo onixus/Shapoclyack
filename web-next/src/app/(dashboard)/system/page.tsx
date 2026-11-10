@@ -35,22 +35,22 @@ function freshness(db: EnrichmentDb): { label: string; className: string } {
   if (!db.present)
     return {
       label: "missing",
-      className: "bg-rose-500/20 text-rose-600 dark:text-rose-300 border-rose-500/30",
+      className: "bg-danger-subtle text-danger border-danger/30",
     };
   const stale = db.stale ?? (db.age_days != null && db.age_days > STALE_AFTER_DAYS);
   if (stale)
     return {
       label: "stale",
-      className: "bg-amber-500/20 text-amber-600 dark:text-amber-300 border-amber-500/30",
+      className: "bg-warning-subtle text-warning border-warning/30",
     };
   if (db.usable === false)
     return {
       label: "stub",
-      className: "bg-amber-500/20 text-amber-600 dark:text-amber-300 border-amber-500/30",
+      className: "bg-warning-subtle text-warning border-warning/30",
     };
   return {
     label: "fresh",
-    className: "bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border-emerald-500/30",
+    className: "bg-success-subtle text-success border-success/30",
   };
 }
 
@@ -84,7 +84,7 @@ export default function SystemPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-subtle text-primary border border-primary shadow-md">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-subtle text-primary border border-primary">
             <Settings className="h-5 w-5" />
           </div>
           <div>
@@ -102,7 +102,7 @@ export default function SystemPage() {
       {error ? (
         <Alert
           variant="destructive"
-          className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+          className="border-danger/40 bg-danger-subtle text-danger"
         >
           <AlertDescription>{(error as Error).message}</AlertDescription>
         </Alert>
@@ -186,7 +186,7 @@ export default function SystemPage() {
                         ) : (
                           <Badge
                             variant="destructive"
-                            className="bg-rose-500/20 text-rose-600 dark:text-rose-300 border-rose-500/30"
+                            className="bg-danger-subtle text-danger border-danger/30"
                           >
                             {tool.error
                               ? toolMessage(t.locale, tool.error, true)
@@ -238,7 +238,7 @@ export default function SystemPage() {
                               {!retroDataset.present ? (
                                 t("retro.noDataset")
                               ) : retroDataset.error ? (
-                                <span className="text-rose-600 dark:text-rose-400">
+                                <span className="text-danger">
                                   {t.locale === "ru"
                                     ? systemText(t.locale, "Load error; see technical details")
                                     : retroDataset.error}

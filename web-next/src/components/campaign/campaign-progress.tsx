@@ -8,13 +8,13 @@ import { cn } from "@/lib/utils";
  * "done / not done": the point of the view is that they are different claims. */
 export const CATEGORY_COLOR: Record<CampaignCategory, string> = {
   open: "bg-muted-foreground",
-  fixing: "bg-orange-500",
-  awaiting_verification: "bg-violet-500",
-  verified: "bg-emerald-500",
-  accepted_risk: "bg-amber-500",
-  false_positive: "bg-zinc-400 dark:bg-zinc-500",
-  closed_unverified: "bg-yellow-400",
-  unavailable: "bg-rose-500",
+  fixing: "bg-viz2",
+  awaiting_verification: "bg-viz4",
+  verified: "bg-success",
+  accepted_risk: "bg-warning",
+  false_positive: "bg-viz8",
+  closed_unverified: "bg-viz5",
+  unavailable: "bg-danger",
 };
 
 export function CategoryBadge({ category }: { category: CampaignCategory }) {

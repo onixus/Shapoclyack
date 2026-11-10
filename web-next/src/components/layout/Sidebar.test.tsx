@@ -91,38 +91,33 @@ describe("Sidebar", () => {
     signIn({ role: "operator" });
     renderSidebar();
     const nav = screen.getByRole("navigation", { name: "Primary" });
-    expect(within(nav).getByText("External surface")).toBeInTheDocument();
-    expect(within(nav).getByText("Internal surface")).toBeInTheDocument();
+    expect(within(nav).getByText("Scanning")).toBeInTheDocument();
+    expect(within(nav).getByText("Inventory")).toBeInTheDocument();
     const current = within(nav).getAllByRole("link", { current: "page" });
     expect(current).toHaveLength(1);
-    expect(current[0]).toHaveAttribute("href", "/scans/external");
-    // "/scans" is a prefix of the current path but must not light up too.
-    expect(within(nav).getByRole("link", { name: "Jobs" })).not.toHaveAttribute("aria-current");
+    expect(current[0]).toHaveAttribute("href", "/scans");
   });
 
   it("hides operator pages and the quick-launch pair from a viewer", () => {
     signIn({ role: "viewer" });
     renderSidebar();
     const nav = screen.getByRole("navigation", { name: "Primary" });
-    expect(within(nav).queryByText("External scans")).not.toBeInTheDocument();
+    expect(within(nav).queryByText("Scans")).not.toBeInTheDocument();
     expect(within(nav).queryByText("Sensors")).not.toBeInTheDocument();
+    expect(within(nav).queryByRole("link", { name: "Journal" })).not.toBeInTheDocument();
     expect(within(nav).getByText("Vulnerabilities")).toBeInTheDocument();
     expect(screen.queryByTestId("quick-launch")).not.toBeInTheDocument();
   });
 
-  it("keeps the audit trail reachable for a tenant admin signed in as a global viewer", () => {
-    // "admin" on GET /api/audit means admin *in the tenant*, which the JWT does
-    // not carry. A minRole on this entry hid the page from exactly the account
-    // it exists for; the API is the boundary, and the page renders its 403.
-    signIn({ role: "viewer", tenants: ["acme"] });
+  it("shows the journal only to someone who may read it", () => {
+    // GET /api/audit is `audit.read` in the tenant. The door used to be shown
+    // to everyone and then answer 403.
+    signIn({ role: "viewer", permissions: ["audit.read"], tenants: ["acme"] });
     renderSidebar();
     const nav = screen.getByRole("navigation", { name: "Primary" });
-    expect(within(nav).getByRole("link", { name: "Audit trail" })).toHaveAttribute(
-      "href",
-      "/audit",
-    );
+    expect(within(nav).getByRole("link", { name: "Journal" })).toHaveAttribute("href", "/audit");
     // The neighbouring page really is global-admin-only, so it stays hidden.
-    expect(within(nav).queryByRole("link", { name: "Users" })).not.toBeInTheDocument();
+    expect(within(nav).queryByRole("link", { name: "Accounts" })).not.toBeInTheDocument();
   });
 
   it("offers an operator one click to each surface's launcher", () => {
@@ -144,13 +139,13 @@ describe("Sidebar", () => {
     renderSidebar();
     const user = userEvent.setup();
     const nav = screen.getByRole("navigation", { name: "Primary" });
-    expect(within(nav).getByText("Exposure")).toBeInTheDocument();
-    await user.click(within(nav).getByRole("button", { name: "External surface" }));
-    expect(within(nav).queryByText("Exposure")).not.toBeInTheDocument();
+    expect(within(nav).getByText("Wordlists")).toBeInTheDocument();
+    await user.click(within(nav).getByRole("button", { name: "Scanning" }));
+    expect(within(nav).queryByText("Wordlists")).not.toBeInTheDocument();
     // The active entry survives the collapse.
-    expect(within(nav).getByRole("link", { name: "External scans" })).toBeInTheDocument();
+    expect(within(nav).getByRole("link", { name: "Scans" })).toBeInTheDocument();
     expect(JSON.parse(window.localStorage.getItem("shapoclyack.nav.collapsed") ?? "[]")).toEqual([
-      "external",
+      "scanning",
     ]);
   });
 

@@ -40,30 +40,47 @@ describe("navigation groups", () => {
     expect(new Set(hrefs).size).toBe(hrefs.length);
   });
 
-  it("separates the external and internal surfaces", () => {
-    const external = NAV_GROUPS.find((g) => g.id === "external")!;
-    const internal = NAV_GROUPS.find((g) => g.id === "internal")!;
-    expect(external.items.map((i) => i.href)).toContain("/scans/external");
-    expect(internal.items.map((i) => i.href)).toContain("/scans/internal");
-    expect(internal.items.map((i) => i.href)).toContain("/agents");
-    expect(external.items.map((i) => i.href)).toContain("/org-profile");
+  it("keeps one entry per question", () => {
+    const hrefs = NAV.map((item) => item.href);
+    expect(hrefs).toContain("/scans");
+    expect(hrefs).toContain("/endpoints");
+    expect(hrefs).toContain("/agents");
+    expect(hrefs).not.toContain("/scans/external");
+    expect(hrefs).not.toContain("/scans/internal");
+    expect(hrefs).not.toContain("/remediation");
+    expect(hrefs).not.toContain("/exposure");
+    expect(hrefs).not.toContain("/security");
+    expect(NAV_GROUPS).toHaveLength(6);
+    expect(NAV).toHaveLength(22);
   });
 });
 
 describe("role gating", () => {
   it("hides operator and admin doors from a viewer", () => {
     const viewer = menu(principal("viewer", "viewer", []));
-    expect(viewer).not.toContain("/scans/external");
+    expect(viewer).not.toContain("/scans");
     expect(viewer).not.toContain("/agents");
     expect(viewer).not.toContain("/users");
-    expect(viewer).toContain("/vulnerabilities");
-    expect(viewer).toContain("/runs");
-    expect(viewer).toContain("/system");
+    expect(viewer).not.toContain("/audit");
+    expect(viewer).toEqual([
+      "/",
+      "/vulnerabilities",
+      "/compliance",
+      "/assets",
+      "/endpoints",
+      "/runs",
+      "/operator",
+      "/reports",
+      "/adoption",
+      "/usage",
+      "/system",
+    ]);
   });
 
   it("shows an operator the scanning pages but not administration secrets", () => {
     const operator = menu(principal("operator", "operator", ["config.read", "scan.cancel"]));
-    expect(operator).toContain("/scans/internal");
+    expect(operator).toContain("/scans");
+    expect(operator).not.toContain("/scans/internal");
     expect(operator).toContain("/tenants");
     expect(operator).not.toContain("/service-tokens");
     expect(operator).toContain("/integrations");
@@ -79,15 +96,7 @@ describe("role gating", () => {
     const scanOperator = menu(
       principal("viewer", "scan-operator", ["config.read", "scan.cancel"]),
     );
-    for (const href of [
-      "/scans",
-      "/scans/external",
-      "/scans/internal",
-      "/agents",
-      "/schedules",
-      "/wordlists",
-      "/integrations",
-    ]) {
+    for (const href of ["/scans", "/agents", "/schedules", "/wordlists", "/integrations"]) {
       expect(scanOperator).toContain(href);
     }
     // ...and only those. Widening the scope stays with `scope-approver`, and
@@ -180,6 +189,7 @@ describe("role gating", () => {
         "tenant.credential.manage",
         "tenant.retention.read",
         "tenant.member.read",
+        "audit.read",
       ]),
     );
     expect(admin).toEqual(NAV.map((i) => i.href));
@@ -227,16 +237,23 @@ describe("data retention (#332)", () => {
 
 describe("activeNavHref", () => {
   it("lights only the deepest matching entry", () => {
-    expect(activeNavHref("/scans/external")).toBe("/scans/external");
+    expect(activeNavHref("/scans/external")).toBe("/scans");
     expect(activeNavHref("/scans")).toBe("/scans");
-    expect(activeNavHref("/scans/internal?launch=1".split("?")[0])).toBe("/scans/internal");
+    expect(activeNavHref("/scans/internal")).toBe("/scans");
     expect(activeNavHref("/runs/view")).toBe("/runs");
     expect(activeNavHref("/")).toBe("/");
     expect(activeNavHref("/vulnerabilities/view")).toBe("/vulnerabilities");
   });
 
-  it("maps the legacy /jobs route onto the scan-jobs entry", () => {
+  it("lights the question that absorbed a former menu entry", () => {
     expect(activeNavHref("/jobs")).toBe("/scans");
+    expect(activeNavHref("/remediation")).toBe("/vulnerabilities");
+    expect(activeNavHref("/campaigns")).toBe("/vulnerabilities");
+    expect(activeNavHref("/threats")).toBe("/vulnerabilities");
+    expect(activeNavHref("/exposure")).toBe("/assets");
+    expect(activeNavHref("/attack-surface")).toBe("/runs");
+    expect(activeNavHref("/org-profile")).toBe("/runs");
+    expect(activeNavHref("/geo")).toBe("/runs");
   });
 
   it("returns null for an unknown path rather than the dashboard", () => {

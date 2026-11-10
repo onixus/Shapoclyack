@@ -88,11 +88,11 @@ export default function ReportsPage() {
           const unconfirmed = row.original.unconfirmed_findings ?? 0;
           return (
             <span className="flex items-baseline gap-1.5">
-              <span className={`font-mono text-xs font-bold ${val > 0 ? "text-rose-600 dark:text-rose-400" : "text-muted-foreground"}`}>
+              <span className={`font-mono text-xs font-bold ${val > 0 ? "text-danger" : "text-muted-foreground"}`}>
                 {val.toLocaleString()}
               </span>
               {unconfirmed > 0 ? (
-                <span className="font-mono text-xs text-amber-600 dark:text-amber-300/80" title="Unconfirmed — reachable-service exposures and unverified keyword CVE hits, included in the total">
+                <span className="font-mono text-xs text-warning dark:text-warning/80" title="Unconfirmed — reachable-service exposures and unverified keyword CVE hits, included in the total">
                   {unconfirmed.toLocaleString()} unconf.
                 </span>
               ) : null}
@@ -123,7 +123,7 @@ export default function ReportsPage() {
             <Button
               variant="outline"
               size="sm"
-              className="gap-1.5 border-indigo-500/30 bg-indigo-500/10 text-indigo-600 dark:text-indigo-300 hover:bg-indigo-500/20 text-xs font-semibold"
+              className="gap-1.5 border-info/30 bg-info-subtle text-info hover:bg-info-subtle text-xs font-semibold"
               onClick={() => downloadSarif(row.original.run_id)}
               disabled={busyRun === `sarif-${row.original.run_id}`}
             >
@@ -144,7 +144,7 @@ export default function ReportsPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-subtle text-primary border border-primary shadow-md">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-subtle text-primary border border-primary">
             <FileText className="h-5 w-5" />
           </div>
           <div>

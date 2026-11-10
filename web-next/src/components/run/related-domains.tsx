@@ -81,7 +81,7 @@ function CandidateRow({
                 {candidate.domain}
               </span>
               {isConfirmed ? (
-                <Badge className="bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border-emerald-500/40 gap-1 font-mono text-xs">
+                <Badge className="bg-success-subtle text-success border-success/40 gap-1 font-mono text-xs">
                   <CheckCircle2 className="h-3 w-3" />
                   {runText(t.locale, "CONFIRMED")}
                 </Badge>
@@ -103,7 +103,7 @@ function CandidateRow({
                 })}
               </Badge>
               {isPromoted && (
-                <Badge className="bg-purple-500/20 text-purple-600 dark:text-purple-300 border-purple-500/40 text-xs font-mono">
+                <Badge className="bg-info-subtle text-info border-info/40 text-xs font-mono">
                   {runText(t.locale, "PROMOTED")}
                 </Badge>
               )}
@@ -142,7 +142,7 @@ function CandidateRow({
               }
               className={`h-7 text-xs font-mono gap-1.5 ${
                 isPromoted
-                  ? "hover:border-rose-500 hover:text-rose-600 dark:text-rose-300"
+                  ? "hover:border-danger hover:text-danger dark:text-danger"
                   : "hover:border-primary hover:text-primary dark:text-primary"
               }`}
               onClick={(e) => {
@@ -153,7 +153,7 @@ function CandidateRow({
             >
               {isPromoted ? (
                 <>
-                  <MinusCircle className="h-3.5 w-3.5 text-rose-600 dark:text-rose-400" />
+                  <MinusCircle className="h-3.5 w-3.5 text-danger" />
                   {t("prose.withdrawFromScope")}
                 </>
               ) : (
@@ -307,7 +307,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
               <Badge
                 className={
                   primaryOwner.dnssec
-                    ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border-emerald-500/40"
+                    ? "bg-success-subtle text-success border-success/40"
                     : "bg-muted text-muted-foreground border-border"
                 }
               >
@@ -329,10 +329,10 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
       </div>
 
       {/* Promoted scope: tenant-wide, survives the run that proposed each domain */}
-      <Card className="border-border bg-card shadow-md">
+      <Card className="border-border bg-card">
         <CardHeader className="py-3.5 px-4 border-b border-border">
           <CardTitle className="text-xs font-bold uppercase tracking-wider text-foreground flex items-center gap-2">
-            <PlusCircle className="h-4 w-4 text-purple-600 dark:text-purple-400" />
+            <PlusCircle className="h-4 w-4 text-info" />
             {runText(t.locale, "Promoted Scope")} ({promoted.length})
           </CardTitle>
           <p className="text-xs text-muted-foreground mt-1">{t("prose.everyOrdinaryScanOfThis")}</p>
@@ -348,10 +348,10 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
                       size="sm"
                       variant="secondary"
                       disabled={scopeMutation.isPending}
-                      className="h-7 text-xs font-mono gap-1.5 hover:border-rose-500 hover:text-rose-600 dark:text-rose-300"
+                      className="h-7 text-xs font-mono gap-1.5 hover:border-danger hover:text-danger dark:text-danger"
                       onClick={() => withdraw(domain)}
                     >
-                      <MinusCircle className="h-3.5 w-3.5 text-rose-600 dark:text-rose-400" />
+                      <MinusCircle className="h-3.5 w-3.5 text-danger" />
                       {t("prose.withdrawFromScope")}
                     </Button>
                   )}
@@ -367,7 +367,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
       </Card>
 
       {/* Related Domains Card */}
-      <Card className="border-border bg-card shadow-md">
+      <Card className="border-border bg-card">
         <CardHeader className="py-3.5 px-4 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Globe className="h-4 w-4 text-primary" />
@@ -405,8 +405,8 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
         </CardHeader>
 
         {/* Disclaimer banner */}
-        <div className="px-4 py-2 bg-amber-50 dark:bg-amber-950/20 border-b border-amber-300 dark:border-amber-900/30 flex items-center gap-2 text-xs text-amber-600 dark:text-amber-300/80">
-          <AlertCircle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+        <div className="px-4 py-2 bg-warning-subtle border-b border-warning/30 flex items-center gap-2 text-xs text-warning dark:text-warning/80">
+          <AlertCircle className="h-3.5 w-3.5 text-warning shrink-0" />
           <span>
             {t.locale === "ru"
               ? runText(
@@ -425,9 +425,9 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
           {actionError && (
             <div
               role="alert"
-              className="px-4 py-2 bg-rose-50 dark:bg-rose-950/30 border-b border-rose-300 dark:border-rose-900/40 flex items-center gap-2 text-xs text-rose-600 dark:text-rose-300"
+              className="px-4 py-2 bg-danger-subtle border-b border-danger/30 dark:border-danger/40 flex items-center gap-2 text-xs text-danger"
             >
-              <AlertCircle className="h-3.5 w-3.5 text-rose-600 dark:text-rose-400 shrink-0" />
+              <AlertCircle className="h-3.5 w-3.5 text-danger shrink-0" />
               <span>{actionError}</span>
             </div>
           )}

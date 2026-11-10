@@ -2,29 +2,20 @@ import {
   Archive,
   BookText,
   Bot,
-  Building2,
   CircleGauge,
   ClipboardCheck,
   Database,
   FileText,
   Gauge,
-  Globe2,
   Home,
   KeyRound,
   Laptop,
-  Layers,
-  ListChecks,
-  Network,
+  Library,
   Play,
-  Radar,
   ScrollText,
   Server,
-  Share2,
   ShieldAlert,
-  ShieldCheck,
-  Siren,
   SlidersHorizontal,
-  SquareKanban,
   Timer,
   UserCheck,
   UserCog,
@@ -73,10 +64,10 @@ export type NavGroup = {
 };
 
 /**
- * Information architecture (docs/ui-ux-redesign-roadmap.md, "Navigation"):
- * security workflows first, then the two scanning surfaces — what faces the
- * internet and what lives inside the perimeter — then the operations that
- * serve both, insights, and administration.
+ * Information architecture: one menu entry per distinct question. A second
+ * view of the same question is a tab on that page, not another door.
+ * Quick launch (external / internal) still sets the perimeter on `/scans`.
+ * Own MFA lives in the account menu (`/security`), not here.
  */
 export const NAV_GROUPS: readonly NavGroup[] = [
   {
@@ -95,20 +86,6 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         hintKey: "nav.hint.vulnerabilities",
       },
       {
-        href: "/remediation",
-        labelKey: "nav.remediation",
-        icon: SquareKanban,
-        hintKey: "nav.hint.remediation",
-      },
-      {
-        href: "/campaigns",
-        labelKey: "nav.campaigns",
-        icon: ListChecks,
-        hintKey: "nav.hint.campaigns",
-      },
-      { href: "/assets", labelKey: "nav.assets", icon: Database, hintKey: "nav.hint.assets" },
-      { href: "/threats", labelKey: "nav.threats", icon: Siren, hintKey: "nav.hint.threats" },
-      {
         href: "/compliance",
         labelKey: "nav.compliance",
         icon: ClipboardCheck,
@@ -117,64 +94,21 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     ],
   },
   {
-    id: "external",
-    labelKey: "nav.group.external",
+    id: "inventory",
+    labelKey: "nav.group.inventory",
     items: [
-      {
-        href: "/scans/external",
-        labelKey: "nav.externalScans",
-        icon: Globe2,
-        minRole: "operator",
-        hintKey: "nav.hint.externalScans",
-      },
-      { href: "/exposure", labelKey: "nav.exposure", icon: Radar, hintKey: "nav.hint.exposure" },
-      {
-        href: "/attack-surface",
-        labelKey: "nav.attackSurface",
-        icon: Share2,
-        hintKey: "nav.hint.attackSurface",
-      },
-      {
-        href: "/org-profile",
-        labelKey: "nav.orgProfile",
-        icon: Building2,
-        hintKey: "nav.hint.orgProfile",
-      },
-      { href: "/geo", labelKey: "nav.geo", icon: Network, hintKey: "nav.hint.geo" },
-    ],
-  },
-  {
-    id: "internal",
-    labelKey: "nav.group.internal",
-    items: [
-      {
-        href: "/scans/internal",
-        labelKey: "nav.internalScans",
-        icon: Layers,
-        minRole: "operator",
-        hintKey: "nav.hint.internalScans",
-      },
+      { href: "/assets", labelKey: "nav.assets", icon: Database, hintKey: "nav.hint.assets" },
       {
         href: "/endpoints",
         labelKey: "nav.endpoints",
         icon: Laptop,
         hintKey: "nav.hint.endpoints",
       },
-      {
-        // The fleet is operator's; the **Deploy Agent** dialog on the same page
-        // mints a provisioning key, which is `tenant.credential.manage` (#504),
-        // so a `token-admin` comes here for the dialog alone.
-        href: "/agents",
-        labelKey: "nav.agents",
-        icon: Server,
-        anyOf: [{ minRole: "operator" }, { permission: "tenant.credential.manage" }],
-        hintKey: "nav.hint.agents",
-      },
     ],
   },
   {
-    id: "operations",
-    labelKey: "nav.group.operations",
+    id: "scanning",
+    labelKey: "nav.group.scanning",
     items: [
       {
         href: "/scans",
@@ -192,19 +126,29 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         minRole: "operator",
         hintKey: "nav.hint.schedules",
       },
-      { href: "/reports", labelKey: "nav.reports", icon: BookText, hintKey: "nav.hint.reports" },
+      {
+        // The fleet is operator's; the **Deploy Agent** dialog on the same page
+        // mints a provisioning key, which is `tenant.credential.manage` (#504),
+        // so a `token-admin` comes here for the dialog alone.
+        href: "/agents",
+        labelKey: "nav.agents",
+        icon: Server,
+        anyOf: [{ minRole: "operator" }, { permission: "tenant.credential.manage" }],
+        hintKey: "nav.hint.agents",
+      },
       {
         href: "/wordlists",
         labelKey: "nav.wordlists",
-        icon: Database,
+        icon: Library,
         minRole: "operator",
         hintKey: "nav.hint.wordlists",
       },
+      { href: "/reports", labelKey: "nav.reports", icon: BookText, hintKey: "nav.hint.reports" },
     ],
   },
   {
-    id: "insights",
-    labelKey: "nav.group.insights",
+    id: "program",
+    labelKey: "nav.group.program",
     items: [
       { href: "/adoption", labelKey: "nav.adoption", icon: Gauge, hintKey: "nav.hint.adoption" },
       { href: "/usage", labelKey: "nav.usage", icon: CircleGauge, hintKey: "nav.hint.usage" },
@@ -249,13 +193,14 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         hintKey: "nav.hint.access",
       },
       {
-        // No minRole, unlike /users next door: "admin" on GET /api/audit means
-        // admin *in the tenant*, which the JWT does not carry, so filtering on
-        // the global role would hide the page from exactly the tenant admin
-        // it is for. The API is the boundary; the page renders its 403.
+        // `audit.read` in the active tenant, the same dependency as
+        // GET /api/audit. Showing the door and then rendering 403 was the
+        // previous compromise, because the JWT does not carry the tenant role.
+        // `/auth/me` now does, as `permissions`.
         href: "/audit",
         labelKey: "nav.audit",
         icon: ScrollText,
+        permission: "audit.read",
         hintKey: "nav.hint.audit",
       },
       {
@@ -288,17 +233,6 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         hintKey: "nav.hint.serviceTokens",
       },
       {
-        // Everyone's, not an administrator's: it manages the caller's own
-        // second factor (#315). It sits here because this is where the
-        // account-level doors are, and it carries no minRole for the same
-        // reason /audit does not — the API decides, and every role has one of
-        // these pages.
-        href: "/security",
-        labelKey: "nav.security",
-        icon: ShieldCheck,
-        hintKey: "nav.hint.security",
-      },
-      {
         href: "/system",
         labelKey: "nav.system",
         icon: SlidersHorizontal,
@@ -326,9 +260,31 @@ export function visibleNavGroups(user: Principal): NavGroup[] {
 }
 
 /**
+ * Pages that used to be their own menu entries. They stay at the old address
+ * and light the entry that now owns the question.
+ */
+const NAV_ALIASES: readonly { prefix: string; href: string }[] = [
+  { prefix: "/jobs", href: "/scans" },
+  { prefix: "/remediation", href: "/vulnerabilities" },
+  { prefix: "/campaigns", href: "/vulnerabilities" },
+  { prefix: "/threats", href: "/vulnerabilities" },
+  { prefix: "/exposure", href: "/assets" },
+  { prefix: "/attack-surface", href: "/runs" },
+  { prefix: "/org-profile", href: "/runs" },
+  { prefix: "/geo", href: "/runs" },
+];
+
+function aliasHref(pathname: string): string | null {
+  for (const alias of NAV_ALIASES) {
+    if (pathname === alias.prefix || pathname.startsWith(`${alias.prefix}/`)) return alias.href;
+  }
+  return null;
+}
+
+/**
  * The single active entry for a path: the longest href that is the path or
- * one of its ancestors, so `/scans/external` lights "External scans" and not
- * also "Scan jobs" at `/scans`.
+ * one of its ancestors. `/scans/external` therefore lights "Scans" at
+ * `/scans`, the only scans entry left in the menu.
  */
 export function activeNavHref(pathname: string, items: readonly NavItem[] = NAV): string | null {
   let best: string | null = null;
@@ -339,7 +295,6 @@ export function activeNavHref(pathname: string, items: readonly NavItem[] = NAV)
         : pathname === item.href || pathname.startsWith(`${item.href}/`);
     if (matches && (best === null || item.href.length > best.length)) best = item.href;
   }
-  // Legacy `/jobs` deep links land on the scan-jobs entry.
-  if (best === null && (pathname === "/jobs" || pathname.startsWith("/jobs/"))) return "/scans";
+  if (best === null) return aliasHref(pathname);
   return best;
 }

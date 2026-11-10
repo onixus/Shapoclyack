@@ -32,28 +32,28 @@ function StatusBadge({ status }: { status: ControlStatus | OverallVerdict }) {
   switch (status) {
     case "ok":
       return (
-        <Badge className="bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border-emerald-500/40 gap-1 font-mono">
+        <Badge className="bg-success-subtle text-success border-success/40 gap-1 font-mono">
           <ShieldCheck className="h-3.5 w-3.5" />
           {runText(t.locale, "OK")}
         </Badge>
       );
     case "weak":
       return (
-        <Badge className="bg-amber-500/20 text-amber-600 dark:text-amber-300 border-amber-500/40 gap-1 font-mono">
+        <Badge className="bg-warning-subtle text-warning border-warning/40 gap-1 font-mono">
           <AlertTriangle className="h-3.5 w-3.5" />
           {runText(t.locale, "WEAK")}
         </Badge>
       );
     case "fail":
       return (
-        <Badge className="bg-rose-500/20 text-rose-600 dark:text-rose-300 border-rose-500/40 gap-1 font-mono">
+        <Badge className="bg-danger-subtle text-danger border-danger/40 gap-1 font-mono">
           <ShieldAlert className="h-3.5 w-3.5" />
           {runText(t.locale, "FAIL")}
         </Badge>
       );
     case "error":
       return (
-        <Badge className="bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-800 gap-1 font-mono">
+        <Badge className="bg-danger-subtle text-danger border-danger gap-1 font-mono">
           <AlertTriangle className="h-3.5 w-3.5" />
           {runText(t.locale, "ERROR")}
         </Badge>
@@ -85,21 +85,21 @@ function RiskBadge({ risk }: { risk: string }) {
   const normalized = risk.toLowerCase();
   if (normalized.includes("very_high") || normalized.includes("critical")) {
     return (
-      <Badge className="bg-rose-600/30 text-rose-600 dark:text-rose-300 border-rose-500/40">
+      <Badge className="bg-danger-subtle text-sevcritical border-sevcritical/40">
         {t("ui.criticalVeryHigh")}
       </Badge>
     );
   }
   if (normalized.includes("high")) {
     return (
-      <Badge className="bg-rose-500/20 text-rose-600 dark:text-rose-300 border-rose-500/30">
+      <Badge className="bg-warning-subtle text-sevhigh border-sevhigh/30">
         {t("ui.highRisk")}
       </Badge>
     );
   }
   if (normalized.includes("moderate") || normalized.includes("medium")) {
     return (
-      <Badge className="bg-amber-500/20 text-amber-600 dark:text-amber-300 border-amber-500/30">
+      <Badge className="bg-warning-subtle text-sevmedium border-sevmedium/30">
         {t("ui.moderateRisk")}
       </Badge>
     );
@@ -108,14 +108,14 @@ function RiskBadge({ risk }: { risk: string }) {
   // below claims it and the very-low branch is unreachable.
   if (normalized.includes("very_low")) {
     return (
-      <Badge className="bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border-emerald-500/30">
+      <Badge className="bg-muted text-sevinfo border-sevinfo/30">
         {t("ui.veryLowRisk")}
       </Badge>
     );
   }
   if (normalized.includes("low")) {
     return (
-      <Badge className="bg-blue-500/20 text-blue-600 dark:text-blue-300 border-blue-500/30">
+      <Badge className="bg-info-subtle text-sevlow border-sevlow/30">
         {t("ui.lowRisk")}
       </Badge>
     );
@@ -136,22 +136,22 @@ function SeverityPills({ counts }: { counts: Record<string, number> }) {
   return (
     <div className="flex items-center gap-1.5 font-mono text-xs">
       {c > 0 && (
-        <span className="rounded bg-rose-500/20 px-1.5 py-0.5 font-bold text-rose-600 dark:text-rose-300">
+        <span className="rounded bg-danger-subtle px-1.5 py-0.5 font-bold text-sevcritical">
           {t.locale === "ru" ? t.label("critical") : "C"}:{c}
         </span>
       )}
       {h > 0 && (
-        <span className="rounded bg-orange-500/20 px-1.5 py-0.5 font-bold text-orange-600 dark:text-orange-300">
+        <span className="rounded bg-warning-subtle px-1.5 py-0.5 font-bold text-sevhigh">
           {t.locale === "ru" ? t.label("high") : "H"}:{h}
         </span>
       )}
       {m > 0 && (
-        <span className="rounded bg-amber-500/20 px-1.5 py-0.5 font-medium text-amber-600 dark:text-amber-300">
+        <span className="rounded bg-warning-subtle px-1.5 py-0.5 font-medium text-sevmedium">
           {t.locale === "ru" ? t.label("medium") : "M"}:{m}
         </span>
       )}
       {l > 0 && (
-        <span className="rounded bg-blue-500/20 px-1.5 py-0.5 text-blue-600 dark:text-blue-300">
+        <span className="rounded bg-info-subtle px-1.5 py-0.5 text-sevlow">
           {t.locale === "ru" ? t.label("low") : "L"}:{l}
         </span>
       )}
@@ -343,7 +343,7 @@ export function ControlsMatrix({ runId }: { runId: string }) {
       </div>
 
       {/* Controls Table Card */}
-      <Card className="border-border bg-card shadow-md">
+      <Card className="border-border bg-card">
         <CardHeader className="py-3.5 px-4 border-b border-border">
           <CardTitle className="text-xs font-bold uppercase tracking-wider text-foreground">
             {runText(t.locale, "Evaluated Security Controls")} ({data.controls?.length || 0})

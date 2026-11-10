@@ -54,11 +54,11 @@ export function LegalHoldPanel({
       </p>
       {hold ? (
         <div
-          className="space-y-1 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm"
+          className="space-y-1 rounded-lg border border-warning/40 bg-warning-subtle p-3 text-sm"
           role="status"
         >
           <p className="flex items-center gap-2 font-semibold text-foreground">
-            <Gavel className="h-4 w-4 text-amber-500" />
+            <Gavel className="h-4 w-4 text-warning" />
             {t("retention.hold.active", { since: when(hold.set_at) })}
           </p>
           <p className="text-xs text-muted-foreground">{t("retention.hold.activeHint")}</p>
@@ -84,7 +84,7 @@ export function LegalHoldPanel({
           <div className="flex flex-wrap gap-2">
             <Button
               type="button"
-              className="gap-2 bg-amber-600 text-foreground hover:bg-amber-500"
+              className="gap-2 bg-warning-subtle text-warning hover:bg-warning-subtle"
               disabled={!reason.trim() || reason.trim() === (hold?.reason ?? "") || place.isPending}
               onClick={() => place.mutate(reason.trim())}
             >
@@ -124,7 +124,7 @@ export function LegalHoldPanel({
               {t("ui.cancel")}
             </AlertDialogCancel>
             <AlertDialogAction
-              className="bg-rose-600 text-foreground hover:bg-rose-500"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => release.mutate()}
             >
               {t("retention.hold.release")}

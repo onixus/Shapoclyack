@@ -188,7 +188,7 @@ export default function DashboardPage() {
       {error ? (
         <Alert
           variant="destructive"
-          className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+          className="border-danger/40 bg-danger-subtle text-danger"
         >
           <AlertDescription>{error.message}</AlertDescription>
         </Alert>

@@ -50,6 +50,7 @@ import {
 } from "@/lib/config/statuses";
 import { normalizeSeverity, SEVERITIES } from "@/lib/run-data";
 import { assetDetailHref, findingLabel, SLA_STATES, VULN_STATES, vulnDetailHref } from "@/lib/vuln-lifecycle";
+import { FindingViews } from "@/components/view-tabs";
 
 const FILTER_ALL = "all";
 const OPEN_WORKING_SET = "open";
@@ -525,6 +526,7 @@ function VulnerabilitiesInner() {
               </>
             ) : null}
           </p>
+          <FindingViews current="list" />
         </div>
       </div>
 
@@ -700,7 +702,7 @@ function VulnerabilitiesInner() {
                   {t("problems.drill.clear")}
                 </Button>
                 {driftQuery.data?.drift?.differs ? (
-                  <span role="status" className="text-amber-600 dark:text-amber-400">
+                  <span role="status" className="text-warning">
                     {driftQuery.data.drift.changed_since_as_of > 0
                       ? t("problems.drill.drift", {
                           expected: driftQuery.data.drift.expected_instances,

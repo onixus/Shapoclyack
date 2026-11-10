@@ -66,7 +66,7 @@ it("opens a read-only Russian device card, preserves asset URL and closes on ten
   expect(within(dialog).getByRole("heading", { name: "Карточка устройства" })).toBeVisible();
   expect(within(dialog).getByText("Связано с сетевым активом")).toBeVisible();
   useAuthStore.setState({ activeTenant: "other" });
-  expect(await screen.findByRole("heading", { name: "Конечные точки" })).toBeVisible();
+  expect(await screen.findByRole("heading", { name: "Устройства" })).toBeVisible();
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 });
 it("retains server-provided stale filtering without inventing an age threshold", async () => {

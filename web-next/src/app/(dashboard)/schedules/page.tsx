@@ -308,7 +308,7 @@ export default function SchedulesPage() {
                   type="button"
                   size="sm"
                   variant="outline"
-                  className="h-7 w-7 border-rose-300 dark:border-rose-900/50 bg-muted p-0 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:bg-rose-950"
+                  className="h-7 w-7 border-danger/30 dark:border-danger/50 bg-muted p-0 text-danger hover:bg-danger-subtle dark:bg-danger-subtle"
                   onClick={() => setDeleteTarget(schedule)}
                   aria-label={t("scanCopy.deleteAction")}
                 >
@@ -338,7 +338,7 @@ export default function SchedulesPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-subtle text-primary border border-primary shadow-md">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-subtle text-primary border border-primary">
             <Timer className="h-5 w-5" />
           </div>
           <div>
@@ -681,7 +681,7 @@ export default function SchedulesPage() {
               {t("ui.cancel")}
             </AlertDialogCancel>
             <AlertDialogAction
-              className="bg-rose-600 text-foreground hover:bg-rose-500"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => {
                 if (deleteTarget) deleteMutation.mutate(deleteTarget.schedule_id);
                 setDeleteTarget(null);

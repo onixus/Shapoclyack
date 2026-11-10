@@ -70,7 +70,7 @@
     --destructive: var(--apex-danger-solid);
     --destructive-foreground: 0 0% 100%;
     --border: var(--apex-border-subtle);
-    --input: var(--apex-border-strong);
+    --input: var(--control);
     --ring: var(--apex-focus-ring);
     --control: 216 16% 54%;
     --warning: 26 90% 37%;

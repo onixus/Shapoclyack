@@ -15,8 +15,8 @@ import { useComplianceFrameworks, useCompliancePosture } from "@/hooks/use-compl
 import type { ComplianceControlStatus } from "@/lib/api";
 
 const STATUS_STYLE: Record<ComplianceControlStatus["status"], string> = {
-  passed: "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
-  failed: "border-rose-500/30 bg-rose-500/10 text-rose-600 dark:text-rose-400",
+  passed: "border-success/30 bg-success-subtle text-success",
+  failed: "border-danger/30 bg-danger-subtle text-danger",
   not_assessed: "border-border-strong bg-muted text-muted-foreground",
 };
 
@@ -27,8 +27,8 @@ const STATUS_LABEL: Record<ComplianceControlStatus["status"], string> = {
 };
 
 function StatusIcon({ status }: { status: ComplianceControlStatus["status"] }) {
-  if (status === "passed") return <ShieldCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />;
-  if (status === "failed") return <ShieldX className="h-4 w-4 text-rose-600 dark:text-rose-400" />;
+  if (status === "passed") return <ShieldCheck className="h-4 w-4 text-success" />;
+  if (status === "failed") return <ShieldX className="h-4 w-4 text-danger" />;
   return <MinusCircle className="h-4 w-4 text-muted-foreground" />;
 }
 
@@ -53,12 +53,12 @@ function ControlRow({ control }: { control: ComplianceControlStatus }) {
         </span>
         <span className="flex shrink-0 items-center gap-2">
           {control.failing_count > 0 ? (
-            <Badge variant="outline" className="border-rose-500/30 text-rose-600 dark:text-rose-400">
+            <Badge variant="outline" className="border-danger/30 text-danger">
               {control.failing_count} failing
             </Badge>
           ) : null}
           {control.accepted_count > 0 ? (
-            <Badge variant="outline" className="border-amber-500/30 text-amber-600 dark:text-amber-400">
+            <Badge variant="outline" className="border-warning/30 text-warning">
               {control.accepted_count} accepted
             </Badge>
           ) : null}
@@ -138,7 +138,7 @@ export default function CompliancePage() {
       {postureQuery.isLoading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : postureQuery.error ? (
-        <p className="text-sm text-rose-600 dark:text-rose-400">{(postureQuery.error as Error).message}</p>
+        <p className="text-sm text-danger">{(postureQuery.error as Error).message}</p>
       ) : posture ? (
         <>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -157,7 +157,7 @@ export default function CompliancePage() {
             </div>
             <div className="rounded-xl border border-border bg-card p-4">
               <p className="text-xs uppercase tracking-wide text-muted-foreground">{t("ui.failing")}</p>
-              <p className="mt-1 text-2xl font-bold text-rose-600 dark:text-rose-400">{posture.controls_failed}</p>
+              <p className="mt-1 text-2xl font-bold text-danger">{posture.controls_failed}</p>
             </div>
             <div className="rounded-xl border border-border bg-card p-4">
               <p className="text-xs uppercase tracking-wide text-muted-foreground">{t("ui.notAssessed")}</p>
@@ -178,7 +178,7 @@ export default function CompliancePage() {
                   reader of a compliance page is exactly the reader who has to
                   be able to tell the two apart. */}
               {posture.suppressed_findings > 0 ? (
-                <p className="mt-1 text-xs text-amber-500">
+                <p className="mt-1 text-xs text-warning">
                   {posture.suppressed_findings} finding
                   {posture.suppressed_findings === 1 ? "" : "s"} held out by a false-positive
                   verdict
@@ -189,8 +189,8 @@ export default function CompliancePage() {
 
           {/* The scope note is not decoration: without it a coverage score is
               read as a compliance percentage for the whole standard. */}
-          <p className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-xs text-muted-foreground">
-            <span className="font-semibold text-amber-500">Scope: </span>
+          <p className="rounded-lg border border-warning/20 bg-warning-subtle px-4 py-3 text-xs text-muted-foreground">
+            <span className="font-semibold text-warning">Scope: </span>
             {posture.scope_note} The score is the share of assessed controls that pass, not a
             statement of compliance with {posture.name} {posture.version}.
           </p>
