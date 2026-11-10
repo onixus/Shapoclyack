@@ -76,10 +76,16 @@ NVD online: set `NVD_API_KEY` in the sensor's environment. Pulse's own
 
 ### Rhai plugins
 
-`plugins: true` (the default; also settable per speed profile) hands the plugins in
-`scanner/pipeline/pulse_data/plugins/` to Pulse with `--script-dir`: weak SSH
-algorithms, anonymous FTP, services that cannot start TLS, SMB/RDP/VNC reachability,
-HTTP TRACE over plain HTTP.
+`plugins: true` (the default; also settable per speed profile) hands the Rhai
+plugin directory to Pulse with `--script-dir`: weak SSH algorithms, anonymous
+FTP, services that cannot start TLS, SMB/RDP/VNC reachability, HTTP TRACE over
+plain HTTP. The scripts are not in the image. A checkout uses
+`scanner/pipeline/pulse_data/plugins/`; an image uses
+`/var/lib/shapoclyack/pulse-plugins` after `scripts/fetch-pulse-plugins.sh`.
+Further git repositories are `plugin_sources` (not a per-profile setting).
+The System page edits the directory and that list for the API host
+([console](ui.md#pulse-plugin-repositories)). A sensor job does not
+receive them.
 They replace the part of NSE `default,safe` that Pulse's sandbox can express.
 Pulse then runs in an empty working directory (the same one as its `HOME`), the
 plugin files and their sha256 are recorded in `adapter.plugins` of `pulse/raw.json`,

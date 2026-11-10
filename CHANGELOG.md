@@ -33,6 +33,13 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- Rhai Pulse plugins are git content, not image layers. Images no longer copy
+  `scanner/pipeline/pulse_data/plugins`. `scripts/fetch-pulse-plugins.sh`
+  installs a pinned repository, and further repositories of your own, into
+  `/var/lib/shapoclyack/pulse-plugins`. `service_probe.pulse.plugins_dir` and
+  `plugin_sources` name that directory and the sources a run must match.
+  The System page edits both for the API host. A sensor job is not sent them.
+  A later source cannot replace a file an earlier source installed.
 - Pulse plugin phase 7: twelve read-only checks for CouchDB, Nomad, InfluxDB,
   NATS, Neo4j Bolt, RabbitMQ Management, GitLab, Harbor, Portainer, SonarQube,
   Keycloak and Rancher. The checks parse one bounded status or negotiation

@@ -22,8 +22,9 @@ Two sides throughout:
 3. [Pointing every feed at a mirror](#3-pointing-every-feed-at-a-mirror)
 4. [The offline bundle](#4-the-offline-bundle) — build, transfer, load, verify
 5. [nuclei templates](#5-nuclei-templates)
-6. [Update cadence](#6-update-cadence)
-7. [What stays unavailable offline](#7-what-stays-unavailable-offline)
+6. [Pulse plugins](#6-pulse-plugins)
+7. [Update cadence](#7-update-cadence)
+8. [What stays unavailable offline](#8-what-stays-unavailable-offline)
 
 ## 1. Mirror the images
 
@@ -146,6 +147,7 @@ read by the script and by the in-process fetcher that shares the feed.
 | Exploit-DB index | `EXPLOITDB_CSV_URL` | `https://gitlab.com/exploit-database/exploitdb/-/raw/main/files_exploits.csv` | The same CSV |
 | Metasploit module metadata | `METASPLOIT_MODULES_URL` | `https://raw.githubusercontent.com/rapid7/metasploit-framework/master/db/modules_metadata_base.json` | The same JSON |
 | nuclei templates | `NUCLEI_TEMPLATES_REPO`, `NUCLEI_TEMPLATES_REF`, `NUCLEI_TEMPLATES_COMMIT` | nuclei's own `-update-templates` | A git mirror of `projectdiscovery/nuclei-templates` — see §5 |
+| Pulse Rhai plugins | `PULSE_PLUGINS_REPO`, `PULSE_PLUGINS_REF`, `PULSE_PLUGINS_COMMIT`, `PULSE_PLUGINS_SOURCES` | the scripts in the scanner image | A git mirror of this repository's `scanner/pipeline/pulse_data/plugins`, plus any repositories of your own — see §6 |
 
 Ubuntu refresh uses Canonical's complete bzip2 database, with a 128 MiB transfer
 ceiling and a 512 MiB decoded ceiling. Raw JSON mirrors retain the full coverage
@@ -493,7 +495,42 @@ ProjectDiscovery's public OAST servers (`oast.pro` and five more) and wait on
 their DNS. See
 [network-requirements.md](network-requirements.md#out-of-band-testing-interactsh).
 
-## 6. Update cadence
+## 6. Pulse plugins
+
+The Rhai scripts are not in the image, so a mirror of the image alone does
+not install them. Point the fetch at a git mirror. `PULSE_PLUGINS_REF` is a
+tag or a full commit. `PULSE_PLUGINS_COMMIT` is the commit that ref must
+resolve to. Without `PULSE_PLUGINS_REPO` the official repository is
+`https://github.com/onixus/Shapoclyack.git` and the path inside it is
+`scanner/pipeline/pulse_data/plugins`.
+
+```bash
+PULSE_PLUGINS_REPO=file:///srv/mirrors/shapoclyack.git \
+PULSE_PLUGINS_REF=v1.2.0 \
+PULSE_PLUGINS_COMMIT=<the 40-character commit that tag names> \
+  scripts/fetch-pulse-plugins.sh /var/lib/shapoclyack/pulse-plugins
+```
+
+A second repository is another entry in `PULSE_PLUGINS_SOURCES` (a JSON list)
+or in `service_probe.pulse.plugin_sources`. The System page edits that list
+for the API host; a sensor job is not sent it
+([console](ui.md#pulse-plugin-repositories)). List the mirror you trust first:
+a later file cannot replace an earlier name. `file://` is a mounted mirror.
+`https` and `ssh` work. Plain `http`, and a URL that carries a password, are
+refused. The resolved commits are written to `.shapoclyack-plugins.json` in
+the destination. When `plugin_sources` is set on the sensor, a directory
+whose receipt differs is not loaded.
+
+In Kubernetes, mount a volume at `/var/lib/shapoclyack/pulse-plugins` and run
+the fetch before scans, or set `OCTO_PULSE_PLUGINS_DIR` to that mount. The
+scanner does not clone during a scan. Until the directory holds scripts, the
+Pulse stage runs and the plugin receipt says why it loaded none. The API
+reads `shapo_http_trace.rhai` from that same directory when it checks the
+trace finding, so the API needs the content too.
+`OCTO_HTTPS_PROXY`, `OCTO_HTTP_PROXY`, `OCTO_NO_PROXY` and `OCTO_CA_BUNDLE`
+apply to the git fetch.
+
+## 7. Update cadence
 
 What the upstreams publish, and so how stale a bundle becomes:
 
@@ -513,7 +550,7 @@ once its file is more than 30 days old, which is the outside limit. Build on a
 schedule on the connected side (a CI job running `make enrichment-bundle`) so
 the transfer is the only manual step.
 
-## 7. What stays unavailable offline
+## 8. What stays unavailable offline
 
 Nothing here fails a scan; each is either off by default or degrades to
 "not checked". Leave these off on an air-gapped installation:

@@ -128,9 +128,11 @@ RUN set -eu; \
       echo "warning: enrichment data is missing or stubbed; continuing (ENRICHMENT_STRICT=0)" >&2; \
     fi
 
+# The Rhai plugins are not in this image. The operator reads shapo_http_trace
+# from the same content directory the scanner loads.
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin octo && \
-    mkdir -p /app/scanner/output /app/scanner/state && \
-    chown -R octo:octo /app
+    mkdir -p /app/scanner/output /app/scanner/state /var/lib/shapoclyack/pulse-plugins && \
+    chown -R octo:octo /app /var/lib/shapoclyack/pulse-plugins
 USER octo
 
 EXPOSE 8080

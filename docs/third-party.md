@@ -119,8 +119,11 @@ it must not be shadowed by an enrichment volume mounted there:
 | Subdomain-takeover catalogue | `scanner/pipeline/takeover_fingerprints.json` | [can-i-take-over-xyz](https://github.com/EdOverflow/can-i-take-over-xyz); [nuclei-templates](https://github.com/projectdiscovery/nuclei-templates/tree/main/http/takeovers) `http/takeovers`; Microsoft's dangling-DNS guidance | **CC BY 4.0 — attribution required** (can-i-take-over-xyz); MIT (nuclei-templates) | Per service: takeover status and the short error strings a provider shows for an unclaimed resource. A selection, re-expressed as a JSON catalogue with this project's own CNAME patterns, notes and ids; no prose is copied. Edited by hand — see [configuration.md](configuration.md#subdomain-takeover-detection) |
 | Nuclei-derived Rhai checks | `shapo_rsync_modules`, `shapo_zookeeper_envi` | [nuclei-templates v9.9.4](https://github.com/projectdiscovery/nuclei-templates/tree/f4251b06c100067f230c4f54a1679de59802c7a4), authors pussycat0x and pdteam | Upstream MIT, reproduced in `scanner/pipeline/pulse_data/nuclei-templates.LICENSE`; reimplementations Apache-2.0 | Bounded probes for listable rsync modules and ZooKeeper `envi`; neither asserts access to service data |
 
-Rhai plugins for Pulse ([Pulse plugins](pulse-plugins.md)) ship in
-`scanner/pipeline/pulse_data/plugins/` for the same reason. Three are adapted from
+Rhai plugins for Pulse ([Pulse plugins](pulse-plugins.md)) are authored in
+`scanner/pipeline/pulse_data/plugins/` and installed from git
+(`scripts/fetch-pulse-plugins.sh`); release images do not copy them, for the
+same reason an enrichment volume must not be the only copy of the tree.
+Three are adapted from
 scripts of GenDec release v1.3.0 (MIT, per its `Cargo.toml`) and say so in their
 `SPDX-License-Identifier: MIT` header. Other files are Apache-2.0; the two
 Nuclei-derived checks are separately attributed in the table above:

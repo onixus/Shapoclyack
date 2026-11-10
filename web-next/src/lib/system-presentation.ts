@@ -58,6 +58,22 @@ const copy: Record<string, string> = {
   severities: "Уровни серьёзности",
   exclude_tags: "Исключённые метки проверок",
   templates_dir: "Каталог шаблонов",
+  "pulse.plugins_dir": "Каталог плагинов Pulse",
+  "pulse.plugin_sources": "Репозитории плагинов Pulse",
+  "Empty uses the scripts in this checkout, or /var/lib/shapoclyack/pulse-plugins after fetch.":
+    "Пустое значение берёт скрипты из этого репозитория. В образе это каталог после загрузки.",
+  "Add repository": "Добавить репозиторий",
+  "Remove repository": "Удалить репозиторий",
+  "Source name": "Имя",
+  "Repository URL": "Адрес репозитория",
+  "Git ref": "Ветка, тег или коммит",
+  "Pinned commit": "Коммит, 40 символов",
+  "Directory in the repository": "Каталог в репозитории",
+  "No extra repositories. An empty list does not require a fetch receipt.":
+    "Дополнительных репозиториев нет. Пустой список не требует квитанцию загрузки.",
+  "The first repository keeps a file name. A later copy is recorded and not installed.":
+    "Первый репозиторий оставляет имя файла. Повтор записывается в квитанцию и не ставится.",
+  "Eight repositories is the limit.": "Не больше восьми репозиториев.",
   concurrency: "Параллельных проверок",
   rate_limit: "Запросов в секунду",
   timeout_seconds: "Тайм-аут, секунды",

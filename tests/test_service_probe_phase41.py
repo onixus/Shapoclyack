@@ -84,8 +84,9 @@ def test_profile_pulse_config_bounds_match_base():
     not the other, or a field added to one and forgotten in the other)."""
     base_fields = PulseProbeConfig.model_fields
     override_fields = ProfilePulseConfig.model_fields
-    # `bin` is intentionally not overridable per-profile.
-    assert set(override_fields) == set(base_fields) - {"bin"}
+    # `bin`, `plugins_dir` and `plugin_sources` are host settings. A speed
+    # profile must not point the sensor at another plugin repository.
+    assert set(override_fields) == set(base_fields) - {"bin", "plugins_dir", "plugin_sources"}
     for name, override_field in override_fields.items():
         base_field = base_fields[name]
 

@@ -84,6 +84,16 @@ class ApplicabilityReview(BaseModel):
         return value
 
 
+def _trace_plugin_bytes() -> bytes:
+    """The trace plugin a scan would load. Missing content is a changed source."""
+    from scanner.pipeline.pulse_plugin_content import read_trace_plugin
+
+    try:
+        return read_trace_plugin()
+    except FileNotFoundError:
+        raise GatewayError("operator_source_changed") from None
+
+
 def trace_guide():
     """A reviewed, release-pinned offline record; reads perform no HTTP fetch."""
     raw = TRACE_GUIDE_FILE.read_bytes()
@@ -104,7 +114,7 @@ def _trace_identity(row):
             or not isinstance(row.port, str) or not row.port.isascii() or not row.port.isdigit()
             or not 1 <= int(row.port) <= 65535):
         return False
-    expected = "sha256:" + hashlib.sha256(TRACE_PLUGIN_FILE.read_bytes()).hexdigest()
+    expected = "sha256:" + hashlib.sha256(_trace_plugin_bytes()).hexdigest()
     return all(isinstance(item, dict) and item.get("detector") == "pulse-plugin"
         and item.get("ref") == "shapo_http_trace" and item.get("ruleset") == expected
         and item.get("protocol", "tcp") == "tcp" and str(item.get("port")) == str(row.port) for item in row.detectors)
