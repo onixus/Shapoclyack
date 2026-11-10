@@ -52,6 +52,7 @@ FEED_SPECS = {
     "advisories_suse": ("advisories/suse-advisories.json", 1, False),
     "advisories_alas": ("advisories/alas-advisories.json", 1, False),
     "nvd_cpe": ("nvd-cpe/nvd-cpe-ranges.json", 5000, False), "bdu_fstec": ("bdu/bdu-overlay.json", 1000, False),
+    "bdu_threats": ("bdu/threats-overlay.json", 100, False),
     "geoip": ("geoip/geoip.mmdb", 0, False), "asn": ("asn/asn.mmdb", 0, False)}
 FEED_SUPPORT = {"geoip/geoip.mmdb", "geoip/geoip-overlay.json", "asn/asn.mmdb", "cvss4/cvss4.sha256",
     "wordlists/subdomains-small.txt", "wordlists/bucket-names-small.txt"}

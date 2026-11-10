@@ -85,11 +85,12 @@ process is what covers it, and hiding the acceptance would be worse than either.
 
 ### The Russian catalogues
 
-Four catalogues cover the Russian regulators over the *same* signals: FSTEC
+Five catalogues cover the Russian regulators over the *same* signals: FSTEC
 order 117 (state information systems; in force since 1 March 2026 in place of
 order 17, with the measure codes of the methodological document of
 12 April 2026), FSTEC order 21 (personal data under 152-ФЗ), FSTEC order 239
-(significant critical-information-infrastructure objects under 187-ФЗ) and
+(significant critical-information-infrastructure objects under 187-ФЗ),
+Federal Law 187-ФЗ (technical security measures for CII, linking orders 235 and 239) and
 ГОСТ Р 57580.1-2017 (financial organisations, applied through the Bank of
 Russia's regulations). Measure codes and titles are the regulators' own, in
 Russian — an auditor looks for «АНЗ.1», not for a translation of it — with two

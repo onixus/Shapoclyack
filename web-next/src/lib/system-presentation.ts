@@ -81,7 +81,8 @@ const copy: Record<string, string> = {
   advisories_suse: "Бюллетени безопасности SUSE",
   advisories_alas: "Бюллетени безопасности Amazon Linux",
   nvd_cpe: "Сопоставления продуктов CPE из NVD",
-  bdu_fstec: "Банк угроз ФСТЭК",
+  bdu_fstec: "База уязвимостей ФСТЭК (БДУ)",
+  bdu_threats: "Банк данных угроз ФСТЭК (УБИ)",
 };
 export const systemText = (locale: Locale, value: string) =>
   locale === "ru" ? copy[value] || value : value;

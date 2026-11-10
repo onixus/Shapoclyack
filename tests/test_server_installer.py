@@ -35,6 +35,21 @@ def test_prepare_production_and_preserve_secrets(tmp_path):
     assert path.read_bytes() == before
 
 
+def test_prepare_with_bdu_flag(tmp_path):
+    args = argparse.Namespace(
+        image=installer.DEFAULT_IMAGE,
+        url="https://scan.example.com",
+        port=8080,
+        bdu=True,
+    )
+    installer.prepare(tmp_path, args)
+    config = json.loads((tmp_path / "compose.json").read_text())
+    api = config["services"]["api"]
+    assert api["environment"]["OCTO_BDU_FSTEC_FETCH_ENABLED"] == "true"
+    assert "enrichment:/app/scanner/data/bdu" in api["volumes"]
+    assert "enrichment" in config["volumes"]
+
+
 @pytest.mark.parametrize("value", ["http://scan.example.com", "https://user:pass@x", "https://x/a",
                                    "https://x?bad=1", "https://x:$PORT", "https://x:99999"])
 def test_reject_invalid_public_url(value):

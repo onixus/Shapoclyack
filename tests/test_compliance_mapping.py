@@ -396,6 +396,7 @@ def test_api_lists_frameworks_and_returns_posture(tmp_path, monkeypatch):
         "fstec-117",
         "fstec-21",
         "fstec-239",
+        "fz-187",
         "gost-r-57580.1-2017",
     }
     # The scope note is the anti-overclaim guard; it must reach the client.
@@ -425,7 +426,7 @@ def test_api_control_detail_and_auth(tmp_path, monkeypatch):
 
 # ------------------------------------------------------------ Russia
 
-_RU_FRAMEWORKS = ("fstec-117", "fstec-21", "fstec-239", "gost-r-57580.1-2017")
+_RU_FRAMEWORKS = ("fstec-117", "fstec-21", "fstec-239", "fz-187", "gost-r-57580.1-2017")
 
 
 def test_the_fstec_window_is_the_regulators_clock():
