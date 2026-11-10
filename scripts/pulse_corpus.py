@@ -381,6 +381,18 @@ NSE_PLUGIN_MAP.update({
 })
 PLUGIN_ONLY = dict(RECORDED_PLUGIN_ONLY)
 PLUGIN_ONLY.update({
+    "shapo_couchdb_root": "unauthenticated root document only; databases, users and writes untested",
+    "shapo_nomad_status": "unauthenticated leader status only; jobs, nodes and peers untested",
+    "shapo_influx_health": "unauthenticated ping only; queries, writes and credentials untested",
+    "shapo_nats_info": "anonymous CONNECT/PING only; subscribe and publish untested",
+    "shapo_neo4j_discovery": "Bolt version negotiation only; HELLO, LOGON and graph queries untested",
+    "shapo_rabbitmq_mgmt": "unauthenticated management whoami only; overview, queues and users untested",
+    "shapo_gitlab_health": "unauthenticated health only; readiness, projects and users untested",
+    "shapo_harbor_health": "unauthenticated health only; projects, repositories and image catalog untested",
+    "shapo_portainer_status": "unauthenticated system status only; endpoints, stacks and updates untested",
+    "shapo_sonarqube_status": "unauthenticated system status only; health, components and migration untested",
+    "shapo_keycloak_realm": "unauthenticated administrative realm listing only; users and clients untested",
+    "shapo_rancher_status": "unauthenticated ping only; clusters and nodes untested",
     "shapo_clickhouse_ping": "unauthenticated HTTP ping only; queries and native protocol untested",
     "shapo_mongodb_hello": "unauthenticated hello only; database and document access untested",
     "shapo_etcd_version": "unauthenticated version only; key-value ranges and writes untested",

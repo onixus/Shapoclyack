@@ -228,6 +228,18 @@ def verify_plugins(
 #: given, contains the second string, or the port is in ``ports`` and the
 #: service is unknown.
 APPLICABILITY: dict[str, dict[str, Any]] = {
+    "shapo_couchdb_root": {"services": {"couchdb"}, "banner": (), "ports": {5984}},
+    "shapo_nomad_status": {"services": {"nomad"}, "banner": (), "ports": {4646}},
+    "shapo_influx_health": {"services": {"influxdb"}, "banner": (), "ports": {8086}},
+    "shapo_nats_info": {"services": {"nats"}, "banner": (), "ports": {4222}},
+    "shapo_neo4j_discovery": {"services": set(), "banner": (), "ports": {7687}},
+    "shapo_rabbitmq_mgmt": {"services": {"rabbitmq-mgmt"}, "banner": (), "ports": {15672}},
+    "shapo_gitlab_health": {"services": {"gitlab"}, "banner": (), "ports": set()},
+    "shapo_harbor_health": {"services": {"harbor"}, "banner": (), "ports": set()},
+    "shapo_portainer_status": {"services": {"portainer"}, "banner": (), "ports": set()},
+    "shapo_sonarqube_status": {"services": {"sonarqube"}, "banner": (), "ports": set()},
+    "shapo_keycloak_realm": {"services": {"keycloak"}, "banner": (), "ports": set()},
+    "shapo_rancher_status": {"services": {"rancher"}, "banner": (), "ports": set()},
     "shapo_clickhouse_ping": {"services": {"clickhouse"}, "banner": (), "ports": {8123}},
     "shapo_mongodb_hello": {"services": {"mongodb"}, "banner": (), "ports": {27017, 27018, 27019}},
     "shapo_etcd_version": {"services": {"etcd"}, "banner": (), "ports": {2379}},

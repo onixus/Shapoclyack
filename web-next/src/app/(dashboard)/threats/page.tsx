@@ -15,6 +15,7 @@ import type { TrackedVulnerability } from "@/lib/api";
 import { RISK_LEVEL_STATUS, SEVERITY_STATUS, VULN_LIFECYCLE_STATUS } from "@/lib/config/statuses";
 import { normalizeSeverity } from "@/lib/run-data";
 import { assetDetailHref, findingLabel, vulnDetailHref } from "@/lib/vuln-lifecycle";
+import { FindingViews } from "@/components/view-tabs";
 import { useT } from "@/lib/i18n";
 
 export default function ThreatsPage() {
@@ -111,10 +112,11 @@ export default function ThreatsPage() {
             </h1>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">{t("page.threats.subtitle")}</p>
+          <FindingViews current="kev" />
         </div>
       </div>
 
-      <Alert className="border-rose-500/40 bg-rose-50 text-rose-900 dark:bg-rose-950/20 dark:text-rose-100">
+      <Alert className="border-danger/40 bg-danger-subtle text-danger">
         <AlertDescription className="text-xs">
           {t("page.threats.alert")}
         </AlertDescription>

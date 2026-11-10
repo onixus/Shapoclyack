@@ -112,14 +112,17 @@ RDP_OBSERVATION_CALL_SECONDS = 1.5
 _RULESET = re.compile(r"(\d{4})\.(\d{1,2})\.(\d{1,2})(?:-h(\d+))?")
 
 #: ``meta.schema`` values the parsers are known to read (APEX boundary
-#: ``pulse-engine-v3`` in apex-contract/manifest.json). v3 (GenDec#33/#35)
-#: only adds optional fields - ``distro``/``distro_revision`` per row,
-#: ``meta.mode``, ``hosts[]``, ``discovery`` - so the v2 the pinned v1.4.0
-#: binary prints stays accepted until the pin moves past it. Another value is
-#: still parsed, field by field as always, but logged: a v4 should be read
-#: before it is trusted. Caveat: the pinned Pulse v1.4.0 prints v2, so the v3
-#: ``hosts[]`` handling in l2_discovery is exercised on synthetic reports only
-#: until a real v3 binary has been run against it.
+#: ``pulse-engine-v3`` in apex-contract/manifest.json). The tagged Pulse
+#: v1.5.0 binary still prints ``pulse.scan.v2`` and adds scan-verdict fields
+#: on ``stats`` (``complete``, ``cancelled``, ``fatal_error``, error counters).
+#: GenDec main, still version 1.5.0, documents ``pulse.scan.v3``: those verdict
+#: fields, plus optional ``distro``/``distro_revision``, ``meta.mode``,
+#: ``meta.coverage_complete``, ``hosts[]``, ``discovery``, and TLS facts
+#: (``alpn``, ``certificate_parsed``, ``client_cert_requested``). The v2 the
+#: pinned v1.4.0 binary prints stays accepted until the pin moves. Another
+#: value is still parsed, field by field as always, but logged: a v4 should be
+#: read before it is trusted. The pinned binary prints v2, so the v3
+#: ``hosts[]`` handling in l2_discovery is exercised on synthetic reports only.
 REPORT_SCHEMAS = ("pulse.scan.v2", "pulse.scan.v3")
 #: ``meta.schema`` comes from the tool's output: kept short before it reaches a
 #: log line, ``raw.json`` or ``report_schemas``.
@@ -339,16 +342,65 @@ def _is_os_raw_socket_failure(stderr: str) -> bool:
     return "os detection" in text and "raw socket" in text
 
 
+#: Pulse 1.5.0 ``stats`` verdicts. Counters sum; these do not.
+#: ``complete`` / ``l4_complete`` are true only when every chunk that reported
+#: the key said so. ``cancelled`` is true when any chunk was cancelled.
+#: ``fatal_error`` keeps the first non-empty diagnostic (Pulse caps it at 512).
+_STATS_AND = ("complete", "l4_complete")
+_STATS_FATAL = "fatal_error"
+_STATS_FATAL_MAX = 512
+
+
 def _merge_stats(acc: dict[str, Any], new: dict[str, Any]) -> None:
-    """Sum one chunk's pulse ``stats`` into ``acc`` (rate is recomputed, not summed)."""
+    """Sum one chunk's pulse ``stats`` into ``acc`` (rate is recomputed, not summed).
+
+    Boolean verdicts and ``fatal_error`` (Pulse 1.5.0) are kept. A missing key
+    is an older binary and does not invent a verdict. ``null`` ``fatal_error``
+    is the same as absent.
+    """
     for key, value in new.items():
-        if key == "rate_pps" or isinstance(value, bool) or not isinstance(value, (int, float)):
+        if key == "rate_pps" or key in _STATS_AND or key in ("cancelled", _STATS_FATAL):
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             continue
         acc[key] = acc.get(key, 0) + value
+    for key in _STATS_AND:
+        value = new.get(key)
+        if not isinstance(value, bool):
+            continue
+        acc[key] = value if key not in acc else bool(acc[key]) and value
+    if isinstance(new.get("cancelled"), bool):
+        acc["cancelled"] = bool(acc.get("cancelled")) or new["cancelled"]
+    fatal = new.get(_STATS_FATAL)
+    if isinstance(fatal, str) and fatal.strip() and not acc.get(_STATS_FATAL):
+        acc[_STATS_FATAL] = fatal.strip()[:_STATS_FATAL_MAX]
     total = acc.get("total")
     elapsed_ms = acc.get("elapsed_ms")
     if isinstance(total, (int, float)) and isinstance(elapsed_ms, (int, float)) and elapsed_ms > 0:
         acc["rate_pps"] = round(total / (elapsed_ms / 1000.0), 1)
+
+
+def _note_scan_verdict(idx: int, stats: Mapping[str, Any]) -> None:
+    """Say when a chunk's own stats do not describe a finished probe.
+
+    Pulse 1.5.0 can exit 0 and still set ``complete`` false: transport errors
+    are not closed ports. The counters stay in ``stats``; this only logs.
+    """
+    fatal = stats.get(_STATS_FATAL)
+    if isinstance(fatal, str) and fatal.strip():
+        logging.warning("pulse_probe chunk %s: fatal_error: %s", idx, fatal.strip()[:200])
+        return
+    if stats.get("cancelled") is True:
+        logging.warning(
+            "pulse_probe chunk %s: scan cancelled; partial results are not a finished probe", idx,
+        )
+        return
+    if stats.get("complete") is False:
+        logging.warning(
+            "pulse_probe chunk %s: stats.complete is false (incomplete=%s, errors=%s); "
+            "error counters are not closed-port verdicts",
+            idx, stats.get("incomplete"), stats.get("errors"),
+        )
 
 
 def _group_tcp_ports(open_ports: list[str]) -> dict[str, list[int]]:
@@ -1157,6 +1209,9 @@ def _run_pulse_probe(
     pulse_versions: set[str] = set()
     report_schemas: set[str] = set()
     warned_schemas: set[str] = set()
+    # AND of meta.coverage_complete across chunks that reported it (Pulse 1.5.0
+    # schema). None means no chunk had the key, so the adapter block omits it.
+    coverage_complete: bool | None = None
     consecutive_crashes = 0
     consecutive_timeouts = 0
     scan_mode = "syn" if syn else "connect"
@@ -1352,6 +1407,9 @@ def _run_pulse_probe(
                 rulesets.add(str(meta["ruleset"]))
             if meta.get("version"):
                 pulse_versions.add(str(meta["version"]))
+            if isinstance(meta.get("coverage_complete"), bool):
+                reported = meta["coverage_complete"]
+                coverage_complete = reported if coverage_complete is None else coverage_complete and reported
             schema = _report_schema(meta.get("schema"))
             if schema and (schema in report_schemas or len(report_schemas) < REPORT_SCHEMAS_MAX):
                 report_schemas.add(schema)
@@ -1378,6 +1436,7 @@ def _run_pulse_probe(
             merged_raw["tls"].extend(payload.get("tls") or [])
             if isinstance(payload.get("stats"), dict):
                 _merge_stats(merged_raw["stats"], payload["stats"])
+                _note_scan_verdict(idx, payload["stats"])
         # Every chunk is on the record, failed ones included -- an artifact
         # that lists only the chunks that answered looks like a clean run.
         merged_raw["chunks"].append(
@@ -1448,6 +1507,7 @@ def _run_pulse_probe(
         "ruleset": min(rulesets, key=ruleset_order) if rulesets else None,
         "pulse_version": min(pulse_versions) if pulse_versions else None,
         "report_schemas": sorted(report_schemas),
+        **({"coverage_complete": coverage_complete} if coverage_complete is not None else {}),
         "chunk_hosts": size,
         "plugins": plugin_receipt,
         **diagnostics,

@@ -31,6 +31,7 @@ import {
 } from "@/hooks/use-report-factory";
 import { toast } from "sonner";
 import { downloadGeneratedReport, type GeneratedReportInfo } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 type Kind = "executive" | "technical" | "compliance";
 type Format = "pdf" | "html" | "json" | "csv" | "xlsx";
@@ -39,13 +40,15 @@ function Section({
   title,
   icon,
   children,
+  className,
 }: {
   title: string;
   icon: React.ReactNode;
   children: React.ReactNode;
+  className?: string;
 }) {
   return (
-    <div className="rounded-xl border border-border bg-card">
+    <div className={cn("rounded-xl border border-border bg-card", className)}>
       <div className="flex items-center gap-2 border-b border-border px-4 py-3">
         {icon}
         <h2 className="text-sm font-bold text-foreground">{title}</h2>
@@ -99,7 +102,7 @@ export function ReportFactoryPanel() {
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      <Section title="Branding" icon={<Palette className="h-4 w-4 text-sky-500" />}>
+      <Section title="Branding" icon={<Palette className="h-4 w-4 text-primary" />}>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1">
             <Label htmlFor="org-name">{t("ui.organisationName")}</Label>
@@ -132,6 +135,7 @@ export function ReportFactoryPanel() {
         <Button
           className="mt-3"
           size="sm"
+          variant="outline"
           disabled={saveBranding.isPending}
           onClick={() =>
             saveBranding.mutate({
@@ -148,7 +152,7 @@ export function ReportFactoryPanel() {
         </p>
       </Section>
 
-      <Section title="Generate now" icon={<FileBarChart className="h-4 w-4 text-sky-500" />}>
+      <Section title="Generate now" icon={<FileBarChart className="h-4 w-4 text-primary" />}>
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="space-y-1">
             <Label>{t("ui.report")}</Label>
@@ -217,7 +221,7 @@ export function ReportFactoryPanel() {
         </Button>
       </Section>
 
-      <Section title="Templates" icon={<Plus className="h-4 w-4 text-sky-500" />}>
+      <Section title="Templates" icon={<Plus className="h-4 w-4 text-primary" />}>
         <div className="grid gap-3 sm:grid-cols-3">
           <Input
             value={templateName}
@@ -252,6 +256,7 @@ export function ReportFactoryPanel() {
         <Button
           className="mt-3"
           size="sm"
+          variant="outline"
           disabled={
             !templateName ||
             createTemplate.isPending ||
@@ -293,7 +298,7 @@ export function ReportFactoryPanel() {
         </ul>
       </Section>
 
-      <Section title="Scheduled delivery" icon={<Plus className="h-4 w-4 text-sky-500" />}>
+      <Section title="Scheduled delivery" icon={<Plus className="h-4 w-4 text-primary" />}>
         <div className="grid gap-3 sm:grid-cols-2">
           <Select value={scheduleTemplate} onValueChange={setScheduleTemplate}>
             <SelectTrigger>
@@ -342,6 +347,7 @@ export function ReportFactoryPanel() {
         <Button
           className="mt-3"
           size="sm"
+          variant="outline"
           disabled={!scheduleTemplate || !scheduleName || createSchedule.isPending}
           onClick={() =>
             createSchedule.mutate(
@@ -396,9 +402,10 @@ export function ReportFactoryPanel() {
 
       <Section
         title="Generated reports"
-        icon={<FileBarChart className="h-4 w-4 text-sky-500" />}
+        icon={<FileBarChart className="h-4 w-4 text-primary" />}
+        className="lg:col-span-2"
       >
-        <ul className="space-y-1 text-xs lg:col-span-2">
+        <ul className="space-y-1 text-xs">
           {(reports.data ?? []).length === 0 ? (
             <li className="text-muted-foreground">{t("ui.nothingGeneratedYet")}</li>
           ) : null}
@@ -418,7 +425,7 @@ export function ReportFactoryPanel() {
                     : "—"}
                 </span>{" "}
                 {report.status === "failed" ? (
-                  <span className="text-rose-600 dark:text-rose-400">{report.error}</span>
+                  <span className="text-danger">{report.error}</span>
                 ) : (
                   <span className="text-muted-foreground">{deliverySummary(report)}</span>
                 )}

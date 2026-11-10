@@ -181,7 +181,7 @@ export default function LoginPage() {
       </div>
       <section className="relative z-10 w-full max-w-md space-y-6 rounded-xl border border-border bg-card p-8 text-foreground">
         <div className="space-y-2">
-          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-sky-600 dark:text-sky-400">
+          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-primary">
             {t("login.kicker")}
           </p>
           <h1 className="text-2xl font-semibold tracking-tight">
@@ -210,7 +210,7 @@ export default function LoginPage() {
                 required
               />
             </label>
-            {error ? <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{error}</p> : null}
+            {error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}
             <Button type="submit" className="w-full" disabled={submitting}>
               {submitting ? t("login.mfa.submitting") : t("login.mfa.submit")}
             </Button>
@@ -231,7 +231,7 @@ export default function LoginPage() {
             <div className="flex items-center justify-between text-xs">
               <button
                 type="button"
-                className="text-sky-600 dark:text-sky-400 hover:underline"
+                className="text-primary hover:underline"
                 onClick={() => {
                   setUseRecovery((value) => !value);
                   setCode("");
@@ -247,12 +247,12 @@ export default function LoginPage() {
         ) : (
           <>
             {localLogin === "disabled" ? (
-              <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
+              <p className="rounded-md border border-warning/40 bg-warning-subtle p-3 text-xs text-warning">
                 {t("login.localDisabled")}
               </p>
             ) : null}
             {localLogin === "break-glass" ? (
-              <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
+              <p className="rounded-md border border-warning/40 bg-warning-subtle p-3 text-xs text-warning">
                 {t("login.localBreakGlass")}
               </p>
             ) : null}
@@ -278,7 +278,7 @@ export default function LoginPage() {
                   required
                 />
               </label>
-              {error ? <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{error}</p> : null}
+              {error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}
               <Button type="submit" className="w-full" disabled={submitting}>
                 {submitting
                   ? t("login.submitting")

@@ -83,7 +83,7 @@ describe("pressure ordering", () => {
 describe("labels", () => {
   it("renders the billing period as a day range", () => {
     expect(periodLabel("2026-09-01T00:00:00", "2026-10-01T00:00:00")).toBe(
-      "2026-09-01 → 2026-10-01",
+      "2026\u201109\u201101 → 2026\u201110\u201101",
     );
   });
 

@@ -33,9 +33,9 @@ function stamp(iso: string | null | undefined): string | null {
 }
 
 const STATE_TONE: Record<RunPublicationInfo["state"], string> = {
-  publishing: "border-sky-500/40 text-sky-700 dark:text-sky-300",
-  retrying: "border-amber-500/40 text-amber-700 dark:text-amber-300",
-  dead: "border-rose-500/40 text-rose-700 dark:text-rose-300",
+  publishing: "border-primary text-primary",
+  retrying: "border-warning/40 text-warning",
+  dead: "border-danger/40 text-danger",
 };
 
 function Field({
@@ -102,7 +102,7 @@ export function JobPublications({ job, open }: { job: JobInfo; open: boolean }) 
             </Field>
             {row.last_error ? (
               <Field label={t("jobs.publication.lastError")}>
-                <span className="font-mono text-rose-700 dark:text-rose-300">
+                <span className="font-mono text-danger">
                   {row.last_error}
                 </span>
               </Field>
@@ -130,7 +130,7 @@ export function JobPublications({ job, open }: { job: JobInfo; open: boolean }) 
                 label={t("jobs.publication.leaseLapses")}
                 hint={t("jobs.publication.leaseLapsesHint")}
               >
-                <span className="font-mono text-amber-700 dark:text-amber-300">
+                <span className="font-mono text-warning">
                   {row.lease_lapses}
                 </span>
               </Field>
@@ -148,7 +148,7 @@ export function JobPublications({ job, open }: { job: JobInfo; open: boolean }) 
           </dl>
 
           {row.silent ? (
-            <p className="mt-2 flex items-start gap-1.5 text-xs text-amber-800 dark:text-amber-200">
+            <p className="mt-2 flex items-start gap-1.5 text-xs text-warning">
               <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               {t("jobs.publication.silent", {
                 deadline: stamp(row.orphan_deadline_at) ?? "—",
@@ -184,7 +184,7 @@ export function JobPublications({ job, open }: { job: JobInfo; open: boolean }) 
                 type="button"
                 size="sm"
                 variant="outline"
-                className="text-rose-700 dark:text-rose-300"
+                className="text-danger"
                 disabled={!row.actionable || discard.isPending}
                 onClick={() => setDiscardTarget(row)}
               >
@@ -214,7 +214,7 @@ export function JobPublications({ job, open }: { job: JobInfo; open: boolean }) 
           <AlertDialogFooter>
             <AlertDialogCancel>{t("jobs.publication.keep")}</AlertDialogCancel>
             <AlertDialogAction
-              className="bg-rose-600 text-foreground hover:bg-rose-500"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => {
                 if (discardTarget) discard.mutate(discardTarget.publication_id);
                 setDiscardTarget(null);

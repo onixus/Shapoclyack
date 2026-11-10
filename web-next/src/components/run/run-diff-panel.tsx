@@ -11,31 +11,31 @@ export function RunDiffPanel({ counts }: { counts: Record<string, number> }) {
       <div className="mt-2 flex flex-wrap gap-4 text-foreground">
         <div>
           <span className="text-muted-foreground">{runText(t.locale, "Hosts")}: </span>
-          <span className="text-emerald-600 dark:text-emerald-400 font-bold">
+          <span className="text-success font-bold">
             +{counts.hosts_added || 0}
           </span>{" "}
           /{" "}
-          <span className="text-rose-600 dark:text-rose-400 font-bold">
+          <span className="text-danger font-bold">
             -{counts.hosts_removed || 0}
           </span>
         </div>
         <div>
           <span className="text-muted-foreground">{runText(t.locale, "Ports")}: </span>
-          <span className="text-emerald-600 dark:text-emerald-400 font-bold">
+          <span className="text-success font-bold">
             +{counts.ports_added || 0}
           </span>{" "}
           /{" "}
-          <span className="text-rose-600 dark:text-rose-400 font-bold">
+          <span className="text-danger font-bold">
             -{counts.ports_removed || 0}
           </span>
         </div>
         <div>
           <span className="text-muted-foreground">{runText(t.locale, "Vulnerabilities")}: </span>
-          <span className="text-emerald-600 dark:text-emerald-400 font-bold">
+          <span className="text-success font-bold">
             +{counts.vulns_added || 0}
           </span>{" "}
           /{" "}
-          <span className="text-rose-600 dark:text-rose-400 font-bold">
+          <span className="text-danger font-bold">
             -{counts.vulns_removed || 0}
           </span>
         </div>

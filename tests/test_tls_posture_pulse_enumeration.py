@@ -44,6 +44,33 @@ def _row(enumeration: Any, **extra: Any) -> dict[str, Any]:
             "enumeration": enumeration, **extra}
 
 
+def test_unparsed_pulse_15_certificate_is_not_a_finding():
+    """certificate_parsed false means self_signed and expired were not observed."""
+    row = _from_pulse({
+        "ip": "10.0.0.9", "port": 443, "certificate_parsed": False,
+        "self_signed": True, "expired": True,
+        "not_after": "2020-01-01T00:00:00Z",
+        "client_cert_requested": True,
+        "alpn": {"offered": ["h2", "http/1.1"], "negotiated": "h2"},
+    })
+    assert row["cert"]["parse_ok"] is False
+    assert row["cert"]["certificate_parsed"] is False
+    assert row["issues"] == []
+    assert row["client_cert_requested"] is True
+    assert row["alpn"] == "h2"
+
+
+def test_a_parsed_certificate_still_reports_self_signed():
+    row = _from_pulse({
+        "ip": "10.0.0.9", "port": 443, "certificate_parsed": True,
+        "subject_cn": "localhost", "issuer_cn": "localhost", "self_signed": True,
+    })
+    assert row["cert"]["parse_ok"] is True
+    assert "self_signed" in {issue["kind"] for issue in row["issues"]}
+    assert "client_cert_requested" not in row
+    assert "alpn" not in row
+
+
 # --- same answers as the nmap path, on the same endpoints --------------------
 
 

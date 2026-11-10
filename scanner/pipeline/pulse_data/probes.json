@@ -1,5 +1,5 @@
 {
-  "version": "2026.08.21+shapo.1",
+  "version": "2026.08.21+shapo.2",
   "probes": [
     {
       "name": "ssh-greeting",
@@ -1019,6 +1019,21 @@
           "service": "k8s-kubelet",
           "product": "Kubernetes Kubelet",
           "soft": true
+        },
+        {
+          "pattern": "(?i)_gitlab_session=",
+          "service": "gitlab",
+          "product": "GitLab"
+        },
+        {
+          "pattern": "(?i)<title>\\s*Welcome to Keycloak\\s*</title>",
+          "service": "keycloak",
+          "product": "Keycloak IAM"
+        },
+        {
+          "pattern": "(?i)<title>\\s*Keycloak Administration Console\\s*</title>",
+          "service": "keycloak",
+          "product": "Keycloak IAM"
         }
       ]
     },

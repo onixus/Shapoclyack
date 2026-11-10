@@ -51,7 +51,7 @@ export default function AgentsPage() {
         header: t("col.agentHost"),
         cell: ({ row }) => (
           <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted/60 text-sky-500 shadow-sm">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted/60 text-primary">
               <Server className="h-4 w-4" />
             </div>
             <div>
@@ -94,12 +94,12 @@ export default function AgentsPage() {
           const isOutdated = row.original.is_outdated;
           return (
             <div className="flex items-center gap-1.5">
-              <code className="rounded bg-muted px-2 py-0.5 font-mono text-xs text-sky-700 dark:text-sky-300 border border-border">
+              <code className="rounded bg-muted px-2 py-0.5 font-mono text-xs text-primary border border-border">
                 v{row.original.version || "—"}
               </code>
               {isOutdated && (
                 <span title={`Update available: v${row.original.latest_version || "—"}`} className="flex items-center">
-                  <ArrowUpCircle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                  <ArrowUpCircle className="h-4 w-4 text-warning" />
                 </span>
               )}
             </div>
@@ -138,7 +138,7 @@ export default function AgentsPage() {
         cell: ({ getValue }) => {
           const value = getValue();
           return value ? (
-            <code className="rounded bg-muted px-2 py-0.5 font-mono text-xs text-indigo-700 dark:text-indigo-300 border border-border">
+            <code className="rounded bg-muted px-2 py-0.5 font-mono text-xs text-info border border-border">
               {String(value)}
             </code>
           ) : (
@@ -184,7 +184,7 @@ export default function AgentsPage() {
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border/80 pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-500 border border-sky-500/20 shadow-sm">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-subtle text-primary border border-primary">
             <Cpu className="h-5 w-5" />
           </div>
           <div>

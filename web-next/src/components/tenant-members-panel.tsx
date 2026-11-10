@@ -133,7 +133,7 @@ export function TenantMembersPanel({
             <p className="text-xs text-muted-foreground sm:col-span-4">{selected.description}</p>
           ) : null}
           {catalogueQuery.error ? (
-            <p className="text-xs text-rose-500 sm:col-span-4" role="alert">
+            <p className="text-xs text-danger sm:col-span-4" role="alert">
               {t("users.membership.catalogueFailed")}
             </p>
           ) : null}
@@ -144,7 +144,7 @@ export function TenantMembersPanel({
       ) : null}
 
       {error ? (
-        <p className="text-sm text-rose-500" role="alert">
+        <p className="text-sm text-danger" role="alert">
           {error instanceof Error ? error.message : null}
         </p>
       ) : null}

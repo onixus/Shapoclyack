@@ -8,12 +8,12 @@ describe("i18n dictionaries", () => {
   });
 
   it("keeps English as the source strings", () => {
-    expect(translate("en", "nav.dashboard")).toBe("Dashboard");
+    expect(translate("en", "nav.dashboard")).toBe("Risk overview");
     expect(translate("en", "login.title")).toBe("Sign in");
   });
 
   it("returns Russian chrome for the same keys", () => {
-    expect(translate("ru", "nav.dashboard")).toBe("Обзор");
+    expect(translate("ru", "nav.dashboard")).toBe("Обзор риска");
     expect(translate("ru", "login.title")).toBe("Вход");
     expect(translate("ru", "appearance.light")).toBe("Светлая");
   });

@@ -217,8 +217,48 @@ def _char_class(pattern: str, i: int) -> tuple[str | None, int]:
     return None, j  # unterminated: re.compile reports it
 
 
+#: Probe transports Pulse accepts (GenDec probe_db::ProbeTransport). Missing means tcp.
+_TRANSPORTS = frozenset({"tcp", "tls", "udp", "quic"})
+_UDP_PAYLOAD_MAX = 4096
+
+
+def _ascii_graphic(value: str) -> bool:
+    """Pulse ``is_ascii_graphic``: printable ASCII, no space, 1..=255 bytes."""
+    return bool(value) and len(value) <= 255 and all(33 <= ord(char) <= 126 for char in value)
+
+
+def _unescape_payload(text: str) -> str:
+    """Pulse ``unescape``: ``\\n \\r \\t \\0 \\\\``; any other escape keeps both characters."""
+    out: list[str] = []
+    chars = iter(text)
+    for char in chars:
+        if char != "\\":
+            out.append(char)
+            continue
+        nxt = next(chars, None)
+        if nxt is None:
+            out.append("\\")
+        elif nxt in "rnt0\\":
+            out.append({"r": "\r", "n": "\n", "t": "\t", "0": "\0", "\\": "\\"}[nxt])
+        else:
+            out.append("\\" + nxt)
+    return "".join(out)
+
+
+def _pattern_for_compile(pattern: str) -> str:
+    """Pulse compiles ``{alpn}`` as the literal ``h2`` at load time."""
+    return pattern.replace("{alpn}", "h2")
+
+
 def validate_probe_db_text(text: str) -> tuple[str, int, int]:
-    """Check ``text`` the way Pulse will load it; return (version, probes, matches)."""
+    """Check ``text`` the way Pulse will load it; return (version, probes, matches).
+
+    Pulse 1.5.0 (GenDec main) also rejects an unknown ``transport``, an ALPN
+    token that is not ASCII graphic, an ``http_version`` other than 1 or 2,
+    and a UDP payload over 4096 bytes. ``distro`` / ``distro_revision`` are
+    optional strings. A pattern may contain ``{alpn}``; Pulse substitutes
+    ``h2`` before the load-time compile.
+    """
     def reject_constant(name: str) -> Any:
         raise ProbeDbError(f"not valid JSON: {name} is not a JSON number")
 
@@ -249,31 +289,50 @@ def validate_probe_db_text(text: str) -> tuple[str, int, int]:
         rarity = probe.get("rarity", 5)
         if not isinstance(rarity, int) or isinstance(rarity, bool) or not 0 <= rarity <= 255:
             raise ProbeDbError(f"probe {name}: 'rarity' must be an integer 0-255")
+        transport = probe.get("transport", "tcp")
+        if not isinstance(transport, str) or transport not in _TRANSPORTS:
+            raise ProbeDbError(f"probe {name}: 'transport' must be tcp, tls, udp or quic")
+        alpn = probe.get("alpn", [])
+        if not isinstance(alpn, list) or not all(isinstance(item, str) and _ascii_graphic(item) for item in alpn):
+            raise ProbeDbError(f"probe {name}: 'alpn' must be a list of ASCII graphic identifiers")
+        http_version = probe.get("http_version")
+        if http_version is not None and (
+            isinstance(http_version, bool) or not isinstance(http_version, int) or http_version not in (1, 2)
+        ):
+            raise ProbeDbError(f"probe {name}: 'http_version' must be 1 or 2")
         for key in ("payload", "payload_hex"):
             if not isinstance(probe.get(key, ""), str):
                 raise ProbeDbError(f"probe {name}: '{key}' must be a string")
         hex_payload = probe.get("payload_hex", "")
         if not _HEX.fullmatch(_STRIP_SPACE.sub("", hex_payload)):
             raise ProbeDbError(f"probe {name}: invalid payload_hex")
+        if transport == "udp":
+            if hex_payload:
+                payload_len = len(_STRIP_SPACE.sub("", hex_payload)) // 2
+            else:
+                payload_len = len(_unescape_payload(probe.get("payload", "")).encode("utf-8"))
+            if payload_len > _UDP_PAYLOAD_MAX:
+                raise ProbeDbError(f"probe {name}: UDP payload exceeds {_UDP_PAYLOAD_MAX} bytes")
         matches = probe.get("matches", [])
         if not isinstance(matches, list):
             raise ProbeDbError(f"probe {name}: 'matches' must be a list")
         for rule in matches:
             if not isinstance(rule, dict) or not isinstance(rule.get("pattern"), str):
                 raise ProbeDbError(f"probe {name}: every match needs a string 'pattern'")
-            for key in ("service", "product", "version"):
+            for key in ("service", "product", "version", "distro", "distro_revision"):
                 if not isinstance(rule.get(key, ""), str):
                     raise ProbeDbError(f"probe {name}: match '{key}' must be a string")
             if not isinstance(rule.get("soft", False), bool):
                 raise ProbeDbError(f"probe {name}: match 'soft' must be a boolean")
             pattern = rule["pattern"]
+            compiled = _pattern_for_compile(pattern)
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", FutureWarning)  # "possible set difference": rejected below
-                    re.compile(pattern)
+                    re.compile(compiled)
             except re.error as exc:
                 raise ProbeDbError(f"probe {name}: bad pattern {pattern!r}: {exc}") from exc
-            bad, cost = analyze(pattern)
+            bad, cost = analyze(compiled)
             if bad:
                 raise ProbeDbError(
                     f"probe {name}: pattern {pattern!r} uses {bad}, outside the subset Python and "

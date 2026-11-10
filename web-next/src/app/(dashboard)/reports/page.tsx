@@ -54,7 +54,7 @@ export default function ReportsPage() {
         cell: ({ row }) => (
           <Link
             href={`${runDetailHref(row.original.run_id)}&tab=reports`}
-            className="font-mono text-xs text-sky-600 dark:text-sky-400 hover:text-sky-600 dark:text-sky-300 underline-offset-2 hover:underline"
+            className="font-mono text-xs text-primary hover:text-primary underline-offset-2 hover:underline"
           >
             {row.original.run_id}
           </Link>
@@ -63,7 +63,7 @@ export default function ReportsPage() {
       {
         accessorKey: "profile",
         header: t("col.profile"),
-        cell: ({ getValue }) => <Badge variant="secondary" className="bg-muted text-sky-600 dark:text-sky-300 font-mono text-xs">{String(getValue() || "—")}</Badge>,
+        cell: ({ getValue }) => <Badge variant="secondary" className="bg-muted text-primary font-mono text-xs">{String(getValue() || "—")}</Badge>,
       },
       {
         accessorKey: "started_at",
@@ -88,11 +88,11 @@ export default function ReportsPage() {
           const unconfirmed = row.original.unconfirmed_findings ?? 0;
           return (
             <span className="flex items-baseline gap-1.5">
-              <span className={`font-mono text-xs font-bold ${val > 0 ? "text-rose-600 dark:text-rose-400" : "text-muted-foreground"}`}>
+              <span className={`font-mono text-xs font-bold ${val > 0 ? "text-danger" : "text-muted-foreground"}`}>
                 {val.toLocaleString()}
               </span>
               {unconfirmed > 0 ? (
-                <span className="font-mono text-xs text-amber-600 dark:text-amber-300/80" title="Unconfirmed — reachable-service exposures and unverified keyword CVE hits, included in the total">
+                <span className="font-mono text-xs text-warning dark:text-warning/80" title="Unconfirmed — reachable-service exposures and unverified keyword CVE hits, included in the total">
                   {unconfirmed.toLocaleString()} unconf.
                 </span>
               ) : null}
@@ -110,7 +110,7 @@ export default function ReportsPage() {
               <Button
                 variant="outline"
                 size="sm"
-                className="gap-1.5 border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-300 hover:bg-sky-500/20 text-xs font-semibold"
+                className="gap-1.5 border-primary bg-accent-subtle text-primary hover:bg-accent-subtle text-xs font-semibold"
                 onClick={() => downloadPdf(row.original.run_id)}
                 disabled={busyRun === row.original.run_id}
               >
@@ -123,7 +123,7 @@ export default function ReportsPage() {
             <Button
               variant="outline"
               size="sm"
-              className="gap-1.5 border-indigo-500/30 bg-indigo-500/10 text-indigo-600 dark:text-indigo-300 hover:bg-indigo-500/20 text-xs font-semibold"
+              className="gap-1.5 border-info/30 bg-info-subtle text-info hover:bg-info-subtle text-xs font-semibold"
               onClick={() => downloadSarif(row.original.run_id)}
               disabled={busyRun === `sarif-${row.original.run_id}`}
             >
@@ -144,7 +144,7 @@ export default function ReportsPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20 shadow-md">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-subtle text-primary border border-primary">
             <FileText className="h-5 w-5" />
           </div>
           <div>

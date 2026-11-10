@@ -56,8 +56,8 @@ function ProvisioningKeyNotice({
   const t = useT();
   if (keyMinted) {
     return (
-      <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-foreground">
-        <p className="flex items-center gap-1.5 font-semibold text-amber-600 dark:text-amber-400">
+      <div className="rounded-lg border border-warning/30 bg-warning-subtle p-3 text-xs text-foreground">
+        <p className="flex items-center gap-1.5 font-semibold text-warning">
           <KeyRound className="h-3.5 w-3.5" />
           {t("prose.provisioningKeyShownOnce")}
         </p>
@@ -82,7 +82,7 @@ function ProvisioningKeyNotice({
             tenant credential.
           </p>
           {canMint ? null : (
-            <p className="mt-1 leading-relaxed text-amber-600 dark:text-amber-400">
+            <p className="mt-1 leading-relaxed text-warning">
               {t("prose.mintingOneTakesCredentialManage")}
             </p>
           )}
@@ -97,7 +97,7 @@ function ProvisioningKeyNotice({
           Generate key
         </Button>
       </div>
-      {error ? <p className="mt-2 text-rose-600 dark:text-rose-400">{error}</p> : null}
+      {error ? <p className="mt-2 text-danger">{error}</p> : null}
     </div>
   );
 }
@@ -205,7 +205,7 @@ export function DeployAgentDialog() {
       <DialogContent className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden p-0 bg-card text-card-foreground border-border shadow-2xl">
         <DialogHeader className="border-b border-border/80 px-6 pt-6 pb-4">
           <DialogTitle className="flex items-center gap-2.5 text-xl font-bold">
-            <Cpu className="h-5 w-5 text-sky-500" />
+            <Cpu className="h-5 w-5 text-primary" />
             {t("prose.deployScanningAgent")}
           </DialogTitle>
           <DialogDescription className="text-muted-foreground text-xs sm:text-sm">
@@ -218,25 +218,25 @@ export function DeployAgentDialog() {
             <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4 gap-1.5 bg-muted/80 p-1 border border-border rounded-lg">
               <TabsTrigger
                 value="ssh"
-                className="text-xs sm:text-sm font-medium data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+                className="text-xs sm:text-sm font-medium data-[state=active]:bg-card data-[state=active]:text-foreground"
               >
                 Remote SSH Push
               </TabsTrigger>
               <TabsTrigger
                 value="systemd"
-                className="text-xs sm:text-sm font-medium data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+                className="text-xs sm:text-sm font-medium data-[state=active]:bg-card data-[state=active]:text-foreground"
               >
                 Linux One-Liner
               </TabsTrigger>
               <TabsTrigger
                 value="docker"
-                className="text-xs sm:text-sm font-medium data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+                className="text-xs sm:text-sm font-medium data-[state=active]:bg-card data-[state=active]:text-foreground"
               >
                 Docker Container
               </TabsTrigger>
               <TabsTrigger
                 value="kubernetes"
-                className="text-xs sm:text-sm font-medium data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+                className="text-xs sm:text-sm font-medium data-[state=active]:bg-card data-[state=active]:text-foreground"
               >
                 Kubernetes
               </TabsTrigger>
@@ -246,8 +246,8 @@ export function DeployAgentDialog() {
             <TabsContent value="ssh" className="mt-4 space-y-4">
               {!activeDeployId ? (
                 <form onSubmit={handleStartDeploy} className="space-y-4">
-                  <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-xs text-foreground">
-                    <p className="flex items-center gap-1.5 font-semibold text-sky-600 dark:text-sky-400">
+                  <div className="rounded-lg border border-primary bg-accent-subtle p-4 text-xs text-foreground">
+                    <p className="flex items-center gap-1.5 font-semibold text-primary">
                       <Shield className="h-4 w-4" />
                       {t("prose.agentPushDeploymentViaSsh")}
                     </p>
@@ -359,7 +359,7 @@ export function DeployAgentDialog() {
                           </p>
                         ) : (
                           <div className="flex flex-wrap items-center gap-2">
-                            <p className="text-amber-600 dark:text-amber-400">
+                            <p className="text-warning">
                               Whoever answered offered this. Confirm it on the host with{" "}
                               <code className="font-mono">
                                 ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
@@ -384,7 +384,7 @@ export function DeployAgentDialog() {
                       </p>
                     )}
                     {hostKeyMutation.error ? (
-                      <p className="text-xs text-rose-600 dark:text-rose-400">
+                      <p className="text-xs text-danger">
                         {(hostKeyMutation.error as Error).message}
                       </p>
                     ) : null}
@@ -440,12 +440,12 @@ export function DeployAgentDialog() {
                       Start Installation
                     </Button>
                     {canPush ? null : (
-                      <p className="text-xs text-amber-600 dark:text-amber-400">
+                      <p className="text-xs text-warning">
                         {t("prose.thePushTakesAdminAndCredential")}
                       </p>
                     )}
                     {deployMutation.error ? (
-                      <p className="text-xs text-rose-600 dark:text-rose-400">
+                      <p className="text-xs text-danger">
                         {(deployMutation.error as Error).message}
                       </p>
                     ) : null}
@@ -457,17 +457,17 @@ export function DeployAgentDialog() {
                   <div className="flex items-center justify-between rounded-lg border border-border bg-muted/50 p-3">
                     <div>
                       <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs font-semibold text-sky-600 dark:text-sky-400">
+                        <span className="font-mono text-xs font-semibold text-primary">
                           {deployStatus?.stage || "Processing..."}
                         </span>
                         {deployStatus?.status === "installing" || deployStatus?.status === "connecting" || deployStatus?.status === "verifying" ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-500" />
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
                         ) : deployStatus?.status === "completed" ? (
-                          <span className="rounded bg-emerald-500/20 px-2 py-0.5 text-xs font-bold text-emerald-600 dark:text-emerald-400">
+                          <span className="rounded bg-success-subtle px-2 py-0.5 text-xs font-bold text-success">
                             SUCCESS
                           </span>
                         ) : deployStatus?.status === "failed" ? (
-                          <span className="rounded bg-rose-500/20 px-2 py-0.5 text-xs font-bold text-rose-600 dark:text-rose-400">
+                          <span className="rounded bg-danger-subtle px-2 py-0.5 text-xs font-bold text-danger">
                             FAILED
                           </span>
                         ) : null}
@@ -523,8 +523,8 @@ export function DeployAgentDialog() {
             {/* TAB 2: LINUX ONE-LINER */}
             <TabsContent value="systemd" className="mt-4 space-y-4">
               {keyNotice}
-              <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-xs text-foreground">
-                <p className="font-semibold text-sky-600 dark:text-sky-400">{t("ui.automatedSystemdServiceOneliner")}</p>
+              <div className="rounded-lg border border-primary bg-accent-subtle p-4 text-xs text-foreground">
+                <p className="font-semibold text-primary">{t("ui.automatedSystemdServiceOneliner")}</p>
                 <p className="mt-1 text-muted-foreground leading-relaxed">
                   {t("prose.runThisCommandOnAny")}
                 </p>
@@ -540,14 +540,14 @@ export function DeployAgentDialog() {
                     className="h-7 border-border bg-muted text-xs text-foreground hover:bg-accent"
                   >
                     {copiedKey === "systemd" ? (
-                      <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+                      <Check className="mr-1.5 h-3.5 w-3.5 text-success" />
                     ) : (
                       <Copy className="mr-1.5 h-3.5 w-3.5" />
                     )}
                     {copiedKey === "systemd" ? "Copied!" : "Copy"}
                   </Button>
                 </div>
-                <pre className="p-4 font-mono text-xs text-sky-600 dark:text-sky-300 overflow-x-auto custom-scrollbar whitespace-pre">
+                <pre className="p-4 font-mono text-xs text-primary overflow-x-auto custom-scrollbar whitespace-pre">
                   {snippets?.systemd_oneliner || "curl -sSL https://.../api/agent/install.sh | sudo bash"}
                 </pre>
               </div>
@@ -556,8 +556,8 @@ export function DeployAgentDialog() {
             {/* TAB 3: DOCKER CONTAINER */}
             <TabsContent value="docker" className="mt-4 space-y-4">
               {keyNotice}
-              <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-xs text-foreground">
-                <p className="font-semibold text-sky-600 dark:text-sky-400">Docker Run Command & Compose</p>
+              <div className="rounded-lg border border-primary bg-accent-subtle p-4 text-xs text-foreground">
+                <p className="font-semibold text-primary">Docker Run Command & Compose</p>
                 <p className="mt-1 text-muted-foreground leading-relaxed">
                   {t("prose.runsTheScanningAgentIn")}
                 </p>
@@ -573,11 +573,11 @@ export function DeployAgentDialog() {
                       onClick={() => handleCopy(snippets?.docker_run || "", "docker")}
                       className="h-7 border-border bg-muted text-xs text-foreground hover:bg-accent"
                     >
-                      {copiedKey === "docker" ? <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
+                      {copiedKey === "docker" ? <Check className="mr-1.5 h-3.5 w-3.5 text-success" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
                       {copiedKey === "docker" ? "Copied!" : "Copy"}
                     </Button>
                   </div>
-                  <pre className="p-4 font-mono text-xs text-sky-600 dark:text-sky-300 overflow-x-auto custom-scrollbar whitespace-pre">
+                  <pre className="p-4 font-mono text-xs text-primary overflow-x-auto custom-scrollbar whitespace-pre">
                     {snippets?.docker_run || "docker run -d ..."}
                   </pre>
                 </div>
@@ -591,7 +591,7 @@ export function DeployAgentDialog() {
                       onClick={() => handleCopy(snippets?.docker_compose || "", "compose")}
                       className="h-7 border-border bg-muted text-xs text-foreground hover:bg-accent"
                     >
-                      {copiedKey === "compose" ? <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
+                      {copiedKey === "compose" ? <Check className="mr-1.5 h-3.5 w-3.5 text-success" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
                       {copiedKey === "compose" ? "Copied!" : "Copy"}
                     </Button>
                   </div>
@@ -605,8 +605,8 @@ export function DeployAgentDialog() {
             {/* TAB 4: KUBERNETES */}
             <TabsContent value="kubernetes" className="mt-4 space-y-4">
               {keyNotice}
-              <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-xs text-foreground">
-                <p className="font-semibold text-sky-600 dark:text-sky-400">{t("ui.kubernetesDeploymentManifest")}</p>
+              <div className="rounded-lg border border-primary bg-accent-subtle p-4 text-xs text-foreground">
+                <p className="font-semibold text-primary">{t("ui.kubernetesDeploymentManifest")}</p>
                 <p className="mt-1 text-muted-foreground leading-relaxed">
                   {t("prose.deployContinuousScannerAgentsInto")}
                 </p>
@@ -621,7 +621,7 @@ export function DeployAgentDialog() {
                     onClick={() => handleCopy(snippets?.kubernetes_yaml || "", "k8s")}
                     className="h-7 border-border bg-muted text-xs text-foreground hover:bg-accent"
                   >
-                    {copiedKey === "k8s" ? <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
+                    {copiedKey === "k8s" ? <Check className="mr-1.5 h-3.5 w-3.5 text-success" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
                     {copiedKey === "k8s" ? "Copied!" : "Copy"}
                   </Button>
                 </div>
@@ -640,14 +640,14 @@ export function DeployAgentDialog() {
                     onClick={() => handleCopy(snippets?.kubernetes_secret_command || "", "k8s-secret")}
                     className="h-7 border-border bg-muted text-xs text-foreground hover:bg-accent"
                   >
-                    {copiedKey === "k8s-secret" ? <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
+                    {copiedKey === "k8s-secret" ? <Check className="mr-1.5 h-3.5 w-3.5 text-success" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
                     {copiedKey === "k8s-secret" ? "Copied!" : "Copy"}
                   </Button>
                 </div>
                 <p className="px-3.5 pt-3 text-xs leading-relaxed text-muted-foreground">
                   {t("prose.kubernetesSecretAfterApply")}
                 </p>
-                <pre className="p-4 font-mono text-xs text-sky-600 dark:text-sky-300 overflow-x-auto custom-scrollbar whitespace-pre">
+                <pre className="p-4 font-mono text-xs text-primary overflow-x-auto custom-scrollbar whitespace-pre">
                   {snippets?.kubernetes_secret_command || "printf '%s' ... | kubectl create secret ..."}
                 </pre>
               </div>

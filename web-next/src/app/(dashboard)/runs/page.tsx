@@ -137,14 +137,14 @@ function RunsInner() {
               <span
                 className={cn(
                   "font-mono text-xs font-bold",
-                  val > 0 ? "text-rose-600 dark:text-rose-400" : "text-muted-foreground",
+                  val > 0 ? "text-danger" : "text-muted-foreground",
                 )}
               >
                 {val.toLocaleString()}
               </span>
               {unconfirmed > 0 ? (
                 <span
-                  className="font-mono text-xs text-amber-600 dark:text-amber-300/80"
+                  className="font-mono text-xs text-warning dark:text-warning/80"
                   title={runText(
                     t.locale,
                     "Unconfirmed — reachable-service exposures and unverified keyword CVE hits, included in the total",
@@ -168,7 +168,7 @@ function RunsInner() {
             {row.original.has_diff ? (
               <Badge
                 variant="secondary"
-                className="border-indigo-500/30 bg-indigo-500/20 text-xs text-indigo-700 dark:text-indigo-300"
+                className="border-info/30 bg-info-subtle text-xs text-info"
               >
                 {runText(t.locale, "diff")}
               </Badge>
@@ -176,7 +176,7 @@ function RunsInner() {
             {row.original.has_summary ? (
               <Badge
                 variant="outline"
-                className="border-emerald-500/30 bg-emerald-500/10 text-xs text-emerald-700 dark:text-emerald-300"
+                className="border-success/30 bg-success-subtle text-xs text-success"
               >
                 {runText(t.locale, "pdf")}
               </Badge>
@@ -223,7 +223,7 @@ function RunsInner() {
                 className={cn(
                   "rounded-md px-3 py-1.5 text-xs font-semibold transition-colors",
                   active
-                    ? "bg-card text-foreground shadow-sm"
+                    ? "bg-card text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >

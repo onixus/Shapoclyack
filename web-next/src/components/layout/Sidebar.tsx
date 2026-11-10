@@ -136,7 +136,7 @@ export function Sidebar() {
       <aside id="primary-sidebar"
         ref={drawerRef}
         className={cn(
-          "lg:visible fixed inset-y-0 left-0 z-40 w-64 border-r border-border bg-sunken text-card-foreground transition-[transform,visibility] lg:static lg:translate-x-0",
+          "lg:visible fixed inset-y-0 left-0 z-40 w-60 border-r border-border bg-sunken text-card-foreground transition-[transform,visibility] lg:static lg:translate-x-0",
           open ? "visible translate-x-0" : "invisible -translate-x-full",
         )}
       >
@@ -255,8 +255,8 @@ export function Sidebar() {
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span className="flex items-center gap-1.5 font-medium">
                 <span className="relative flex h-2 w-2">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-75" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
                 </span>
                 {system?.runtime.job_execution_mode === "agent"
                   ? t("sidebar.modeAgent")

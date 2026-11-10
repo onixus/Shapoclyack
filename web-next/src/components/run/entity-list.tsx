@@ -38,7 +38,7 @@ export function EntityList({
               <button
                 type="button"
                 className={`flex w-full items-start justify-between gap-3 px-4 py-3 text-left text-xs transition-colors hover:bg-muted ${
-                  isSelected ? "bg-sky-500/10 border-l-2 border-sky-400" : ""
+                  isSelected ? "bg-accent-subtle border-l-2 border-primary" : ""
                 }`}
                 onClick={() => onSelect(value)}
               >

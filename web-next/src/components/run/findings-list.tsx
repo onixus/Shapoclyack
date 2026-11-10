@@ -33,7 +33,7 @@ export function FindingsList({
       {truncation.isTruncated ? (
         <Alert
           variant="warning"
-          className="border-amber-500/30 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-200"
+          className="border-warning/30 bg-warning-subtle text-warning"
         >
           <AlertDescription className="text-xs">
             {runText(
@@ -91,13 +91,13 @@ export function FindingsList({
                           t.locale,
                         )}
                         {item.port ? (
-                          <span className="text-sky-600 dark:text-sky-400 font-normal">
+                          <span className="text-primary font-normal">
                             :{item.port}
                           </span>
                         ) : null}
                         {item.requires_confirmation ? (
                           <span
-                            className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-overline font-semibold uppercase text-amber-600 dark:text-amber-300"
+                            className="rounded border border-warning/30 bg-warning-subtle px-1.5 py-0.5 text-overline font-semibold uppercase text-warning"
                             title={runText(
                               t.locale,
                               "The scanner could not confirm this finding — treat it as triage signal, not a confirmed vulnerability.",
@@ -107,7 +107,7 @@ export function FindingsList({
                           </span>
                         ) : null}
                         {item.in_kev ? (
-                          <span className="rounded border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 text-overline font-semibold uppercase text-rose-600 dark:text-rose-300">
+                          <span className="rounded border border-danger/30 bg-danger-subtle px-1.5 py-0.5 text-overline font-semibold uppercase text-danger">
                             KEV
                           </span>
                         ) : null}

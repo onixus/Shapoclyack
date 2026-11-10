@@ -111,7 +111,7 @@ function BackToAssets() {
       className="gap-2 px-0 text-muted-foreground hover:text-foreground hover:bg-transparent"
     >
       <Link href="/assets">
-        <ArrowLeft className="h-4 w-4 text-sky-600 dark:text-sky-400" />
+        <ArrowLeft className="h-4 w-4 text-primary" />
         {t("asset.back")}
       </Link>
     </Button>
@@ -164,7 +164,7 @@ function AssetDetailInner() {
         <BackToAssets />
         <Alert
           variant="destructive"
-          className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+          className="border-danger/40 bg-danger-subtle text-danger"
         >
           <AlertDescription>{t("asset.missingParam")}</AlertDescription>
         </Alert>
@@ -179,7 +179,7 @@ function AssetDetailInner() {
           <BackToAssets />
           <Alert
             variant="destructive"
-            className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+            className="border-danger/40 bg-danger-subtle text-danger"
           >
             <AlertDescription>{(detailQuery.error as Error).message}</AlertDescription>
           </Alert>
@@ -289,7 +289,7 @@ function AssetDetailInner() {
       </div>
 
       {unassigned > 0 || breached > 0 ? (
-        <Alert className="border-amber-500/30 bg-amber-50 dark:bg-amber-950/20 text-amber-900 dark:text-amber-100">
+        <Alert className="border-warning/30 bg-warning-subtle text-warning">
           <AlertDescription className="text-xs">
             {t("asset.alert.requiredNow", {
               what: [
@@ -322,31 +322,31 @@ function AssetDetailInner() {
             <TabsList className="bg-card border border-border h-auto flex-wrap justify-start">
               <TabsTrigger
                 value="findings"
-                className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300"
+                className="data-[state=active]:bg-muted data-[state=active]:text-primary dark:text-primary"
               >
                 {t("asset.tab.findings", { count: trackedOpen })}
               </TabsTrigger>
               <TabsTrigger
                 value="services"
-                className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300"
+                className="data-[state=active]:bg-muted data-[state=active]:text-primary dark:text-primary"
               >
                 {t("asset.tab.services", { count: serviceCount })}
               </TabsTrigger>
               <TabsTrigger
                 value="software"
-                className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300"
+                className="data-[state=active]:bg-muted data-[state=active]:text-primary dark:text-primary"
               >
                 {t("asset.tab.software", { count: software.length })}
               </TabsTrigger>
               <TabsTrigger
                 value="evidence"
-                className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300"
+                className="data-[state=active]:bg-muted data-[state=active]:text-primary dark:text-primary"
               >
                 {t("asset.tab.evidence")}
               </TabsTrigger>
               <TabsTrigger
                 value="history"
-                className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300"
+                className="data-[state=active]:bg-muted data-[state=active]:text-primary dark:text-primary"
               >
                 {t("asset.tab.history")}
               </TabsTrigger>
@@ -405,7 +405,7 @@ function AssetDetailInner() {
                   <>
                     {" "}
                     {assetText(t.locale, "from run")}{" "}
-                    <code className="font-mono text-sky-600 dark:text-sky-400">
+                    <code className="font-mono text-primary">
                       {latest.run_id}
                     </code>
                   </>
@@ -437,7 +437,7 @@ function AssetDetailInner() {
                           key={`${v.cve || v.script_id}-${v.port}-${idx}`}
                           className="hover:bg-muted transition-colors"
                         >
-                          <td className="px-3.5 py-3 font-mono font-semibold text-sky-600 dark:text-sky-400">
+                          <td className="px-3.5 py-3 font-mono font-semibold text-primary">
                             {vulnerabilityName(
                               { cve: v.cve, script_id: v.script_id, title: "" },
                               t.locale,
@@ -452,7 +452,7 @@ function AssetDetailInner() {
                           </td>
                           <td className="px-3.5 py-3 font-mono text-foreground">{v.port || "—"}</td>
                           <td className="px-3.5 py-3">
-                            <span className="rounded bg-rose-500/20 px-1.5 py-0.5 font-bold tabular-nums text-rose-600 dark:text-rose-300 border border-rose-500/30">
+                            <span className="rounded bg-danger-subtle px-1.5 py-0.5 font-bold tabular-nums text-danger border border-danger/30">
                               {v.cvss4 ?? v.cvss ?? "—"}
                             </span>
                           </td>
@@ -545,7 +545,7 @@ function TrackedFindingsPanel({
         {assetText(t.locale, "No open tracked findings on this asset. Closed history lives in the")}{" "}
         <Link
           href={vulnListHref({ assetId })}
-          className="text-sky-600 dark:text-sky-400 underline underline-offset-2"
+          className="text-primary underline underline-offset-2"
         >
           {assetText(t.locale, "Vulnerability Center")}
         </Link>
@@ -562,14 +562,14 @@ function TrackedFindingsPanel({
           : ""}{" "}
         <Link
           href={vulnListHref({ assetId })}
-          className="text-sky-600 dark:text-sky-400 underline underline-offset-2"
+          className="text-primary underline underline-offset-2"
         >
           {t("asset.findings.openInCenter")}
         </Link>
         {" · "}
         <Link
           href="/remediation"
-          className="text-sky-600 dark:text-sky-400 underline underline-offset-2"
+          className="text-primary underline underline-offset-2"
         >
           {t("asset.findings.remediationBoard")}
         </Link>
@@ -592,7 +592,7 @@ function TrackedFindingsPanel({
                 <td className="px-3.5 py-3">
                   <Link
                     href={vulnDetailHref(vuln.vuln_id, tenantId)}
-                    className="font-mono font-semibold text-sky-600 dark:text-sky-400 hover:underline"
+                    className="font-mono font-semibold text-primary hover:underline"
                   >
                     {vulnerabilityName(vuln, t.locale)}
                   </Link>
@@ -626,7 +626,7 @@ function TrackedFindingsPanel({
                     asChild
                     variant="outline"
                     size="sm"
-                    className="h-7 text-xs border-border bg-card text-sky-600 dark:text-sky-400"
+                    className="h-7 text-xs border-border bg-card text-primary"
                   >
                     <Link href={vulnDetailHref(vuln.vuln_id, tenantId)}>{t("asset.act")}</Link>
                   </Button>
@@ -725,7 +725,7 @@ function OverviewCard({ asset }: { asset: AssetDetail }) {
             >
               <Badge
                 variant="secondary"
-                className="uppercase font-semibold text-overline bg-muted text-sky-600 dark:text-sky-400"
+                className="uppercase font-semibold text-overline bg-muted text-primary"
               >
                 {assetCode(t.locale, identifier.identifier_type, "Other identifier")}
               </Badge>
@@ -772,7 +772,7 @@ function NoEndpointCard({ loading }: { loading: boolean }) {
             asChild
             variant="outline"
             size="sm"
-            className="h-7 border-border text-xs text-sky-600 dark:text-sky-400"
+            className="h-7 border-border text-xs text-primary"
           >
             <Link href="/endpoints">{t("asset.endpointBrowse")}</Link>
           </Button>
@@ -845,7 +845,7 @@ function SoftwareTab({
                 {(["name", "version", "publisher", "source"] as const).map((col) => (
                   <th
                     key={assetText(t.locale, col)}
-                    className="cursor-pointer px-3.5 py-3 hover:text-sky-600 dark:text-sky-300"
+                    className="cursor-pointer px-3.5 py-3 hover:text-primary dark:text-primary"
                     onClick={() => setSortKey(col)}
                   >
                     {assetText(t.locale, col)}
@@ -1078,7 +1078,7 @@ function EditCard({ asset }: { asset: AssetDetail }) {
               <Button
                 variant="outline"
                 size="sm"
-                className="border-rose-500/40 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:bg-rose-950/60"
+                className="border-danger/40 text-danger hover:bg-danger-subtle dark:bg-danger-subtle"
               >
                 {assetText(t.locale, "Decommission")}
               </Button>
@@ -1098,7 +1098,7 @@ function EditCard({ asset }: { asset: AssetDetail }) {
                 </AlertDialogCancel>
                 <AlertDialogAction
                   onClick={() => update.mutate({ status: "decommissioned" })}
-                  className="bg-rose-600 text-foreground hover:bg-rose-500"
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                 >
                   {t("asset.decommissionConfirm")}
                 </AlertDialogAction>
@@ -1143,7 +1143,7 @@ function ContextHistoryCard({ assetId, tenantId }: { assetId: string; tenantId: 
 function ContextHistoryItem({ event }: { event: AssetContextEvent }) {
   const t = useT();
   return (
-    <li className="relative border-l border-border pl-4 before:absolute before:-left-1 before:top-1.5 before:h-2 before:w-2 before:rounded-full before:bg-sky-500/70">
+    <li className="relative border-l border-border pl-4 before:absolute before:-left-1 before:top-1.5 before:h-2 before:w-2 before:rounded-full before:bg-accent-subtle">
       <p className="font-semibold text-foreground">{assetContextEventText(t.locale, event)}</p>
       <SystemTechnicalDetails
         data={{

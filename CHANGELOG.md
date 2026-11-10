@@ -14,6 +14,16 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- Pulse 1.5.0 report fields are no longer dropped. Merged `pulse/raw.json`
+  stats keep `complete`, `l4_complete`, `cancelled` and `fatal_error` (numeric
+  counters still sum; rate is still recomputed). A chunk with `complete: false`
+  is logged and is not treated as a set of closed ports. `meta.coverage_complete`
+  is recorded on `adapter.coverage_complete` when a chunk sends it. A TLS row
+  with `certificate_parsed: false` does not become a certificate finding.
+  `client_cert_requested: true` and `alpn.negotiated` are copied onto the
+  posture row. The probe-database check now rejects a `transport`, `alpn` or
+  `http_version` that Pulse would refuse, and compiles a `{alpn}` pattern the
+  way Pulse does (substituted with `h2` at load time).
 - Pulse status checks decode one chunked HTTP body, accept a ClickHouse ping
   body of `Ok.` with one trailing LF or CRLF, walk MongoDB timestamp and regex
   fields, and require a complete Prometheus `"success"` status. The Kubernetes
@@ -23,6 +33,13 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- Pulse plugin phase 7: twelve read-only checks for CouchDB, Nomad, InfluxDB,
+  NATS, Neo4j Bolt, RabbitMQ Management, GitLab, Harbor, Portainer, SonarQube,
+  Keycloak and Rancher. The checks parse one bounded status or negotiation
+  response and do not attempt login, writes, object enumeration or graph queries.
+  Neo4j Bolt runs only on an unnamed port 7687. GitLab is named from the
+  `_gitlab_session` cookie on `GET /`, and Keycloak from the welcome or
+  administration-console title.
 - Pulse plugin phase 1: read-only unauthenticated status checks for ClickHouse
   `/ping`, MongoDB `isMaster`, etcd `/version` and Docker Engine `/version`.
   Queries, database/document reads and daemon operations are not performed.
@@ -90,6 +107,19 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- The console menu keeps one entry per question. Board, campaigns and KEV are
+  tabs on Vulnerabilities; declared internet exposure is a tab on Assets; a
+  run's graph, organisation profile and map are tabs on that run. Scans are one
+  page, with the external and internal launch buttons setting the perimeter.
+  Own MFA is in the account menu. The journal is shown only with `audit.read`.
+  Old addresses stay where they were.
+- The console finishes the APEX surface pass
+  ([#603](https://github.com/onixus/Shapoclyack/issues/603)). The theme
+  preference is `apex.theme` (`dark`, `light` or `system`), Inter and
+  JetBrains Mono ship with the build, and charts use the `viz-*` and `sev-*`
+  palettes. The remediation board keeps all six lifecycle stages on a 1440px
+  screen. Current dark and light captures, with documentation addresses in
+  place of the lab tenant, are in [docs/ui.md](docs/ui.md).
 - The legacy Nuclei web sweep binds input-forward DNS names to the discovered
   IP ([#619](https://github.com/onixus/Shapoclyack/pull/619)): one invocation
   per authority, always dialling the IP, the bare IP (default virtual host)
