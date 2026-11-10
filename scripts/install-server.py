@@ -72,11 +72,12 @@ def manifest(
     vol_names = ["postgres", "output", "state", "config", "inputs"]
 
     if bdu_enabled:
-        api_env["OCTO_BDU_FSTEC_FETCH_ENABLED"] = "true"
+        # The API process does not run fetch-enrichment.sh, and an empty named
+        # volume would hide the catalog shipped in the image. Paths stay on
+        # that catalog until an operator bind-mounts a directory that already
+        # holds the overlays.
         api_env["OCTO_BDU_FSTEC_DATABASE"] = "/app/scanner/data/bdu/bdu-overlay.json"
         api_env["OCTO_BDU_THREATS_DATABASE"] = "/app/scanner/data/bdu/threats-overlay.json"
-        volumes.append("enrichment:/app/scanner/data/bdu")
-        vol_names.append("enrichment")
 
     return {
         "services": {
@@ -131,7 +132,7 @@ def prepare(directory: Path, args: argparse.Namespace) -> None:
     print(f"Configuration: {directory / 'compose.json'}")
     print(f"Initial credentials: {directory / 'access.json'} (not printed to logs)")
     if bdu_enabled:
-        print("BDU FSTEC & Threat Bank (УБИ): enabled in API configuration.")
+        print("BDU paths use the catalog in the image. install does not download it.")
 
 
 def compose(directory: Path, *args: str, **kwargs) -> subprocess.CompletedProcess:

@@ -26,8 +26,10 @@ DATABASE_ENV = "OCTO_BDU_THREATS_DATABASE"
 SOURCE_URL = "https://bdu.fstec.ru/files/documents/thrlist.xlsx"
 SOURCE_URL_ENV = "BDU_THREATS_URL"
 
-_UBI_RE = re.compile(r"^УБИ\.(\d+)$", re.IGNORECASE)
+_UBI_RE = re.compile(r"^(?:УБИ|UBI)\.(\d+)$", re.IGNORECASE)
 MAX_XLSX_BYTES = 100 * 1024 * 1024
+MAX_MEMBER_BYTES = 100 * 1024 * 1024
+_ARCHIVED = "архивная"
 
 _lock = threading.Lock()
 _cache_fingerprint: tuple[str, int, int] | None = None
@@ -42,11 +44,24 @@ def _clean_str(val: str | None) -> str:
     return val.replace("_x000D_", "").strip()
 
 
+def _member(archive: zipfile.ZipFile, name: str) -> None:
+    try:
+        info = archive.getinfo(name)
+    except KeyError as exc:
+        raise ValueError("invalid thrlist.xlsx: missing worksheets or shared strings") from exc
+    if info.file_size <= 0 or info.file_size > MAX_MEMBER_BYTES:
+        raise ValueError(f"{name} expands to {info.file_size} bytes; refusing")
+
+
 def parse_xlsx(stream: BinaryIO) -> tuple[dict[str, dict[str, Any]], str | None]:
     """Parse thrlist.xlsx spreadsheet and extract UBI threat definitions."""
-    with zipfile.ZipFile(stream) as archive:
-        if "xl/sharedStrings.xml" not in archive.namelist() or "xl/worksheets/sheet1.xml" not in archive.namelist():
-            raise ValueError("invalid thrlist.xlsx: missing worksheets or shared strings")
+    try:
+        archive = zipfile.ZipFile(stream)
+    except zipfile.BadZipFile as exc:
+        raise ValueError(f"invalid thrlist.xlsx: {exc}") from exc
+    with archive:
+        _member(archive, "xl/sharedStrings.xml")
+        _member(archive, "xl/worksheets/sheet1.xml")
 
         # 1. Parse shared strings safely
         shared_strings: list[str] = []
@@ -119,7 +134,9 @@ def parse_xlsx(stream: BinaryIO) -> tuple[dict[str, dict[str, Any]], str | None]
         confidentiality = row.get("F", "") == "1"
         integrity = row.get("G", "") == "1"
         availability = row.get("H", "") == "1"
-        
+        status = row.get("K", "")
+        remarks = row.get("L", "")
+
         # Excel date offset (days since 1899-12-30)
         updated = row.get("J") or row.get("I")
         updated_iso: str | None = None
@@ -143,6 +160,8 @@ def parse_xlsx(stream: BinaryIO) -> tuple[dict[str, dict[str, Any]], str | None]
             "impact_confidentiality": confidentiality,
             "impact_integrity": integrity,
             "impact_availability": availability,
+            "status": status,
+            "remarks": remarks,
             "updated": updated_iso,
         }
 
@@ -160,9 +179,9 @@ def _sha256(path: Path) -> str:
 def build_overlay(source: Path, *, origin_url: str | None = None) -> dict[str, Any]:
     """Parse official thrlist.xlsx into structured JSON overlay."""
     source = Path(source)
-    source_sha256 = _sha256(source)
     if source.stat().st_size > MAX_XLSX_BYTES:
         raise ValueError(f"threats XLSX exceeds {MAX_XLSX_BYTES} bytes; refusing")
+    source_sha256 = _sha256(source)
 
     with source.open("rb") as stream:
         threats, updated = parse_xlsx(stream)
@@ -192,11 +211,24 @@ def reset_cache() -> None:
         _checked_at = None
 
 
+def _reload_seconds() -> float:
+    try:
+        return max(0.0, float(os.environ.get("OCTO_ENRICHMENT_RELOAD_SECONDS", "60")))
+    except (TypeError, ValueError):
+        return 60.0
+
+
+def _published(row: object) -> bool:
+    if not isinstance(row, dict):
+        return False
+    return str(row.get("status") or "").casefold() != _ARCHIVED
+
+
 def _load() -> dict[str, Any]:
     global _cache_fingerprint, _cache, _checked_at
     now = time.monotonic()
     checked = _checked_at
-    if checked is not None and now - checked < 60.0:
+    if checked is not None and now - checked < _reload_seconds():
         return _cache
     path = database_path()
     try:
@@ -223,17 +255,26 @@ def _load() -> dict[str, Any]:
         return _cache
 
 
-def lookup_threat(ubi_id: str) -> dict[str, Any] | None:
-    """Look up one threat by UBI.NNN or NNN."""
-    val = ubi_id.strip().upper()
+def _canonical_ubi(ubi_id: str) -> str:
+    val = ubi_id.strip()
+    match = _UBI_RE.match(val)
+    if match:
+        return f"УБИ.{int(match.group(1)):03d}"
     if val.isdigit():
-        val = f"УБИ.{int(val):03d}"
+        return f"УБИ.{int(val):03d}"
+    return val
+
+
+def lookup_threat(ubi_id: str) -> dict[str, Any] | None:
+    """Look up one published threat by UBI.NNN or NNN. Archived rows stay out."""
     data = _load()
     threats = data.get("threats") or {}
-    return threats.get(val)
+    row = threats.get(_canonical_ubi(ubi_id))
+    return row if _published(row) else None
 
 
 def list_threats() -> list[dict[str, Any]]:
     data = _load()
     threats = data.get("threats") or {}
-    return sorted(threats.values(), key=lambda t: t.get("ubi_id", ""))
+    published = [row for row in threats.values() if _published(row)]
+    return sorted(published, key=lambda t: t.get("ubi_id", ""))

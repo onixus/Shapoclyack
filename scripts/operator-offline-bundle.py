@@ -270,7 +270,7 @@ def feed_header(raw):
             raise ValueError("Invalid feed header")
         position += 1
         whitespace()
-        if key == "entries":
+        if key in {"entries", "threats"}:
             if position >= len(text) or text[position] not in "[{":
                 raise ValueError("Feed entries required")
             end = "}" if text[position] == "{" else "]"
@@ -286,14 +286,26 @@ def feed_header(raw):
     raise ValueError("Bounded feed entries unavailable")
 
 
+def _record_count(content):
+    """Record count for an overlay. Threat bank rows live under ``threats``."""
+    if not isinstance(content, dict):
+        return None
+    entries = content.get("entries")
+    if isinstance(entries, (list, dict)):
+        return len(entries)
+    threats = content.get("threats")
+    if isinstance(threats, dict):
+        return len(threats)
+    return None
+
+
 def inspect_feed(path, *, minimum, origin, now):
     with path.open("rb") as handle:
         header, nonempty = feed_header(handle.read(FEED_HEADER_BYTES))
     count, checked = None, False
     if path.stat().st_size <= FEED_PARSE_BYTES:
         content = json.loads(path.read_bytes(), object_pairs_hook=unique)
-        entries = content.get("entries") if isinstance(content, dict) else None
-        count = len(entries) if isinstance(entries, (list, dict)) else None
+        count = _record_count(content)
         checked = count is not None
         header = content
     source = header.get("source")
@@ -459,8 +471,7 @@ def verify_feeds(archive_path, inventory_path):
                     count, checked = None, False
                     if complete is not None:
                         content = json.loads(complete, object_pairs_hook=unique)
-                        entries = content.get("entries") if isinstance(content, dict) else None
-                        count = len(entries) if isinstance(entries, (dict, list)) else None
+                        count = _record_count(content)
                         checked = count is not None
                         actual = content
                     source = actual.get("source")

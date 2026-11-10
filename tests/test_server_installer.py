@@ -45,9 +45,11 @@ def test_prepare_with_bdu_flag(tmp_path):
     installer.prepare(tmp_path, args)
     config = json.loads((tmp_path / "compose.json").read_text())
     api = config["services"]["api"]
-    assert api["environment"]["OCTO_BDU_FSTEC_FETCH_ENABLED"] == "true"
-    assert "enrichment:/app/scanner/data/bdu" in api["volumes"]
-    assert "enrichment" in config["volumes"]
+    assert "OCTO_BDU_FSTEC_FETCH_ENABLED" not in api["environment"]
+    assert api["environment"]["OCTO_BDU_FSTEC_DATABASE"].endswith("bdu-overlay.json")
+    assert api["environment"]["OCTO_BDU_THREATS_DATABASE"].endswith("threats-overlay.json")
+    assert "enrichment:/app/scanner/data/bdu" not in api["volumes"]
+    assert "enrichment" not in config["volumes"]
 
 
 @pytest.mark.parametrize("value", ["http://scan.example.com", "https://user:pass@x", "https://x/a",

@@ -742,12 +742,12 @@ _FZ_187 = Framework(
     controls=(
         Control(
             control_id="КИИ.ИНВ",
-            title="Учёт и категорирование объектов и информационных ресурсов КИИ (ст. 7, п. 3.2 № 235)",
+            title="Учёт информационных ресурсов объектов КИИ (п. 3.2 № 235)",
             signals=(sig.STALE_ASSET, sig.UNCLASSIFIED_ASSET, sig.UNOWNED_ASSET),
             requires=(SOURCE_ASSETS,),
             rationale=(
-                "An unclassified, unowned or stale asset cannot be verified against the subject's "
-                "CII object registry or maintained category."
+                "An unclassified, unowned or stale asset is missing from the subject's "
+                "resource register. Significance categorisation is outside this control."
             ),
         ),
         Control(
@@ -771,8 +771,9 @@ _FZ_187 = Framework(
         ),
         Control(
             control_id="КИИ.ОПО",
-            title="Управление обновлениями и устранение недостатков конфигураций ПО (ОПО.4, УКФ.3 № 239)",
+            title="Управление обновлениями программного обеспечения (ОПО.4, УКФ.3 № 239)",
             signals=(sig.OVERDUE_REMEDIATION, sig.UNASSESSABLE_SOFTWARE),
+            requires=(SOURCE_FINDINGS, SOURCE_ENDPOINT_INVENTORY),
             rationale=(
                 "Overdue remediation or unassessable third-party software on endpoints introduces "
                 "uncontrolled attack vectors into the protected infrastructure."
@@ -799,7 +800,7 @@ _FZ_187 = Framework(
         Control(
             control_id="КИИ.СЕТЬ",
             title="Защита периметра и сегментирование сетей объектов КИИ (ЗИС.2, УПД.3 № 239)",
-            combinations=(_ADMIN_FROM_UNTRUSTED, _CLEARTEXT_FROM_UNTRUSTED),
+            combinations=(_ADMIN_FROM_UNTRUSTED,),
             rationale=(
                 "Unrestricted internet or untrusted exposure of administrative services and unencrypted "
                 "protocols violates network boundary and segmentation controls."
@@ -817,7 +818,7 @@ _FZ_187 = Framework(
         Control(
             control_id="КИИ.УДАЛ",
             title="Защищённый удалённый доступ к объектам КИИ (УПД.13 № 239)",
-            combinations=(_WEAK_AUTH_FROM_UNTRUSTED,),
+            combinations=(_CLEARTEXT_FROM_UNTRUSTED, _WEAK_AUTH_FROM_UNTRUSTED),
             rationale=(
                 "Internet-facing remote access without robust authentication creates direct "
                 "exposure to intrusion attempts."

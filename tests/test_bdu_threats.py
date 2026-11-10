@@ -4,6 +4,8 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from api.services import bdu_threats
 
 
@@ -90,3 +92,49 @@ def test_bdu_threats_lookup(tmp_path, monkeypatch):
     assert hit2["name"] == "Угроза отказа в обслуживании"
 
     assert bdu_threats.lookup_threat("УБИ.999") is None
+
+
+def test_lookup_normalizes_ubi_forms_and_hides_archived(tmp_path, monkeypatch):
+    payload = {
+        "version": 1,
+        "threats": {
+            "УБИ.001": {"ubi_id": "УБИ.001", "name": "live", "status": "Опубликована"},
+            "УБИ.002": {"ubi_id": "УБИ.002", "name": "old", "status": "Архивная"},
+        },
+    }
+    path = tmp_path / "threats-overlay.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv(bdu_threats.DATABASE_ENV, str(path))
+    bdu_threats.reset_cache()
+    assert bdu_threats.lookup_threat("УБИ.1")["name"] == "live"
+    assert bdu_threats.lookup_threat("уби.1")["name"] == "live"
+    assert bdu_threats.lookup_threat("UBI.001")["name"] == "live"
+    assert bdu_threats.lookup_threat("УБИ.002") is None
+    assert [row["ubi_id"] for row in bdu_threats.list_threats()] == ["УБИ.001"]
+
+
+def test_bad_zip_and_oversized_member_are_value_errors(tmp_path, monkeypatch):
+    bad = tmp_path / "bad.xlsx"
+    bad.write_bytes(b"not a zip")
+    with bad.open("rb") as stream:
+        with pytest.raises(ValueError, match="invalid thrlist"):
+            bdu_threats.parse_xlsx(stream)
+    xlsx = tmp_path / "thrlist.xlsx"
+    _create_mock_xlsx(xlsx)
+    monkeypatch.setattr(bdu_threats, "MAX_MEMBER_BYTES", 10)
+    with xlsx.open("rb") as stream:
+        with pytest.raises(ValueError, match="expands"):
+            bdu_threats.parse_xlsx(stream)
+
+
+def test_overlay_size_is_checked_before_hashing(tmp_path, monkeypatch):
+    path = tmp_path / "huge.xlsx"
+    path.write_bytes(b"x" * 32)
+    monkeypatch.setattr(bdu_threats, "MAX_XLSX_BYTES", 8)
+
+    def hashed(_path):
+        raise AssertionError("hashed before the size check")
+
+    monkeypatch.setattr(bdu_threats, "_sha256", hashed)
+    with pytest.raises(ValueError, match="exceeds"):
+        bdu_threats.build_overlay(path)

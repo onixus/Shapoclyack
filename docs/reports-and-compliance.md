@@ -19,8 +19,8 @@ Findings and estate facts are classified into a small closed vocabulary of
 **signals** (`api/services/compliance/signals.py`), and each framework's
 catalogue (`frameworks.py`) is written against that vocabulary rather than
 against CVEs. Adding a framework is a catalogue entry; fixing how a weak-TLS
-finding is recognised fixes it for every framework at once. Seven catalogues
-ship: PCI DSS 4.0, CIS Controls v8, ISO/IEC 27001:2022, and the four Russian
+finding is recognised fixes it for every framework at once. Eight catalogues
+ship: PCI DSS 4.0, CIS Controls v8, ISO/IEC 27001:2022, and the five Russian
 ones described [below](#the-russian-catalogues).
 
 | Signal | Raised by |
@@ -81,6 +81,7 @@ process is what covers it, and hiding the acceptance would be worse than either.
 | ФСТЭК № 117 (ГИС), 2025 + МД 12.04.2026 | КК, КУ, КУ-сроки, КО, ОД, ПК, ИАФ.3, МСЭ.3, МСЭ.4, ЗКС.1, ЗКУ.2 | Protection classes, threat modelling, documentation, ГосСОПКА, physical protection, organisational measures |
 | ФСТЭК № 21 (ИСПДн), 2013 | ИАФ.4, УПД.3, УПД.13, ОПС.3, АНЗ.1–АНЗ.5, ЗИС.3, ЗИС.17 | Protection level (УЗ-1…УЗ-4), base-set selection, the operator's 152-ФЗ duties (consent, localisation, Roskomnadzor), organisational measures |
 | ФСТЭК № 239 (КИИ), 2017 | АУД.1, АУД.2, ОПО.4, УКФ.3, ИАФ.4, ИАФ.7, УПД.13, ЗИС.2, ЗИС.8, ЗИС.19 | Significance category, base set by category, ГосСОПКА, incident response, organisational measures |
+| 187-ФЗ (КИИ), 2017 | КИИ.ИНВ, КИИ.УЯЗ, КИИ.СРОКИ, КИИ.ОПО, КИИ.КОНФ, КИИ.ИАФ, КИИ.СЕТЬ, КИИ.КАНАЛЫ, КИИ.УДАЛ | Significance categorisation (127-ПП), threat model, ГосСОПКА, organisational measures. `КИИ.*` are this catalogue's labels, not measure codes from orders 235 or 239 |
 | ГОСТ Р 57580.1-2017 | ИУ.1, СМЭ.3, ЗВС.1, ЦЗИ.2, ЦЗИ.4–ЦЗИ.9 | Protection level (1–3), security contours, organisational (О/Н) measures, conformity assessment under ГОСТ Р 57580.2 |
 
 ### The Russian catalogues
@@ -93,10 +94,11 @@ order 17, with the measure codes of the methodological document of
 Federal Law 187-ФЗ (technical security measures for CII, linking orders 235 and 239) and
 ГОСТ Р 57580.1-2017 (financial organisations, applied through the Bank of
 Russia's regulations). Measure codes and titles are the regulators' own, in
-Russian — an auditor looks for «АНЗ.1», not for a translation of it — with two
+Russian — an auditor looks for «АНЗ.1», not for a translation of it — with three
 exceptions said out loud: the long ГОСТ measure texts are shortened to a title,
-and «КУ-сроки» is this platform's split of order 117's «КУ» into the open
-vulnerabilities and the missed windows, not a code in the document. Every
+«КУ-сроки» is this platform's split of order 117's «КУ» into the open
+vulnerabilities and the missed windows, not a code in the document, and
+`КИИ.*` on the 187-ФЗ catalogue are the same kind of platform label. Every
 scope note says what the catalogue leaves out, which is most of each document:
 protection classes and levels, threat modelling, ГосСОПКА, documentation and
 every organisational measure.
