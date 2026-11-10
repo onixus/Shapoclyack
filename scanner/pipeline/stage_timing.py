@@ -20,23 +20,45 @@ T = TypeVar("T")
 logger = logging.getLogger(__name__)
 
 
+def _nuclei_attempted(result: dict, coverage: dict) -> bool:
+    """True when nuclei itself started, so a later ``skipped_reason`` is not a skip.
+
+    Disabled, missing-binary and no-target results keep ``coverage.ran`` false
+    and also set ``skipped_reason``. A failed or partial pass does the same,
+    and that one must stay incomplete.
+    """
+    if result.get("skipped_reason") == "nuclei_run_failed":
+        return True
+    returncode = coverage.get("returncode")
+    if isinstance(returncode, int) and returncode != 0:
+        return True
+    findings = result.get("findings")
+    if isinstance(findings, list) and findings:
+        return True
+    checked = result.get("checked_count")
+    return isinstance(checked, int) and checked > 0
+
+
 def stage_outcome(result: Any) -> tuple[str, str] | None:
     """Status the timing record should show for a stage that returned normally.
 
-    A disabled or empty control stage says so with ``skipped_reason``. Nuclei
-    keeps partial matches and still returns when coverage did not complete;
-    that return is not a successful stage. ``None`` leaves the record ``ok``.
+    Nuclei initialises ``coverage.ran`` to false and leaves it there both when
+    the stage never started and when a pass did not finish. ``skipped_reason``
+    wins only for the former, so a disabled nuclei job is not counted as
+    unfinished work. ``None`` leaves the record ``ok``.
     """
     if not isinstance(result, dict):
         return None
     coverage = result.get("coverage")
+    reason = result.get("skipped_reason")
     if isinstance(coverage, dict) and coverage.get("ran") is False:
-        detail = str(result.get("skipped_reason") or "coverage_not_counted")
+        if reason and not _nuclei_attempted(result, coverage):
+            return "skipped", str(reason)
+        detail = str(reason or "coverage_not_counted")
         returncode = coverage.get("returncode")
         if isinstance(returncode, int) and returncode != 0:
             detail = f"{detail}; returncode={returncode}"
         return "incomplete", detail
-    reason = result.get("skipped_reason")
     if reason:
         return "skipped", str(reason)
     return None

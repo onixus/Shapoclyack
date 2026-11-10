@@ -129,6 +129,12 @@ REPORT_SCHEMAS = ("pulse.scan.v2", "pulse.scan.v3")
 REPORT_SCHEMA_MAX_LEN = 64
 #: Distinct unknown values kept per run (a hostile report could vary it per chunk).
 REPORT_SCHEMAS_MAX = 8
+#: Pulse plugin rows put ``SCRIPT-<NAME>`` in ``cve_id``. That is not a CVE.
+_CVE_ID = re.compile(r"CVE-\d{4}-\d{4,}", re.I)
+
+
+def _rows_with_cve_id(rows: Iterable[Any]) -> int:
+    return sum(1 for row in rows if _CVE_ID.fullmatch(str(getattr(row, "cve_id", "") or "")))
 
 
 def _report_schema(value: Any) -> str:
@@ -1521,7 +1527,7 @@ def _run_pulse_probe(
     # Mark report preference: explicit flag, else OCTO_SERVICE_BACKEND env.
     sync_report_primary_marker(pulse_dir, report_primary)
 
-    cve_ids = sum(1 for row in all_cves if getattr(row, "cve_id", None))
+    cve_ids = _rows_with_cve_id(all_cves)
     logging.info(
         "pulse_probe done: %s services, %s os, %s findings (%s with a CVE id), %s tls%s",
         len(deduped),

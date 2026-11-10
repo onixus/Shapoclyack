@@ -60,6 +60,33 @@ def test_prepare_scan_stays_available_only_when_named_targets_are_the_bound_scan
     assert "prepare_scan" in planner.available_tools(inside)
 
 
+def _scan(request, **scan):
+    body = {"ranges": "192.0.2.0/24", "ports": "22,80", **scan}
+    return planner.PlanRequest(request=request, context={"scan": body})
+
+
+@pytest.mark.parametrize("wording,scan,offered", [
+    ("ports 22, 443", {}, False),
+    ("port 80-443", {"ports": "80"}, False),
+    ("tcp/443", {"ports": "443"}, True),
+    ("udp 53", {"ports": "53"}, False),
+    ("udp 53", {"ports": "22", "ports_udp": "53"}, True),
+    ("scan at 10:30", {}, True),
+    ("проверь порт 22", {"ports": "22"}, True),
+    ("проверь порт 22", {"ports": "80"}, False),
+    ("scan 10.0.0.0/8", {"ranges": "10.0.0.0/30", "ports": "80"}, False),
+    ("scan 10.0.0.1", {"ranges": "10.0.0.0/30", "ports": "80"}, True),
+    ("scan 2001:db8::80", {"ports": "80"}, False),
+    ("read report.pdf", {}, True),
+    ("scan localhost", {}, False),
+    ("scan localhost", {"domains": "localhost", "ranges": ""}, True),
+    ("port 80", {"ports": "1-65535"}, True),
+])
+def test_prepare_scan_rejects_a_wider_or_unparsed_target(wording, scan, offered):
+    tools = planner.available_tools(_scan(wording, **scan))
+    assert ("prepare_scan" in tools) is offered
+
+
 @pytest.mark.parametrize("body", [
     {"request": "x", "tenant_id": "foreign"},
     {"request": "x", "context": {"role": "admin"}},

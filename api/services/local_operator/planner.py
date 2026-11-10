@@ -58,79 +58,183 @@ class Choice(BaseModel):
     tool: ToolName
 
 
-_NAMED_HOST = re.compile(
-    r"\b(?:\d{1,3}(?:\.\d{1,3}){3}|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63})\b",
+# A filename such as report.pdf matches the hostname shape. These suffixes are
+# not DNS labels the operator names as a scan target.
+_FILE_SUFFIX = frozenset({
+    "pdf", "html", "htm", "json", "txt", "md", "png", "jpg", "jpeg", "gif",
+    "doc", "docx", "xls", "xlsx", "csv", "log", "xml", "yaml", "yml", "zip",
+    "gz", "tar", "py", "js", "ts", "css", "svg",
+})
+_IPV4 = re.compile(
+    r"\b(?P<addr>\d{1,3}(?:\.\d{1,3}){3})"
+    r"(?P<prefix>/\d{1,2})?"
+    r"(?:-(?P<end>\d{1,3}(?:\.\d{1,3}){3}))?"
+    r"(?::(?P<port>\d{1,5}))?\b"
+)
+_IPV6 = re.compile(
+    r"(?i)(?<![0-9A-Za-z:])(?:\[(?P<br>[0-9A-Fa-f:.]+)\]:(?P<brport>\d{1,5})"
+    r"|(?P<addr>(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4})(?P<prefix>/\d{1,3})?)"
+)
+_DOMAIN = re.compile(
+    r"\b(?P<name>(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63})"
+    r"(?::(?P<port>\d{1,5}))?\b",
     re.I,
 )
-_NAMED_PORT = re.compile(r"(?i)(?:\bports?\b|\btcp\b|\budp\b|:)\s*(\d{1,5})\b")
+_LOCALHOST = re.compile(r"(?i)\blocalhost\b(?!\.)")
+_PORT_CLAUSE = re.compile(
+    r"(?i)(?P<proto>\btcp\b|\budp\b|\bports?\b|\bпорт(?:а|у|ом|е|ы|ов|ам|ами|ах)?\b)"
+    r"(?:[ \t]*/[ \t]*|[ \t]*:[ \t]*|[ \t]+)"
+    r"(?P<body>\d{1,5}(?:[ \t]*-[ \t]*\d{1,5})?"
+    r"(?:(?:[ \t]*,[ \t]*|[ \t]+и[ \t]+|[ \t]+and[ \t]+|[ \t]+)"
+    r"\d{1,5}(?:[ \t]*-[ \t]*\d{1,5})?)*)"
+)
 
 
-def _port_set(text: str) -> set[int]:
-    ports: set[int] = set()
-    for part in re.split(r"[\s,]+", text):
+def _intervals(text: str) -> list[tuple[int, int]] | None:
+    """Port list as inclusive ranges. ``None`` when a token is not a port."""
+    if not text or not text.strip():
+        return []
+    found: list[tuple[int, int]] = []
+    for part in re.split(r"[\s,]+", text.strip()):
         if not part:
             continue
-        if "-" in part:
-            left, right = part.split("-", 1)
-            if left.isdigit() and right.isdigit():
-                lo, hi = int(left), int(right)
-                if 0 < lo <= hi <= 65535 and hi - lo <= 10000:
-                    ports.update(range(lo, hi + 1))
+        bounds = part.split("-", 1) if "-" in part else (part, part)
+        if not bounds[0].isdigit() or not bounds[1].isdigit():
+            return None
+        lo, hi = int(bounds[0]), int(bounds[1])
+        if not 0 < lo <= hi <= 65535:
+            return None
+        found.append((lo, hi))
+    return found
+
+
+def _interval_covered(allowed: list[tuple[int, int]], lo: int, hi: int) -> bool:
+    cursor = lo
+    for start, end in sorted(allowed):
+        if end < cursor:
             continue
-        if part.isdigit():
-            number = int(part)
-            if 0 < number <= 65535:
-                ports.add(number)
-    return ports
+        if start > cursor:
+            return False
+        cursor = end + 1
+        if cursor > hi:
+            return True
+    return cursor > hi
 
 
-def _range_contains(ranges: str, token: str) -> bool:
+def _item_contains(item: str, start: ipaddress._BaseAddress, end: ipaddress._BaseAddress) -> bool:
+    if "-" in item and "/" not in item:
+        left, right = (piece.strip() for piece in item.split("-", 1))
+        try:
+            low, high = ipaddress.ip_address(left), ipaddress.ip_address(right)
+        except ValueError:
+            return False
+        return (low.version == start.version and int(low) <= int(start)
+                and int(end) <= int(high))
     try:
-        address = ipaddress.ip_address(token)
+        network = ipaddress.ip_network(item, strict=False)
     except ValueError:
         return False
-    for line in ranges.splitlines():
-        item = line.strip()
-        if not item:
-            continue
-        if "-" in item and "/" not in item:
-            left, right = (piece.strip() for piece in item.split("-", 1))
-            try:
-                start, end = ipaddress.ip_address(left), ipaddress.ip_address(right)
-            except ValueError:
-                continue
-            if start.version == address.version and int(start) <= int(address) <= int(end):
-                return True
-            continue
-        try:
-            network = ipaddress.ip_network(item, strict=False)
-        except ValueError:
-            continue
-        if address in network:
-            return True
-    return False
+    return (network.version == start.version and start in network and end in network)
+
+
+def _span_covered(ranges: str, start: ipaddress._BaseAddress, end: ipaddress._BaseAddress) -> bool:
+    if start.version != end.version or int(start) > int(end):
+        return False
+    return any(_item_contains(line.strip(), start, end) for line in ranges.splitlines() if line.strip())
+
+
+def _ports_covered(tcp: list[tuple[int, int]], udp: list[tuple[int, int]],
+                   lo: int, hi: int, transport: str) -> bool:
+    if transport == "tcp":
+        return _interval_covered(tcp, lo, hi)
+    if transport == "udp":
+        return _interval_covered(udp, lo, hi)
+    return _interval_covered([*tcp, *udp], lo, hi)
+
+
+def _parse_port_body(body: str) -> list[tuple[int, int]] | None:
+    pieces = re.split(r"(?i)\s*(?:,|\band\b|\bи\b)\s*|\s+", body.strip())
+    return _intervals(" ".join(piece for piece in pieces if piece))
 
 
 def request_matches_bound_scan(text: str, scan: actions.ScanArguments) -> bool:
     """Whether every host and port the request names is the bound scan.
 
-    The model never sees the target list. This check is what lets
-    ``prepare_scan`` stay available when the user names that scan, and what
-    removes it when the user names a different one.
+    The model never sees the target list. A named address is compared with
+    its mask or range, not as a single host, and a token that only looks
+    like a target drops the tool instead of being ignored.
     """
+    tcp = _intervals(scan.ports)
+    udp = _intervals(scan.ports_udp)
+    if tcp is None or udp is None:
+        return False
     domains = {line.strip().lower().rstrip(".") for line in scan.domains.splitlines() if line.strip()}
-    for match in _NAMED_HOST.findall(text):
-        token = match.lower().rstrip(".")
+    named_tcp: list[tuple[int, int]] = []
+    named_udp: list[tuple[int, int]] = []
+    named_either: list[tuple[int, int]] = []
+
+    def remember(port: str | None, transport: str) -> bool:
+        if port is None:
+            return True
+        if not port.isdigit() or not 0 < int(port) <= 65535:
+            return False
+        bucket = {"tcp": named_tcp, "udp": named_udp}[transport]
+        bucket.append((int(port), int(port)))
+        return True
+
+    for match in _IPV4.finditer(text):
+        prefix = match.group("prefix") or ""
         try:
-            ipaddress.ip_address(token)
+            if match.group("end"):
+                start = ipaddress.ip_address(match.group("addr"))
+                end = ipaddress.ip_address(match.group("end"))
+                covered = _span_covered(scan.ranges, start, end)
+            else:
+                network = ipaddress.ip_network(f"{match.group('addr')}{prefix or '/32'}", strict=False)
+                covered = _span_covered(scan.ranges, network.network_address, network.broadcast_address)
         except ValueError:
-            if token not in domains:
-                return False
-        else:
-            if not _range_contains(scan.ranges, token):
-                return False
-    allowed = _port_set(scan.ports) | _port_set(scan.ports_udp)
-    return all(int(port) in allowed for port in _NAMED_PORT.findall(text))
+            return False
+        if not covered or not remember(match.group("port"), "tcp"):
+            return False
+    for match in _IPV6.finditer(text):
+        literal = match.group("br") or match.group("addr")
+        prefix = match.group("prefix") or ""
+        try:
+            if prefix:
+                network = ipaddress.ip_network(f"{literal}{prefix}", strict=False)
+                covered = _span_covered(scan.ranges, network.network_address, network.broadcast_address)
+            else:
+                address = ipaddress.ip_address(literal)
+                covered = _span_covered(scan.ranges, address, address)
+        except ValueError:
+            continue
+        if not covered or not remember(match.group("brport"), "tcp"):
+            return False
+    for match in _DOMAIN.finditer(text):
+        name = match.group("name").lower().rstrip(".")
+        if name.rsplit(".", 1)[-1] in _FILE_SUFFIX:
+            continue
+        if name not in domains or not remember(match.group("port"), "tcp"):
+            return False
+    if _LOCALHOST.search(text) and "localhost" not in domains:
+        return False
+    for match in _PORT_CLAUSE.finditer(text):
+        parsed = _parse_port_body(match.group("body"))
+        if parsed is None:
+            return False
+        proto = match.group("proto").lower()
+        bucket = named_tcp if proto == "tcp" else named_udp if proto == "udp" else named_either
+        bucket.extend(parsed)
+    for lo, hi in named_tcp:
+        if not _ports_covered(tcp, udp, lo, hi, "tcp"):
+            return False
+    for lo, hi in named_udp:
+        if not _ports_covered(tcp, udp, lo, hi, "udp"):
+            return False
+    for lo, hi in named_either:
+        if not _ports_covered(tcp, udp, lo, hi, "either"):
+            return False
+    return True
 
 
 def available_tools(request: PlanRequest) -> dict[str, dict]:

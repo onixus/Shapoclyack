@@ -50,6 +50,14 @@ def test_incomplete_coverage_is_not_recorded_as_ok() -> None:
     assert timer.as_dict()["top_stages"][0]["name"] == "nuclei"
     assert stage_outcome({"skipped_reason": "mail_posture.disabled"}) == ("skipped", "mail_posture.disabled")
     assert stage_outcome({"coverage": {"ran": True, "returncode": 0}}) is None
+    disabled = {"coverage": {"ran": False, "returncode": None}, "skipped_reason": "nuclei.disabled"}
+    assert stage_outcome(disabled) == ("skipped", "nuclei.disabled")
+    quiet = {"coverage": {"ran": False, "returncode": None}, "skipped_reason": "no_web_ports", "findings": []}
+    assert stage_outcome(quiet) == ("skipped", "no_web_ports")
+    partial = {**quiet, "findings": [{"template": "x"}]}
+    assert stage_outcome(partial)[0] == "incomplete"
+    failed = {"coverage": {"ran": False, "returncode": None}, "skipped_reason": "nuclei_run_failed"}
+    assert stage_outcome(failed)[0] == "incomplete"
 
 
 def test_skip_and_write_json(tmp_path: Path) -> None:
