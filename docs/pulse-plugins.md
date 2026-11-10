@@ -32,7 +32,8 @@ PULSE_PLUGINS_COMMIT=<40-character commit> \
 `PULSE_PLUGINS_REPO` defaults to `https://github.com/onixus/Shapoclyack.git`
 and `PULSE_PLUGINS_PATH` to `scanner/pipeline/pulse_data/plugins`. A different
 repository defaults to its root. `https`, `ssh`, `file` and `git@host:path`
-are accepted. A URL with a password, and plain `http`, are refused.
+are accepted. A URL with a password, a query, a fragment, or plain `http`,
+is refused.
 
 Your own plugins are another source. List the repository you trust first.
 A later file with the same name is not installed; the receipt records the
@@ -64,8 +65,10 @@ list: it keeps the directory and the receipt installed on that sensor.
 When `plugin_sources` is non-empty, a run whose directory receipt is a
 different set does not load the plugins. An empty `commit` accepts the commit
 the fetch resolved; a set `commit` refuses a moved tag. The fetch stages the
-tree and swaps it in only after every source has been checked out. A mount
-point is updated in place. `OCTO_HTTPS_PROXY`, `OCTO_HTTP_PROXY`,
+tree beside the destination when that parent is writable, and inside the
+destination when it is a mount or the parent cannot be written. It swaps the
+tree in only after every source has been checked out. A failed swap puts the
+previous files back. `OCTO_HTTPS_PROXY`, `OCTO_HTTP_PROXY`,
 `OCTO_NO_PROXY` and `OCTO_CA_BUNDLE` apply, as they do for nuclei templates
 ([air gap](air-gap.md#6-pulse-plugins)).
 

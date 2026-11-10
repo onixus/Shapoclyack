@@ -516,17 +516,19 @@ or in `service_probe.pulse.plugin_sources`. The System page edits that list
 for the API host; a sensor job is not sent it
 ([console](ui.md#pulse-plugin-repositories)). List the mirror you trust first:
 a later file cannot replace an earlier name. `file://` is a mounted mirror.
-`https` and `ssh` work. Plain `http`, and a URL that carries a password, are
-refused. The resolved commits are written to `.shapoclyack-plugins.json` in
-the destination. When `plugin_sources` is set on the sensor, a directory
+`https` and `ssh` work. Plain `http`, and a URL that carries a password, a
+query or a fragment, are refused. The resolved commits are written to
+`.shapoclyack-plugins.json` in the destination. When `plugin_sources` is set
+on the sensor, a directory
 whose receipt differs is not loaded.
 
 In Kubernetes, mount a volume at `/var/lib/shapoclyack/pulse-plugins` and run
 the fetch before scans, or set `OCTO_PULSE_PLUGINS_DIR` to that mount. The
 scanner does not clone during a scan. Until the directory holds scripts, the
 Pulse stage runs and the plugin receipt says why it loaded none. The API
-reads `shapo_http_trace.rhai` from that same directory when it checks the
-trace finding, so the API needs the content too.
+reads `shapo_http_trace.rhai` from `service_probe.pulse.plugins_dir` when
+that path is set, and otherwise from the same directory a scan on that host
+would use, so the API needs that content too.
 `OCTO_HTTPS_PROXY`, `OCTO_HTTP_PROXY`, `OCTO_NO_PROXY` and `OCTO_CA_BUNDLE`
 apply to the git fetch.
 

@@ -30,6 +30,15 @@ All notable changes to Shapoclyack are documented in this file.
   check runs only when the service is `k8s-api`. A plain-HTTP header check with
   no finished header block is an error. The LDAP RootDSE search uses a present
   filter for `objectClass`.
+- A Pulse plugin fetch stages inside the destination when that directory is a
+  mount or its parent cannot be written, and puts the previous tree back when
+  a cross-device copy fails. Trace guidance reads
+  `service_probe.pulse.plugins_dir` and does not fall through to another copy.
+  A symlink in a checkout cannot install scripts from outside the clone. A
+  repository URL with a query or a fragment is refused, and a mismatch does
+  not repeat the raw URL. An oversized script is skipped before it is read.
+  The file cap stops at the limit instead of installing one more file and
+  failing the fetch.
 
 ### Added
 

@@ -92,7 +92,12 @@ class PulsePluginSource(BaseModel):
 
 
 def validate_repo(url: str) -> str:
-    """Accept ``https``, ``ssh``, ``file`` and ``git@host:path``. Refuse credentials."""
+    """Accept ``https``, ``ssh``, ``file`` and ``git@host:path``.
+
+    A password, a query and a fragment are refused. A query is where a token
+    usually sits, and a mismatch would otherwise copy that URL into the scan
+    artifact.
+    """
     url = url.strip()
     if not url or any(char in url for char in " \t\r\n\x00"):
         raise ValueError("plugin repo must be a single URL")
@@ -107,6 +112,8 @@ def validate_repo(url: str) -> str:
         raise ValueError("plugin repo must use https, ssh, file, or git@host:path")
     if parts.password or (parts.username and parts.username != "git"):
         raise ValueError("plugin repo must not carry credentials")
+    if parts.query or parts.fragment:
+        raise ValueError("plugin repo must not carry a query or a fragment")
     if parts.scheme == "file":
         if parts.netloc not in {"", "localhost"} or not parts.path.startswith("/"):
             raise ValueError("a file plugin repo must be an absolute file:// path")
@@ -163,28 +170,23 @@ def default_plugin_directory() -> Path:
     return CONTENT_DIR
 
 
-def read_trace_plugin() -> bytes:
-    """Bytes of ``shapo_http_trace`` from the same place a scan would load it."""
-    for path in _trace_candidates():
-        if path.is_symlink() or not path.is_file():
-            continue
-        try:
-            return path.read_bytes()
-        except OSError:
-            continue
-    raise FileNotFoundError(TRACE_PLUGIN_NAME)
+def read_trace_plugin(directory: Path | None = None) -> bytes:
+    """Bytes of ``shapo_http_trace`` from the one directory a scan would use.
 
-
-def _trace_candidates() -> list[Path]:
-    found: list[Path] = []
-    configured = os.environ.get("OCTO_PULSE_PLUGINS_DIR", "").strip()
-    if configured:
-        found.append(Path(configured) / TRACE_PLUGIN_NAME)
-    from scanner.pipeline import pulse_plugins
-
-    found.append(pulse_plugins.PLUGINS_DIR / TRACE_PLUGIN_NAME)
-    found.append(CONTENT_DIR / TRACE_PLUGIN_NAME)
-    return found
+    ``directory`` is that path and the only file that is opened. ``None``
+    follows ``default_plugin_directory()`` (the environment, then a checkout
+    that contains plugins, then the content directory). A missing file is
+    not replaced by a copy from somewhere else: the hash would no longer be
+    the one the scan stored.
+    """
+    root = default_plugin_directory() if directory is None else directory
+    path = root / TRACE_PLUGIN_NAME
+    if path.is_symlink() or not path.is_file():
+        raise FileNotFoundError(TRACE_PLUGIN_NAME)
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise FileNotFoundError(TRACE_PLUGIN_NAME) from exc
 
 
 def _has_rhai(root: Path) -> bool:
@@ -290,7 +292,10 @@ def materialize(checkouts: Sequence[Mapping[str, str]], dest: Path) -> dict[str,
     """Copy accepted ``*.rhai`` files into an empty ``dest`` and write the receipt.
 
     ``checkouts`` are already on disk. Each mapping has ``name``, ``root``,
-    ``repo``, ``ref``, ``commit`` and ``path``. Earlier sources win a name.
+    ``repo``, ``ref``, ``commit`` and ``path``. ``work``, when present, is the
+    clone; a root that leaves it through a symlink is refused. Earlier sources
+    win a name. Once ``MAX_FILES`` entries have been recorded, one further
+    file is noted and the rest are left out. The fetch still succeeds.
     """
     if not checkouts:
         raise PulseContentError("no plugin checkouts to install")
@@ -304,6 +309,7 @@ def materialize(checkouts: Sequence[Mapping[str, str]], dest: Path) -> dict[str,
     collisions: list[dict[str, str]] = []
     skipped: list[dict[str, str]] = []
     source_rows: list[dict[str, Any]] = []
+    capped = False
     for item in checkouts:
         source = PulsePluginSource.model_validate(
             {
@@ -316,26 +322,43 @@ def materialize(checkouts: Sequence[Mapping[str, str]], dest: Path) -> dict[str,
         )
         if not _COMMIT.fullmatch(source.commit):
             raise PulseContentError(f"{source.name}: checkout has no resolved commit")
-        root = Path(item["root"]).resolve()
-        if not root.is_dir():
-            raise PulseContentError(f"{source.name}: {root} is not a directory")
+        raw_root = Path(item["root"])
+        work = Path(item["work"]) if item.get("work") else None
+        if work is not None:
+            _contained_checkout(raw_root, work, source.name)
+            root = raw_root
+            boundary = work.resolve()
+        else:
+            root = raw_root.resolve()
+            if not root.is_dir():
+                raise PulseContentError(f"{source.name}: {root} is not a directory")
+            boundary = root
         taken = 0
         seen = 0
-        for path in sorted(root.glob("*.rhai")):
-            seen += 1
-            if seen > MAX_FILES or len(installed) + len(skipped) + len(collisions) > MAX_FILES:
-                raise PulseContentError(f"more than {MAX_FILES} plugin files")
-            decision = _consider(path, root, source.name, installed)
-            if decision[0] == "installed":
-                installed[path.stem] = {
-                    "name": path.stem,
-                    "sha256": decision[1],
-                    "source": source.name,
-                    "bytes": decision[2],
-                }
-                taken += 1
-            else:
-                (collisions if decision[0] == "collision" else skipped).append(decision[1])
+        if not capped:
+            for path in sorted(root.glob("*.rhai")):
+                seen += 1
+                if seen > MAX_FILES or len(installed) + len(skipped) + len(collisions) >= MAX_FILES:
+                    skipped.append(
+                        {
+                            "name": path.stem,
+                            "source": source.name,
+                            "reason": f"more than {MAX_FILES} plugin files",
+                        }
+                    )
+                    capped = True
+                    break
+                decision = _consider(path, boundary, source.name, installed)
+                if decision[0] == "installed":
+                    installed[path.stem] = {
+                        "name": path.stem,
+                        "sha256": decision[1],
+                        "source": source.name,
+                        "bytes": decision[2],
+                    }
+                    taken += 1
+                else:
+                    (collisions if decision[0] == "collision" else skipped).append(decision[1])
         source_rows.append(
             {
                 "name": source.name,
@@ -381,6 +404,12 @@ def _consider(
         return "skipped", {"name": name, "source": source, "reason": "unreadable"}
     if not resolved.is_relative_to(root):
         return "skipped", {"name": name, "source": source, "reason": "outside the source directory"}
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return "skipped", {"name": name, "source": source, "reason": "unreadable"}
+    if size > MAX_PLUGIN_BYTES:
+        return "skipped", {"name": name, "source": source, "reason": f"larger than {MAX_PLUGIN_BYTES} bytes"}
     try:
         blob = path.read_bytes()
     except OSError:
@@ -450,7 +479,7 @@ def content_mismatch(directory: Path | None, sources: Sequence[Any]) -> str | No
             return "installed plugin receipt is unreadable"
         name, repo, ref, commit, path = _expected_fields(expected)
         if actual.get("name") != name or actual.get("repo") != redact_repo(repo) or actual.get("ref") != ref:
-            return f"installed plugin source {name!r} is not {repo} @ {ref}"
+            return f"installed plugin source {name!r} is not {redact_repo(repo)} @ {ref}"
         if actual.get("path") != path:
             return f"installed plugin source {name!r} path is not {path or '/'}"
         resolved = str(actual.get("commit") or "")
@@ -471,19 +500,31 @@ def _expected_fields(source: Any) -> tuple[str, str, str, str, str]:
 
 
 def fetch_plugins(dest: Path, sources: Sequence[PulsePluginSource]) -> dict[str, Any]:
-    """Clone ``sources``, install into ``dest``, and leave ``dest`` untouched on failure."""
+    """Clone ``sources``, install into ``dest``, and leave ``dest`` untouched on failure.
+
+    The stage directory is a sibling of ``dest`` when the parent can hold it,
+    so the swap is one rename. A mount, and a parent this process cannot write
+    (an image leaves ``/var/lib/shapoclyack`` root-owned and writable only on
+    the leaf), is staged inside ``dest`` under a ``.pulse-plugins.`` name the
+    swap skips. ``rename`` across that mount would fail with ``EXDEV`` and the
+    directory would stay empty.
+    """
     sources = _validate_sources([source.model_dump() for source in sources])
-    parent = dest.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=".pulse-plugins.", dir=parent))
+    created = not dest.exists()
+    dest.mkdir(parents=True, exist_ok=True)
+    stage_in_dest = _is_mountpoint(dest) or not os.access(dest.parent, os.W_OK)
+    stage_parent = dest if stage_in_dest else dest.parent
+    staging = Path(tempfile.mkdtemp(prefix=".pulse-plugins.", dir=stage_parent))
     try:
         checkouts: list[dict[str, str]] = []
         for source in sources:
-            root, commit = _checkout(staging / "src" / source.name, source)
+            checkout = staging / "src" / source.name
+            root, commit = _checkout(checkout, source)
             checkouts.append(
                 {
                     "name": source.name,
                     "root": str(root),
+                    "work": str(checkout),
                     "repo": source.repo,
                     "ref": source.ref,
                     "commit": commit,
@@ -496,6 +537,11 @@ def fetch_plugins(dest: Path, sources: Sequence[PulsePluginSource]) -> dict[str,
         _swap_in(out, dest)
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
+        if created:
+            try:
+                dest.rmdir()
+            except OSError:
+                pass
         raise
     shutil.rmtree(staging, ignore_errors=True)
     return receipt
@@ -524,9 +570,38 @@ def _checkout(work: Path, source: PulsePluginSource) -> tuple[Path, str]:
             f"{source.name}: {source.ref} on {redact_repo(source.repo)} is {commit}, not {source.commit}"
         )
     root = work if not source.path else work / source.path
-    if not root.is_dir() or root.is_symlink():
-        raise PulseContentError(f"{source.name}: {source.path or '/'} is not a directory in {source.ref}")
+    _contained_checkout(root, work, source.name)
     return root, commit
+
+
+def _contained_checkout(root: Path, work: Path, source: str) -> None:
+    """Raise when ``root`` is not a real directory inside the clone ``work``.
+
+    Git checks out symlinks. A later component of ``path`` can be a real
+    directory reached through an earlier symlink, so ``is_dir()`` is true and
+    ``is_symlink()`` on the final component is false. Resolving that path
+    leaves the clone, and a less-trusted repository would then install every
+    flat ``*.rhai`` from the outside directory.
+    """
+    current = root
+    for _ in range(64):
+        if current.is_symlink():
+            raise PulseContentError(f"{source}: {root} leaves the checkout through a symlink")
+        if current == work:
+            break
+        parent = current.parent
+        if parent == current:
+            raise PulseContentError(f"{source}: {root} is outside the checkout")
+        current = parent
+    else:
+        raise PulseContentError(f"{source}: {root} is outside the checkout")
+    try:
+        resolved = root.resolve()
+        boundary = work.resolve()
+    except OSError as exc:
+        raise PulseContentError(f"{source}: {root} is not a directory in the checkout") from exc
+    if not resolved.is_dir() or not resolved.is_relative_to(boundary):
+        raise PulseContentError(f"{source}: {root} is outside the checkout")
 
 
 def _git(args: list[str], *, timeout: int = 30, check: bool = False) -> subprocess.CompletedProcess[str]:
@@ -557,8 +632,13 @@ def _git_detail(done: subprocess.CompletedProcess[str]) -> str:
 
 
 def _swap_in(staging: Path, dest: Path) -> None:
-    """Put ``staging`` in place of ``dest``. A failure puts the previous tree back."""
-    if _is_mountpoint(dest):
+    """Put ``staging`` in place of ``dest``. A failure puts the previous tree back.
+
+    A stage directory that lives inside ``dest`` cannot be swapped by renaming
+    ``dest``: the new tree would move with it. The same in-place swap is used
+    for a mount, where renaming the directory itself is not possible.
+    """
+    if _is_mountpoint(dest) or _is_inside(staging, dest):
         _swap_contents(staging, dest)
         return
     old: Path | None = None
@@ -568,17 +648,30 @@ def _swap_in(staging: Path, dest: Path) -> None:
     try:
         staging.rename(dest)
     except OSError as exc:
-        if exc.errno == errno.EXDEV:
+        if exc.errno != errno.EXDEV:
+            if old is not None and not dest.exists():
+                old.rename(dest)
+            raise
+        try:
             shutil.copytree(staging, dest, dirs_exist_ok=False)
-            shutil.rmtree(staging, ignore_errors=True)
-            if old is not None:
-                shutil.rmtree(old, ignore_errors=True)
-            return
-        if old is not None and not dest.exists():
-            old.rename(dest)
-        raise
+        except Exception:
+            shutil.rmtree(dest, ignore_errors=True)
+            if old is not None and not dest.exists():
+                old.rename(dest)
+            raise
+        shutil.rmtree(staging, ignore_errors=True)
+        if old is not None:
+            shutil.rmtree(old, ignore_errors=True)
+        return
     if old is not None:
         shutil.rmtree(old, ignore_errors=True)
+
+
+def _is_inside(child: Path, parent: Path) -> bool:
+    try:
+        return child.resolve().is_relative_to(parent.resolve())
+    except (OSError, ValueError):
+        return False
 
 
 def _is_mountpoint(path: Path) -> bool:
