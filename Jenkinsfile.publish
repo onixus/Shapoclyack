@@ -157,7 +157,7 @@ pipeline {
           $class: 'GitSCM',
           branches: [[name: "refs/tags/${params.TAG}"]],
           userRemoteConfigs: [[
-            url: '/Users/onixus/Git/Shapoclyack',
+            url: 'https://github.com/onixus/Shapoclyack.git',
             refspec: '+refs/tags/*:refs/tags/*',
           ]],
         ])
