@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 from urllib.parse import urlsplit
@@ -132,9 +133,78 @@ def write_private(path: Path, data: str) -> None:
         stream.write(data)
 
 
+def _name_window(preview: list[str], name: str) -> None:
+    """Keep the five lexicographically first names, independent of readdir order."""
+    if len(preview) < 5:
+        preview.append(name)
+    elif name < preview[-1]:
+        preview[-1] = name
+    else:
+        return
+    preview.sort()
+
+
+def _occupancy(directory: Path) -> tuple[int, list[str]] | None:
+    """Entries already in directory, or None when it is missing or empty."""
+    if not directory.exists():
+        return None
+    preview: list[str] = []
+    total = 0
+    try:
+        for item in directory.iterdir():
+            total += 1
+            _name_window(preview, item.name)
+    except FileNotFoundError:
+        if total == 0:
+            return None
+    if total == 0 or not directory.exists():
+        return None
+    return total, preview
+
+
+def _occupied_message(directory: Path, total: int, preview: list[str]) -> str:
+    shown = ", ".join(repr(name) for name in preview)
+    if total > len(preview):
+        shown += ", ..."
+    quoted_dir = shlex.quote(str(directory))
+    script = shlex.quote(str(Path(__file__).resolve()))
+    has_compose = (directory / "compose.json").is_file()
+    has_access = (directory / "access.json").is_file()
+    lines = [
+        (
+            f"Installation directory {quoted_dir} already exists and is not empty "
+            f"({total} entries; compose.json: {'yes' if has_compose else 'no'}; "
+            f"access.json: {'yes' if has_access else 'no'}; names: {shown})."
+        ),
+        "To start the existing installation, run:",
+        f"  python3 {script} start --directory {quoted_dir}",
+    ]
+    if has_compose:
+        compose = shlex.quote(str(directory / "compose.json"))
+        lines.extend([
+            (
+                "Deleting this directory does not stop containers or remove named "
+                "volumes. It destroys compose.json (the project name and keys) and "
+                "backups stored here, after which start and stop can no longer see "
+                "this installation."
+            ),
+            "A full wipe, only while compose.json still exists, destroys the database:",
+            f"  docker compose --project-directory {quoted_dir} -f {compose} down -v",
+            "Then remove the directory:",
+            f"  rm -rf {quoted_dir}",
+        ])
+    else:
+        lines.append(
+            "Choose an empty directory. This path has no compose.json, so it is not "
+            "an installation and must not be deleted in order to reinstall."
+        )
+    return "\n".join(lines)
+
+
 def prepare(directory: Path, args: argparse.Namespace) -> None:
-    if directory.exists() and any(directory.iterdir()):
-        raise ValueError("Installation directory must be empty; use start for an existing installation")
+    occupied = _occupancy(directory)
+    if occupied is not None:
+        raise ValueError(_occupied_message(directory, *occupied))
     bdu_host = resolve_bdu(getattr(args, "bdu", None))
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(directory, 0o700)
