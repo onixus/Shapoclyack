@@ -1394,6 +1394,54 @@
           "product": "PostgreSQL database"
         }
       ]
+    },
+    {
+      "name": "socks5-greeting",
+      "ports": [1080],
+      "rarity": 1,
+      "payload": "",
+      "payload_hex": "050100",
+      "matches": [
+        {
+          "pattern": "^\\x05\\x00",
+          "service": "socks",
+          "product": "SOCKS5 proxy (no auth)"
+        },
+        {
+          "pattern": "^\\x05",
+          "service": "socks",
+          "product": "SOCKS5 proxy",
+          "soft": true
+        }
+      ]
+    },
+    {
+      "name": "s7-comm",
+      "ports": [102],
+      "rarity": 1,
+      "payload": "",
+      "payload_hex": "0300001611e00000000100c00109c1020100c2020101",
+      "matches": [
+        {
+          "pattern": "^\\x03\\x00\\x00.\\x11\\xd0",
+          "service": "s7",
+          "product": "Siemens S7 PLC"
+        }
+      ]
+    },
+    {
+      "name": "enip-list-identity",
+      "ports": [44818],
+      "rarity": 1,
+      "payload": "",
+      "payload_hex": "630000000000000000000000000000000000000000000000",
+      "matches": [
+        {
+          "pattern": "^\\x63\\x00",
+          "service": "enip",
+          "product": "EtherNet/IP device"
+        }
+      ]
     }
   ]
 }

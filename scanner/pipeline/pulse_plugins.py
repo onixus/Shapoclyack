@@ -236,6 +236,15 @@ def verify_plugins(
 #: given, contains the second string, or the port is in ``ports`` and the
 #: service is unknown.
 APPLICABILITY: dict[str, dict[str, Any]] = {
+    "shapo_elasticsearch_root": {"services": {"elasticsearch"}, "banner": (), "ports": set()},
+    "shapo_opensearch_root": {"services": {"opensearch"}, "banner": (), "ports": set()},
+    "shapo_minio_health": {"services": {"minio"}, "banner": (), "ports": set()},
+    "shapo_neo4j_http": {"services": {"neo4j"}, "banner": (), "ports": set()},
+    "shapo_http_git": {"services": {"http"}, "banner": (("http/", ""),), "ports": set()},
+    "shapo_http_server_status": {"services": {"http"}, "banner": (("http/", ""),), "ports": set()},
+    "shapo_http_webdav": {"services": {"http"}, "banner": (("http/", ""),), "ports": set()},
+    "shapo_socks_noauth": {"services": {"socks"}, "banner": (), "ports": {1080}},
+    "shapo_enip_identity": {"services": {"enip"}, "banner": (), "ports": {44818}},
     "shapo_couchdb_root": {"services": {"couchdb"}, "banner": (), "ports": {5984}},
     "shapo_nomad_status": {"services": {"nomad"}, "banner": (), "ports": {4646}},
     "shapo_influx_health": {"services": {"influxdb"}, "banner": (), "ports": {8086}},

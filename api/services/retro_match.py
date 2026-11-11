@@ -544,6 +544,8 @@ UNMAPPED_PROBE_PRODUCTS: dict[str, str] = {
         # Remote desktop, telephony, telnet
         "Microsoft Remote Desktop (RDP)", "xrdp (Linux RDP)", "Remote Desktop Protocol", "Generic SIP",
         "Telnet daemon", "MikroTik RouterOS telnetd", "Cisco IOS telnetd", "Telnet service",
+        # Phase 8 probes name a protocol, not a versioned product.
+        "SOCKS5 proxy (no auth)", "SOCKS5 proxy", "Siemens S7 PLC", "EtherNet/IP device",
     ),
 }
 

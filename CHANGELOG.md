@@ -42,6 +42,20 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- Pulse plugin phase 8: read-only checks for an unauthenticated Elasticsearch
+  root document, an OpenSearch root document, MinIO liveness, the Neo4j HTTP
+  discovery document, a plain-HTTP Git `HEAD` ref line, and an Apache
+  `server-status` title. Indices, buckets, Cypher, Git objects and the Apache
+  scoreboard are not requested. Neo4j Bolt is unchanged and still runs only on
+  an unnamed port 7687.
+- Pulse plugin phase 8 completion: three additional read-only checks for
+  plain-HTTP WebDAV `PROPFIND` depth 0 (`207 Multi-Status`), SOCKS5
+  no-authentication method selection, and EtherNet/IP List Identity with a
+  24-byte encapsulation header. Credentials, tunnels and CIP writes are not
+  attempted. New service probes `socks5-greeting`, `s7-comm` and
+  `enip-list-identity` name SOCKS, S7 and EtherNet/IP. NTLM on IMAP, POP3
+  and SMTP, and the S7 SZL read, are not shipped: each `probe_send` opens a
+  new TCP socket, so those checks stay blocked.
 - Rhai Pulse plugins are git content, not image layers. Images no longer copy
   `scanner/pipeline/pulse_data/plugins`. `scripts/fetch-pulse-plugins.sh`
   installs a pinned repository, and further repositories of your own, into
