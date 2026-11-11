@@ -52,6 +52,7 @@ FEED_SPECS = {
     "advisories_suse": ("advisories/suse-advisories.json", 1, False),
     "advisories_alas": ("advisories/alas-advisories.json", 1, False),
     "nvd_cpe": ("nvd-cpe/nvd-cpe-ranges.json", 5000, False), "bdu_fstec": ("bdu/bdu-overlay.json", 1000, False),
+    "bdu_threats": ("bdu/threats-overlay.json", 100, False),
     "geoip": ("geoip/geoip.mmdb", 0, False), "asn": ("asn/asn.mmdb", 0, False)}
 FEED_SUPPORT = {"geoip/geoip.mmdb", "geoip/geoip-overlay.json", "asn/asn.mmdb", "cvss4/cvss4.sha256",
     "wordlists/subdomains-small.txt", "wordlists/bucket-names-small.txt"}
@@ -269,7 +270,7 @@ def feed_header(raw):
             raise ValueError("Invalid feed header")
         position += 1
         whitespace()
-        if key == "entries":
+        if key in {"entries", "threats"}:
             if position >= len(text) or text[position] not in "[{":
                 raise ValueError("Feed entries required")
             end = "}" if text[position] == "{" else "]"
@@ -285,14 +286,26 @@ def feed_header(raw):
     raise ValueError("Bounded feed entries unavailable")
 
 
+def _record_count(content):
+    """Record count for an overlay. Threat bank rows live under ``threats``."""
+    if not isinstance(content, dict):
+        return None
+    entries = content.get("entries")
+    if isinstance(entries, (list, dict)):
+        return len(entries)
+    threats = content.get("threats")
+    if isinstance(threats, dict):
+        return len(threats)
+    return None
+
+
 def inspect_feed(path, *, minimum, origin, now):
     with path.open("rb") as handle:
         header, nonempty = feed_header(handle.read(FEED_HEADER_BYTES))
     count, checked = None, False
     if path.stat().st_size <= FEED_PARSE_BYTES:
         content = json.loads(path.read_bytes(), object_pairs_hook=unique)
-        entries = content.get("entries") if isinstance(content, dict) else None
-        count = len(entries) if isinstance(entries, (list, dict)) else None
+        count = _record_count(content)
         checked = count is not None
         header = content
     source = header.get("source")
@@ -458,8 +471,7 @@ def verify_feeds(archive_path, inventory_path):
                     count, checked = None, False
                     if complete is not None:
                         content = json.loads(complete, object_pairs_hook=unique)
-                        entries = content.get("entries") if isinstance(content, dict) else None
-                        count = len(entries) if isinstance(entries, (dict, list)) else None
+                        count = _record_count(content)
                         checked = count is not None
                         actual = content
                     source = actual.get("source")

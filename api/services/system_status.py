@@ -287,6 +287,8 @@ def enrichment_status(config: dict[str, Any]) -> list[dict[str, Any]]:
         or "scanner/data/nvd-cpe/nvd-cpe-ranges.json",
         "bdu_fstec": os.environ.get("OCTO_BDU_FSTEC_DATABASE")
         or "scanner/data/bdu/bdu-overlay.json",
+        "bdu_threats": os.environ.get("OCTO_BDU_THREATS_DATABASE")
+        or "scanner/data/bdu/threats-overlay.json",
     }
     manifest = enrichment_manifest()
     return [_stat_db(name, path, manifest) for name, path in paths.items()]

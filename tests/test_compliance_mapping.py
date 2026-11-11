@@ -396,6 +396,7 @@ def test_api_lists_frameworks_and_returns_posture(tmp_path, monkeypatch):
         "fstec-117",
         "fstec-21",
         "fstec-239",
+        "fz-187",
         "gost-r-57580.1-2017",
     }
     # The scope note is the anti-overclaim guard; it must reach the client.
@@ -425,7 +426,21 @@ def test_api_control_detail_and_auth(tmp_path, monkeypatch):
 
 # ------------------------------------------------------------ Russia
 
-_RU_FRAMEWORKS = ("fstec-117", "fstec-21", "fstec-239", "gost-r-57580.1-2017")
+_RU_FRAMEWORKS = ("fstec-117", "fstec-21", "fstec-239", "fz-187", "gost-r-57580.1-2017")
+
+
+def test_fz187_keeps_the_tenant_clock_off_the_endpoint_inventory():
+    """КИИ.ОПО is findings-only. Endpoint software is КИИ.УКФ, not an AND."""
+    framework = catalog.get_framework("fz-187")
+    by_id = {control.control_id: control for control in framework.controls}
+    update = by_id["КИИ.ОПО"]
+    assert update.signals == (sig.OVERDUE_REMEDIATION,)
+    assert update.requires == (catalog.SOURCE_FINDINGS,)
+    endpoint = by_id["КИИ.УКФ"]
+    assert endpoint.signals == (sig.UNASSESSABLE_SOFTWARE,)
+    assert endpoint.requires == (catalog.SOURCE_ENDPOINT_INVENTORY,)
+    assert sig.INSECURE_PROTOCOL in by_id["КИИ.КАНАЛЫ"].signals
+    assert "unencrypted" not in by_id["КИИ.СЕТЬ"].rationale
 
 
 def test_the_fstec_window_is_the_regulators_clock():
