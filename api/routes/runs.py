@@ -18,9 +18,11 @@ from api.schemas import (
     PortAggregateItem,
     PromoteDomainResponse,
     RunDetail,
+    RunPublicationInfo,
     RunSummary,
     VulnerabilityItem,
 )
+from api.services import run_publisher
 from api.services import runs as runs_service
 from api.services import scan_scopes
 from api.settings import Settings
@@ -145,6 +147,33 @@ def get_diff(
     if detail.diff is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Diff not available for this run")
     return detail.diff
+
+
+@router.get("/{run_id}/publications", response_model=list[RunPublicationInfo])
+def get_run_publications(
+    run_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> list[dict[str, Any]]:
+    """Publications still owed by the job that wrote this run.
+
+    Same listing as ``GET /api/jobs/{job_id}/publications``. The job id lives
+    in the run's tenant marker; a run id is not a job id.
+    """
+    run_dir = runs_service.get_run_dir(
+        settings, run_id, tenant_id=_run_tenant_filter(principal)
+    )
+    if run_dir is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    job_id = runs_service.read_run_job_id(run_dir)
+    if not job_id:
+        return []
+    return run_publisher.publications_for_job(
+        settings,
+        job_id,
+        tenant_id=None if principal.is_platform_admin else principal.tenant_id,
+        show_paths=principal.is_platform_admin,
+    )
 
 
 @router.get("/{run_id}/artifacts/{artifact_path:path}", response_class=PlainTextResponse)
