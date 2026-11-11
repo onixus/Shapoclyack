@@ -445,9 +445,25 @@ def test_a_telnet_banner_and_an_rfb_greeting_stay_confirmed():
     telnet_row = next(row for row in records if row.port == 23)
     assert telnet_row.requires_confirmation is False
     assert telnet_row.severity == "high" and telnet_row.confidence == 90
-    assert telnet_row.evidence == "Telnet banner on port 23: telnetd | "
+    assert telnet_row.evidence == "Telnet banner on port 23: telnetd"
     rfb = next(row for row in records if row.ip == "10.0.0.2")
     assert rfb.requires_confirmation is False
+
+
+@pytest.mark.parametrize("banner", ["\n", "\r\n"])
+def test_a_blank_telnet_greeting_stays_unconfirmed(banner):
+    telnet = _plugin_row("shapo_cleartext_services", port=23, severity="HIGH")
+    telnet.update(title="Telnet service exposed", service="telnet", evidence="Telnet service on port 23")
+    payload = {
+        "open": [{"ip": "10.0.0.1", "port": 23, "protocol": "tcp", "service": "telnet", "banner": banner}],
+        "findings": [telnet],
+    }
+    records = pp.parse_pulse_json(
+        payload, plugin_shas=_offered("shapo_cleartext_services")
+    )[2]
+    assert records[0].severity == "low" and records[0].confidence == 45
+    assert records[0].requires_confirmation is True
+    assert records[0].evidence == "No telnet banner on port 23"
 
 
 def test_recorded_plugin_rows_are_not_rewritten_without_a_plugin_set():

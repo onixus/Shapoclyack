@@ -554,7 +554,8 @@ def _port_label_finding(
     RDP or a VNC label without an ``RFB`` greeting stays unconfirmed.
     """
     if plugin == "shapo_cleartext_services" and title == "Telnet service exposed":
-        text = banner.replace("\r", "").replace("\n", " | ")
+        pieces = [piece.strip() for piece in banner.replace("\r", "\n").split("\n")]
+        text = " | ".join(piece for piece in pieces if piece)
         if text:
             return (
                 "high",

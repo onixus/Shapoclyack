@@ -58,6 +58,53 @@ def test_incomplete_coverage_is_not_recorded_as_ok() -> None:
     assert stage_outcome(partial)[0] == "incomplete"
     failed = {"coverage": {"ran": False, "returncode": None}, "skipped_reason": "nuclei_run_failed"}
     assert stage_outcome(failed)[0] == "incomplete"
+    finished_network = {
+        "coverage": {
+            "ran": False,
+            "returncode": None,
+            "network": {"ran": True, "skipped_reason": None, "passes": [{"ran": True, "returncode": 0}]},
+        },
+        "skipped_reason": "no_web_ports",
+        "findings": [{"template": "smb", "pass": "network"}],
+    }
+    assert stage_outcome(finished_network) is None
+    failed_network = {
+        "coverage": {
+            "ran": True,
+            "returncode": 0,
+            "network": {
+                "ran": False,
+                "skipped_reason": "not_all_passes_ran",
+                "passes": [{"ran": False, "returncode": 1, "skipped_reason": "nuclei_run_failed"}],
+            },
+        },
+        "findings": [],
+    }
+    assert stage_outcome(failed_network) == ("incomplete", "not_all_passes_ran; returncode=1")
+    quiet_network = {
+        "coverage": {
+            "ran": False,
+            "returncode": None,
+            "network": {
+                "ran": False,
+                "skipped_reason": "not_all_passes_ran",
+                "passes": [{"ran": False, "skipped_reason": "nuclei_run_failed"}],
+            },
+        },
+        "skipped_reason": "no_web_ports",
+        "findings": [],
+    }
+    assert stage_outcome(quiet_network)[0] == "incomplete"
+    disabled_network = {
+        "coverage": {
+            "ran": False,
+            "returncode": None,
+            "network": {"ran": False, "skipped_reason": "network_templates_disabled", "passes": []},
+        },
+        "skipped_reason": "no_web_ports",
+        "findings": [],
+    }
+    assert stage_outcome(disabled_network) == ("skipped", "no_web_ports")
 
 
 def test_skip_and_write_json(tmp_path: Path) -> None:
