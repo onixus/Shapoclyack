@@ -16,6 +16,7 @@ from api.db.engine import get_session
 from api.services.local_operator import actions, gateway, store
 from api.services.local_operator.config import OperatorConfig
 from api.services.local_operator.providers import OperatorProviderError
+from scanner.pipeline.public_suffix import has_icann_tld
 
 ToolName = Literal["summarize_run", "analyze_run", "compare_runs", "find_remediation",
                    "prepare_scan", "cancel_scan", "verify_finding", "abstain"]
@@ -58,8 +59,9 @@ class Choice(BaseModel):
     tool: ToolName
 
 
-# A filename such as report.pdf matches the hostname shape. These suffixes are
-# not DNS labels the operator names as a scan target.
+# A filename such as report.pdf matches the hostname shape. A suffix that is
+# also a public TLD (md, py, zip) is still a host; only a document suffix or a
+# path is ignored.
 _FILE_SUFFIX = frozenset({
     "pdf", "html", "htm", "json", "txt", "md", "png", "jpg", "jpeg", "gif",
     "doc", "docx", "xls", "xlsx", "csv", "log", "xml", "yaml", "yml", "zip",
@@ -68,19 +70,21 @@ _FILE_SUFFIX = frozenset({
 _IPV4 = re.compile(
     r"\b(?P<addr>\d{1,3}(?:\.\d{1,3}){3})"
     r"(?P<prefix>/\d{1,2})?"
-    r"(?:-(?P<end>\d{1,3}(?:\.\d{1,3}){3}))?"
-    r"(?::(?P<port>\d{1,5}))?\b"
+    r"(?:-(?P<end>\d{1,3}(?:\.\d{1,3}){3}|\d{1,3}))?"
+    r"(?::(?P<port>\d{1,5}))?"
 )
 _IPV6 = re.compile(
-    r"(?i)(?<![0-9A-Za-z:])(?:\[(?P<br>[0-9A-Fa-f:.]+)\]:(?P<brport>\d{1,5})"
-    r"|(?P<addr>(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4})(?P<prefix>/\d{1,3})?)"
+    r"(?i)(?<![0-9A-Za-z:])(?:"
+    r"\[(?P<br>[0-9A-Fa-f:.]+)(?:%(?P<brzone>[^\s\]/]+))?\]:(?P<brport>\d{1,5})"
+    r"|(?P<addr>(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4})"
+    r"(?:%(?P<zone>[^\s/:]+))?(?P<prefix>/\d{1,3})?(?::(?P<port>\d{1,5}))?)"
 )
 _DOMAIN = re.compile(
     r"\b(?P<name>(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63})"
     r"(?::(?P<port>\d{1,5}))?\b",
     re.I,
 )
-_LOCALHOST = re.compile(r"(?i)\blocalhost\b(?!\.)")
+_LOCALHOST = re.compile(r"(?i)\blocalhost\b(?!\.)(?::(?P<port>\d{1,5}))?")
 _PORT_CLAUSE = re.compile(
     r"(?i)(?P<proto>\btcp\b|\budp\b|\bports?\b|\bпорт(?:а|у|ом|е|ы|ов|ам|ами|ах)?\b)"
     r"(?:[ \t]*/[ \t]*|[ \t]*:[ \t]*|[ \t]+)"
@@ -157,6 +161,29 @@ def _parse_port_body(body: str) -> list[tuple[int, int]] | None:
     return _intervals(" ".join(piece for piece in pieces if piece))
 
 
+def _is_filename(name: str, text: str, start: int) -> bool:
+    """A document name. A public TLD in the same spelling stays a host."""
+    if start > 0 and text[start - 1] in "/\\":
+        return True
+    suffix = name.rsplit(".", 1)[-1]
+    return suffix in _FILE_SUFFIX and not has_icann_tld(suffix)
+
+
+def _ipv4_bounds(addr: str, prefix: str, end: str | None):
+    """Inclusive span of one IPv4 token. A short ``-N`` is the last octet."""
+    start = ipaddress.ip_address(addr)
+    if end:
+        if prefix:
+            raise ValueError("prefix and range")
+        if "." not in end:
+            pieces = addr.split(".")
+            pieces[-1] = end
+            end = ".".join(pieces)
+        return start, ipaddress.ip_address(end)
+    network = ipaddress.ip_network(f"{addr}{prefix or '/32'}", strict=False)
+    return network.network_address, network.broadcast_address
+
+
 def request_matches_bound_scan(text: str, scan: actions.ScanArguments) -> bool:
     """Whether every host and port the request names is the bound scan.
 
@@ -183,41 +210,44 @@ def request_matches_bound_scan(text: str, scan: actions.ScanArguments) -> bool:
         return True
 
     for match in _IPV4.finditer(text):
-        prefix = match.group("prefix") or ""
+        if match.end() < len(text) and text[match.end()] in "0123456789.-":
+            return False
         try:
-            if match.group("end"):
-                start = ipaddress.ip_address(match.group("addr"))
-                end = ipaddress.ip_address(match.group("end"))
-                covered = _span_covered(scan.ranges, start, end)
-            else:
-                network = ipaddress.ip_network(f"{match.group('addr')}{prefix or '/32'}", strict=False)
-                covered = _span_covered(scan.ranges, network.network_address, network.broadcast_address)
+            start, end = _ipv4_bounds(match.group("addr"), match.group("prefix") or "", match.group("end"))
+            covered = _span_covered(scan.ranges, start, end)
         except ValueError:
             return False
         if not covered or not remember(match.group("port"), "tcp"):
             return False
     for match in _IPV6.finditer(text):
+        if match.end() < len(text) and text[match.end()] == "%":
+            return False
         literal = match.group("br") or match.group("addr")
         prefix = match.group("prefix") or ""
+        port = match.group("brport") or match.group("port")
         try:
-            if prefix:
-                network = ipaddress.ip_network(f"{literal}{prefix}", strict=False)
-                covered = _span_covered(scan.ranges, network.network_address, network.broadcast_address)
-            else:
-                address = ipaddress.ip_address(literal)
-                covered = _span_covered(scan.ranges, address, address)
+            address = ipaddress.ip_address(literal)
         except ValueError:
             continue
-        if not covered or not remember(match.group("brport"), "tcp"):
+        try:
+            if prefix:
+                network = ipaddress.ip_network(f"{address}{prefix}", strict=False)
+                covered = _span_covered(scan.ranges, network.network_address, network.broadcast_address)
+            else:
+                covered = _span_covered(scan.ranges, address, address)
+        except ValueError:
+            return False
+        if not covered or not remember(port, "tcp"):
             return False
     for match in _DOMAIN.finditer(text):
         name = match.group("name").lower().rstrip(".")
-        if name.rsplit(".", 1)[-1] in _FILE_SUFFIX:
+        if _is_filename(name, text, match.start()):
             continue
         if name not in domains or not remember(match.group("port"), "tcp"):
             return False
-    if _LOCALHOST.search(text) and "localhost" not in domains:
-        return False
+    for match in _LOCALHOST.finditer(text):
+        if "localhost" not in domains or not remember(match.group("port"), "tcp"):
+            return False
     for match in _PORT_CLAUSE.finditer(text):
         parsed = _parse_port_body(match.group("body"))
         if parsed is None:
