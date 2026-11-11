@@ -663,6 +663,10 @@ def create_app() -> FastAPI:
 
     _publish_v1_schema(app)
 
+    @app.api_route("/api/{unmatched:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
+    def api_not_found(unmatched: str):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+
     web_dist = settings.web_dist
     if web_dist.is_dir() and (web_dist / "index.html").exists():
         next_static = web_dist / "_next"
