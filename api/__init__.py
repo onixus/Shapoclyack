@@ -3,4 +3,4 @@
 # Keep in sync with the GitHub release / GHCR tags **and** with
 # agent/__init__.py, which cannot import this module (see #363 and
 # tests/test_agent_version.py).
-__version__ = "0.48-1021"
+__version__ = "0.49-1111-rc1"
