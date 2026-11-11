@@ -725,6 +725,119 @@ _FSTEC_239 = Framework(
 )
 
 
+_FZ_187 = Framework(
+    framework_id="fz-187",
+    name="187-ФЗ (Безопасность КИИ РФ)",
+    version="2017",
+    scope_note=(
+        "Федеральный закон от 26.07.2017 № 187-ФЗ «О безопасности критической информационной "
+        "инфраструктуры Российской Федерации» и нормативные акты ФСТЭК России (приказы № 235 "
+        "и № 239). Включает технические контроли безопасности объектов КИИ: инвентаризацию и "
+        "учёт активов, анализ уязвимостей, соблюдение сроков устранения уязвимостей по методике "
+        "ФСТЭК, контроль конфигураций и обновлений, защиту периметра, безопасную аутентификацию "
+        "и шифрование каналов связи. Категорирование объектов КИИ (127-ПП), модель угроз "
+        "(ФСТЭК 2021), регламент взаимодействия с НКЦКИ/ГосСОПКА и организационные меры "
+        "подлежат оценке субъектом КИИ вне автоматического инструментального сканирования."
+    ),
+    controls=(
+        Control(
+            control_id="КИИ.ИНВ",
+            title="Учёт информационных ресурсов объектов КИИ (п. 3.2 № 235)",
+            signals=(sig.STALE_ASSET, sig.UNCLASSIFIED_ASSET, sig.UNOWNED_ASSET),
+            requires=(SOURCE_ASSETS,),
+            rationale=(
+                "An unclassified, unowned or stale asset is missing from the subject's "
+                "resource register. Significance categorisation is outside this control."
+            ),
+        ),
+        Control(
+            control_id="КИИ.УЯЗ",
+            title="Анализ и выявление уязвимостей в программно-аппаратных комплексах КИИ (п. 24 № 235, АУД.2 № 239)",
+            signals=(sig.UNPATCHED_CVE, sig.KNOWN_EXPLOITED),
+            severity_floor="high",
+            rationale=(
+                "Open critical or high vulnerabilities or actively exploited flaws on observed CII "
+                "components breach continuous vulnerability assessment requirements."
+            ),
+        ),
+        Control(
+            control_id="КИИ.СРОКИ",
+            title="Соблюдение регламентных сроков устранения уязвимостей (Руководство ФСТЭК России, ОПО.4 № 239)",
+            signals=(sig.OVERDUE_FSTEC_WINDOW,),
+            rationale=(
+                "Findings open past regulator windows (24h critical, 7d high, 28d medium, 120d low) "
+                "fail the regulator's operational response mandate for critical infrastructure."
+            ),
+        ),
+        Control(
+            control_id="КИИ.ОПО",
+            title="Управление обновлениями программного обеспечения (ОПО.4 № 239)",
+            signals=(sig.OVERDUE_REMEDIATION,),
+            rationale=(
+                "A finding past the operator's own remediation deadline. The regulator's "
+                "window is КИИ.СРОКИ; this control reads only the tenant clock and only "
+                "needs findings."
+            ),
+        ),
+        Control(
+            control_id="КИИ.УКФ",
+            title="Контроль состава программного обеспечения на конечных точках (УКФ.3 № 239)",
+            signals=(sig.UNASSESSABLE_SOFTWARE,),
+            requires=(SOURCE_ENDPOINT_INVENTORY,),
+            rationale=(
+                "Installed software the advisory matcher could not assess on an endpoint. "
+                "The control is assessed when an endpoint inventory is present."
+            ),
+        ),
+        Control(
+            control_id="КИИ.КОНФ",
+            title="Контроль параметров настройки и безопасной конфигурации ПО и СЗИ (п. 235, УКФ № 239)",
+            signals=(sig.MISCONFIGURATION, sig.INFORMATION_DISCLOSURE),
+            rationale=(
+                "Misconfiguration and unnecessary software/banner disclosures provide actionable "
+                "intelligence to threat actors targeting CII."
+            ),
+        ),
+        Control(
+            control_id="КИИ.ИАФ",
+            title="Идентификация, аутентификация и защита учётных данных (ИАФ.4, ИАФ.7 № 239)",
+            signals=(sig.WEAK_CREDENTIALS, sig.INSECURE_PROTOCOL),
+            rationale=(
+                "Default or weak credentials, or transmission of credentials over unencrypted protocols, "
+                "violate authentication enforcement on CII components."
+            ),
+        ),
+        Control(
+            control_id="КИИ.СЕТЬ",
+            title="Защита периметра и сегментирование сетей объектов КИИ (ЗИС.2, УПД.3 № 239)",
+            combinations=(_ADMIN_FROM_UNTRUSTED,),
+            rationale=(
+                "Administrative or database services reachable from an untrusted network "
+                "violate network boundary and segmentation controls."
+            ),
+        ),
+        Control(
+            control_id="КИИ.КАНАЛЫ",
+            title="Криптографическая защита данных при передаче по каналам связи (ЗИС.19 № 239)",
+            signals=(sig.WEAK_CRYPTOGRAPHY, sig.INSECURE_PROTOCOL),
+            rationale=(
+                "Deprecated TLS, weak ciphers, invalid certificates and cleartext services "
+                "fail secure communication requirements for CII."
+            ),
+        ),
+        Control(
+            control_id="КИИ.УДАЛ",
+            title="Защищённый удалённый доступ к объектам КИИ (УПД.13 № 239)",
+            combinations=(_CLEARTEXT_FROM_UNTRUSTED, _WEAK_AUTH_FROM_UNTRUSTED),
+            rationale=(
+                "Internet-facing remote access without robust authentication creates direct "
+                "exposure to intrusion attempts."
+            ),
+        ),
+    ),
+)
+
+
 _GOST_57580_1 = Framework(
     framework_id="gost-r-57580.1-2017",
     name="ГОСТ Р 57580.1",
@@ -835,6 +948,7 @@ FRAMEWORKS: dict[str, Framework] = {
         _FSTEC_117,
         _FSTEC_21,
         _FSTEC_239,
+        _FZ_187,
         _GOST_57580_1,
     )
 }

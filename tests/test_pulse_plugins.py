@@ -381,6 +381,105 @@ def test_plugin_finding_is_stamped_with_the_files_sha_and_cleaned():
     assert records[0].evidence == "e"
 
 
+def _offered(*names: str) -> dict[str, str]:
+    return {name: "ab" * 32 for name in names}
+
+
+def test_a_port_label_without_a_banner_stays_unconfirmed():
+    telnet = _plugin_row("shapo_cleartext_services", port=23, severity="HIGH")
+    telnet.update(
+        title="Telnet service exposed",
+        service="telnet",
+        summary="Telnet sends the login and every command in cleartext and has no TLS mode.",
+        evidence="Telnet service on port 23",
+    )
+    rdp = _plugin_row("shapo_remote_admin_exposure", port=3389, severity="LOW")
+    rdp.update(
+        title="Remote administration service reachable (RDP)",
+        service="rdp",
+        evidence="Port 3389 open (service: rdp)",
+    )
+    ftp = _plugin_row("shapo_cleartext_services", port=21, severity="MEDIUM")
+    ftp.update(title="FTP without TLS", service="ftp", evidence="220 vsFTPd")
+    vnc = _plugin_row("shapo_remote_admin_exposure", ip="10.0.0.4", port=5900, severity="LOW")
+    vnc.update(
+        title="Remote administration service reachable (VNC)",
+        service="vnc",
+        evidence="Port 5900 open (service: vnc)",
+    )
+    payload = {
+        "open": [
+            {"ip": "10.0.0.1", "port": 23, "protocol": "tcp", "service": "telnet", "banner": ""},
+            {"ip": "10.0.0.4", "port": 5900, "protocol": "tcp", "service": "vnc", "banner": ""},
+        ],
+        "findings": [telnet, rdp, ftp, vnc],
+    }
+    _, _, records = pp.parse_pulse_json(
+        payload, plugin_shas=_offered("shapo_cleartext_services", "shapo_remote_admin_exposure")
+    )
+    by_port = {(row.ip, row.port): row for row in records}
+    bare = by_port[("10.0.0.1", 23)]
+    assert bare.severity == "low" and bare.confidence == 45 and bare.requires_confirmation is True
+    assert bare.evidence == "No telnet banner on port 23"
+    assert "no telnet banner" in bare.summary
+    assert by_port[("10.0.0.1", 3389)].requires_confirmation is True
+    assert by_port[("10.0.0.4", 5900)].requires_confirmation is True
+    ftp_row = by_port[("10.0.0.1", 21)]
+    assert ftp_row.requires_confirmation is False and ftp_row.evidence == "220 vsFTPd"
+
+
+def test_a_telnet_banner_and_an_rfb_greeting_stay_confirmed():
+    telnet = _plugin_row("shapo_cleartext_services", port=23, severity="HIGH")
+    telnet.update(title="Telnet service exposed", service="telnet", evidence="Telnet service on port 23")
+    vnc = _plugin_row("shapo_remote_admin_exposure", ip="10.0.0.2", port=5900, severity="LOW")
+    vnc.update(
+        title="Remote administration service reachable (VNC)",
+        service="vnc",
+        evidence="Port 5900 open (service: vnc)",
+    )
+    payload = {
+        "open": [
+            {"ip": "10.0.0.1", "port": 23, "protocol": "tcp", "service": "telnet", "banner": "telnetd\r\n"},
+            {"ip": "10.0.0.2", "port": 5900, "protocol": "tcp", "service": "vnc", "banner": "RFB 003.008\n"},
+        ],
+        "findings": [telnet, vnc],
+    }
+    _, _, records = pp.parse_pulse_json(
+        payload, plugin_shas=_offered("shapo_cleartext_services", "shapo_remote_admin_exposure")
+    )
+    telnet_row = next(row for row in records if row.port == 23)
+    assert telnet_row.requires_confirmation is False
+    assert telnet_row.severity == "high" and telnet_row.confidence == 90
+    assert telnet_row.evidence == "Telnet banner on port 23: telnetd"
+    rfb = next(row for row in records if row.ip == "10.0.0.2")
+    assert rfb.requires_confirmation is False
+
+
+@pytest.mark.parametrize("banner", ["\n", "\r\n"])
+def test_a_blank_telnet_greeting_stays_unconfirmed(banner):
+    telnet = _plugin_row("shapo_cleartext_services", port=23, severity="HIGH")
+    telnet.update(title="Telnet service exposed", service="telnet", evidence="Telnet service on port 23")
+    payload = {
+        "open": [{"ip": "10.0.0.1", "port": 23, "protocol": "tcp", "service": "telnet", "banner": banner}],
+        "findings": [telnet],
+    }
+    records = pp.parse_pulse_json(
+        payload, plugin_shas=_offered("shapo_cleartext_services")
+    )[2]
+    assert records[0].severity == "low" and records[0].confidence == 45
+    assert records[0].requires_confirmation is True
+    assert records[0].evidence == "No telnet banner on port 23"
+
+
+def test_recorded_plugin_rows_are_not_rewritten_without_a_plugin_set():
+    row = _plugin_row("shapo_cleartext_services", port=23, severity="HIGH")
+    row.update(title="Telnet service exposed", evidence="Telnet service on port 23")
+    records = pp.parse_pulse_json({"findings": [row]})[2]
+    assert records[0].requires_confirmation is False
+    assert records[0].severity == "high"
+    assert records[0].evidence == "Telnet service on port 23"
+
+
 def test_finding_from_a_plugin_nobody_offered_is_dropped(caplog):
     payload = {"cves": [_plugin_row("shapo_ssh_algorithms"), _plugin_row("stranger")]}
     _, _, records = pp.parse_pulse_json(payload, plugin_shas={"shapo_ssh_algorithms": "ab" * 32})

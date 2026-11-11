@@ -153,6 +153,30 @@ def test_large_feed_header_inspection_does_not_load_full_corpus(module, tmp_path
     assert record["coverage"] == "seed_or_unknown" and record["usable"] is False
 
 
+def test_threat_bank_counts_the_threats_map(module, tmp_path):
+    path = tmp_path / "threats-overlay.json"
+    threats = {f"УБИ.{index:03d}": {"ubi_id": f"УБИ.{index:03d}"} for index in range(1, 101)}
+    path.write_text(json.dumps(
+        {"source": "bdu-threats-fstec", "updated": "2026-10-01", "threats": threats},
+        ensure_ascii=False, sort_keys=True,
+    ))
+    record = module.inspect_feed(path, minimum=100, origin="fetch", now=datetime(2026, 10, 25, tzinfo=UTC))
+    assert record["entries"] == 100 and record["usable"] is True and record["updated"] == "2026-10-01"
+
+
+def test_large_threat_map_does_not_look_like_a_broken_header(module, tmp_path, monkeypatch):
+    path = tmp_path / "threats.json"
+    path.write_text(json.dumps({
+        "source": "bdu-threats-fstec", "updated": "2026-10-24",
+        "threats": {"УБИ.001": {"padding": "x" * 1024}},
+    }, ensure_ascii=False))
+    monkeypatch.setattr(module, "FEED_PARSE_BYTES", 128)
+    record = module.inspect_feed(path, minimum=100, origin="fetch", now=datetime(2026, 10, 25, tzinfo=UTC))
+    assert record["entries"] is None and record["usable"] is False
+    assert record["source"] == "bdu-threats-fstec"
+    assert record["freshness_at_snapshot"] == "fresh_by_feed_date_only"
+
+
 def test_small_native_feed_metadata_after_entries_is_checked_from_bounded_full_payload(module, tmp_path):
     path = tmp_path / "sorted.json"
     path.write_text(json.dumps({"entries": {"one": {}}, "source": "vendor-seed", "updated": "2026-09-15"}, sort_keys=True))

@@ -240,30 +240,36 @@ class InferenceProvider:
             payload["response_format"] = _response_format(response_schema)
         try:
             # The outer deadline bounds the complete exchange, including slow-drip bodies.
+            # One retry covers a dropped connection. Auth and a rejected body are not retried.
             async with asyncio.timeout(config.timeout_seconds):
-                address = await self._require_public_endpoint()
-                async with self._client(config.timeout_seconds, address) as client:
-                    async with client.stream("POST", config.base_url.rstrip("/") + "/chat/completions", headers=headers, json=payload) as response:
-                        if response.status_code in (401, 403):
-                            raise OperatorProviderError("operator_upstream_unauthorized")
-                        if response.status_code != 200:
-                            raise OperatorProviderError("operator_upstream_rejected")
-                        if response.headers.get("content-encoding", "identity").lower() != "identity":
-                            raise OperatorProviderError("operator_invalid_response")
-                        data = bytearray()
-                        async for chunk in response.aiter_bytes():
-                            if len(data) + len(chunk) > config.max_response_bytes:
-                                raise OperatorProviderError("operator_response_too_large")
-                            data.extend(chunk)
-            body = json.loads(data)
-            choice = body["choices"][0]
-            message = choice["message"]
-            if choice.get("finish_reason") not in (None, "stop") or message.get("tool_calls") or message.get("function_call") or message.get("refusal"):
-                raise OperatorProviderError("operator_incomplete_response")
-            content = message["content"]
-            if not isinstance(content, str) or not content.strip():
-                raise ValueError
-            return Completion(content=content, provider=config.provider, model=config.model)
+                for attempt in range(2):
+                    try:
+                        address = await self._require_public_endpoint()
+                        async with self._client(config.timeout_seconds, address) as client:
+                            async with client.stream("POST", config.base_url.rstrip("/") + "/chat/completions", headers=headers, json=payload) as response:
+                                if response.status_code in (401, 403):
+                                    raise OperatorProviderError("operator_upstream_unauthorized")
+                                if response.status_code != 200:
+                                    raise OperatorProviderError("operator_upstream_rejected")
+                                if response.headers.get("content-encoding", "identity").lower() != "identity":
+                                    raise OperatorProviderError("operator_invalid_response")
+                                data = bytearray()
+                                async for chunk in response.aiter_bytes():
+                                    if len(data) + len(chunk) > config.max_response_bytes:
+                                        raise OperatorProviderError("operator_response_too_large")
+                                    data.extend(chunk)
+                        body = json.loads(data)
+                        choice = body["choices"][0]
+                        message = choice["message"]
+                        if choice.get("finish_reason") not in (None, "stop") or message.get("tool_calls") or message.get("function_call") or message.get("refusal"):
+                            raise OperatorProviderError("operator_incomplete_response")
+                        content = message["content"]
+                        if not isinstance(content, str) or not content.strip():
+                            raise ValueError
+                        return Completion(content=content, provider=config.provider, model=config.model)
+                    except (httpx.HTTPError, TimeoutError, OSError):
+                        if attempt == 1:
+                            raise
         except OperatorProviderError:
             raise
         except (httpx.HTTPError, TimeoutError, OSError):

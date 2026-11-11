@@ -133,10 +133,24 @@ def test_response_limit():
 
 
 def test_transport_errors_are_sanitized():
+    seen = []
     def handler(request):
+        seen.append(request)
         raise httpx.ConnectError("private-key leaked in transport", request=request)
     with pytest.raises(OperatorProviderError, match="^operator_transport_failed$"):
         complete(handler=handler)
+    assert len(seen) == 2
+
+
+def test_one_dropped_connection_is_retried():
+    seen = []
+    def handler(request):
+        seen.append(request)
+        if len(seen) == 1:
+            raise httpx.ConnectError("reset", request=request)
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]})
+    assert complete(handler=handler).content == "ok"
+    assert len(seen) == 2
 
 
 def test_complete_exchange_has_deadline():
