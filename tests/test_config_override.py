@@ -76,6 +76,97 @@ def test_validate_rejects_nuclei_performance_knobs_out_of_range():
         cfg.validate_overrides({"nuclei": {"templates_dir": 123}})
 
 
+def _plugin_source(**overrides: object) -> dict:
+    source = {
+        "name": "acme",
+        "repo": "https://git.example/sec/plugins.git",
+        "ref": "v3",
+        "commit": "",
+        "path": "",
+    }
+    source.update(overrides)
+    return source
+
+
+def test_validate_accepts_pulse_plugin_repositories():
+    data = cfg.unflatten(
+        {
+            "service_probe.pulse.plugins_dir": "",
+            "service_probe.pulse.plugin_sources": [
+                _plugin_source(name="official", path="scanner/pipeline/pulse_data/plugins"),
+                _plugin_source(),
+            ],
+        }
+    )
+    assert cfg.validate_overrides(data) is data
+
+
+def test_validate_rejects_a_plugin_repository_the_fetch_would_refuse():
+    with pytest.raises(ValueError, match="https, ssh, file"):
+        cfg.validate_overrides(
+            {"service_probe": {"pulse": {"plugin_sources": [_plugin_source(repo="http://git.example/p.git")]}}}
+        )
+    with pytest.raises(ValueError, match="credentials"):
+        cfg.validate_overrides(
+            {
+                "service_probe": {
+                    "pulse": {
+                        "plugin_sources": [
+                            _plugin_source(repo="https://user:secret@git.example/sec/plugins.git")
+                        ]
+                    }
+                }
+            }
+        )
+    with pytest.raises(ValueError, match="without '\\.\\.'"):
+        cfg.validate_overrides(
+            {"service_probe": {"pulse": {"plugin_sources": [_plugin_source(path="../secret")]}}}
+        )
+    with pytest.raises(ValueError, match="unique"):
+        cfg.validate_overrides(
+            {
+                "service_probe": {
+                    "pulse": {"plugin_sources": [_plugin_source(), _plugin_source()]}
+                }
+            }
+        )
+    with pytest.raises(ValueError, match="at most 8"):
+        cfg.validate_overrides(
+            {
+                "service_probe": {
+                    "pulse": {
+                        "plugin_sources": [_plugin_source(name=f"src-{index}") for index in range(9)]
+                    }
+                }
+            }
+        )
+
+
+def test_validate_accepts_an_empty_plugin_directory_and_rejects_a_broken_one():
+    assert cfg.validate_overrides({"service_probe": {"pulse": {"plugins_dir": ""}}})
+    with pytest.raises(ValueError, match="single path"):
+        cfg.validate_overrides({"service_probe": {"pulse": {"plugins_dir": "/tmp/plugins\n"}}})
+    with pytest.raises(ValueError, match="4096"):
+        cfg.validate_overrides({"service_probe": {"pulse": {"plugins_dir": "x" * 4097}}})
+
+
+def test_pulse_plugin_settings_stay_on_the_api_host():
+    """A sensor job must not carry a filesystem path or a plugin repository.
+
+    Forwarding the list would make a sensor with a different receipt unload
+    its plugins. The fetch stays on the host that will run the scripts.
+    """
+    from scanner.pipeline import config_overlay
+
+    paths = {
+        "service_probe.pulse.plugins_dir",
+        "service_probe.pulse.plugin_sources",
+    }
+    assert paths <= set(cfg.EDITABLE_PATHS)
+    assert paths <= cfg.HOST_ONLY_PATHS
+    assert paths.isdisjoint(config_overlay.OVERLAY_PATHS)
+
+
 def test_validate_accepts_service_probe_backend_pulse():
     data = cfg.unflatten({"service_probe.backend": "pulse"})
     assert cfg.validate_overrides(data) is data

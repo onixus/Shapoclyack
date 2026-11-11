@@ -458,6 +458,28 @@ def test_the_scanner_refuses_a_templates_dir():
         config_overlay.check_config({"nuclei": {"templates_dir": "/tmp"}})
 
 
+def test_the_scanner_refuses_a_plugin_repository_list():
+    """The console can record repositories. A sensor job cannot carry them."""
+    from scanner.pipeline import config_overlay
+
+    with pytest.raises(config_overlay.ConfigOverlayError, match="plugin_sources"):
+        config_overlay.check_config(
+            {
+                "service_probe": {
+                    "pulse": {
+                        "plugin_sources": [
+                            {
+                                "name": "acme",
+                                "repo": "https://git.example/sec/plugins.git",
+                                "ref": "v3",
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+
+
 def test_an_overlay_cannot_drop_the_hosts_nuclei_exclusions(tmp_path):
     """One installation-wide override reaches every tenant's sensors now; an
     empty ``exclude_tags`` there would have turned on intrusive, fuzz and dos

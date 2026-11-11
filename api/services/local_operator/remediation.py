@@ -84,6 +84,41 @@ class ApplicabilityReview(BaseModel):
         return value
 
 
+def _trace_plugin_bytes(settings=None) -> bytes:
+    """The trace plugin a scan on this host would load.
+
+    A non-empty ``service_probe.pulse.plugins_dir`` is the only file that is
+    read. An empty one uses the same default a scan uses. Missing content, or
+    a config that cannot be loaded, is a changed source: another copy must
+    not be accepted in its place.
+    """
+    from scanner.pipeline.pulse_plugin_content import read_trace_plugin
+
+    try:
+        return read_trace_plugin(_configured_plugin_directory(settings))
+    except FileNotFoundError:
+        raise GatewayError("operator_source_changed") from None
+
+
+def _configured_plugin_directory(settings):
+    """The host's plugin directory, or ``None`` when the scan would use the default.
+
+    ``None`` settings (a unit check with no installation) do not read the
+    database. A saved override is merged the same way a scan on this host is.
+    """
+    if settings is None:
+        return None
+    from api.services.config_override import _deep_merge, base_config_dict, get_overrides
+    from scanner.pipeline.config_schema import load_config
+
+    try:
+        loaded = load_config(_deep_merge(base_config_dict(settings), get_overrides(settings)))
+    except Exception:
+        raise GatewayError("operator_source_changed") from None
+    raw = loaded.service_probe.pulse.plugins_dir
+    return Path(raw) if raw else None
+
+
 def trace_guide():
     """A reviewed, release-pinned offline record; reads perform no HTTP fetch."""
     raw = TRACE_GUIDE_FILE.read_bytes()
@@ -99,12 +134,12 @@ def _finding_snapshot(row):
     return _digest(value)
 
 
-def _trace_identity(row):
+def _trace_identity(row, settings=None):
     if (row.source != "scan" or row.cve or row.script_id != "pulse-plugin:shapo_http_trace" or not row.detectors
             or not isinstance(row.port, str) or not row.port.isascii() or not row.port.isdigit()
             or not 1 <= int(row.port) <= 65535):
         return False
-    expected = "sha256:" + hashlib.sha256(TRACE_PLUGIN_FILE.read_bytes()).hexdigest()
+    expected = "sha256:" + hashlib.sha256(_trace_plugin_bytes(settings)).hexdigest()
     return all(isinstance(item, dict) and item.get("detector") == "pulse-plugin"
         and item.get("ref") == "shapo_http_trace" and item.get("ruleset") == expected
         and item.get("protocol", "tcp") == "tcp" and str(item.get("port")) == str(row.port) for item in row.detectors)
@@ -127,7 +162,7 @@ def review_finding(settings, context, *, vuln_id, body, audit):
         if row is None:
             return None
         guide = trace_guide()
-        if not _trace_identity(row):
+        if not _trace_identity(row, settings):
             raise GatewayError("operator_invalid_query")
         if body.source_sha256 != TRACE_GUIDE_SHA256 or body.finding_sha256 != _finding_snapshot(row):
             raise GatewayError("operator_source_changed")
@@ -164,7 +199,7 @@ def for_finding(settings, principal, *, vuln_id, language="ru", now=None):
             return None
         finding_hash = _finding_snapshot(row)
         observed = _utc(row.last_seen_at)
-        reason = ("detector_not_reviewed" if not _trace_identity(row) else "finding_stale" if observed is None
+        reason = ("detector_not_reviewed" if not _trace_identity(row, settings) else "finding_stale" if observed is None
             or observed > now + timedelta(minutes=5) or now - observed > timedelta(days=7)
             else "application_review_required")
         events = list(db.scalars(select(models.VulnerabilityEvent).where(models.VulnerabilityEvent.tenant_id == principal.tenant_id,

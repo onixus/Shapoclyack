@@ -116,7 +116,7 @@ committing the files. See [Demo screenshot hygiene](#demo-screenshot-hygiene).
 | `/service-tokens` | Non-interactive API credentials for the selected tenant | `tenant.credential.manage` — the tenant's admin or a token-admin |
 | `/agents` | **Sensors** — the fleet of sensors (API resource `agents`, `agent_kind = scanner`): live health tiles, a sensor drawer, the SSH deploy dialog and on-request provisioning keys (the page is labelled "Sensors"; the route stays `/agents`) | Operator; `tenant.credential.manage` alone (a `token-admin`) gets the tiles and the **Deploy Sensor** dialog without the fleet list |
 | `/security` | Your own second factor: enrol an authenticator, keep the recovery codes, turn it off | Any role, for the signed-in account only |
-| `/system` | Versions, dependencies, stages, runtime, retention state, safe config (Nmap is neither probed nor listed since #548; the speed-profile panel shows the service-probe backend, always `pulse`, and the configurator offers no timing select or shadow toggle: [Migrating off Nmap](nmap-migration.md)) | Viewer; the config panel needs `config.read` and edits need platform admin. A viewer also sees the tenant/sensor counters as `—`: they span every tenant on the installation ([#318](https://github.com/onixus/Shapoclyack/issues/318)) |
+| `/system` | Versions, dependencies, stages, runtime, retention state, safe config (Nmap is neither probed nor listed since #548; the speed-profile panel shows the service-probe backend, always `pulse`, and the configurator offers no timing select or shadow toggle: [Migrating off Nmap](nmap-migration.md)). The configurator also edits the Pulse plugin directory and git repositories ([below](#pulse-plugin-repositories)) | Viewer; the config panel needs `config.read` and edits need platform admin. A viewer also sees the tenant/sensor counters as `—`: they span every tenant on the installation ([#318](https://github.com/onixus/Shapoclyack/issues/318)) |
 
 ## Application shell
 
@@ -1330,6 +1330,33 @@ Run findings may include both confirmed vulnerabilities and lower-confidence exp
 - unconfirmed/confirmation-required state.
 
 Do not equate every row with a confirmed CVE. `finding_class`, `confidence`, `requires_confirmation`, and evidence fields are part of the finding contract and should remain visible enough for an analyst to understand why an item was prioritized.
+
+## Pulse plugin repositories
+
+The scanner configurator on `/system` edits two installation settings:
+
+| Path | What the field does |
+|---|---|
+| `service_probe.pulse.plugins_dir` | Directory of `*.rhai` files. Empty keeps the usual order: `OCTO_PULSE_PLUGINS_DIR`, otherwise the checkout under `scanner/pipeline/pulse_data/plugins` when those files are present, otherwise `/var/lib/shapoclyack/pulse-plugins` |
+| `service_probe.pulse.plugin_sources` | Git repositories `scripts/fetch-pulse-plugins.sh` installs into that directory. Each row is a name, a repository URL, a ref, an optional 40-character commit and an optional directory inside the repository |
+
+An empty source list does not require a fetch receipt. A non-empty list must
+match `.shapoclyack-plugins.json` in the directory, or the run loads no
+plugins. The first row keeps a file name; a later row with the same name is
+recorded and not installed. At most eight repositories. `https`, `ssh`,
+`file` and `git@host:path` are accepted. A password in the URL, and plain
+`http`, are refused.
+
+Saving writes an installation override (`PUT /api/config`, platform admin).
+It applies to scans that run on the API host. A sensor job's overlay does not
+carry either value: the directory is a path on this host, and the list is the
+receipt this host's fetch wrote. A sensor keeps the copy installed on that
+sensor. A speed profile cannot point at another repository.
+
+The console does not clone the repositories. Run
+`scripts/fetch-pulse-plugins.sh` on the host that will load the scripts, then
+save the same list here if that host is the API. See
+[Pulse plugins](pulse-plugins.md#content-from-git).
 
 ## Enrichment freshness on `/system`
 

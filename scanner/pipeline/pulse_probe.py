@@ -25,8 +25,9 @@ banners and CVEs.
 
 There are no NSE scripts any more (docs/nmap-migration.md). What is left of
 ``default,safe`` is the part Rhai plugins can do from inside Pulse's sandbox
-(#544): ``--script-dir`` hands over ``pulse_data/plugins/`` -- see
-``pulse_plugins.py`` and docs/pulse-plugins.md.
+(#544): ``--script-dir`` hands over the plugin content directory -- see
+``pulse_plugins.py`` and docs/pulse-plugins.md. Images do not bake the
+scripts; ``scripts/fetch-pulse-plugins.sh`` installs them from git.
 
 Does **not** invoke Pulse product features that duplicate Shapoclyack:
 ``pulse monitor``, ``--server``, ``--alert-*``, ``--inventory``, and bare
@@ -60,7 +61,7 @@ import subprocess
 import tempfile
 import time
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -68,6 +69,7 @@ from typing import Any
 from . import distro_revision
 from .protocol import parse_endpoint
 from .pulse_plan import plan_tcp_probe
+from .pulse_plugin_content import content_mismatch, content_summary
 from .pulse_plugins import (
     PLUGIN_CLASS,
     PLUGIN_SOURCE,
@@ -961,6 +963,8 @@ def _run_pulse_probe(
     on_unresolved: Callable[[list[str]], None] | None = None,
     on_resume_validated: Callable[[set[str]], None] | None = None,
     plugins: bool = False,
+    plugins_dir: str = "",
+    plugin_sources: Sequence[Any] | None = None,
     observation_tenant_id: str | None = None,
     observation_run_id: str | None = None,
     observation_receipts_enabled: bool = True,
@@ -986,7 +990,7 @@ def _run_pulse_probe(
     in a row overrun the process timeout (a single overrun only leaves the
     chunk unresolved).
 
-    ``plugins``: hand ``pulse_data/plugins/`` to Pulse with ``--script-dir``
+    ``plugins``: hand the plugin content directory to Pulse with ``--script-dir``
     (``pulse_plugins``). Off by default here and on by default in the config
     (``service_probe.pulse.plugins``), so a caller has to ask for the extra
     connections. Each plugin is first run through ``pulse plugin check``; only
@@ -1007,7 +1011,12 @@ def _run_pulse_probe(
     # (a Pulse failure, receipts disabled), never the previous one's facts.
     (output_dir / OBSERVATION_FILENAME).unlink(missing_ok=True)
     pulse_bin = resolve_pulse_bin(bin_path)
-    plugin_set = resolve_plugin_set(enabled=plugins)
+    plugin_set = resolve_plugin_set(enabled=plugins, directory=Path(plugins_dir) if plugins_dir else None)
+    if plugins and plugin_sources:
+        mismatch = content_mismatch(plugin_set.directory, plugin_sources)
+        if mismatch:
+            logging.warning("pulse_plugins: %s", mismatch)
+            plugin_set = type(plugin_set)(directory=plugin_set.directory, unavailable=mismatch)
     # Which plugins Pulse will actually load. It loads every script of its
     # directory that compiles and skips the rest without a word, so each file is
     # asked once (`pulse plugin check`) and Pulse is given a directory of copies
@@ -1038,6 +1047,7 @@ def _run_pulse_probe(
         "loaded": loaded,
         "rejected": rejected,
         "errors": [],
+        "content": content_summary(plugin_set.directory) if plugins else None,
     }
     grouped = _group_tcp_ports(open_ports)
     observation_targets = sorted(host for host, ports in grouped.items() if 3389 in ports)

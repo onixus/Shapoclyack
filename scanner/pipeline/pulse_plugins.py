@@ -6,9 +6,14 @@ TLS. Pulse has a scripting layer of its own (Rhai, GenDec ``src/scanner/script.r
 and ``sandbox.rs``); the plugins that fill the gap live in
 ``pulse_data/plugins/`` and are described in ``docs/pulse-plugins.md``.
 
-Why the directory sits beside the code and not under ``scanner/data``: an
-enrichment volume mounted there shadows it (same reason as ``services.tsv``,
-``pulse_probe.SERVICES_DB``).
+The files in ``pulse_data/plugins/`` are the official git content. Release
+images do not copy them (``.dockerignore``). A run reads
+``OCTO_PULSE_PLUGINS_DIR`` or ``service_probe.pulse.plugins_dir`` when one is
+set, otherwise this tree when it is present, otherwise
+``/var/lib/shapoclyack/pulse-plugins`` after
+``scripts/fetch-pulse-plugins.sh``. The tree stays beside the code, not under
+``scanner/data``, so an enrichment volume mounted there cannot hide a
+checkout (same reason as ``services.tsv``, ``pulse_probe.SERVICES_DB``).
 
 What this module owns, so that ``pulse_probe`` stays about the command line:
 
@@ -68,7 +73,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-#: Default location of the shipped plugins.
+from scanner.pipeline.pulse_plugin_content import default_plugin_directory
+
+#: Default location of the official plugin content in a git checkout.
+#: Release images do not contain this directory.
 PLUGINS_DIR = Path(__file__).resolve().parent / "pulse_data" / "plugins"
 
 #: Longest per-call timeout any shipped plugin may pass to ``probe_send`` /
@@ -141,7 +149,7 @@ def resolve_plugin_set(*, enabled: bool, directory: Path | None = None) -> Plugi
     """
     if not enabled:
         return PluginSet(directory=None)
-    root = Path(directory) if directory is not None else PLUGINS_DIR
+    root = Path(directory) if directory is not None else default_plugin_directory()
     files: list[PluginFile] = []
     if root.is_dir():
         for path in sorted(root.glob("*.rhai")):

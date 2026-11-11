@@ -57,6 +57,7 @@ def _plugin_row(plugin: str = "shapo_ssh_algorithms", *, ip: str = "10.0.0.1", p
 
 @pytest.fixture
 def plugin_dir(tmp_path, monkeypatch) -> Path:
+    monkeypatch.delenv("OCTO_PULSE_PLUGINS_DIR", raising=False)
     directory = tmp_path / "plugins"
     directory.mkdir()
     (directory / "shapo_ssh_algorithms.rhai").write_text(PLUGIN_A, encoding="utf-8")
@@ -233,7 +234,11 @@ def test_when_every_plugin_is_rejected_no_script_dir_is_passed(tmp_path, plugin_
 
 
 def test_missing_plugin_directory_degrades_and_says_so(tmp_path, pulse, monkeypatch, caplog):
+    from scanner.pipeline import pulse_plugin_content
+
+    monkeypatch.delenv("OCTO_PULSE_PLUGINS_DIR", raising=False)
     monkeypatch.setattr(pulse_plugins, "PLUGINS_DIR", tmp_path / "gone")
+    monkeypatch.setattr(pulse_plugin_content, "CONTENT_DIR", tmp_path / "also-gone")
     receipt = _raw(_run(tmp_path, plugins=True))["adapter"]["plugins"]
     assert "--script-dir" not in pulse.spawns[0]["command"]
     assert receipt["active"] is False and "no .rhai plugins" in receipt["unavailable"]
