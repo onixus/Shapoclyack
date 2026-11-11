@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html>
+<head><title>Daily Herald — markets close higher after a quiet session</title></head>
+<body>
+  <article>
+    <h1>Markets close higher after a quiet session on Tuesday afternoon</h1>
+    <p>Analysts said Acme reported earnings in line with estimates and that the wider sector, not the company, drove the move across exchanges in New York and London this week.</p>
+    <p>The Herald newsroom confirmed the figures with two people familiar with the filing. Acme itself declined to comment beyond the published statement released on Monday morning.</p>
+    <p>Readers looking for the full earnings table can find it in the business section of tomorrow's print edition, which also covers shipping and energy prices.</p>
+  </article>
+</body>
+</html>

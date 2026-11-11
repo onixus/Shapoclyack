@@ -1,0 +1,8 @@
+<!DOCTYPE html>
+<html>
+<head><title>This domain is parked free</title></head>
+<body>
+  <h1>This domain is parked free, courtesy of GoDaddy</h1>
+  <p>The domain may be for sale. This page is a placeholder and not the brand site.</p>
+</body>
+</html>

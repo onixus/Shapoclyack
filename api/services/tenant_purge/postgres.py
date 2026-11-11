@@ -96,6 +96,12 @@ POSTGRES_TABLES = (
     "webhook_deliveries",
     "webhook_subscriptions",
     "asset_import_connectors",
+    # Brand watch: observations before candidates, both before profiles.
+    # Jobs reference profiles (SET NULL is not used); delete them first.
+    "brand_observations",
+    "brand_watch_jobs",
+    "brand_candidates",
+    "brand_profiles",
     "notification_channels",
     # Reports; the objects themselves went in the artifact step.
     "report_schedules",

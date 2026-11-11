@@ -1,0 +1,8 @@
+<!DOCTYPE html>
+<html>
+<head><title>App</title></head>
+<body>
+  <div id="root"></div>
+  <script>window.__BOOT__ = { ready: false };</script>
+</body>
+</html>
