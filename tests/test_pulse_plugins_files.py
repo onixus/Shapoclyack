@@ -1158,6 +1158,103 @@ def test_http_status_plugins_of_phases_1_2_and_4(plugin, service, target, reply,
         assert seen is None and errors.strip() and "Function not found" not in errors
 
 
+# Phase 8. A 200 that is not the parsed condition is clean for the two plain-HTTP
+# checks, and an error for the service-gated documents. Evidence stays static.
+PHASE8_CASES = [
+    ("es-ok", "shapo_elasticsearch_root", "elasticsearch", "/",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"tagline":"You Know, for Search","version":{"number":"8.11.0"}}'),
+     "finding", ()),
+    ("es-spaced", "shapo_elasticsearch_root", "elasticsearch", "/",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"tagline" : "You Know, for Search", "version" : {"number":"8.11.0"}}'),
+     "finding", ()),
+    ("es-chunked", "shapo_elasticsearch_root", "elasticsearch", "/",
+     _chunked_http_reply("200 OK", b"Content-Type: application/json",
+                         body=b'{"tagline":"You Know, for Search","version":{"number":"8.11.0"}}'),
+     "finding", ("8.11.0",)),
+    ("es-refused", "shapo_elasticsearch_root", "elasticsearch", "/",
+     _http_reply("401 Unauthorized"), "clean", ()),
+    ("es-redirect", "shapo_elasticsearch_root", "elasticsearch", "/",
+     _http_reply("302 Found", b"Location: https://example.invalid/"), "clean", ()),
+    ("es-longer-tagline", "shapo_elasticsearch_root", "elasticsearch", "/",
+     _http_reply("200 OK", body=b'{"tagline":"You Know, for Searching","version":{}}'), "error", ()),
+    ("es-no-version", "shapo_elasticsearch_root", "elasticsearch", "/",
+     _http_reply("200 OK", body=b'{"tagline":"You Know, for Search"}'), "error", ()),
+    ("es-garbage", "shapo_elasticsearch_root", "elasticsearch", "/",
+     b"NO CARRIER\r\n", "error", ()),
+    ("os-ok", "shapo_opensearch_root", "opensearch", "/",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"distribution":"opensearch","version":{"number":"2.11.0"}}'),
+     "finding", ("2.11.0",)),
+    ("os-refused", "shapo_opensearch_root", "opensearch", "/",
+     _http_reply("403 Forbidden"), "clean", ()),
+    ("os-elastic-body", "shapo_opensearch_root", "opensearch", "/",
+     _http_reply("200 OK", body=b'{"tagline":"You Know, for Search","version":{}}'), "error", ()),
+    ("minio-ok", "shapo_minio_health", "minio", "/minio/health/live",
+     _http_reply("200 OK", b"Server: MinIO"), "finding", ()),
+    ("minio-release", "shapo_minio_health", "minio", "/minio/health/live",
+     _http_reply("200 OK", b"Server: MinIO/2024.01.01.01"), "finding", ("2024.01.01.01",)),
+    ("minio-refused", "shapo_minio_health", "minio", "/minio/health/live",
+     _http_reply("401 Unauthorized"), "clean", ()),
+    ("minio-other-server", "shapo_minio_health", "minio", "/minio/health/live",
+     _http_reply("200 OK", b"Server: nginx/1.24.0"), "error", ()),
+    ("minio-garbage", "shapo_minio_health", "minio", "/minio/health/live",
+     b"NO CARRIER\r\n", "error", ()),
+    ("neo4j-ok", "shapo_neo4j_http", "neo4j", "/",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"neo4j_version":"5.15.0","neo4j_edition":"community"}'),
+     "finding", ("5.15.0", "community")),
+    ("neo4j-refused", "shapo_neo4j_http", "neo4j", "/",
+     _http_reply("401 Unauthorized"), "clean", ()),
+    ("neo4j-no-version", "shapo_neo4j_http", "neo4j", "/",
+     _http_reply("200 OK", body=b'{"bolt_direct":"bolt://localhost:7687"}'), "error", ()),
+    ("git-ok", "shapo_http_git", "http", "/.git/HEAD",
+     _http_reply("200 OK", body=b"ref: refs/heads/main\n"), "finding", ("heads/main", "main")),
+    ("git-404", "shapo_http_git", "http", "/.git/HEAD",
+     _http_reply("404 Not Found"), "clean", ()),
+    ("git-html", "shapo_http_git", "http", "/.git/HEAD",
+     _http_reply("200 OK", body=b"<html>ref: refs/heads/main</html>"), "clean", ()),
+    ("git-garbage", "shapo_http_git", "http", "/.git/HEAD",
+     b"NO CARRIER\r\n", "error", ()),
+    ("status-ok", "shapo_http_server_status", "http", "/server-status",
+     _http_reply("200 OK", body=b"<html><head><title>Apache Server Status for example.invalid</title></head></html>"),
+     "finding", ("example.invalid",)),
+    ("status-h1", "shapo_http_server_status", "http", "/server-status",
+     _http_reply("200 OK", body=b"<h1>Apache Server Status for example.invalid</h1>"),
+     "finding", ("example.invalid",)),
+    ("status-homepage", "shapo_http_server_status", "http", "/server-status",
+     _http_reply("200 OK", body=b"<html><title>Welcome</title></html>"), "clean", ()),
+    ("status-401", "shapo_http_server_status", "http", "/server-status",
+     _http_reply("401 Unauthorized"), "clean", ()),
+    ("status-garbage", "shapo_http_server_status", "http", "/server-status",
+     b"NO CARRIER\r\n", "error", ()),
+]
+
+
+@needs_pulse
+@pytest.mark.parametrize(("plugin", "service", "target", "reply", "expect", "hidden"),
+                         [case[1:] for case in PHASE8_CASES], ids=[case[0] for case in PHASE8_CASES])
+def test_phase8_plugins_parse_one_reply(plugin, service, target, reply, expect, hidden, stub, tmp_path):
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin(plugin, service, server, tmp_path)
+    seen = finding(lines)
+    request = server.received[-1]
+    assert request.startswith(f"GET {target} HTTP/1.1\r\n".encode()), request
+    assert b"Host: shapoclyack.invalid\r\n" in request
+    assert b"Connection: close\r\n" in request
+    if expect == "finding":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+        evidence = seen[2]
+        for secret in hidden:
+            assert secret not in evidence
+            assert secret not in seen[1]
+    elif expect == "clean":
+        assert seen is None and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
 # --- shapo_winrm_http: the 401 needs both the challenge and the product mark ---
 
 

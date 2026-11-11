@@ -42,6 +42,12 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- Pulse plugin phase 8: read-only checks for an unauthenticated Elasticsearch
+  root document, an OpenSearch root document, MinIO liveness, the Neo4j HTTP
+  discovery document, a plain-HTTP Git `HEAD` ref line, and an Apache
+  `server-status` title. Indices, buckets, Cypher, Git objects and the Apache
+  scoreboard are not requested. Neo4j Bolt is unchanged and still runs only on
+  an unnamed port 7687.
 - Rhai Pulse plugins are git content, not image layers. Images no longer copy
   `scanner/pipeline/pulse_data/plugins`. `scripts/fetch-pulse-plugins.sh`
   installs a pinned repository, and further repositories of your own, into
