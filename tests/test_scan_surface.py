@@ -120,6 +120,7 @@ def test_write_run_tenant_records_the_surface(tmp_path):
     )
     assert runs_service.read_run_surface(run_dir) == "internal"
     assert runs_service.read_run_tenant(run_dir) == "default"
+    assert runs_service.read_run_job_id(run_dir) == "j1"
 
     # A scan of the server's default input files classifies to nothing, and the
     # marker must not gain an empty key that reads as a fourth surface.
@@ -127,6 +128,34 @@ def test_write_run_tenant_records_the_surface(tmp_path):
         settings, "20260905T000000Z", "default", job_id="j1"
     )
     assert runs_service.read_run_surface(run_dir) is None
+
+
+def test_run_publications_follow_the_marker_job(tmp_path, monkeypatch):
+    from api.auth import TenantPrincipal
+    from api.routes.runs import get_run_publications
+
+    settings = make_settings(tmp_path)
+    run_id = "20260905T000000Z"
+    run_dir = settings.output_dir / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    assert runs_service.write_run_tenant(settings, run_id, "default", job_id="job-1")
+    seen: dict[str, object] = {}
+
+    def capture(settings, job_id, *, tenant_id, show_paths):
+        seen["job_id"] = job_id
+        seen["tenant_id"] = tenant_id
+        seen["show_paths"] = show_paths
+        return [{"status": "pending"}]
+
+    monkeypatch.setattr("api.routes.runs.run_publisher.publications_for_job", capture)
+    principal = TenantPrincipal(username="op", tenant_id="default", role="operator", rank=2)
+    assert get_run_publications(run_id, principal, settings) == [{"status": "pending"}]
+    assert seen == {"job_id": "job-1", "tenant_id": "default", "show_paths": False}
+
+    assert runs_service.write_run_tenant(settings, run_id, "default")
+    seen.clear()
+    assert get_run_publications(run_id, principal, settings) == []
+    assert seen == {}
 
 
 @pytest.fixture()

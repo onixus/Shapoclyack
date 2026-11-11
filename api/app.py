@@ -663,10 +663,6 @@ def create_app() -> FastAPI:
 
     _publish_v1_schema(app)
 
-    @app.api_route("/api/{unmatched:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
-    def api_not_found(unmatched: str):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
-
     web_dist = settings.web_dist
     if web_dist.is_dir() and (web_dist / "index.html").exists():
         next_static = web_dist / "_next"
@@ -700,6 +696,11 @@ def create_app() -> FastAPI:
 
         @app.get("/{full_path:path}")
         def spa_fallback(full_path: str) -> FileResponse:
+            # The shell is not an API response. This catch-all is registered
+            # after the API routes, so only a path nothing else claimed lands
+            # here; returning index.html made a missing endpoint look like 200.
+            if full_path == "api" or full_path.startswith("api/"):
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
             # Next `output: "export"` emits `runs.html` / `runs/view.html` (and optionally
             # directory `index.html`). Prefer explicit files before the SPA shell.
             if full_path:

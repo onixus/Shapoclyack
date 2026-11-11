@@ -3,7 +3,7 @@ services:
     image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
     environment:
       POSTGRES_USER: octo
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-shapoclyack_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
       POSTGRES_DB: shapoclyack
     volumes:
       - postgres-data:/var/lib/postgresql/data
@@ -16,7 +16,7 @@ services:
 
   nats:
     image: nats:2.10.24-alpine@sha256:fd981e2ab99000964bd15286054e61fcc445732fd907db039f260fc0b824b314
-    command: ["-js"]
+    command: ["-js", "-sd", "/data"]
     ports:
       - "127.0.0.1:4222:4222"
     volumes:
@@ -28,12 +28,13 @@ services:
     environment:
       CLICKHOUSE_DB: shapoclyack
       CLICKHOUSE_USER: default
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-shapoclyack_ch_password}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?required}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     ports:
       - "127.0.0.1:8123:8123"
     volumes:
       - clickhouse-data:/var/lib/clickhouse
+      - ./k8s/shapoclyack/base/clickhouse/init-local.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: [CMD, wget, --spider, "-q", "http://127.0.0.1:8123/ping"]
       interval: 5s
@@ -41,42 +42,58 @@ services:
       retries: 20
     restart: unless-stopped
 
+  migrate:
+    image: ${SHAPOCLYACK_API_IMAGE:-ghcr.io/onixus/shapoclyack-api:shapoclyack-0.49-1111-rc1@sha256:3e6f94cbc2504d46f72309049414c6b134edad867a8ea3d7d113439ec25cdb3e}
+    command: ["python", "-m", "api.db.migrate"]
+    environment:
+      OCTO_POSTGRES_URL: postgresql+psycopg://octo:${POSTGRES_PASSWORD:?required}@postgres:5432/shapoclyack
+    depends_on:
+      postgres: {condition: service_healthy}
+    restart: "no"
+
   api:
     image: ${SHAPOCLYACK_API_IMAGE:-ghcr.io/onixus/shapoclyack-api:shapoclyack-0.49-1111-rc1@sha256:3e6f94cbc2504d46f72309049414c6b134edad867a8ea3d7d113439ec25cdb3e}
     environment:
       OCTO_ENV: prod
-      OCTO_POSTGRES_URL: postgresql+psycopg://octo:${POSTGRES_PASSWORD:-shapoclyack_password}@postgres:5432/shapoclyack
+      OCTO_POSTGRES_URL: postgresql+psycopg://octo:${POSTGRES_PASSWORD:?required}@postgres:5432/shapoclyack
       OCTO_NATS_URL: nats://nats:4222
-      OCTO_CLICKHOUSE_URL: http://default:${CLICKHOUSE_PASSWORD:-shapoclyack_ch_password}@clickhouse:8123/shapoclyack
-      OCTO_JWT_SECRET: ${OCTO_JWT_SECRET:-18a47cfb05219e5d4cb057a6e138a0c4f828a156ce914c6db2781b4904a6214f}
-      OCTO_MASTER_KEY: ${OCTO_MASTER_KEY:-e3a1529a6b18fc35c6e78921df040e32ab9591fa04e0689b7201cda85731b802}
-      OCTO_API_USERS: ${OCTO_API_USERS:-[{"username": "admin", "password": "changeme123", "role": "admin"}]}
+      OCTO_CLICKHOUSE_URL: http://default:${CLICKHOUSE_PASSWORD:?required}@clickhouse:8123/shapoclyack
+      OCTO_JWT_SECRET: ${OCTO_JWT_SECRET:?required}
+      OCTO_MASTER_KEY: ${OCTO_MASTER_KEY:?required}
+      OCTO_API_USERS: ${OCTO_API_USERS:?required}
       OCTO_API_CORS: ${OCTO_API_CORS:-http://localhost:8080}
       OCTO_PUBLIC_BASE_URL: ${OCTO_PUBLIC_BASE_URL:-http://localhost:8080}
       OCTO_JOB_EXECUTION_MODE: agent
       OCTO_ALLOW_SCAN_START: "true"
     ports:
-      - "${PORT:-8080}:8080"
+      - "127.0.0.1:${PORT:-8080}:8080"
     volumes:
       - scanner-state:/app/scanner/state
       - scanner-output:/app/scanner/output
       - scanner-inputs:/app/scanner/inputs
     depends_on:
+      migrate: {condition: service_completed_successfully}
       postgres: {condition: service_healthy}
       clickhouse: {condition: service_healthy}
     restart: unless-stopped
 
   sensor:
     image: ${SHAPOCLYACK_SCANNER_IMAGE:-ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.49-1111-rc1@sha256:5c152bba4bcf949a7fa4b85a7f5880a0e95a77a01febf19fb6b621a637f65508}
+    # Same reason as overlays/prod/executor-hostnetwork-patch.yaml: SYN probes
+    # from a bridge leave through its gateway and never reach the host's LAN
+    # address. Service DNS goes away with the bridge, so the API and NATS are
+    # the ports published on the host loopback. This is the Linux host
+    # namespace; Docker Desktop does not attach it to the machine's LAN.
+    network_mode: host
     entrypoint: ["python", "-m", "agent"]
     cap_add:
       - NET_RAW
       - NET_ADMIN
     environment:
-      OCTO_API_URL: http://api:8080
-      OCTO_NATS_URL: nats://nats:4222
+      OCTO_API_URL: http://127.0.0.1:${PORT:-8080}
+      OCTO_NATS_URL: nats://127.0.0.1:4222
       OCTO_AGENT_ID: ${OCTO_AGENT_ID:-sensor-standalone-1}
-      OCTO_AGENT_PROVISIONING_KEY: ${OCTO_AGENT_PROVISIONING_KEY:-}
+      OCTO_AGENT_PROVISIONING_KEY: ${OCTO_AGENT_PROVISIONING_KEY:?required}
     volumes:
       - sensor-key:/home/scanner/.shapoclyack-sensor
     depends_on:

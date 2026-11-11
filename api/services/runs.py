@@ -184,6 +184,16 @@ def read_run_surface(run_dir: Path) -> str | None:
     return _surface_from_marker(_load_json(run_dir / RUN_TENANT_FILE))
 
 
+def read_run_job_id(run_dir: Path) -> str | None:
+    """Job that wrote this run, from its tenant marker, or ``None``."""
+    marker = _load_json(run_dir / RUN_TENANT_FILE)
+    if isinstance(marker, dict):
+        job_id = marker.get("job_id")
+        if isinstance(job_id, str) and job_id.strip():
+            return job_id.strip()
+    return None
+
+
 def _tenant_from_marker(meta: Any) -> str:
     if isinstance(meta, dict):
         tenant_id = meta.get("tenant_id")
