@@ -15,8 +15,10 @@ from scanner.pipeline.pulse_probe import (
     load_service_artifacts,
     parse_pulse_json,
     write_pulse_artifacts,
+    _rows_with_cve_id,
 )
 from scanner.pipeline.service_schema import (
+    CveRecord,
     ServiceRecord,
     cves_to_extra_vulnerabilities,
     finding_key,
@@ -835,6 +837,15 @@ def test_old_enum_receipt_without_starttls_request_contract_is_reprobed(tmp_path
     assert len(calls) == 1
     assert Path(calls[0][calls[0].index("--targets-file") + 1]) != old_hosts_file
     assert json.loads(path.read_text())["adapter"]["tls_enumeration_contract"] == "raw-starttls-v2"
+
+
+def test_cve_id_count_ignores_plugin_script_names():
+    rows = [
+        CveRecord(ip="192.0.2.1", cve_id="CVE-2023-48795"),
+        CveRecord(ip="192.0.2.1", cve_id="SCRIPT-SHAPO_TELNET"),
+        CveRecord(ip="192.0.2.1", cve_id=""),
+    ]
+    assert _rows_with_cve_id(rows) == 1
 
 
 def test_direct_only_keysize_unknown_candidate_receipt_cannot_skip_new_flight_measurements(tmp_path, monkeypatch):

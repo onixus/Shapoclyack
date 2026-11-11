@@ -243,14 +243,16 @@ esac
 run epss "epss" "$ROOT/scripts/fetch-epss-db.sh" -o "$DEST/epss/epss-overlay.json"
 run kev "kev" "$ROOT/scripts/fetch-kev-db.sh" -o "$DEST/kev/kev-overlay.json"
 
-# FSTEC BDU: CVE -> BDU identity/provenance for Russian compliance evidence.
+# FSTEC BDU: CVE -> BDU identity/provenance and Threat Bank for Russian compliance evidence.
 # It is enrichment, not a detector: BDU-only records are retained in the overlay
 # but never turned into findings without an independently observable match.
 if bdu_fstec_fetch_enabled; then
   run bdu_fstec "bdu fstec" python3 "$ROOT/scripts/fetch-bdu-fstec.py" \
     -o "$DEST/bdu/bdu-overlay.json"
+  run bdu_threats "bdu threats" python3 "$ROOT/scripts/fetch-bdu-threats.py" \
+    -o "$DEST/bdu/threats-overlay.json"
 else
-  echo "==> bdu fstec: skipped (opt-in; set OCTO_BDU_FSTEC_FETCH_ENABLED=true to refresh)"
+  echo "==> bdu fstec & threats: skipped (opt-in; set OCTO_BDU_FSTEC_FETCH_ENABLED=true to refresh)"
 fi
 
 # Vendor advisories for software->CVE matching (docs/software-cve-matching.md).

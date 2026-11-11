@@ -227,6 +227,19 @@ def test_pre_effect_classification_never_trusts_a_wrapped_lost_response():
         except vulnerabilities.VerificationDispatchError as exc:
             return exc
 
+    refusal = vulnerabilities.VerificationDispatchError(
+        "No live sensor of 192.0.2.9 can run it",
+        code="sensor_capability_missing",
+        required_capability="config_overlay.v3",
+    )
+    assert actions.is_pre_effect(refusal)
+    row = type("Row", (), {"status": "confirmed"})()
+    execution = type("Execution", (), {"status": "running", "payload": {}})()
+    actions._fail(row, execution, refusal)
+    assert execution.payload["error"] == "verification_dispatch_refused"
+    assert execution.payload["reason"] == "sensor_capability_missing"
+    assert execution.payload["required_capability"] == "config_overlay.v3"
+    assert "192.0.2.9" not in json.dumps(execution.payload)
     assert actions.is_pre_effect(vulnerabilities.VerificationDispatchError("No live sensor"))
     assert actions.is_pre_effect(wrapped(ValueError("admission changed")))
     assert actions.is_pre_effect(wrapped(PermissionError("scope")))

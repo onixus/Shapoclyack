@@ -50,6 +50,14 @@ sudo shapoclyack-server install --url https://scan.example.com
 4. Ожидает PostgreSQL, останавливает API, сохраняет дамп и выполняет миграции.
 5. Запускает API и ждёт успешного `/readyz`. При ошибке возвращает ненулевой код.
 
+`--bdu DIR` монтирует уже подготовленный каталог с файлами `bdu-overlay.json`
+и `threats-overlay.json` в контейнер API только для чтения и направляет
+`OCTO_BDU_FSTEC_DATABASE` и `OCTO_BDU_THREATS_DATABASE` на этот каталог.
+Каталоги готовятся заранее (`scripts/fetch-enrichment.sh` с
+`OCTO_BDU_FSTEC_FETCH_ENABLED=true` либо офлайн-копия) и лежат на хосте до
+`prepare` или `install`. Образ их не содержит, установщик их не скачивает
+и флаг обновление ленты не включает.
+
 После успеха прочитайте `sudo cat /opt/shapoclyack/access.json`, войдите как
 `admin` и смените пароль. Затем утвердите область сканирования для тенанта
 в **Tenants → Scan scope**. Демоаккаунты не создаются, `OCTO_ENV=prod`.

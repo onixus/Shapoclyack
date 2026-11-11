@@ -40,7 +40,67 @@ def test_empty_context_requires_abstention_and_never_leaks_scan_arguments():
     assert planner.output_schema(request)["properties"]["tool"]["enum"] == ["abstain"]
     assert planner.validate_output('{"tool":"abstain"}', request)["status"] == "unsupported"
     request = planner.PlanRequest(request="scan", context={"scan": {"ranges": "192.0.2.77", "ports": "443"}})
-    assert "192.0.2.77" not in json.dumps(planner.build_prompt(request))
+    prompt = json.dumps(planner.build_prompt(request))
+    assert "192.0.2.77" not in prompt
+    assert "prepare_scan" in prompt and "bound_scan" in prompt
+
+
+def test_prepare_scan_stays_available_only_when_named_targets_are_the_bound_scan():
+    bound = {"scan": {"domains": "scanme.nmap.org", "ports": "80"}}
+    matched = planner.PlanRequest(request="prepare a scan of scanme.nmap.org port 80", context=bound)
+    assert "prepare_scan" in planner.available_tools(matched)
+    # The user's own words stay. The bound target list is not copied in beside them.
+    assert json.dumps(planner.build_prompt(matched)).count("scanme.nmap.org") == 1
+    other = planner.PlanRequest(request="prepare a scan of evil.example port 22", context=bound)
+    assert "prepare_scan" not in planner.available_tools(other)
+    inside = planner.PlanRequest(
+        request="scan 192.0.2.10",
+        context={"scan": {"ranges": "192.0.2.0/24", "ports": "1-1024"}},
+    )
+    assert "prepare_scan" in planner.available_tools(inside)
+
+
+def _scan(request, **scan):
+    body = {"ranges": "192.0.2.0/24", "ports": "22,80", **scan}
+    return planner.PlanRequest(request=request, context={"scan": body})
+
+
+@pytest.mark.parametrize("wording,scan,offered", [
+    ("ports 22, 443", {}, False),
+    ("port 80-443", {"ports": "80"}, False),
+    ("tcp/443", {"ports": "443"}, True),
+    ("udp 53", {"ports": "53"}, False),
+    ("udp 53", {"ports": "22", "ports_udp": "53"}, True),
+    ("scan at 10:30", {}, True),
+    ("проверь порт 22", {"ports": "22"}, True),
+    ("проверь порт 22", {"ports": "80"}, False),
+    ("scan 10.0.0.0/8", {"ranges": "10.0.0.0/30", "ports": "80"}, False),
+    ("scan 10.0.0.1", {"ranges": "10.0.0.0/30", "ports": "80"}, True),
+    ("scan 192.0.2.1-10", {"ranges": "192.0.2.1", "ports": "80"}, False),
+    ("scan 192.0.2.1-10", {"ranges": "192.0.2.0/24", "ports": "80"}, True),
+    ("scan 192.0.2.1-10.1", {"ranges": "192.0.2.0/24", "ports": "80"}, False),
+    ("scan 2001:db8::80", {"ports": "80"}, False),
+    ("scan 2001:db8::80", {"ranges": "2001:db8::/32", "ports": "22"}, True),
+    ("scan 2001:db8::1/129", {"ranges": "2001:db8::/32", "ports": "80"}, False),
+    ("scan at 10:30:00", {}, True),
+    ("scan fe80::1%eth0", {"ranges": "fe80::/10", "ports": "80"}, True),
+    ("scan fe80::1%eth0:22", {"ranges": "fe80::/10", "ports": "80"}, False),
+    ("scan fe80::1%eth0:22", {"ranges": "fe80::/10", "ports": "22"}, True),
+    ("scan [2001:db8::1]:22", {"ranges": "2001:db8::/32", "ports": "80"}, False),
+    ("scan [2001:db8::1]:22", {"ranges": "2001:db8::/32", "ports": "22"}, True),
+    ("read report.pdf", {}, True),
+    ("read docs/report.pdf", {}, True),
+    ("prepare a scan of agency.gov.md", {}, False),
+    ("prepare a scan of example.zip", {}, False),
+    ("scan localhost", {}, False),
+    ("scan localhost", {"domains": "localhost", "ranges": ""}, True),
+    ("scan localhost:22", {"domains": "localhost", "ranges": "", "ports": "80"}, False),
+    ("scan localhost:22", {"domains": "localhost", "ranges": "", "ports": "22"}, True),
+    ("port 80", {"ports": "1-65535"}, True),
+])
+def test_prepare_scan_rejects_a_wider_or_unparsed_target(wording, scan, offered):
+    tools = planner.available_tools(_scan(wording, **scan))
+    assert ("prepare_scan" in tools) is offered
 
 
 @pytest.mark.parametrize("body", [

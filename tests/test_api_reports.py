@@ -241,6 +241,7 @@ def test_compliance_report_carries_controls_and_executive_one_does_not(tmp_path,
         "fstec-117",
         "fstec-21",
         "fstec-239",
+        "fz-187",
         "gost-r-57580.1-2017",
     }
     assert all("controls" not in entry for entry in exec_body["compliance"])
