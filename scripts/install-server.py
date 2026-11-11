@@ -134,7 +134,16 @@ def write_private(path: Path, data: str) -> None:
 
 def prepare(directory: Path, args: argparse.Namespace) -> None:
     if directory.exists() and any(directory.iterdir()):
-        raise ValueError("Installation directory must be empty; use start for an existing installation")
+        existing = [item.name for item in directory.iterdir()]
+        msg = (
+            f"Installation directory '{directory}' already exists and is not empty "
+            f"(contains: {', '.join(existing[:5])}{'...' if len(existing) > 5 else ''}).\n"
+            f"If you want to re-install from scratch, remove the directory first:\n"
+            f"  rm -rf '{directory}'\n"
+            f"Or to start the existing installation, run:\n"
+            f"  python3 {Path(__file__).name} start --directory '{directory}'"
+        )
+        raise ValueError(msg)
     bdu_host = resolve_bdu(getattr(args, "bdu", None))
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(directory, 0o700)
