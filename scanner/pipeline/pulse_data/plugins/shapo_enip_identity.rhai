@@ -27,8 +27,9 @@ fn le32(data, pos) {
 fn run() {
     let unnamed = service == "" || service == "unknown";
     if !(service == "enip" || (unnamed && port == 44818)) { return; }
-    // List Identity, session handle 0, status 0, empty sender context, options 0.
-    let reply = probe_send_hex(port, "6300000000000000000000000000000000000000", 1500).to_lower();
+    // List Identity: 24-byte encapsulation header. Command 0x0063, length 0,
+    // session 0, status 0, sender context 0, options 0.
+    let reply = probe_send_hex(port, "630000000000000000000000000000000000000000000000", 1500).to_lower();
     if reply.len() == 0 { throw "empty EtherNet/IP List Identity reply"; }
     if reply.len() < 48 || reply.len() % 2 != 0 { throw "truncated EtherNet/IP encapsulation header"; }
     if le16(reply, 0) != 0x63 { throw "EtherNet/IP reply command is not List Identity"; }
