@@ -152,6 +152,23 @@ installed sensor or fleet acceptance.
 | `shapo_socks_noauth` | SOCKS5 method negotiation selects no authentication | LOW; CONNECT, BIND and UDP ASSOCIATE are not sent | Separate protocol check |
 | `shapo_s7_identity` | COTP Connection Confirm followed by a parsed SZL module-identification block | LOW; memory read, write and CPU control are not attempted | Separate protocol check |
 | `shapo_enip_identity` | EtherNet/IP List Identity response with one complete identity item | LOW; register session, CIP read and write are not attempted | Separate protocol check |
+| `shapo_http_methods` | Dangerous methods advertised in the `Allow` header of an `OPTIONS /` reply | LOW; actual usability on every resource is not tested | `http-methods` narrowed to PUT/DELETE/CONNECT tokens |
+| `shapo_http_cookie_flags` | `Set-Cookie` header returned without `HttpOnly` on plain HTTP | LOW; the cookie value and `Secure` are not assessed | `http-cookie-flags` narrowed to the HttpOnly attribute |
+| `shapo_http_cors` | `Access-Control-Allow-Origin: *` together with `Access-Control-Allow-Credentials: true` | LOW; other CORS combinations are not reported | `http-cors` narrowed to the wildcard-with-credentials case |
+| `shapo_http_ntlm_info` | NTLM type2 challenge returned after an unauthenticated type1 over plain HTTP | LOW; type3, credentials and session are not attempted | `http-ntlm-info` narrowed to the type2 prefix |
+| `shapo_http_svn` | Exposed `/.svn/wc.db` whose body starts with the SQLite file signature | LOW; database contents and repository access are not read | `http-svn-info` narrowed to the working-copy database signature |
+| `shapo_smb_os` | SMB1 NEGOTIATE reply containing a Native OS string | LOW; the OS string value, host name and shares are not copied | `smb-os-discovery` narrowed to the negotiate Native OS field |
+| `shapo_cassandra_ready` | CQL `STARTUP` without credentials answered with `READY` | LOW; queries, keyspaces and writes are not attempted | `cassandra-info` narrowed to the anonymous startup reply |
+| `shapo_jdwp_handshake` | Echoed `JDWP-Handshake` on the debug port | LOW; JDWP commands and code execution are not sent | `jdwp-info` narrowed to the handshake echo |
+| `shapo_mssql_prelogin` | Complete TDS PRELOGIN response from the engine | LOW; login, queries and commands are not sent | `ms-sql-info` narrowed to prelogin |
+| `shapo_oracle_tns_version` | Oracle TNS listener accepts a `VERSION` request | LOW; CONNECT_DATA user, service and queries are not sent | `oracle-tns-version` narrowed to the version packet |
+| `shapo_modbus_identity` | Modbus function 43 read-device-identification response | LOW; register read and write are not attempted | `modbus-discover` narrowed to one safe function |
+| `shapo_rmi_registry` | JRMP handshake protocol-ok marker from a Java RMI registry | LOW; remote object names and invocation are not attempted | `rmi-dumpregistry` narrowed to the handshake |
+| `shapo_epmd_names` | Erlang Port Mapper Daemon `names` reply containing a node entry | LOW; node names and RPC connections are not copied | `epmd-info` narrowed to the names command |
+| `shapo_iscsi_text` | iSCSI Login request without credentials answered with a Login Response | LOW; session, digest negotiation and LUN access are not attempted | `iscsi-info` narrowed to an unauthenticated login |
+| `shapo_nbd_hello` | NBD new-style handshake returns the `INIT_PASSWD` magic | LOW; export name and data operations are not sent | `nbd-info` narrowed to the handshake |
+| `shapo_drda_exchange` | DRDA Exchange Server Attributes Reply (`EXCSATRD`) | LOW; SQL, security and database access are not attempted | `drda-info` narrowed to EXCSAT |
+| `shapo_giop_locate` | CORBA GIOP/IIOP endpoint answers a `LocateRequest` | LOW; object method invocation is not performed | `giop-info` narrowed to LocateRequest |
 
 The two exposure plugins still claim reachability only. Negotiation and
 inventory observations do not establish relay/exploitability, trusted identity,

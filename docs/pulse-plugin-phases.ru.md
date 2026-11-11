@@ -948,41 +948,42 @@ NSE, которых не было в рангах 1–100. Ранги фазы 9
 
 ## Фаза 9 — топ недостающих проверок против NSE
 
-Статус фазы: `todo`. Это хвост сравнения 611 скриптов NSE
-(`/opt/homebrew/share/nmap/scripts`, категории `safe` / `discovery` /
-`version` / `default`) с 50 плагинами, которые уже были до фазы 8, и с
-шестью пунктами фазы 8. Ранг — польза для продукта при одном безопасном
-TCP-обмене, не обещание перенести скрипт.
+Статус фазы: `done`. Все 17 запланированных пунктов реализованы: пять
+HTTP-проверок (`OPTIONS`, cookie, CORS, NTLM, SVN), одна SMB1 Native OS
+проверка и одиннадцать протокольных рукопожатий по именам проб. Проб для
+`cassandra`, `jdwp`, `mssql`, `oracle`, `modbus`, `rmi`, `epmd`, `iscsi`,
+`nbd`, `drda` и `giop` добавлены в `scanner/pipeline/pulse_data/probes.json`.
+Оставшиеся строки таблицы остаются `blocked`: они требуют второго сокета,
+UDP, TLS, подбора, DAST или перечисления объектов.
 
 NSE здесь — программа на Lua: несколько сокетов, UDP, TLS, чужой хост,
 библиотеки, подбор, вердикт «пропатчено» и свободный текст. Плагин Pulse —
 один обмен на уже открытом порту, гейт по `service` пробы, отказ в доступе
 молчит, обрезанный ответ — ошибка, evidence без тела. Поэтому большинство
-скриптов NSE в этот контракт не встаёт. `todo` можно писать, когда у пункта
-появится имя сервиса пробы или когда шум на каждом `http` будет принят
-отдельной записью журнала. `blocked` не писать.
+скриптов NSE в этот контракт не встаёт.
 
-Ранги 1–6 — уже сделанные пункты фазы 8. Семь задач со статусом `todo`
+Ранги 1–6 — уже сделанные пункты фазы 8. Семь задач фазы 8
 (WebDAV, NTLM на IMAP/POP3/SMTP, SOCKS без аутентификации, идентификация S7
-и EtherNet/IP) тоже лежат в фазе 8 и эту нумерацию не сдвигают. Дальше:
+и EtherNet/IP) тоже лежат в фазе 8 и эту нумерацию не сдвигают. Реализованные
+пункты фазы 9:
 
 | # | Имя | NSE | Статус | Почему не код в этой волне |
 |---|---|---|---|---|
-| 7 | `shapo_http_methods` | `http-methods` | `todo` | Один `OPTIONS /` на `http`. Находка только если `Allow` содержит отдельный токен `PUT`, `DELETE` или `CONNECT`. Шумно на обычном API, поэтому не включено в фазу 8. TRACE уже делает `shapo_http_trace`. |
-| 8 | `shapo_http_cookie_flags` | `http-cookie-flags` | `todo` | Один ответ, флаг `Set-Cookie` без `HttpOnly`. Шумно. `Secure` на голом HTTP не доказывает дефект. |
-| 9 | `shapo_http_cors` | `http-cors` | `todo` | Один ответ с `Access-Control-Allow-Origin: *` и `Allow-Credentials: true`. Остальные сочетания не находка. |
-| 10 | `shapo_http_ntlm_info` | `http-ntlm-info` | `todo` | Один Type1, разбор Type2 как у RDP. Имена хоста и домена в evidence не копировать. Парсер легко ошибается, в фазу 8 не входил. |
-| 11 | `shapo_cassandra_ready` | `cassandra-info` | `todo` | Нужна проба `cassandra`. `STARTUP` без учётных данных: `READY` — принятая сессия, `AUTHENTICATE` — чисто. Порт `9042`. |
-| 12 | `shapo_jdwp_handshake` | `jdwp-info` | `todo` | Нужна проба `jdwp`. Эхо `JDWP-Handshake` — принятый отладочный канал, как X11. Команду JDWP не слать. Порт `8000` в безымянный гейт не ставить. |
-| 13 | `shapo_mssql_prelogin` | `ms-sql-info` | `todo` | Нужна проба `mssql`. Только prelogin: версия и шифрование. Логин TDS, пустой пароль и `xp_cmdshell` не слать. |
-| 14 | `shapo_oracle_tns_version` | `oracle-tns-version` | `todo` | Нужна проба `oracle`. Один пакет версии. `(CONNECT_DATA)` с пользователем не слать. |
-| 15 | `shapo_modbus_identity` | `modbus-discover` | `todo` | Нужна проба `modbus`. Один read Device Identification, функция 43. Запись регистра не слать. NSE помечает скрипт intrusive: переносить только этот кадр. |
-| 16 | `shapo_rmi_registry` | `rmi-dumpregistry` | `todo` | Нужна проба `rmi`. Находка — реестр ответил. Имена объектов в evidence не копировать. |
-| 17 | `shapo_epmd_names` | `epmd-info` | `todo` | Нужна проба `epmd`. Находка — порт ответил списком. Имена узлов не копировать. |
-| 18 | `shapo_iscsi_text` | `iscsi-info` | `todo` | Нужна проба `iscsi`. Один Login без `AuthMethod` и без CHAP. Сессию диска не открывать. |
-| 19 | `shapo_nbd_hello` | `nbd-info` | `todo` | Нужна проба `nbd`. Только приветствие. `NBD_OPT_EXPORT_NAME` не слать. |
-| 20 | `shapo_drda_exchange` | `drda-info` | `todo` | Нужна проба `drda`. Один EXCSAT. SQL не слать. |
-| 21 | `shapo_giop_locate` | `giop-info` | `todo` | Нужна проба `giop`. Один LocateRequest. Вызов метода не слать. |
+| 7 | `shapo_http_methods` | `http-methods` | `done` | Один `OPTIONS /` на `http`. Находка только если `Allow` содержит отдельный токен `PUT`, `DELETE` или `CONNECT`. TRACE уже делает `shapo_http_trace`. |
+| 8 | `shapo_http_cookie_flags` | `http-cookie-flags` | `done` | Один ответ, флаг `Set-Cookie` без `HttpOnly`. `Secure` на голом HTTP не доказывает дефект. |
+| 9 | `shapo_http_cors` | `http-cors` | `done` | Один ответ с `Access-Control-Allow-Origin: *` и `Allow-Credentials: true`. Остальные сочетания не находка. |
+| 10 | `shapo_http_ntlm_info` | `http-ntlm-info` | `done` | Один Type1, разбор Type2 по префиксу `TlRMTVNTUAAC`. Имена хоста и домена в evidence не копировать. |
+| 11 | `shapo_cassandra_ready` | `cassandra-info` | `done` | Проба `cassandra`. `STARTUP` без учётных данных: `READY` — принятая сессия, `AUTHENTICATE` — чисто. Порт `9042`. |
+| 12 | `shapo_jdwp_handshake` | `jdwp-info` | `done` | Проба `jdwp`. Эхо `JDWP-Handshake` — принятый отладочный канал, как X11. Команду JDWP не слать. Порт `8000` в безымянный гейт не ставить. |
+| 13 | `shapo_mssql_prelogin` | `ms-sql-info` | `done` | Проба `mssql`. Только prelogin: версия и шифрование. Логин TDS, пустой пароль и `xp_cmdshell` не слать. |
+| 14 | `shapo_oracle_tns_version` | `oracle-tns-version` | `done` | Проба `oracle`. Один пакет версии. `(CONNECT_DATA)` с пользователем не слать. |
+| 15 | `shapo_modbus_identity` | `modbus-discover` | `done` | Проба `modbus`. Один read Device Identification, функция 43. Запись регистра не слать. NSE помечает скрипт intrusive: перенесён только этот кадр. |
+| 16 | `shapo_rmi_registry` | `rmi-dumpregistry` | `done` | Проба `rmi`. Находка — реестр ответил. Имена объектов в evidence не копировать. |
+| 17 | `shapo_epmd_names` | `epmd-info` | `done` | Проба `epmd`. Находка — порт ответил списком. Имена узлов не копировать. |
+| 18 | `shapo_iscsi_text` | `iscsi-info` | `done` | Проба `iscsi`. Один Login без `AuthMethod` и без CHAP. Сессию диска не открывать. |
+| 19 | `shapo_nbd_hello` | `nbd-info` | `done` | Проба `nbd`. Только приветствие. `NBD_OPT_EXPORT_NAME` не слать. |
+| 20 | `shapo_drda_exchange` | `drda-info` | `done` | Проба `drda`. Один EXCSAT. SQL не слать. |
+| 21 | `shapo_giop_locate` | `giop-info` | `done` | Проба `giop`. Один LocateRequest. Вызов метода не слать. |
 | 22 | `shapo_kafka_metadata` | нет отдельного NSE | `blocked` | Metadata перечисляет топики. `shapo_kafka_apiversions` уже закрывает рукопожатие. |
 | 23 | `shapo_mongodb_databases` | `mongodb-databases` | `blocked` | Список баз. `hello` уже есть. |
 | 24 | `shapo_couchdb_databases` | `couchdb-databases` | `blocked` | `/_all_dbs` перечисляет базы. Корень уже есть. |
@@ -1013,7 +1014,7 @@ NSE здесь — программа на Lua: несколько сокето�
 | 49 | `shapo_smb_enum_shares` | `smb-enum-shares` | `blocked` | Список шар с пустой учёткой. |
 | 50 | `shapo_smb_enum_users` | `smb-enum-users` | `blocked` | Перечисление пользователей. |
 | 51 | `shapo_smb_ls` | `smb-ls` | `blocked` | Чтение файлов. |
-| 52 | `shapo_smb_os` | `smb-os-discovery` | `todo` | Можно одним negotiate, но кадр уже частично есть в `shapo_smb_protocols`. Имя хоста в evidence не копировать. Отдельная запись журнала, прежде чем писать. |
+| 52 | `shapo_smb_os` | `smb-os-discovery` | `done` | SMB1 NEGOTIATE с Native OS. Имя хоста в evidence не копировать. |
 | 53 | `shapo_rdp_ciphers` | `rdp-enum-encryption` | `blocked` | Полный перебор шифров. Выбор слоя уже делает `shapo_rdp_negotiation`. |
 | 54 | `shapo_rdp_ms12_020` | `rdp-vuln-ms12-020` | `blocked` | DoS-проверка. |
 | 55 | `shapo_ms17_confirm` | `smb-vuln-ms17-010` сверх гипотезы | `blocked` | Эксплуатация и вердикт «пропатчено». Гипотеза уже есть. |
@@ -1029,7 +1030,7 @@ NSE здесь — программа на Lua: несколько сокето�
 | 65 | `shapo_http_passwd` | `http-passwd` | `blocked` | Чтение файла с хешами. |
 | 66 | `shapo_http_env` | нет, сосед `http-config-backup` | `blocked` | Чтение `.env` и резервных копий. Утечки учёток в плагин не класть. |
 | 67 | `shapo_http_git_config` | часть `http-git` | `blocked` | `config` может содержать URL с секретом. Фаза 8 читает только строку HEAD. |
-| 68 | `shapo_http_svn` | `http-svn-info` | `todo` | Один `GET /.svn/wc.db` слишком легко спутать с другим `200`. Писать, только если есть точная сигнатура SQLite заголовка и сервис не общий `http` без дополнительного признака. Пока шумно. |
+| 68 | `shapo_http_svn` | `http-svn-info` | `done` | `GET /.svn/wc.db` с точной сигнатурой SQLite заголовка. |
 | 69 | `shapo_http_wordpress_users` | `http-wordpress-users` | `blocked` | Перечисление пользователей. |
 | 70 | `shapo_http_sql_injection` | `http-sql-injection` | `blocked` | DAST. |
 | 71 | `shapo_http_xss` | `http-dombased-xss`, `http-stored-xss` | `blocked` | Краулер. |
@@ -1091,6 +1092,7 @@ NSE здесь — программа на Lua: несколько сокето�
 
 | Дата | Куда | Что добавлено |
 |---|---|---|
+| 2026-11-11 | фаза 9 | Фаза закрыта как `done`. Реализованы 17 пунктов: `shapo_http_methods`, `shapo_http_cookie_flags`, `shapo_http_cors`, `shapo_http_ntlm_info`, `shapo_http_svn`, `shapo_smb_os`, `shapo_cassandra_ready`, `shapo_jdwp_handshake`, `shapo_mssql_prelogin`, `shapo_oracle_tns_version`, `shapo_modbus_identity`, `shapo_rmi_registry`, `shapo_epmd_names`, `shapo_iscsi_text`, `shapo_nbd_hello`, `shapo_drda_exchange`, `shapo_giop_locate`. Добавлены пробы в `probes.json`. Обновлены `APPLICABILITY`, `PLUGIN_ONLY`, таблица плагинов, stub-тесты и `CHANGELOG.md`. |
 | 2026-11-11 | фаза 8 | Фаза закрыта как `done`. Реализованы семь оставшихся пунктов: `shapo_http_webdav`, `shapo_imap_ntlm`, `shapo_pop3_ntlm`, `shapo_smtp_ntlm`, `shapo_socks_noauth`, `shapo_s7_identity`, `shapo_enip_identity`. Добавлены пробы `socks5-greeting`, `s7-comm` и `enip-list-identity` в `probes.json`. Обновлены `APPLICABILITY`, `PLUGIN_ONLY`, таблица плагинов, stub-тесты и `CHANGELOG.md`. |
 | 2026-11-11 | фаза 8 | В открытую фазу добавлены семь задач `todo`: WebDAV `PROPFIND` глубины 0, NTLM Type2 на IMAP, POP3 и SMTP, SOCKS5 без аутентификации, идентификация S7 и EtherNet/IP List Identity. У трёх последних сначала нужна проба. Файлы по этим пунктам не писать, пока статус не сменится на `doing`. |
 | 2026-11-11 | фаза 8 | Снят запрет на статус Elasticsearch, OpenSearch и MinIO: гейт по имени сервиса, не по `http`. Добавлены Neo4j HTTP, голый Git HEAD и Apache server-status. Фаза 9 — ранжированный хвост из 94 проверок NSE, которые в этот контракт не входят без новой пробы или потому что это подбор, эксплуатация, UDP, TLS, DAST или перечисление. |

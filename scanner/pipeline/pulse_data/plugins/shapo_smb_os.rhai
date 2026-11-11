@@ -29,17 +29,17 @@ fn run() {
     let msg_len = be32(reply, 0);
     if msg_len < 32 || 4 + msg_len != reply.len() / 2 { throw "SMB1 NetBIOS length mismatch"; }
     if reply.sub_string(8, 8) != "ff534d42" { throw "SMB1 magic mismatch"; }
-    if octet(reply, 4) != 0x72 { throw "SMB1 reply is not NEGOTIATE"; }
-    let word_count = octet(reply, 32);
+    if octet(reply, 8) != 0x72 { throw "SMB1 reply is not NEGOTIATE"; }
+    let word_count = octet(reply, 36);
     if word_count != 17 { throw "SMB1 NEGOTIATE word count mismatch"; }
-    let dialect = be16(reply, 33);
+    let dialect = be16(reply, 37);
     if dialect == 0xffff { throw "SMB1 NEGOTIATE did not select a dialect"; }
-    let capabilities = be32(reply, 52);
-    if capabilities & 0x80000000 != 0 { throw "SMB1 NEGOTIATE used extended security, no Native OS returned"; }
-    let challenge_len = octet(reply, 66);
-    let byte_count = be16(reply, 67);
+    let capabilities = be32(reply, 56);
+    if (capabilities & 0x80000000) != 0 { throw "SMB1 NEGOTIATE used extended security, no Native OS returned"; }
+    let challenge_len = octet(reply, 70);
+    let byte_count = be16(reply, 71);
     if byte_count < challenge_len + 2 { throw "SMB1 NEGOTIATE data too short for Native OS"; }
-    let data_start = 69;
+    let data_start = 73;
     let os_start = data_start + challenge_len;
     let os_end = os_start;
     while os_end < data_start + byte_count {

@@ -2216,3 +2216,401 @@ def test_smtp_ntlm_truncated_type2_is_an_error_not_a_verdict(stub, tmp_path):
     lines, errors = _run_binary_plugin("shapo_smtp_ntlm", "smtp", server, tmp_path)
     assert finding(lines) is None and errors.strip()
     assert "truncated" in errors and "Function not found" not in errors, errors
+
+
+# --------------------------------------------------------------------------
+# Phase 9 (docs/pulse-plugin-phases.ru.md): five HTTP checks and eleven
+# protocol handshakes. HTTP plugins gate on `service == "http"`; protocol
+# plugins gate on the probe service name or an unnamed port.
+# --------------------------------------------------------------------------
+
+_NTLM_TYPE2_B64 = "TlRMTVNTUAACAAAAAAAAADgAAAA="
+
+#: (id, plugin, service, method, target, stub reply, expected outcome).
+HTTP_PHASE_9_CASES = [
+    ("p9-methods-put", "shapo_http_methods", "http", "OPTIONS", "/",
+     _http_reply("200 OK", b"Allow: GET, HEAD, PUT, OPTIONS"), "finding"),
+    ("p9-methods-connect", "shapo_http_methods", "http", "OPTIONS", "/",
+     _http_reply("200 OK", b"Allow: GET, CONNECT"), "finding"),
+    ("p9-methods-safe", "shapo_http_methods", "http", "OPTIONS", "/",
+     _http_reply("200 OK", b"Allow: GET, HEAD, OPTIONS"), "clean"),
+    ("p9-methods-redirect", "shapo_http_methods", "http", "OPTIONS", "/",
+     _http_reply("302 Found", b"Location: /elsewhere"), "clean"),
+    ("p9-methods-garbage", "shapo_http_methods", "http", "OPTIONS", "/",
+     b"NO CARRIER\r\n", "error"),
+    ("p9-cookie-missing-httponly", "shapo_http_cookie_flags", "http", "HEAD", "/",
+     _http_reply("200 OK", b"Set-Cookie: session=abc123; Path=/"), "finding"),
+    ("p9-cookie-has-httponly", "shapo_http_cookie_flags", "http", "HEAD", "/",
+     _http_reply("200 OK", b"Set-Cookie: session=abc123; HttpOnly; Path=/"), "clean"),
+    ("p9-cookie-no-set-cookie", "shapo_http_cookie_flags", "http", "HEAD", "/",
+     _http_reply("200 OK"), "clean"),
+    ("p9-cookie-garbage", "shapo_http_cookie_flags", "http", "HEAD", "/",
+     b"not http\r\n", "error"),
+    ("p9-cors-wildcard-with-creds", "shapo_http_cors", "http", "GET", "/",
+     _http_reply("200 OK",
+                 b"Access-Control-Allow-Origin: *",
+                 b"Access-Control-Allow-Credentials: true"), "finding"),
+    ("p9-cors-wildcard-no-creds", "shapo_http_cors", "http", "GET", "/",
+     _http_reply("200 OK", b"Access-Control-Allow-Origin: *"), "clean"),
+    ("p9-cors-origin-with-creds", "shapo_http_cors", "http", "GET", "/",
+     _http_reply("200 OK",
+                 b"Access-Control-Allow-Origin: http://shapoclyack.invalid",
+                 b"Access-Control-Allow-Credentials: true"), "clean"),
+    ("p9-cors-garbage", "shapo_http_cors", "http", "GET", "/",
+     b"NO CARRIER\r\n", "error"),
+    ("p9-ntlm-type2", "shapo_http_ntlm_info", "http", "GET", "/",
+     _http_reply("401 Unauthorized", b"WWW-Authenticate: NTLM " + _NTLM_TYPE2_B64.encode()), "finding"),
+    ("p9-ntlm-no-challenge", "shapo_http_ntlm_info", "http", "GET", "/",
+     _http_reply("401 Unauthorized"), "clean"),
+    ("p9-ntlm-200", "shapo_http_ntlm_info", "http", "GET", "/",
+     _http_reply("200 OK"), "clean"),
+    ("p9-ntlm-garbage", "shapo_http_ntlm_info", "http", "GET", "/",
+     b"NO CARRIER\r\n", "error"),
+    ("p9-svn-wc-db", "shapo_http_svn", "http", "GET", "/.svn/wc.db",
+     _http_reply("200 OK", b"Content-Type: application/octet-stream",
+                 body=b"SQLite format 3\x00"), "finding"),
+    ("p9-svn-404", "shapo_http_svn", "http", "GET", "/.svn/wc.db",
+     _http_reply("404 Not Found"), "clean"),
+    ("p9-svn-other-body", "shapo_http_svn", "http", "GET", "/.svn/wc.db",
+     _http_reply("200 OK", body=b"not a database"), "clean"),
+    ("p9-svn-garbage", "shapo_http_svn", "http", "GET", "/.svn/wc.db",
+     b"NO CARRIER\r\n", "error"),
+]
+
+
+@needs_pulse
+@pytest.mark.parametrize(("plugin", "service", "method", "target", "reply", "expect"),
+                         [case[1:] for case in HTTP_PHASE_9_CASES],
+                         ids=[case[0] for case in HTTP_PHASE_9_CASES])
+def test_http_plugins_of_phase_9(plugin, service, method, target, reply, expect, stub, tmp_path):
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin(plugin, service, server, tmp_path)
+    seen = finding(lines)
+    request = server.received[-1]
+    assert request.startswith(f"{method} {target} HTTP/1.1\r\n".encode()), request
+    assert b"Host: shapoclyack.invalid\r\n" in request
+    assert b"Connection: close\r\n" in request
+    if expect == "finding":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    elif expect == "clean":
+        assert seen is None and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --- shapo_smb_os: SMB1 NEGOTIATE returns a Native OS string ----------------
+
+
+def _smb1_negotiate_response(os: bytes = b"Windows Server") -> bytes:
+    """Minimal SMB1 NEGOTIATE response with a null-terminated Native OS string."""
+    word_params = bytes([
+        0x11,  # word count
+        0x00, 0x00,  # dialect index
+        0x00,  # security mode
+        0x00, 0x00,  # max mpx
+        0x00, 0x00,  # max vc
+        0x00, 0x00, 0x00, 0x00,  # max buffer
+        0x00, 0x00, 0x00, 0x00,  # max raw
+        0x00, 0x00, 0x00, 0x00,  # session key
+        0x00, 0x00, 0x00, 0x00,  # capabilities (no extended security)
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  # system time
+        0x00, 0x00,  # timezone
+        0x08,  # challenge length
+    ])
+    challenge = b"\x00" * 8
+    byte_count = len(challenge) + len(os) + 1 + 1
+    data = challenge + os + b"\x00" + b"\x00"
+    body = word_params + byte_count.to_bytes(2, "little") + data
+    smb_header = b"\xffSMB\x72" + b"\x00" * 27  # 32 bytes total
+    msg = smb_header + body
+    return len(msg).to_bytes(4, "big") + msg
+
+
+@needs_pulse
+@pytest.mark.parametrize("case", ["native-os", "empty", "truncated"])
+def test_smb_os_reports_native_os_or_raises(case, stub, tmp_path):
+    if case == "native-os":
+        reply = _smb1_negotiate_response()
+    elif case == "empty":
+        reply = b""
+    else:
+        reply = _smb1_negotiate_response()[:40]
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_smb_os", "smb", server, tmp_path)
+    seen = finding(lines)
+    if case == "native-os":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+        assert any(request[4:8] == b"\xffSMB" for request in server.received)
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --- shapo_cassandra_ready: CQL STARTUP -> READY is a finding ---------------
+
+
+def _cql_frame(opcode: int, body: bytes = b"") -> bytes:
+    return bytes([0x83, 0x00, 0x00, opcode]) + len(body).to_bytes(4, "big") + body
+
+
+@needs_pulse
+@pytest.mark.parametrize("case", ["ready", "authenticate", "truncated"])
+def test_cassandra_ready_parses_cql_startup_reply(case, stub, tmp_path):
+    if case == "ready":
+        reply = _cql_frame(0x02)
+    elif case == "authenticate":
+        reply = _cql_frame(0x10)
+    else:
+        reply = _cql_frame(0x02)[:6]
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_cassandra_ready", "cassandra", server, tmp_path)
+    seen = finding(lines)
+    assert server.received[-1].hex() == (
+        "03000001000000160001000b43514c5f56455253494f4e0005332e302e30"
+    )
+    if case == "ready":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    elif case == "authenticate":
+        assert seen is None and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --- shapo_jdwp_handshake: echoed handshake is a finding --------------------
+
+
+@needs_pulse
+@pytest.mark.parametrize("case", ["echo", "other", "empty"])
+def test_jdwp_handshake_reports_echo_or_raises(case, stub, tmp_path):
+    if case == "echo":
+        reply = b"JDWP-Handshake"
+    elif case == "other":
+        reply = b"HTTP/1.1 400\r\n"
+    else:
+        reply = b""
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_jdwp_handshake", "jdwp", server, tmp_path)
+    seen = finding(lines)
+    assert server.received[-1] == b"JDWP-Handshake"
+    if case == "echo":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --- shapo_mssql_prelogin: parsed TDS PRELOGIN response is a finding --------
+
+
+@needs_pulse
+@pytest.mark.parametrize("case", ["prelogin", "empty", "short"])
+def test_mssql_prelogin_parses_tds_reply(case, stub, tmp_path):
+    if case == "prelogin":
+        body = bytes.fromhex("00001e000000000600060001020007000103000804000c0001ff0a00000400000200")
+        reply = bytes([0x04, 0x01]) + (len(body) + 4).to_bytes(2, "big") + body
+    elif case == "empty":
+        reply = b""
+    else:
+        reply = b"\x04\x01\x00\x08\x00\x00"
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_mssql_prelogin", "mssql", server, tmp_path)
+    seen = finding(lines)
+    assert server.received[-1].hex() == (
+        "1201002f00000100000000000601000600010200070001030008000404000c0001ff00000000000000000000000000"
+    )
+    if case == "prelogin":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --- shapo_oracle_tns_version: Accept containing VERSION is a finding -------
+
+
+@needs_pulse
+@pytest.mark.parametrize("case", ["version", "accept-only", "truncated"])
+def test_oracle_tns_version_looks_for_version_in_accept(case, stub, tmp_path):
+    if case == "version":
+        body = b"(DESCRIPTION=(ERR=0)(VSNNUM=0)(VERSION=0))"
+        reply = (len(body) + 8).to_bytes(2, "big") + b"\x00\x00\x02\x00\x00\x00" + body
+    elif case == "accept-only":
+        body = b"(DESCRIPTION=(ERR=0))"
+        reply = (len(body) + 8).to_bytes(2, "big") + b"\x00\x00\x02\x00\x00\x00" + body
+    else:
+        reply = b"\x00\x08\x00\x00\x02\x00"
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_oracle_tns_version", "oracle", server, tmp_path)
+    seen = finding(lines)
+    assert server.received[-1].hex() == (
+        "002800000100000028434f4e4e4543545f444154413d28434f4d4d414e443d56455253494f4e2929"
+    )
+    if case == "version":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    elif case == "accept-only":
+        assert seen is None and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --- shapo_modbus_identity: function 43 read-device-identification ---------
+
+
+@needs_pulse
+@pytest.mark.parametrize("case", ["identity", "exception", "truncated"])
+def test_modbus_identity_parses_function_43_or_exception(case, stub, tmp_path):
+    if case == "identity":
+        reply = bytes.fromhex("000100000005002b0e0101")
+    elif case == "exception":
+        reply = bytes.fromhex("00010000000300ab0e")
+    else:
+        reply = bytes.fromhex("000100000004002b0e")
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_modbus_identity", "modbus", server, tmp_path)
+    seen = finding(lines)
+    assert server.received[-1].hex() == "000100000004002b0e01"
+    if case == "identity":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    elif case == "exception":
+        assert seen is None and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --- shapo_rmi_registry: JRMP protocol-ok marker is a finding ---------------
+
+
+@needs_pulse
+@pytest.mark.parametrize("case", ["ok", "noauth", "other"])
+def test_rmi_registry_reports_protocol_ok(case, stub, tmp_path):
+    if case == "ok":
+        reply = b"\x4f"
+    elif case == "noauth":
+        reply = b"\x4e"
+    else:
+        reply = b"\x00"
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_rmi_registry", "rmi", server, tmp_path)
+    seen = finding(lines)
+    assert server.received[-1].hex() == "4a524d490002"
+    if case == "ok":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    elif case == "noauth":
+        assert seen is None and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --- shapo_epmd_names: names reply containing a node entry is a finding -----
+
+
+@needs_pulse
+@pytest.mark.parametrize("case", ["node", "empty", "truncated"])
+def test_epmd_names_parses_node_list(case, stub, tmp_path):
+    if case == "node":
+        reply = b"\x00\x1f" + b"name\x40host\x00" + b"\x0a"
+    elif case == "empty":
+        reply = b"\x00\x00\x0a"
+    else:
+        reply = b"\x00\x1f"
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_epmd_names", "epmd", server, tmp_path)
+    seen = finding(lines)
+    assert server.received[-1].hex() == "6e"
+    if case == "node":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --- shapo_iscsi_text: Login Response to an unauthenticated login ----------
+
+
+@needs_pulse
+@pytest.mark.parametrize("case", ["login-response", "reject", "truncated"])
+def test_iscsi_text_parses_login_response(case, stub, tmp_path):
+    if case == "login-response":
+        reply = bytes.fromhex("23" + "00" * 47)
+    elif case == "reject":
+        reply = bytes.fromhex("3f" + "00" * 47)
+    else:
+        reply = bytes.fromhex("23" + "00" * 30)
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_iscsi_text", "iscsi", server, tmp_path)
+    seen = finding(lines)
+    assert server.received[-1].hex() == (
+        "430000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000"
+    )
+    if case == "login-response":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    elif case == "reject":
+        assert seen is None and errors.strip() and "Function not found" not in errors
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --- shapo_nbd_hello: INIT_PASSWD magic after new-style handshake ----------
+
+
+@needs_pulse
+@pytest.mark.parametrize("case", ["init-passwd", "other", "truncated"])
+def test_nbd_hello_reports_init_passwd_magic(case, stub, tmp_path):
+    if case == "init-passwd":
+        reply = b"NBDMAGIC" + b"\x00" * 8 + bytes.fromhex("00000000")
+    elif case == "other":
+        reply = b"HTTP/1.1"
+    else:
+        reply = b"NBDMAG"
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_nbd_hello", "nbd", server, tmp_path)
+    seen = finding(lines)
+    assert server.received[-1].hex() == "4e42444d4147494349484156454f505400000001"
+    if case == "init-passwd":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --- shapo_drda_exchange: EXCSATRD is a finding -----------------------------
+
+
+@needs_pulse
+@pytest.mark.parametrize("case", ["excsatrd", "other", "truncated"])
+def test_drda_exchange_parses_excsatrd(case, stub, tmp_path):
+    if case == "excsatrd":
+        reply = bytes.fromhex("0010d001000114400000000000000000")
+    elif case == "other":
+        reply = bytes.fromhex("0010d001000112340000000000000000")
+    else:
+        reply = bytes.fromhex("0010d00100011440")
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_drda_exchange", "drda", server, tmp_path)
+    seen = finding(lines)
+    assert server.received[-1].hex() == "0021d001000110411404001014030003147c000714400001115e0009736861706f"
+    if case == "excsatrd":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    elif case == "other":
+        assert seen is None and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --- shapo_giop_locate: LocateReply is a finding ----------------------------
+
+
+@needs_pulse
+@pytest.mark.parametrize("case", ["locate", "not-locate", "truncated"])
+def test_giop_locate_parses_locate_reply(case, stub, tmp_path):
+    if case == "locate":
+        reply = bytes.fromhex("47494f50010000040000000400000001")
+    elif case == "not-locate":
+        reply = bytes.fromhex("47494f50010000030000000400000001")
+    else:
+        reply = bytes.fromhex("47494f5001000004")
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_giop_locate", "giop", server, tmp_path)
+    seen = finding(lines)
+    assert server.received[-1].hex() == "47494f50010000030000000400000001"
+    if case == "locate":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    elif case == "not-locate":
+        assert seen is None and errors.strip() and "Function not found" not in errors
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
