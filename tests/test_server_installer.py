@@ -3,6 +3,7 @@ import argparse
 import importlib.util
 import json
 from pathlib import Path
+import shlex
 import subprocess
 
 import pytest
@@ -30,9 +31,48 @@ def test_prepare_production_and_preserve_secrets(tmp_path):
     credentials = json.loads((tmp_path / "access.json").read_text())
     assert len(credentials["password"]) >= 24
     assert json.loads(api["environment"]["OCTO_API_USERS"])[0]["password"] == credentials["password"]
-    with pytest.raises(ValueError, match="empty"):
+    for name in ("0", "1", "2", "3", "4"):
+        (tmp_path / name).write_text("x")
+    with pytest.raises(ValueError, match="not empty") as caught:
         installer.prepare(tmp_path, args)
+    message = str(caught.value)
+    quoted = shlex.quote(str(tmp_path))
+    script = shlex.quote(str(Path(installer.__file__).resolve()))
+    compose = shlex.quote(str(tmp_path / "compose.json"))
+    assert f"python3 {script} start --directory {quoted}" in message
+    assert f"docker compose --project-directory {quoted} -f {compose} down -v" in message
+    assert f"rm -rf {quoted}" in message
+    assert "does not stop containers" in message
+    assert "compose.json: yes" in message
+    assert "access.json: yes" in message
+    names = message.split("names: ", 1)[1].split(").", 1)[0]
+    assert names == "'0', '1', '2', '3', '4', ..."
     assert path.read_bytes() == before
+
+
+def test_prepare_refuses_unrelated_directory_without_delete(tmp_path):
+    directory = tmp_path / "o'brien"
+    directory.mkdir()
+    (directory / "keep.txt").write_text("stay\n")
+    (directory / "a\nb").write_text("x")
+    for name in ("m", "c", "d", "e", "f"):
+        (directory / name).write_text("x")
+    args = argparse.Namespace(image=installer.DEFAULT_IMAGE, url="https://scan.example.com", port=8080)
+    with pytest.raises(ValueError, match="not empty") as caught:
+        installer.prepare(directory, args)
+    message = str(caught.value)
+    quoted = shlex.quote(str(directory))
+    script = shlex.quote(str(Path(installer.__file__).resolve()))
+    assert str(directory) not in message
+    assert f"python3 {script} start --directory {quoted}" in message
+    assert "rm -rf" not in message
+    assert "down -v" not in message
+    assert "compose.json: no" in message
+    assert "must not be deleted" in message
+    first = message.splitlines()[0]
+    assert "names: 'a\\nb', 'c', 'd', 'e', 'f', ..." in first
+    assert "keep.txt" not in message
+    assert (directory / "keep.txt").read_text() == "stay\n"
 
 
 def test_prepare_with_bdu_flag(tmp_path):
