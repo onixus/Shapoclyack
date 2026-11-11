@@ -106,6 +106,85 @@ describe("ConfigEditor secret fields", () => {
   });
 });
 
+describe("ConfigEditor Pulse plugin repositories", () => {
+  const saved = {
+    paths: [...CONFIG.editable_paths],
+    defaults: { ...CONFIG.defaults },
+    effective: { ...CONFIG.effective },
+  };
+
+  function usePluginConfig() {
+    CONFIG.editable_paths = [
+      "service_probe.pulse.plugins_dir",
+      "service_probe.pulse.plugin_sources",
+    ];
+    CONFIG.defaults = {
+      "service_probe.pulse.plugins_dir": "",
+      "service_probe.pulse.plugin_sources": [],
+    } as unknown as typeof CONFIG.defaults;
+    // The fixture's effective value also carries the NVD key. A spread of the
+    // plugin defaults is a different shape, so the assignment needs the same cast.
+    CONFIG.effective = {
+      "service_probe.pulse.plugins_dir": "",
+      "service_probe.pulse.plugin_sources": [],
+    } as unknown as typeof CONFIG.effective;
+  }
+
+  function restore() {
+    CONFIG.editable_paths = saved.paths;
+    CONFIG.defaults = saved.defaults;
+    CONFIG.effective = saved.effective;
+  }
+
+  it("edits a repository and saves the source list, not a number", async () => {
+    const locale = useAppearanceStore.getState().locale;
+    useAppearanceStore.setState({ locale: "en" });
+    usePluginConfig();
+    try {
+      renderEditor();
+      expect(screen.getByText("pulse.plugins_dir")).toBeVisible();
+      expect(screen.getByText(/Empty uses the scripts in this checkout/)).toBeVisible();
+      await userEvent.setup().click(screen.getByRole("button", { name: "Add repository" }));
+      await userEvent.setup().type(screen.getByLabelText("Source name"), "acme");
+      await userEvent
+        .setup()
+        .type(screen.getByLabelText("Repository URL"), "https://git.example/sec/plugins.git");
+      await userEvent.setup().type(screen.getByLabelText("Git ref"), "v3");
+      await userEvent.setup().click(screen.getByRole("button", { name: "Save Overrides" }));
+      expect(updateMock.mock.calls.at(-1)?.[0]).toEqual({
+        "service_probe.pulse.plugin_sources": [
+          {
+            name: "acme",
+            repo: "https://git.example/sec/plugins.git",
+            ref: "v3",
+            commit: "",
+            path: "",
+          },
+        ],
+      });
+    } finally {
+      restore();
+      useAppearanceStore.setState({ locale });
+    }
+  });
+
+  it("shows the Russian labels and keeps the fields visible", () => {
+    const locale = useAppearanceStore.getState().locale;
+    useAppearanceStore.setState({ locale: "ru" });
+    usePluginConfig();
+    try {
+      renderEditor();
+      expect(screen.getByText("Каталог плагинов Pulse")).toBeVisible();
+      expect(screen.getByText("Репозитории плагинов Pulse")).toBeVisible();
+      expect(screen.getByRole("button", { name: "Добавить репозиторий" })).toBeVisible();
+      expect(screen.getByText(/Пустой список не требует квитанцию загрузки/)).toBeVisible();
+    } finally {
+      restore();
+      useAppearanceStore.setState({ locale });
+    }
+  });
+});
+
 describe("ConfigEditor stored Nmap backend (#548)", () => {
   it("shows a saved nmap backend flagged as removed instead of an empty select", () => {
     const saved = {

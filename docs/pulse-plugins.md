@@ -8,12 +8,72 @@ security headers, unauthenticated service status/listing endpoints, broker and
 directory negotiation, SMB dialect/signing and MS17-010 status hypotheses,
 RDP negotiation/type2 inventory, VNC security advertisements, X11 setup
 acceptance, and standalone UDP SNMP inventory.
-The files live in `scanner/pipeline/pulse_data/plugins/`, where an enrichment
-volume mounted over `scanner/data` cannot hide them.
+The official scripts are git content in `scanner/pipeline/pulse_data/plugins/`.
+Release images do not copy that directory. `scripts/fetch-pulse-plugins.sh`
+installs them, and any further repositories you name, into
+`/var/lib/shapoclyack/pulse-plugins` (or `service_probe.pulse.plugins_dir` /
+`OCTO_PULSE_PLUGINS_DIR`). A checkout of this repository still runs from the
+tree until one of those is set, so an enrichment volume mounted over
+`scanner/data` cannot hide the scripts.
 
 On by default wherever Pulse runs (`service_probe.backend: pulse`, the only
 backend). Off with `service_probe.pulse.plugins: false` (also per
-speed profile under `profiles.<mode>.pulse.plugins`).
+speed profile under `profiles.<mode>.pulse.plugins`). The directory and the
+source list are not per-profile settings.
+
+## Content from git
+
+```bash
+PULSE_PLUGINS_REF=<tag-or-commit> \
+PULSE_PLUGINS_COMMIT=<40-character commit> \
+  scripts/fetch-pulse-plugins.sh /var/lib/shapoclyack/pulse-plugins
+```
+
+`PULSE_PLUGINS_REPO` defaults to `https://github.com/onixus/Shapoclyack.git`
+and `PULSE_PLUGINS_PATH` to `scanner/pipeline/pulse_data/plugins`. A different
+repository defaults to its root. `https`, `ssh`, `file` and `git@host:path`
+are accepted. A URL with a password, a query, a fragment, or plain `http`,
+is refused.
+
+Your own plugins are another source. List the repository you trust first.
+A later file with the same name is not installed; the receipt records the
+collision. Names are the file stem: a letter, then letters, digits, `_` or
+`-`, at most 64 characters. A file larger than 64 KiB, a symlink, or anything
+that is not a regular `*.rhai` in that directory is left out.
+
+```yaml
+service_probe:
+  pulse:
+    plugins_dir: /var/lib/shapoclyack/pulse-plugins
+    plugin_sources:
+      - name: official
+        repo: https://github.com/onixus/Shapoclyack.git
+        ref: v1.2.0
+        commit: "<40-character commit>"
+        path: scanner/pipeline/pulse_data/plugins
+      - name: acme
+        repo: https://git.example/sec/pulse-plugins.git
+        ref: v3
+        commit: "<40-character commit>"
+```
+
+The same list can be a JSON file in `PULSE_PLUGINS_SOURCES`, or the two fields
+on the System page ([console](ui.md#pulse-plugin-repositories), platform
+admin, `PUT /api/config`). Saving there records an installation override for
+scans that run on the API host. A sensor is not sent the directory or the
+list: it keeps the directory and the receipt installed on that sensor.
+When `plugin_sources` is non-empty, a run whose directory receipt is a
+different set does not load the plugins. An empty `commit` accepts the commit
+the fetch resolved; a set `commit` refuses a moved tag. The fetch stages the
+tree beside the destination when that parent is writable, and inside the
+destination when it is a mount or the parent cannot be written. It swaps the
+tree in only after every source has been checked out. A failed swap puts the
+previous files back. `OCTO_HTTPS_PROXY`, `OCTO_HTTP_PROXY`,
+`OCTO_NO_PROXY` and `OCTO_CA_BUNDLE` apply, as they do for nuclei templates
+([air gap](air-gap.md#6-pulse-plugins)).
+
+`adapter.plugins.content` in `pulse/raw.json` records each source's name,
+repository (userinfo and query stripped), ref, commit and path.
 
 ## Released content and engine dependency
 

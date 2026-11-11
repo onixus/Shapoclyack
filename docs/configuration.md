@@ -16,6 +16,13 @@ Effective scanner settings are built from:
 API overrides are validated against the full scanner schema before persistence.
 Secrets are not exposed or editable from the Web UI.
 
+The System page edits `service_probe.pulse.plugins_dir` and
+`service_probe.pulse.plugin_sources`
+([console](ui.md#pulse-plugin-repositories)). An empty directory keeps the
+usual resolution order. An empty source list does not require a fetch
+receipt. Neither value is sent to a sensor: the directory is a path on the
+API host, and the list is the receipt that host's fetch wrote.
+
 Validate a file before using it — the parse runs the same schema the pipeline
 does and starts no external tool:
 
@@ -41,7 +48,7 @@ value on the System page rather than assuming the file was applied.
 | `batching` | Bounded IPv4/IPv6 subnet batching | [Scan performance](scan-performance.md), [Architecture](architecture.md) |
 | `discovery` | Alive-host discovery: source, discovery profile, CT logs, brute force, Cloudflare, ASN, cloud resources, domain monitoring, delta | [Discovery modules](#discovery-modules), [Scan performance](scan-performance.md) |
 | `ports` | Port stage: protocol, port lists, UDP top-N, naabu scan type | [Protocol selection](#protocol-selection) |
-| `service_probe` | Service/version detection: `backend` is `pulse` and nothing else (`nmap`, `hybrid` and `shadow` are refused, [Migrating off Nmap](nmap-migration.md)); `pulse.plugins` (default `true`) switches the Rhai plugins on or off | [Pulse backend](pulse-backend.md), [Pulse plugins](pulse-plugins.md) |
+| `service_probe` | Service/version detection: `backend` is `pulse` and nothing else (`nmap`, `hybrid` and `shadow` are refused, [Migrating off Nmap](nmap-migration.md)); `pulse.plugins` (default `true`) switches the Rhai plugins on or off. `pulse.plugins_dir` and `pulse.plugin_sources` name the git content directory and extra plugin repositories; a speed profile cannot override them. The System page edits both, and a sensor job does not receive them | [Pulse backend](pulse-backend.md), [Pulse plugins](pulse-plugins.md), [console](ui.md#pulse-plugin-repositories) |
 | `reporting` | Which report formats a run writes (Markdown, HTML, CSV, JSON, PDF) and the PDF's title/org | [Operations](operations.md), [Reports and compliance](reports-and-compliance.md) |
 | `enrichment` | CVSS v4, GeoIP and ASN datasets | [Enrichment sources](#enrichment-sources) |
 | `fingerprint` | HTTP fingerprinting of already-open web ports: technology catalogue, versions, CPE, exposed consoles and gateways | [Web fingerprinting](web-fingerprinting.md), [Scan performance](scan-performance.md) |

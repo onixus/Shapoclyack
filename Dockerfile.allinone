@@ -410,9 +410,11 @@ RUN set -eux; \
     find / -xdev -perm /6000 -type f -exec chmod a-s {} +; \
     getcap "$(command -v fping)" | grep -q cap_net_raw
 
+# The Rhai plugins are not in this image. The directory is where
+# scripts/fetch-pulse-plugins.sh installs them, and where a volume is mounted.
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin octo && \
-    mkdir -p /app/scanner/output /app/scanner/state /app/scanner/inputs && \
-    chown -R octo:octo /app
+    mkdir -p /app/scanner/output /app/scanner/state /app/scanner/inputs /var/lib/shapoclyack/pulse-plugins && \
+    chown -R octo:octo /app /var/lib/shapoclyack/pulse-plugins
 
 USER octo
 

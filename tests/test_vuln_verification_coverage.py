@@ -1877,6 +1877,7 @@ def _plugin_stage(
     plugins = tmp_path / f"plugins-{run_dir.name}"
     plugins.mkdir(exist_ok=True)
     (plugins / f"{PLUGIN}.rhai").write_text(source, encoding="utf-8")
+    monkeypatch.delenv("OCTO_PULSE_PLUGINS_DIR", raising=False)
     monkeypatch.setattr(pulse_plugins, "PLUGINS_DIR", plugins)
     monkeypatch.setattr(pulse_plugins, "check_plugin", lambda *args, **kwargs: None)
     banner = "SSH-2.0-OpenSSH_7.4" if service == "ssh" else "HTTP/1.1 200 OK"

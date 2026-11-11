@@ -2,3 +2,7 @@
 # Never send either directory to a Docker build context or release image.
 .operator-models
 .operator-local
+
+# Rhai Pulse plugins are git content. scripts/fetch-pulse-plugins.sh installs
+# them under /var/lib/shapoclyack/pulse-plugins. They are not image layers.
+scanner/pipeline/pulse_data/plugins
