@@ -56,6 +56,15 @@ All notable changes to Shapoclyack are documented in this file.
   `enip-list-identity` name SOCKS, S7 and EtherNet/IP. NTLM on IMAP, POP3
   and SMTP, and the S7 SZL read, are not shipped: each `probe_send` opens a
   new TCP socket, so those checks stay blocked.
+- Pulse plugin phase 9: seventeen read-only checks covering dangerous HTTP
+  methods (`OPTIONS` Allow header), missing `HttpOnly` cookies, permissive
+  CORS with credentials, HTTP NTLM type2 challenges, an exposed Subversion
+  `/.svn/wc.db`, SMB1 Native OS disclosure, and protocol handshakes for
+  Cassandra CQL, JDWP, MSSQL TDS PRELOGIN, Oracle TNS VERSION, Modbus device
+  identity, Java RMI registry, EPMD names, iSCSI login, NBD, DRDA EXCSAT and
+  GIOP LocateRequest. Credentials, queries, commands, object listings and
+  data operations are not attempted. New service probes support the eleven
+  protocol checks.
 - Rhai Pulse plugins are git content, not image layers. Images no longer copy
   `scanner/pipeline/pulse_data/plugins`. `scripts/fetch-pulse-plugins.sh`
   installs a pinned repository, and further repositories of your own, into

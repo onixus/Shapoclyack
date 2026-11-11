@@ -1396,6 +1396,155 @@
       ]
     },
     {
+      "name": "cassandra-startup",
+      "ports": [9042],
+      "rarity": 1,
+      "payload_hex": "0300000001000000160001000b43514c5f56455253494f4e0005332e302e30",
+      "matches": [
+        {
+          "pattern": "^\\x83\\x00\\x00\\x00\\x02",
+          "service": "cassandra",
+          "product": "Apache Cassandra"
+        },
+        {
+          "pattern": "^\\x83\\x00\\x00\\x00\\x03",
+          "service": "cassandra",
+          "product": "Apache Cassandra (auth required)"
+        }
+      ]
+    },
+    {
+      "name": "jdwp-handshake",
+      "ports": [8000, 8001, 8787, 5005, 49152],
+      "rarity": 1,
+      "payload": "JDWP-Handshake",
+      "matches": [
+        {
+          "pattern": "^JDWP-Handshake",
+          "service": "jdwp",
+          "product": "Java Debug Wire Protocol"
+        }
+      ]
+    },
+    {
+      "name": "modbus-device-id",
+      "ports": [502],
+      "rarity": 1,
+      "payload_hex": "000100000005002b0e0100",
+      "matches": [
+        {
+          "pattern": "^.......[\\x2b\\xab]",
+          "service": "modbus",
+          "product": "Modbus TCP"
+        }
+      ]
+    },
+    {
+      "name": "mssql-prelogin",
+      "ports": [1433, 1434],
+      "rarity": 1,
+      "payload_hex": "1201002f0000010000001a00060100200001020021000103002200040400260001ff00000000000002000000000000",
+      "matches": [
+        {
+          "pattern": "^\\x04\\x01",
+          "service": "mssql",
+          "product": "Microsoft SQL Server"
+        }
+      ]
+    },
+    {
+      "name": "oracle-tns-version",
+      "ports": [1521],
+      "rarity": 1,
+      "payload_hex": "005a0000010000000136012c000008007fff7f08000000010020003a0000000000000000000000000000000034e600000001000000000000000028434f4e4e4543545f444154413d28434f4d4d414e443d76657273696f6e2929",
+      "matches": [
+        {
+          "pattern": "^....[\\x02\\x04]",
+          "service": "oracle",
+          "product": "Oracle TNS Listener"
+        }
+      ]
+    },
+    {
+      "name": "rmi-handshake",
+      "ports": [1099, 1098, 1199, 8999],
+      "rarity": 1,
+      "payload_hex": "4a524d4900024b",
+      "matches": [
+        {
+          "pattern": "^[\\x4e\\x4f]",
+          "service": "rmi",
+          "product": "Java RMI registry"
+        }
+      ]
+    },
+    {
+      "name": "epmd-names",
+      "ports": [4369],
+      "rarity": 1,
+      "payload_hex": "00016e",
+      "matches": [
+        {
+          "pattern": "^....name ",
+          "service": "epmd",
+          "product": "Erlang Port Mapper Daemon",
+          "soft": true
+        }
+      ]
+    },
+    {
+      "name": "nbd-handshake",
+      "ports": [10809],
+      "rarity": 1,
+      "payload_hex": "4e42444d4147494349484156454f505400000001",
+      "matches": [
+        {
+          "pattern": "^\\x4e\\x42\\x4d\\x41\\x47\\x49\\x43",
+          "service": "nbd",
+          "product": "Network Block Device"
+        }
+      ]
+    },
+    {
+      "name": "iscsi-login",
+      "ports": [3260],
+      "rarity": 1,
+      "payload_hex": "430000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000",
+      "matches": [
+        {
+          "pattern": "^[\\x23\\x63]",
+          "service": "iscsi",
+          "product": "iSCSI target"
+        }
+      ]
+    },
+    {
+      "name": "giop-locate",
+      "ports": [2809, 1050, 900],
+      "rarity": 1,
+      "payload_hex": "47494f5001000003000000080000000100000000",
+      "matches": [
+        {
+          "pattern": "^GIOP....\\x04",
+          "service": "giop",
+          "product": "CORBA IIOP/GIOP"
+        }
+      ]
+    },
+    {
+      "name": "drda-excsat",
+      "ports": [50000],
+      "rarity": 1,
+      "payload_hex": "0032d0010001002c10410004115e0004116d0004115a001814041403000724070008240f0008144000081474000800041147",
+      "matches": [
+        {
+          "pattern": "^..\\xd0",
+          "service": "drda",
+          "product": "IBM DB2 DRDA"
+        }
+      ]
+    },
+    {
       "name": "socks5-greeting",
       "ports": [1080],
       "rarity": 1,
