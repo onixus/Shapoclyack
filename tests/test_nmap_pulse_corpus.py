@@ -554,8 +554,10 @@ def test_new_plugins_are_explicitly_unrecorded_source_capabilities():
     shipped = {p.stem for p in pulse_plugins.PLUGINS_DIR.glob("*.rhai")}
     unrecorded = shipped - recorded
     # 13 from the native RDP/service checks, plus 18 phase 1-4 plugins, 12 phase 7
-    # plugins, 13 phase 8 plugins and 17 phase 9 plugins. shapo_git_daemon is not shipped.
-    assert len(unrecorded) == 73
+    # plugins, 9 phase 8 plugins and 17 phase 9 plugins. shapo_git_daemon is not
+    # shipped. IMAP, POP3 and SMTP NTLM and the S7 SZL read are blocked:
+    # probe_send opens a new socket.
+    assert len(unrecorded) == 69
     accounted = {m["plugin"] for m in NSE_PLUGIN_MAP.values() if m["plugin"]} | set(PLUGIN_ONLY)
     assert unrecorded <= accounted
     # A newly shipped but undeclared plugin must break the complete accounting gate.

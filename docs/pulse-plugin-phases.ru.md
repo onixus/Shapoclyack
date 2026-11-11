@@ -785,10 +785,14 @@ python3 -m pytest tests/test_nmap_pulse_corpus.py::test_every_shipped_plugin_is_
 
 ## Фаза 8 — документы, которые проба уже называет
 
-Статус фазы: `done`. Все тринадцать пунктов реализованы: шесть начальных
-проверок документов и семь однообменных проверок из хвоста NSE. Три из них
-требовали новых проб (`socks`, `s7`, `enip`), которые добавлены в
-`scanner/pipeline/pulse_data/probes.json`. Снято ограничение журнала от 2026-11-10: четыре хранилища просили
+Статус фазы: `done`. Поставлены девять пунктов: шесть начальных проверок
+документов, WebDAV `PROPFIND` глубины 0, SOCKS5 без аутентификации и
+EtherNet/IP List Identity. Четыре пункта закрыты как `blocked`: NTLM на
+IMAP, POP3 и SMTP и идентификация S7. Каждый `probe_send` открывает новое
+TCP-соединение, поэтому второй шаг диалога не остаётся на том же сокете.
+Пробы `socks5-greeting`, `s7-comm` и `enip-list-identity` добавлены в
+`scanner/pipeline/pulse_data/probes.json`; запрос List Identity — 24 байта.
+Снято ограничение журнала от 2026-11-10: четыре хранилища просили
 как недостающие проверки. Гейт готовых пунктов только по имени сервиса
 пробы, без порта и без `service == "http"`. Два готовых пункта про голый HTTP
 идут тем же путём, что `shapo_http_trace`: другой ответ `200` — это чисто, не
@@ -877,7 +881,9 @@ NSE, которых не было в рангах 1–100. Ранги фазы 9
 - Не делать: `Depth: 1`, `Depth: infinity`, `PROPFIND` по найденным путям, `PUT`, `DELETE`, `MOVE`, `COPY`.
 - Тест: `207` с коротким multistatus, evidence без href; `404`; HTML `200`; не HTTP.
 
-### shapo_imap_ntlm — `done`
+### shapo_imap_ntlm — `blocked`
+
+Остановлено 2026-11-11: второй `probe_send` открывает новое соединение, продолжение AUTH на нём не видно. Файл снят.
 
 - Сервис: `imap`. Безымянного порта нет. Порт `993` не добавлять.
 - Запрос: на одном сокете два шага. Сначала `a001 AUTHENTICATE NTLM`. Если строка ответа начинается с `+`, вторым шагом минимальный NTLM Type1 без имени станции и без Type3. Если второй `probe_send` открывает новое соединение, пункт остановить как `blocked` и записать причину, а не склеивать шаги в один пакет.
@@ -888,7 +894,9 @@ NSE, которых не было в рангах 1–100. Ранги фазы 9
 - Не делать: Type3, `LOGIN`, `AUTHENTICATE PLAIN`, перебор.
 - Тест: `+` и короткий корректный Type2, evidence без имён; `a001 NO`; обрезанный Type2.
 
-### shapo_pop3_ntlm — `done`
+### shapo_pop3_ntlm — `blocked`
+
+Остановлено 2026-11-11: второй `probe_send` открывает новое соединение и не видит продолжение `+`. Файл снят.
 
 - Сервис: `pop3`. Безымянного порта нет. Порт `995` не добавлять.
 - Запрос: на одном сокете `AUTH NTLM`, затем при `+` тот же Type1, что у IMAP. Новое соединение на втором шаге останавливает пункт как `blocked`.
@@ -899,7 +907,9 @@ NSE, которых не было в рангах 1–100. Ранги фазы 9
 - Не делать: Type3, `USER`/`PASS`, `CAPA` сверх того, что уже делает `shapo_cleartext_services`.
 - Тест: `+` и Type2; `-ERR`; обрезанный Type2.
 
-### shapo_smtp_ntlm — `done`
+### shapo_smtp_ntlm — `blocked`
+
+Остановлено 2026-11-11: `EHLO`, `AUTH NTLM` и Type1 уходят на разные соединения. Файл снят.
 
 - Сервис: `smtp`. Безымянного порта нет. Порт `465` не добавлять.
 - Запрос: на одном сокете `EHLO shapoclyack.invalid`, затем при коде `250` команда `AUTH NTLM`, затем при `334` тот же Type1. Это наблюдение механизма, не реле и не VRFY. Больше трёх записей не делать. Новый сокет на втором шаге останавливает пункт как `blocked`.
@@ -922,7 +932,9 @@ NSE, которых не было в рангах 1–100. Ранги фазы 9
 - Не делать: `CONNECT`, `BIND`, `UDP ASSOCIATE`, SOCKS4, подбор учётки.
 - Тест: `05 00`; `05 FF`; один байт `05`.
 
-### shapo_s7_identity — `done`
+### shapo_s7_identity — `blocked`
+
+Остановлено 2026-11-11: второй `probe_send` открывает новое соединение, SZL не идёт по сессии COTP. Файл снят. Проба `s7-comm` остаётся и называет сервис.
 
 - Сервис: своего имени в `probes.json` ещё нет. Сначала проба на порт `102`, которая ставит `s7`. До неё файл не коммитить.
 - Порт без имени: `102`, формой `unnamed && port == 102`.
@@ -938,7 +950,7 @@ NSE, которых не было в рангах 1–100. Ранги фазы 9
 
 - Сервис: своего имени в `probes.json` ещё нет. Сначала проба, которая по List Identity ставит `enip` или `ethernetip`. До неё файл не коммитить.
 - Порт без имени: `44818`, формой `unnamed && port == 44818`. Это TCP. UDP не слать.
-- Запрос: один List Identity, команда `0x0063`, без сессии и без регистрации.
+- Запрос: один List Identity, команда `0x0063`, заголовок encapsulation 24 байта (session 0, status 0, sender context 0, options 0), без регистрации.
 - Находка `LOW`: ответ с той же командой, статус `0` и один элемент identity, длины сходятся.
 - Чисто: статус команды не ноль.
 - Ошибка: пусто, длина encapsulation не сходится, элемент обрезан.
@@ -962,10 +974,10 @@ NSE здесь — программа на Lua: несколько сокето�
 молчит, обрезанный ответ — ошибка, evidence без тела. Поэтому большинство
 скриптов NSE в этот контракт не встаёт.
 
-Ранги 1–6 — уже сделанные пункты фазы 8. Семь задач фазы 8
-(WebDAV, NTLM на IMAP/POP3/SMTP, SOCKS без аутентификации, идентификация S7
-и EtherNet/IP) тоже лежат в фазе 8 и эту нумерацию не сдвигают. Реализованные
-пункты фазы 9:
+Ранги 1–6 — уже сделанные пункты фазы 8. Ещё три пункта фазы 8 поставлены
+(`shapo_http_webdav`, `shapo_socks_noauth`, `shapo_enip_identity`), а NTLM
+на IMAP, POP3 и SMTP и идентификация S7 закрыты как `blocked`: второй
+`probe_send` открывает новый сокет. Нумерацию ниже это не сдвигает. Дальше:
 
 | # | Имя | NSE | Статус | Почему не код в этой волне |
 |---|---|---|---|---|
@@ -1094,6 +1106,7 @@ NSE здесь — программа на Lua: несколько сокето�
 |---|---|---|
 | 2026-11-11 | фаза 9 | Ревью PR 644: кадры Cassandra, RMI, EPMD, SMB1, DRDA, Oracle TNS, GIOP, Modbus и MSSQL PRELOGIN приведены к протоколу. У SMB1 длина уже сходилась, сдвинуты только байты флагов; разбор стал little-endian, а расширенная безопасность и пустая Native OS возвращаются чисто. Cookie evidence больше не копирует значение. SVN разбирает chunked и ответ только с LF. iSCSI с ненулевым Status-Class и Reject — чисто. OPTIONS судит по Allow, не по телу. |
 | 2026-11-11 | фаза 9 | Фаза закрыта как `done`. Реализованы 17 пунктов: `shapo_http_methods`, `shapo_http_cookie_flags`, `shapo_http_cors`, `shapo_http_ntlm_info`, `shapo_http_svn`, `shapo_smb_os`, `shapo_cassandra_ready`, `shapo_jdwp_handshake`, `shapo_mssql_prelogin`, `shapo_oracle_tns_version`, `shapo_modbus_identity`, `shapo_rmi_registry`, `shapo_epmd_names`, `shapo_iscsi_text`, `shapo_nbd_hello`, `shapo_drda_exchange`, `shapo_giop_locate`. Добавлены пробы в `probes.json`. Обновлены `APPLICABILITY`, `PLUGIN_ONLY`, таблица плагинов, stub-тесты и `CHANGELOG.md`. |
+| 2026-11-11 | фаза 8 | Ревью PR 642: каждый `probe_send` открывает новый сокет, поэтому `shapo_imap_ntlm`, `shapo_pop3_ntlm`, `shapo_smtp_ntlm` и `shapo_s7_identity` закрыты как `blocked`, файлы сняты. Запрос EtherNet/IP List Identity дополнен до 24 байт (options 0) в плагине и в пробе `enip-list-identity`. Пробы `socks5-greeting` и `s7-comm` остаются. Строки продуктов этих проб не несут версии и записаны в `UNMAPPED_PROBE_PRODUCTS`. |
 | 2026-11-11 | фаза 8 | Фаза закрыта как `done`. Реализованы семь оставшихся пунктов: `shapo_http_webdav`, `shapo_imap_ntlm`, `shapo_pop3_ntlm`, `shapo_smtp_ntlm`, `shapo_socks_noauth`, `shapo_s7_identity`, `shapo_enip_identity`. Добавлены пробы `socks5-greeting`, `s7-comm` и `enip-list-identity` в `probes.json`. Обновлены `APPLICABILITY`, `PLUGIN_ONLY`, таблица плагинов, stub-тесты и `CHANGELOG.md`. |
 | 2026-11-11 | фаза 8 | В открытую фазу добавлены семь задач `todo`: WebDAV `PROPFIND` глубины 0, NTLM Type2 на IMAP, POP3 и SMTP, SOCKS5 без аутентификации, идентификация S7 и EtherNet/IP List Identity. У трёх последних сначала нужна проба. Файлы по этим пунктам не писать, пока статус не сменится на `doing`. |
 | 2026-11-11 | фаза 8 | Снят запрет на статус Elasticsearch, OpenSearch и MinIO: гейт по имени сервиса, не по `http`. Добавлены Neo4j HTTP, голый Git HEAD и Apache server-status. Фаза 9 — ранжированный хвост из 94 проверок NSE, которые в этот контракт не входят без новой пробы или потому что это подбор, эксплуатация, UDP, TLS, DAST или перечисление. |

@@ -433,6 +433,9 @@ def start_scan(
                 ),
             },
             "mode": resolved.mode,
+            # The CLI only runs safe/balanced/fast. ``test`` is stored as
+            # balanced; keep the mode the caller asked for on the job.
+            "requested_mode": request.mode,
             "intent": resolved.intent,
             "intent_summary": (
                 resolved.summary if resolved.intent else None

@@ -48,13 +48,14 @@ All notable changes to Shapoclyack are documented in this file.
   `server-status` title. Indices, buckets, Cypher, Git objects and the Apache
   scoreboard are not requested. Neo4j Bolt is unchanged and still runs only on
   an unnamed port 7687.
-- Pulse plugin phase 8 completion: seven additional read-only checks for
-  plain-HTTP WebDAV `PROPFIND` depth 0 (`207 Multi-Status`), NTLM type2
-  challenges over IMAP, POP3 and SMTP `AUTH NTLM`, SOCKS5 no-authentication
-  method selection, Siemens S7 SZL module identification, and EtherNet/IP
-  List Identity. Credentials, relay, tunnels, PLC memory access and CIP
-  writes are not attempted. New service probes `socks5-greeting`, `s7-comm`
-  and `enip-list-identity` support the three binary checks.
+- Pulse plugin phase 8 completion: three additional read-only checks for
+  plain-HTTP WebDAV `PROPFIND` depth 0 (`207 Multi-Status`), SOCKS5
+  no-authentication method selection, and EtherNet/IP List Identity with a
+  24-byte encapsulation header. Credentials, tunnels and CIP writes are not
+  attempted. New service probes `socks5-greeting`, `s7-comm` and
+  `enip-list-identity` name SOCKS, S7 and EtherNet/IP. NTLM on IMAP, POP3
+  and SMTP, and the S7 SZL read, are not shipped: each `probe_send` opens a
+  new TCP socket, so those checks stay blocked.
 - Pulse plugin phase 9: seventeen read-only checks covering dangerous HTTP
   methods (`OPTIONS` Allow header), missing `HttpOnly` cookies, permissive
   CORS with credentials, HTTP NTLM type2 challenges, an exposed Subversion

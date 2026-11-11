@@ -87,6 +87,8 @@ _JSON_DATASETS: dict[str, tuple[str, int, bool]] = {
     # findings keep their CVE identity and the compliance engine says nothing
     # about BDU rather than guessing. A real dump carries tens of thousands.
     "bdu_fstec": ("bdu/bdu-overlay.json", 1_000, False),
+    # FSTEC Threat Bank (БДУ УБИ — thrlist.xlsx). Optional: 200+ threats.
+    "bdu_threats": ("bdu/threats-overlay.json", 100, False),
 }
 
 # GeoIP/ASN are MaxMind-format .mmdb blobs, not JSON overlays: there is no
@@ -117,17 +119,20 @@ EXIT_NO_DATA = 2  # a required dataset is missing or is a stub
 
 
 def _count_entries(payload: object) -> int | None:
-    """Number of CVEs in an overlay, across the two shapes we publish.
+    """Number of records in an overlay.
 
-    KEV is a list of ids, EPSS/CVSS4/exploit are id → value maps. Anything else
-    is a file we do not recognise, which is reported as ``None`` rather than
-    guessed at.
+    KEV is a list of ids, EPSS/CVSS4/exploit are id -> value maps.
+    BDU threats uses "threats": id -> dict map.
+    Anything else is a file we do not recognise, which is reported as None.
     """
     if not isinstance(payload, dict):
         return None
     entries = payload.get("entries")
     if isinstance(entries, (dict, list)):
         return len(entries)
+    threats = payload.get("threats")
+    if isinstance(threats, dict):
+        return len(threats)
     return None
 
 

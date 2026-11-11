@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from hashlib import sha256
 import json
 import logging
+import re
 from typing import Annotated, Literal
 from uuid import uuid4
 
@@ -206,6 +207,13 @@ def _fail(row, execution, exc):
     retry_after = getattr(exc, "retry_after_seconds", None)
     if retry_after is not None:
         execution.payload["retry_after_seconds"] = retry_after
+    # A stable reason, never the exception text: that text can name a host.
+    reason = getattr(exc, "code", None)
+    if isinstance(reason, str) and reason != code and re.fullmatch(r"[a-z0-9_]{1,64}", reason):
+        execution.payload["reason"] = reason
+    capability = getattr(exc, "required_capability", None)
+    if isinstance(capability, str) and re.fullmatch(r"config_overlay\.v[0-9]+", capability):
+        execution.payload["required_capability"] = capability
 
 
 def _audit_subject(row, result=None):

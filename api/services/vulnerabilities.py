@@ -83,7 +83,20 @@ LOG = logging.getLogger("shapoclyack.vulnerabilities")
 
 
 class VerificationDispatchError(RuntimeError):
-    """A verification scan could not be started, so the finding stays put."""
+    """A verification scan could not be started, so the finding stays put.
+
+    ``code`` is a stable token the operator can show. The message stays out of
+    that payload: it can name a host. ``required_capability`` is set only when
+    the refusal is that no sensor advertises it.
+    """
+
+    code = "verification_dispatch_refused"
+
+    def __init__(self, message: str = "", *args, code: str | None = None, required_capability: str | None = None):
+        super().__init__(message, *args)
+        if code is not None:
+            self.code = code
+        self.required_capability = required_capability
 
 
 class VerificationReconciliationRequired(VerificationDispatchError):
@@ -2827,7 +2840,9 @@ def _trigger_verification_claimed(
                     f"No live sensor of {where} can run a verification re-scan: it needs "
                     f"capability {required_capability} (a sensor from this release, which "
                     "loads pinned nuclei templates and records the coverage evidence the "
-                    "closure is judged on). Upgrade a sensor there and verify again."
+                    "closure is judged on). Upgrade a sensor there and verify again.",
+                    code="sensor_capability_missing",
+                    required_capability=required_capability,
                 )
             # Nothing there to upgrade: no active scanner sensor with a recent
             # heartbeat at or above the version floor.
@@ -2835,7 +2850,9 @@ def _trigger_verification_claimed(
                 f"No live sensor of {where} can run a verification re-scan: none is "
                 "active and reporting in, of scanner kind and at or above the version "
                 f"floor. Bring one online (with capability {required_capability}) "
-                "and verify again."
+                "and verify again.",
+                code="sensor_capability_missing",
+                required_capability=required_capability,
             )
 
     from api.schemas import StartScanRequest
