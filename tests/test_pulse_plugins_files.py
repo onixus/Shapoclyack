@@ -1158,6 +1158,136 @@ def test_http_status_plugins_of_phases_1_2_and_4(plugin, service, target, reply,
         assert seen is None and errors.strip() and "Function not found" not in errors
 
 
+# Phase 8. A 200 that is not the parsed condition is clean for the two plain-HTTP
+# checks, and an error for the service-gated documents. Evidence stays static.
+PHASE8_CASES = [
+    ("es-ok", "shapo_elasticsearch_root", "elasticsearch", "/",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"tagline":"You Know, for Search","version":{"number":"8.11.0"}}'),
+     "finding", ()),
+    ("es-spaced", "shapo_elasticsearch_root", "elasticsearch", "/",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"tagline" : "You Know, for Search", "version" : {"number":"8.11.0"}}'),
+     "finding", ()),
+    ("es-chunked", "shapo_elasticsearch_root", "elasticsearch", "/",
+     _chunked_http_reply("200 OK", b"Content-Type: application/json",
+                         body=b'{"tagline":"You Know, for Search","version":{"number":"8.11.0"}}'),
+     "finding", ("8.11.0",)),
+    ("es-refused", "shapo_elasticsearch_root", "elasticsearch", "/",
+     _http_reply("401 Unauthorized"), "clean", ()),
+    ("es-redirect", "shapo_elasticsearch_root", "elasticsearch", "/",
+     _http_reply("302 Found", b"Location: https://example.invalid/"), "clean", ()),
+    ("es-longer-tagline", "shapo_elasticsearch_root", "elasticsearch", "/",
+     _http_reply("200 OK", body=b'{"tagline":"You Know, for Searching","version":{}}'), "error", ()),
+    ("es-no-version", "shapo_elasticsearch_root", "elasticsearch", "/",
+     _http_reply("200 OK", body=b'{"tagline":"You Know, for Search"}'), "error", ()),
+    ("es-garbage", "shapo_elasticsearch_root", "elasticsearch", "/",
+     b"NO CARRIER\r\n", "error", ()),
+    ("os-ok", "shapo_opensearch_root", "opensearch", "/",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"distribution":"opensearch","version":{"number":"2.11.0"}}'),
+     "finding", ("2.11.0",)),
+    ("os-refused", "shapo_opensearch_root", "opensearch", "/",
+     _http_reply("403 Forbidden"), "clean", ()),
+    ("os-elastic-body", "shapo_opensearch_root", "opensearch", "/",
+     _http_reply("200 OK", body=b'{"tagline":"You Know, for Search","version":{}}'), "error", ()),
+    ("minio-ok", "shapo_minio_health", "minio", "/minio/health/live",
+     _http_reply("200 OK", b"Server: MinIO"), "finding", ()),
+    ("minio-release", "shapo_minio_health", "minio", "/minio/health/live",
+     _http_reply("200 OK", b"Server: MinIO/2024.01.01.01"), "finding", ("2024.01.01.01",)),
+    ("minio-refused", "shapo_minio_health", "minio", "/minio/health/live",
+     _http_reply("401 Unauthorized"), "clean", ()),
+    ("minio-other-server", "shapo_minio_health", "minio", "/minio/health/live",
+     _http_reply("200 OK", b"Server: nginx/1.24.0"), "error", ()),
+    ("minio-garbage", "shapo_minio_health", "minio", "/minio/health/live",
+     b"NO CARRIER\r\n", "error", ()),
+    ("neo4j-ok", "shapo_neo4j_http", "neo4j", "/",
+     _http_reply("200 OK", b"Content-Type: application/json",
+                 body=b'{"neo4j_version":"5.15.0","neo4j_edition":"community"}'),
+     "finding", ("5.15.0", "community")),
+    ("neo4j-refused", "shapo_neo4j_http", "neo4j", "/",
+     _http_reply("401 Unauthorized"), "clean", ()),
+    ("neo4j-no-version", "shapo_neo4j_http", "neo4j", "/",
+     _http_reply("200 OK", body=b'{"bolt_direct":"bolt://localhost:7687"}'), "error", ()),
+    ("git-ok", "shapo_http_git", "http", "/.git/HEAD",
+     _http_reply("200 OK", body=b"ref: refs/heads/main\n"), "finding", ("heads/main", "main")),
+    ("git-404", "shapo_http_git", "http", "/.git/HEAD",
+     _http_reply("404 Not Found"), "clean", ()),
+    ("git-html", "shapo_http_git", "http", "/.git/HEAD",
+     _http_reply("200 OK", body=b"<html>ref: refs/heads/main</html>"), "clean", ()),
+    ("git-garbage", "shapo_http_git", "http", "/.git/HEAD",
+     b"NO CARRIER\r\n", "error", ()),
+    ("status-ok", "shapo_http_server_status", "http", "/server-status",
+     _http_reply("200 OK", body=b"<html><head><title>Apache Server Status for example.invalid</title></head></html>"),
+     "finding", ("example.invalid",)),
+    ("status-h1", "shapo_http_server_status", "http", "/server-status",
+     _http_reply("200 OK", body=b"<h1>Apache Server Status for example.invalid</h1>"),
+     "finding", ("example.invalid",)),
+    ("status-homepage", "shapo_http_server_status", "http", "/server-status",
+     _http_reply("200 OK", body=b"<html><title>Welcome</title></html>"), "clean", ()),
+    ("status-401", "shapo_http_server_status", "http", "/server-status",
+     _http_reply("401 Unauthorized"), "clean", ()),
+    ("status-garbage", "shapo_http_server_status", "http", "/server-status",
+     b"NO CARRIER\r\n", "error", ()),
+]
+
+
+@needs_pulse
+@pytest.mark.parametrize(("plugin", "service", "target", "reply", "expect", "hidden"),
+                         [case[1:] for case in PHASE8_CASES], ids=[case[0] for case in PHASE8_CASES])
+def test_phase8_plugins_parse_one_reply(plugin, service, target, reply, expect, hidden, stub, tmp_path):
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin(plugin, service, server, tmp_path)
+    seen = finding(lines)
+    request = server.received[-1]
+    assert request.startswith(f"GET {target} HTTP/1.1\r\n".encode()), request
+    assert b"Host: shapoclyack.invalid\r\n" in request
+    assert b"Connection: close\r\n" in request
+    if expect == "finding":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+        evidence = seen[2]
+        for secret in hidden:
+            assert secret not in evidence
+            assert secret not in seen[1]
+    elif expect == "clean":
+        assert seen is None and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --- shapo_http_webdav: one Depth 0 PROPFIND; only 207 Multi-Status reports ---
+
+
+@needs_pulse
+@pytest.mark.parametrize(("reply", "expect"), [
+    (_http_reply("207 Multi-Status", b"Content-Type: application/xml; charset=utf-8",
+                 body=b'<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">'
+                      b'<D:response><D:href>/protected/file.txt</D:href></D:response></D:multistatus>'),
+     "finding"),
+    (_http_reply("404 Not Found"), "clean"),
+    (_http_reply("200 OK", b"Content-Type: text/html", body=b"<html><body>Welcome</body></html>"), "clean"),
+    (b"NO CARRIER\r\n", "error"),
+], ids=["webdav-207", "webdav-404", "webdav-html-200", "webdav-not-http"])
+def test_http_webdav_depth0_propfind_reports_only_207_multistatus(reply, expect, stub, tmp_path):
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_http_webdav", "http", server, tmp_path)
+    seen = finding(lines)
+    request = server.received[-1]
+    assert request.startswith(b"PROPFIND / HTTP/1.1\r\n"), request
+    assert b"Host: shapoclyack.invalid\r\n" in request
+    assert b"Depth: 0\r\n" in request
+    assert b"Content-Length: 0\r\n" in request
+    assert b"Connection: close\r\n" in request
+    if expect == "finding":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+        assert "/protected/file.txt" not in seen[2]
+        assert "href" not in seen[2].lower()
+    elif expect == "clean":
+        assert seen is None and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
 # --- shapo_winrm_http: the 401 needs both the challenge and the product mark ---
 
 
@@ -1725,3 +1855,364 @@ def test_neo4j_http_service_does_not_offer_bolt(stub, tmp_path):
     lines, errors = _run_binary_plugin("shapo_neo4j_discovery", "neo4j", server, tmp_path)
     assert finding(lines) is None and not errors.strip(), errors
     assert all(request.hex() != _NEO4J_BOLT_OFFER for request in server.received)
+
+
+# --------------------------------------------------------------------------
+# Phase 8: shapo_pop3_ntlm -- two-step AUTH NTLM observation. The sandbox
+# opens one connection per probe call, so the stub answers the plugin's second
+# record the way a socket-reusing server would: the type2 challenge arrives
+# without a repeated greeting. A fresh "+OK" there is the documented blocked
+# outcome; the plugin raises it instead of calling the port clean.
+# --------------------------------------------------------------------------
+
+POP3_TYPE1_HEX = "4e544c4d53535000010000000782080000000000000000000000000000000000"
+POP3_TYPE2_HEX = (
+    "4e544c4d53535000020000000000000000000000000000001234567890abcdef"
+    "000000000000000000000000000000000000000000000000"
+)
+POP3_GREETING = b"+OK POP3 stub ready\r\n"
+
+
+def _pop3_ntlm_stub(stub, second_reply):
+    # conn 1 is pulse's bare banner grab; conn 2 is AUTH NTLM, answered with a
+    # continuation; conn 3 is the type1 and gets the challenge a kept session
+    # would send (no greeting repeated).
+    return stub([POP3_GREETING, POP3_GREETING, b""],
+                lambda got: second_reply if got.startswith(b"NTLMSSP") else b"+ \r\n")
+
+
+@needs_pulse
+def test_pop3_ntlm_type2_challenge_is_a_low_finding_without_leaking_names(stub, tmp_path):
+    server = _pop3_ntlm_stub(stub, bytes.fromhex(POP3_TYPE2_HEX))
+    lines, errors = _run_binary_plugin("shapo_pop3_ntlm", "pop3", server, tmp_path)
+    seen = finding(lines)
+    assert seen and seen[0] == "LOW" and not errors.strip(), errors
+    # The hex call is the only way to put the 0x82 flag byte on the wire as
+    # one byte: both records, exactly as specified.
+    assert server.received == [b"AUTH NTLM\r\n", bytes.fromhex(POP3_TYPE1_HEX)], server.received
+    # The evidence names the parse, not the reply values: the challenge bytes
+    # of the stub's type2 must not be copied.
+    assert "type2" in seen[2]
+    assert "001234567890abcdef" not in seen[2]
+
+
+@needs_pulse
+def test_pop3_ntlm_refusal_is_clean_and_stops_before_the_type1(stub, tmp_path):
+    server = stub(POP3_GREETING, lambda _got: b"-ERR Authentication required.\r\n")
+    lines, errors = _run_binary_plugin("shapo_pop3_ntlm", "pop3", server, tmp_path)
+    assert finding(lines) is None and not errors.strip(), errors
+    assert server.received == [b"AUTH NTLM\r\n"], server.received
+
+
+@needs_pulse
+def test_pop3_ntlm_truncated_type2_is_an_error_not_a_verdict(stub, tmp_path):
+    server = _pop3_ntlm_stub(stub, bytes.fromhex(POP3_TYPE2_HEX)[:40])
+    lines, errors = _run_binary_plugin("shapo_pop3_ntlm", "pop3", server, tmp_path)
+    assert finding(lines) is None
+    assert "truncated" in errors and "Function not found" not in errors, errors
+
+
+# --------------------------------------------------------------------------
+# Phase 8: shapo_socks_noauth -- one SOCKS5 greeting, the two-byte method
+# selection decides. 05 00 selects no authentication (LOW); 05 ff or any
+# other method is clean; anything that is not exactly a version-5 two-byte
+# reply is an error. No CONNECT is ever sent.
+# --------------------------------------------------------------------------
+
+
+@needs_pulse
+@pytest.mark.parametrize(("reply", "expect"), [
+    (b"\x05\x00", "finding"),
+    (b"\x05\xff", "clean"),
+    (b"\x05", "error"),
+], ids=["noauth-selected", "no-acceptable-method", "one-byte"])
+def test_socks_noauth_greeting_selects_the_method_without_a_tunnel(reply, expect, stub, tmp_path):
+    server = stub(b"", lambda _request: reply)
+    lines, errors = _run_binary_plugin("shapo_socks_noauth", "socks", server, tmp_path)
+    seen = finding(lines)
+    assert server.received[-1].hex() == "050100", (
+        "one SOCKS5 greeting: version 5, one method, method 0 (no authentication)"
+    )
+    if expect == "finding":
+        assert seen and seen[0] == "LOW" and not errors.strip()
+    elif expect == "clean":
+        assert seen is None and not errors.strip()
+    else:
+        assert seen is None and errors.strip() and "Function not found" not in errors
+
+
+# --------------------------------------------------------------------------
+# Phase 8: shapo_s7_identity -- a COTP Connection Request, then one ReadSZL
+# module-identification request. Each probe_send_hex call is its own
+# connection in the sandbox, so the stub answers by request bytes: the
+# Connection Confirm to the CR, the SZL block to the ReadSZL job. Order
+# number, serial number and station name stay inside the stub reply.
+# --------------------------------------------------------------------------
+
+_COTP_CR = bytes.fromhex("0300001611e00000000100c00109c1020100c2020101")
+_COTP_CC = bytes.fromhex("0300000b06d00001000000")
+_COTP_DR = bytes.fromhex("0300000b06800001000000")
+_SZL_REQUEST = bytes.fromhex("0300002002f080320100000000000e00000401120a10020001000100000300c0")
+
+#: Values that exist only inside the stub reply; none may reach a finding row.
+_S7_SECRETS = ("6ES7 315-2AG10-0AB0", "S C-X8F5 0420", "LINE-42-CONTROL")
+
+
+def _szl_ident_reply(szl: bytes) -> bytes:
+    """A ReadSZL Ack_Data: S7 error 0, return code 0xff, one consistent block."""
+    data = b"\xff\x09" + len(szl).to_bytes(2, "big") + szl
+    param = bytes.fromhex("0401120a10020000")
+    s7 = (b"\x32\x03\x00\x00\x00\x00" + len(param).to_bytes(2, "big")
+          + len(data).to_bytes(2, "big") + b"\x00\x00" + param + data)
+    return b"\x03\x00" + (7 + len(s7)).to_bytes(2, "big") + b"\x02\xf0\x80" + s7
+
+
+def _s7_stub(stub, szl_reply):
+    def reply(request: bytes) -> bytes:
+        if request == _COTP_CR:
+            return _COTP_CC if szl_reply is not None else _COTP_DR
+        if request == _SZL_REQUEST:
+            return szl_reply or b""
+        return b""
+
+    return stub(b"", reply)
+
+
+@needs_pulse
+def test_s7_identity_answers_szl_and_keeps_module_identifiers_out_of_evidence(stub, tmp_path):
+    szl = (b"001c0001"
+           + b"6ES7 315-2AG10-0AB0".ljust(20, b" ")
+           + b"S C-X8F5 0420".ljust(24, b" ")
+           + b"LINE-42-CONTROL".ljust(24, b" "))
+    server = _s7_stub(stub, _szl_ident_reply(szl))
+    lines, errors = _run_binary_plugin("shapo_s7_identity", "s7", server, tmp_path)
+    seen = finding(lines)
+    assert seen and seen[0] == "LOW" and not errors.strip(), errors
+    assert server.received == [_COTP_CR, _SZL_REQUEST], server.received
+    for secret in _S7_SECRETS:
+        assert secret not in seen[1] and secret not in seen[2]
+
+
+@needs_pulse
+def test_s7_identity_cotp_refusal_is_clean_and_stops_before_the_szl_request(stub, tmp_path):
+    server = _s7_stub(stub, None)
+    lines, errors = _run_binary_plugin("shapo_s7_identity", "s7", server, tmp_path)
+    assert finding(lines) is None and not errors.strip(), errors
+    assert server.received == [_COTP_CR], server.received
+
+
+@needs_pulse
+def test_s7_identity_truncated_tpkt_is_an_error_not_a_clean_result(stub, tmp_path):
+    server = stub(b"", lambda _request: bytes.fromhex("0300001611d0"))
+    lines, errors = _run_binary_plugin("shapo_s7_identity", "s7", server, tmp_path)
+    assert finding(lines) is None and errors.strip()
+    assert "Function not found" not in errors
+
+
+# --------------------------------------------------------------------------
+# Phase 8: shapo_enip_identity -- one List Identity (command 0x0063) with no
+# registered session. A zero-status reply whose encapsulation length and the
+# single identity item length both close is the finding; a non-zero command
+# status is clean; a frame that does not close is an error. Product name,
+# serial number and socket address stay inside the stub reply.
+# --------------------------------------------------------------------------
+
+_ENIP_LIST_IDENTITY = bytes.fromhex("6300000000000000000000000000000000000000")
+
+
+def _enip_identity_item(product_name=b"WidgetPLC 9000", serial=0x1234ABCD):
+    """A CPF identity item body: fixed CIP fields, then name, state, an IP."""
+    socket_addr = struct.pack(">HH", 2, 44818) + bytes([10, 9, 8, 7]) + b"\x00" * 8
+    return (
+        struct.pack("<H", 1)               # encapsulation protocol version
+        + socket_addr                      # 16-byte socket address (IP inside)
+        + struct.pack("<HHH", 42, 12, 34)  # vendor id, device type, product code
+        + bytes([2, 1])                    # revision (major, minor)
+        + struct.pack("<H", 0x0030)        # device status
+        + struct.pack("<I", serial)        # serial number
+        + bytes([len(product_name)]) + product_name
+        + b"\xff"                          # state
+    )
+
+
+def _enip_list_identity_reply(item=None, status=0, cut=None):
+    """An encapsulation header (command 0x0063) plus one 0x0c identity item."""
+    data = b"" if item is None else struct.pack("<HHH", 1, 0x0C, len(item)) + item
+    reply = (
+        struct.pack("<HHI", 0x0063, len(data), 0)
+        + struct.pack("<I", status)
+        + b"\x00" * 8  # sender context
+        + b"\x00" * 4  # options
+        + data
+    )
+    return reply if cut is None else reply[:cut]
+
+
+@needs_pulse
+def test_enip_identity_one_complete_item_is_a_finding_without_identity_fields(stub, tmp_path):
+    server = stub(b"", lambda _request: _enip_list_identity_reply(_enip_identity_item()))
+    lines, errors = _run_binary_plugin("shapo_enip_identity", "enip", server, tmp_path)
+    seen = finding(lines)
+    assert server.received[-1] == _ENIP_LIST_IDENTITY, (
+        "one List Identity: command 0x0063, session handle 0, empty context"
+    )
+    assert seen and seen[0] == "LOW" and not errors.strip(), errors
+    for secret in ("WidgetPLC 9000", "cdab3412", "10.9.8.7"):
+        assert secret.lower() not in seen[1].lower(), f"title leaks {secret!r}"
+        assert secret.lower() not in seen[2].lower(), f"evidence leaks {secret!r}"
+
+
+@needs_pulse
+def test_enip_identity_nonzero_command_status_is_clean(stub, tmp_path):
+    server = stub(b"", lambda _request: _enip_list_identity_reply(status=0x0001))
+    lines, errors = _run_binary_plugin("shapo_enip_identity", "enip", server, tmp_path)
+    assert finding(lines) is None and not errors.strip(), errors
+
+
+@needs_pulse
+def test_enip_identity_truncated_encapsulation_header_is_an_error(stub, tmp_path):
+    server = stub(b"", lambda _request: _enip_list_identity_reply(_enip_identity_item(), cut=20))
+    lines, errors = _run_binary_plugin("shapo_enip_identity", "enip", server, tmp_path)
+    assert finding(lines) is None and errors.strip()
+    assert "Function not found" not in errors
+
+
+# --------------------------------------------------------------------------
+# Phase 8: shapo_imap_ntlm -- AUTHENTICATE NTLM, then a minimal NTLM type1
+# token on the continuation. A parsed type2 challenge is the finding; a NO/BAD
+# answer is clean and sends no type1; a truncated type2 is an error. The stub
+# answers by request bytes because the sandbox opens one connection per
+# probe_send call; a fresh IMAP greeting on the second call stops the check as
+# blocked with the reason, so the stub serves the type2 connection no greeting.
+# --------------------------------------------------------------------------
+
+#: The minimal NTLM type1 from the phase doc: 32 bytes, no workstation name,
+#: no type3.
+_IMAP_TYPE1_HEX = "4e544c4d53535000010000000782080000000000000000000000000000000000"
+#: The doc's short correct type2: signature, message type 2, zero-length target
+#: name and target info blocks, challenge 1234567890abcdef.
+_IMAP_TYPE2_HEX = (
+    "4e544c4d53535000020000000000000000000000000000001234567890abcdef"
+    "000000000000000000000000000000000000000000000000"
+)
+_IMAP_AUTHENTICATE = b"a001 AUTHENTICATE NTLM\r\n"
+_IMAP_GREETING = b"* OK IMAP4rev1 ready\r\n"
+
+
+@needs_pulse
+def test_imap_ntlm_type2_challenge_is_a_low_finding_without_names(stub, tmp_path):
+    import base64
+
+    def reply(request: bytes) -> bytes:
+        if request.startswith(b"a001 AUTHENTICATE"):
+            return b"+ \r\n"
+        return b"+ " + base64.b64encode(bytes.fromhex(_IMAP_TYPE2_HEX)) + b"\r\n"
+
+    server = stub([_IMAP_GREETING, _IMAP_GREETING, b""], reply)
+    lines, errors = _run_binary_plugin("shapo_imap_ntlm", "imap", server, tmp_path)
+    seen = finding(lines)
+    assert server.received == [_IMAP_AUTHENTICATE, bytes.fromhex(_IMAP_TYPE1_HEX)], server.received
+    assert seen and seen[0] == "LOW" and not errors.strip(), errors
+    for secret in ("1234567890abcdef",):
+        assert secret not in seen[1], f"title leaks {secret!r}"
+        assert secret not in seen[2], f"evidence leaks {secret!r}"
+
+
+@needs_pulse
+def test_imap_ntlm_refusal_is_clean_and_sends_no_type1(stub, tmp_path):
+    server = stub([_IMAP_GREETING, _IMAP_GREETING], lambda _request: b"a001 NO AUTHENTICATE failed\r\n")
+    lines, errors = _run_binary_plugin("shapo_imap_ntlm", "imap", server, tmp_path)
+    assert finding(lines) is None and not errors.strip(), errors
+    assert server.received == [_IMAP_AUTHENTICATE], server.received
+
+
+@needs_pulse
+def test_imap_ntlm_truncated_type2_is_an_error(stub, tmp_path):
+    import base64
+
+    def reply(request: bytes) -> bytes:
+        if request.startswith(b"a001 AUTHENTICATE"):
+            return b"+ \r\n"
+        return b"+ " + base64.b64encode(bytes.fromhex(_IMAP_TYPE2_HEX)[:20]) + b"\r\n"
+
+    server = stub([_IMAP_GREETING, _IMAP_GREETING, b""], reply)
+    lines, errors = _run_binary_plugin("shapo_imap_ntlm", "imap", server, tmp_path)
+    assert finding(lines) is None and errors.strip()
+    assert "Function not found" not in errors
+
+
+# --------------------------------------------------------------------------
+# Phase 8: shapo_smtp_ntlm -- EHLO, then AUTH NTLM on the 250 answer, then the
+# same minimal NTLM type1 on the 334 continuation. The sandbox opens one
+# connection per probe_send call, so the stub answers by request bytes and
+# serves the AUTH NTLM and type1 connections no greeting, the way a
+# socket-keeping server would; a fresh "220" there is the documented blocked
+# outcome. No MAIL FROM/RCPT TO/VRFY/EXPN and no type3 are ever sent.
+# --------------------------------------------------------------------------
+
+#: The doc's type1 (same 32-byte blob as the IMAP and POP3 checks), base64 in
+#: one SMTP text line.
+_SMTP_TYPE1_B64 = b"TlRMTVNTUAABAAAAB4IIAAAAAAAAAAAAAAAAAAAAAAA="
+_SMTP_EHLO = b"EHLO shapoclyack.invalid\r\n"
+_SMTP_GREETING = b"220 mail.example ESMTP\r\n"
+
+
+def _smtp_type2_b64(target_name: bytes = b"") -> bytes:
+    """The doc's type2 shape: signature, message type 2, challenge, blocks that
+    close inside the frame. With a target name only to prove it stays secret."""
+    import base64
+
+    frame = bytearray(56)
+    frame[0:8] = b"NTLMSSP\x00"
+    struct.pack_into("<I", frame, 8, 2)
+    struct.pack_into("<HHI", frame, 12, len(target_name), len(target_name), 56)
+    struct.pack_into("<I", frame, 20, 0x00088205)
+    frame[24:32] = bytes.fromhex("0123456789abcdef")
+    struct.pack_into("<HHI", frame, 40, 0, 0, 0)
+    return base64.b64encode(bytes(frame) + target_name)
+
+
+def _smtp_ntlm_stub(stub, ehlo_block, *step_replies):
+    # conn 1 is pulse's bare banner grab; conn 2 is EHLO and is greeted again
+    # like any fresh SMTP session; conn 3 (AUTH NTLM) and conn 4 (the type1)
+    # get no greeting repeated, as a kept socket would behave.
+    remaining = list(step_replies)
+
+    def reply(request: bytes) -> bytes:
+        if request.startswith(b"EHLO"):
+            return ehlo_block
+        return remaining.pop(0)
+
+    return stub([_SMTP_GREETING, _SMTP_GREETING, b"", b""], reply)
+
+
+@needs_pulse
+def test_smtp_ntlm_type2_challenge_is_a_low_finding_without_names(stub, tmp_path):
+    challenge = _smtp_type2_b64("SRV-DC-01".encode("utf-16-le"))
+    server = _smtp_ntlm_stub(stub, b"250-mail.example\r\n250-AUTH NTLM\r\n250 HELP\r\n",
+                             b"334 \r\n", b"334 " + challenge + b"\r\n")
+    lines, errors = _run_binary_plugin("shapo_smtp_ntlm", "smtp", server, tmp_path)
+    seen = finding(lines)
+    assert server.received == [_SMTP_EHLO, b"AUTH NTLM\r\n", _SMTP_TYPE1_B64 + b"\r\n"], server.received
+    assert seen and seen[0] == "LOW" and not errors.strip(), errors
+    for secret in ("SRV-DC-01", "1234567890abcdef", _smtp_type2_b64().decode()):
+        assert secret not in seen[1], f"title leaks {secret!r}"
+        assert secret not in seen[2], f"evidence leaks {secret!r}"
+
+
+@needs_pulse
+def test_smtp_ntlm_auth_refusal_is_clean_and_sends_no_type1(stub, tmp_path):
+    server = _smtp_ntlm_stub(stub, b"250-mail.example\r\n250-AUTH PLAIN LOGIN\r\n250 HELP\r\n",
+                             b"504 5.7.4 Unrecognized authentication type\r\n")
+    lines, errors = _run_binary_plugin("shapo_smtp_ntlm", "smtp", server, tmp_path)
+    assert finding(lines) is None and not errors.strip(), errors
+    assert server.received == [_SMTP_EHLO, b"AUTH NTLM\r\n"], server.received
+
+
+@needs_pulse
+def test_smtp_ntlm_truncated_type2_is_an_error_not_a_verdict(stub, tmp_path):
+    server = _smtp_ntlm_stub(stub, b"250-mail.example\r\n250-AUTH NTLM\r\n250 HELP\r\n",
+                             b"334 \r\n", b"334 " + _smtp_type2_b64()[:40] + b"\r\n")
+    lines, errors = _run_binary_plugin("shapo_smtp_ntlm", "smtp", server, tmp_path)
+    assert finding(lines) is None and errors.strip()
+    assert "truncated" in errors and "Function not found" not in errors, errors

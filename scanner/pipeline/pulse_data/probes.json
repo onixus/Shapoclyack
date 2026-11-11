@@ -1397,9 +1397,7 @@
     },
     {
       "name": "cassandra-startup",
-      "ports": [
-        9042
-      ],
+      "ports": [9042],
       "rarity": 1,
       "payload_hex": "03000001000000160001000b43514c5f56455253494f4e0005332e302e30",
       "matches": [
@@ -1417,13 +1415,7 @@
     },
     {
       "name": "jdwp-handshake",
-      "ports": [
-        8000,
-        8001,
-        8787,
-        5005,
-        49152
-      ],
+      "ports": [8000, 8001, 8787, 5005, 49152],
       "rarity": 1,
       "payload": "JDWP-Handshake",
       "matches": [
@@ -1436,9 +1428,7 @@
     },
     {
       "name": "modbus-device-id",
-      "ports": [
-        502
-      ],
+      "ports": [502],
       "rarity": 1,
       "payload_hex": "000100000004002b0e01",
       "matches": [
@@ -1451,10 +1441,7 @@
     },
     {
       "name": "mssql-prelogin",
-      "ports": [
-        1433,
-        1434
-      ],
+      "ports": [1433, 1434],
       "rarity": 1,
       "payload_hex": "1201002f00000100000000000601000600010200070001030008000404000c0001ff00000000000000000000000000",
       "matches": [
@@ -1467,9 +1454,7 @@
     },
     {
       "name": "oracle-tns-version",
-      "ports": [
-        1521
-      ],
+      "ports": [1521],
       "rarity": 1,
       "payload_hex": "002800000100000028434f4e4e4543545f444154413d28434f4d4d414e443d56455253494f4e2929",
       "matches": [
@@ -1482,12 +1467,7 @@
     },
     {
       "name": "rmi-handshake",
-      "ports": [
-        1099,
-        1098,
-        1199,
-        8999
-      ],
+      "ports": [1099, 1098, 1199, 8999],
       "rarity": 1,
       "payload_hex": "4a524d490002",
       "matches": [
@@ -1500,9 +1480,7 @@
     },
     {
       "name": "epmd-names",
-      "ports": [
-        4369
-      ],
+      "ports": [4369],
       "rarity": 1,
       "payload_hex": "6e",
       "matches": [
@@ -1516,14 +1494,12 @@
     },
     {
       "name": "nbd-handshake",
-      "ports": [
-        10809
-      ],
+      "ports": [10809],
       "rarity": 1,
       "payload_hex": "4e42444d4147494349484156454f505400000001",
       "matches": [
         {
-          "pattern": "^\\x4e\\x42\\x44\\x4d\\x41\\x47\\x49\\x43",
+          "pattern": "^\\x4e\\x42\\x4d\\x41\\x47\\x49\\x43",
           "service": "nbd",
           "product": "Network Block Device"
         }
@@ -1531,9 +1507,7 @@
     },
     {
       "name": "iscsi-login",
-      "ports": [
-        3260
-      ],
+      "ports": [3260],
       "rarity": 1,
       "payload_hex": "430000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000",
       "matches": [
@@ -1546,11 +1520,7 @@
     },
     {
       "name": "giop-locate",
-      "ports": [
-        2809,
-        1050,
-        900
-      ],
+      "ports": [2809, 1050, 900],
       "rarity": 1,
       "payload_hex": "47494f50010000030000000400000001",
       "matches": [
@@ -1563,9 +1533,7 @@
     },
     {
       "name": "drda-excsat",
-      "ports": [
-        50000
-      ],
+      "ports": [50000],
       "rarity": 1,
       "payload_hex": "0021d001000110411404001014030003147c000714400001115e0009736861706f",
       "matches": [
@@ -1573,6 +1541,54 @@
           "pattern": "^..\\xd0",
           "service": "drda",
           "product": "IBM DB2 DRDA"
+        }
+      ]
+    },
+    {
+      "name": "socks5-greeting",
+      "ports": [1080],
+      "rarity": 1,
+      "payload": "",
+      "payload_hex": "050100",
+      "matches": [
+        {
+          "pattern": "^\\x05\\x00",
+          "service": "socks",
+          "product": "SOCKS5 proxy (no auth)"
+        },
+        {
+          "pattern": "^\\x05",
+          "service": "socks",
+          "product": "SOCKS5 proxy",
+          "soft": true
+        }
+      ]
+    },
+    {
+      "name": "s7-comm",
+      "ports": [102],
+      "rarity": 1,
+      "payload": "",
+      "payload_hex": "0300001611e00000000100c00109c1020100c2020101",
+      "matches": [
+        {
+          "pattern": "^\\x03\\x00\\x00.\\x11\\xd0",
+          "service": "s7",
+          "product": "Siemens S7 PLC"
+        }
+      ]
+    },
+    {
+      "name": "enip-list-identity",
+      "ports": [44818],
+      "rarity": 1,
+      "payload": "",
+      "payload_hex": "6300000000000000000000000000000000000000",
+      "matches": [
+        {
+          "pattern": "^\\x63\\x00",
+          "service": "enip",
+          "product": "EtherNet/IP device"
         }
       ]
     }

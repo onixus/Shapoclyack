@@ -6,6 +6,8 @@ Content covers weak SSH advertisements, verified Ed25519 host-key
 observations, anonymous FTP, cleartext capabilities, plain HTTP TRACE and
 security headers, unauthenticated service status/listing endpoints, broker and
 directory negotiation, SMB dialect/signing and MS17-010 status hypotheses,
+unauthenticated Elasticsearch, OpenSearch, MinIO and Neo4j HTTP documents,
+plain-HTTP Git metadata and Apache server-status,
 RDP negotiation/type2 inventory, VNC security advertisements, X11 setup
 acceptance, and standalone UDP SNMP inventory.
 The official scripts are git content in `scanner/pipeline/pulse_data/plugins/`.
@@ -137,6 +139,19 @@ installed sensor or fleet acceptance.
 | `shapo_sonarqube_status` | Parsed SonarQube system status | LOW; health, components and migration are not accessed | Separate status-access check |
 | `shapo_keycloak_realm` | Unauthenticated administrative realm listing | LOW; users and clients are not read | Separate listing-access check |
 | `shapo_rancher_status` | Exact unauthenticated Rancher ping response | LOW; clusters and nodes are not queried | Separate status-access check |
+| `shapo_elasticsearch_root` | Unauthenticated Elasticsearch root document (`tagline` exactly `You Know, for Search`, plus a `version` member) | LOW; indices, nodes and queries are not accessed | Separate status-access check |
+| `shapo_opensearch_root` | Unauthenticated OpenSearch root document (`distribution` exactly `opensearch`, plus a `version` member) | LOW; indices, nodes and queries are not accessed | Separate status-access check |
+| `shapo_minio_health` | MinIO liveness response with a `Server: MinIO` header | LOW; buckets, objects and cluster health are not accessed | Separate status-access check |
+| `shapo_neo4j_http` | Unauthenticated Neo4j HTTP discovery document with `neo4j_version` | LOW; Bolt, Cypher and databases are not accessed | Separate status-access check. Bolt stays `shapo_neo4j_discovery` on unnamed port 7687 |
+| `shapo_http_git` | Plain-HTTP `/.git/HEAD` whose body is one `ref: refs/` line | LOW; objects, packs and history are not read. Any other HTTP status, including a 200 that is not that line, is clean | `http-git`, narrowed to one ref line over plain HTTP |
+| `shapo_http_server_status` | Plain-HTTP Apache `server-status` title | LOW; the scoreboard and the host name are not copied. A 200 without that title is clean | `http-apache-server-status` over plain HTTP only |
+| `shapo_http_webdav` | Plain-HTTP `PROPFIND /` with `Depth: 0` returning `207 Multi-Status` | LOW; listing depth, PUT, DELETE and MOVE are not attempted. Any other status, including `200`, is clean | `http-webdav-config` narrowed to one safe depth-0 request |
+| `shapo_imap_ntlm` | `AUTHENTICATE NTLM` answered with a parsed NTLM type2 challenge | LOW; credentials, login and folders are not attempted | Separate mechanism observation |
+| `shapo_pop3_ntlm` | `AUTH NTLM` answered with a parsed NTLM type2 challenge | LOW; credentials, login and mailbox are not attempted | Separate mechanism observation |
+| `shapo_smtp_ntlm` | `AUTH NTLM` after `EHLO` answered with a parsed NTLM type2 challenge | LOW; relay, VRFY, EXPN and credentials are not attempted | Separate mechanism observation |
+| `shapo_socks_noauth` | SOCKS5 method negotiation selects no authentication | LOW; CONNECT, BIND and UDP ASSOCIATE are not sent | Separate protocol check |
+| `shapo_s7_identity` | COTP Connection Confirm followed by a parsed SZL module-identification block | LOW; memory read, write and CPU control are not attempted | Separate protocol check |
+| `shapo_enip_identity` | EtherNet/IP List Identity response with one complete identity item | LOW; register session, CIP read and write are not attempted | Separate protocol check |
 
 The two exposure plugins still claim reachability only. Negotiation and
 inventory observations do not establish relay/exploitability, trusted identity,

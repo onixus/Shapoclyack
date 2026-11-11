@@ -381,6 +381,19 @@ NSE_PLUGIN_MAP.update({
 })
 PLUGIN_ONLY = dict(RECORDED_PLUGIN_ONLY)
 PLUGIN_ONLY.update({
+    "shapo_elasticsearch_root": "unauthenticated root document only; indices, nodes and queries untested",
+    "shapo_opensearch_root": "unauthenticated root document only; indices, nodes and queries untested",
+    "shapo_minio_health": "unauthenticated liveness endpoint only; buckets, objects and cluster health untested",
+    "shapo_neo4j_http": "unauthenticated HTTP discovery document only; Bolt, Cypher and databases untested",
+    "shapo_http_git": "one plain-HTTP HEAD ref line only; objects, packs and history untested",
+    "shapo_http_server_status": "Apache server-status title only; the scoreboard and host name are not copied",
+    "shapo_http_webdav": "PROPFIND Depth 0 returns 207 only; listing, PUT, DELETE and MOVE untested",
+    "shapo_imap_ntlm": "AUTHENTICATE NTLM type2 challenge only; credentials, login and folders untested",
+    "shapo_pop3_ntlm": "AUTH NTLM type2 challenge only; credentials, login and mailbox untested",
+    "shapo_smtp_ntlm": "AUTH NTLM type2 challenge only; relay, VRFY, EXPN and credentials untested",
+    "shapo_socks_noauth": "SOCKS5 method negotiation only; CONNECT, BIND and UDP ASSOCIATE untested",
+    "shapo_s7_identity": "COTP + SZL module identification only; memory read, write and control untested",
+    "shapo_enip_identity": "EtherNet/IP List Identity only; register session, CIP read and write untested",
     "shapo_couchdb_root": "unauthenticated root document only; databases, users and writes untested",
     "shapo_nomad_status": "unauthenticated leader status only; jobs, nodes and peers untested",
     "shapo_influx_health": "unauthenticated ping only; queries, writes and credentials untested",

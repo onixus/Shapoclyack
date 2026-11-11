@@ -783,15 +783,299 @@ python3 -m pytest tests/test_nmap_pulse_corpus.py::test_every_shipped_plugin_is_
 - Не делать: `/v3`, `/v1/nodes`, `/v3/clusters`.
 - Тест: `pong`; `302`; `pong-extra`.
 
+## Фаза 8 — документы, которые проба уже называет
+
+Статус фазы: `done`. Все тринадцать пунктов реализованы: шесть начальных
+проверок документов и семь однообменных проверок из хвоста NSE. Три из них
+требовали новых проб (`socks`, `s7`, `enip`), которые добавлены в
+`scanner/pipeline/pulse_data/probes.json`. Снято ограничение журнала от 2026-11-10: четыре хранилища просили
+как недостающие проверки. Гейт готовых пунктов только по имени сервиса
+пробы, без порта и без `service == "http"`. Два готовых пункта про голый HTTP
+идут тем же путём, что `shapo_http_trace`: другой ответ `200` — это чисто, не
+ошибка, иначе каждый сайт стал бы ошибкой плагина.
+
+Серьёзность `LOW`. В evidence нет версии, uuid, ветки, имени хоста, списка и
+тела. `summary` говорит, что данные и запись не запрашивались.
+
+### shapo_elasticsearch_root — `done`
+
+- Сервис: `elasticsearch`. Безымянного порта нет: `9200` уже занят `http-head`.
+- Запрос: `GET /`.
+- Находка: `200`, один JSON-объект, значение `tagline` ровно `You Know, for Search`, есть ключ `version`.
+- Чисто: `401`, `403` или редирект.
+- Ошибка: не HTTP, другой статус, `200` без этой пары. Более длинное `tagline` не подходит.
+- Evidence: приветственный документ разобран. Версию и имя кластера не копировать.
+- Не делать: `/_cat`, `/_cluster`, `/_nodes`, `/_search`.
+- Тест: точный tagline и `version`; `401`; tagline `You Know, for Searching`.
+
+### shapo_opensearch_root — `done`
+
+- Сервис: `opensearch`. Безымянного порта нет.
+- Запрос: `GET /`.
+- Находка: `200`, один JSON-объект, значение `distribution` ровно `opensearch`, есть ключ `version`.
+- Чисто: `401`, `403` или редирект.
+- Ошибка: не HTTP, другой статус, документ Elasticsearch без этого поля.
+- Evidence: приветственный документ разобран. Версию не копировать.
+- Не делать: те же запретные пути, что у Elasticsearch.
+- Тест: `distribution` и `version`; `403`; tagline Elasticsearch.
+
+### shapo_minio_health — `done`
+
+- Сервис: `minio`. Безымянного порта нет: `9000` занят `http-head`.
+- Запрос: `GET /minio/health/live`.
+- Находка: `200` и заголовок, который в нижнем регистре начинается с `server: minio`, а следующий символ — конец строки, `/` или пробел.
+- Чисто: `401`, `403` или редирект.
+- Ошибка: `200` без этого заголовка, другой статус, не HTTP. Пустое тело при таком заголовке — находка, не ошибка.
+- Evidence: liveness ответил. Имя бакета и версию релиза не копировать.
+- Не делать: `/minio/health/cluster`, список бакетов, `ListBucket`.
+- Тест: `Server: MinIO`; `401`; `Server: nginx`.
+
+### shapo_neo4j_http — `done`
+
+- Сервис: `neo4j`. Это HTTP-документ пробы, не Bolt. Безымянного порта нет. `shapo_neo4j_discovery` не менять.
+- Запрос: `GET /`.
+- Находка: `200`, один JSON-объект, есть ключ `neo4j_version`.
+- Чисто: `401`, `403` или редирект.
+- Ошибка: `200` без этого ключа, не HTTP.
+- Evidence: discovery-документ разобран. Версию и edition не копировать.
+- Не делать: Bolt, Cypher, `/db/data`, `tx/commit`.
+- Тест: объект с `neo4j_version`; `401`; объект только с `bolt_direct`.
+
+### shapo_http_git — `done`
+
+- Сервис: `http` или баннер `http/`. Безымянного порта нет.
+- Запрос: `GET /.git/HEAD`.
+- Находка: `200` и тело после обрезки пробелов — одна строка `ref: refs/` длиной не больше 80, без `<`, хвост только из букв, цифр, `/`, `_`, `.`, `-`.
+- Чисто: любой другой разобранный статус и `200`, который не является такой строкой.
+- Ошибка: не HTTP.
+- Evidence: строка ref разобрана. Имя ветки не копировать.
+- Не делать: `/.git/config`, объекты, pack, обход каталога.
+- Тест: `ref: refs/heads/main`; `404`; HTML.
+
+### shapo_http_server_status — `done`
+
+- Сервис: `http` или баннер `http/`. Безымянного порта нет.
+- Запрос: `GET /server-status`.
+- Находка: `200` и тело содержит `<title>Apache Server Status for ` или `<h1>Apache Server Status for `.
+- Чисто: другой статус и `200` без этого заголовка.
+- Ошибка: не HTTP.
+- Evidence: заголовок страницы разобран. Имя хоста и таблицу воркеров не копировать.
+- Не делать: `?auto`, другие пути Apache.
+- Тест: title с именем хоста, которого нет в evidence; обычная страница `200`; не HTTP.
+
+Задачи ниже поставлены сюда 2026-11-11. Это однообменные проверки из корпуса
+NSE, которых не было в рангах 1–100. Ранги фазы 9 не перенумеровывать.
+
+### shapo_http_webdav — `done`
+
+- Сервис: `http` или баннер `http/`. Безымянного порта нет.
+- Запрос: один `PROPFIND /` с `Depth: 0`, `Host: shapoclyack.invalid`, `Content-Length: 0`, `Connection: close`. Тела XML нет.
+- Находка `LOW`: статус `207`.
+- Чисто: `401`, `403`, `404`, `405` или редирект. Любой другой разобранный статус, включая `200`, тоже чисто: обычный сайт не должен становиться ошибкой плагина.
+- Ошибка: не HTTP, обрезанные заголовки.
+- Evidence: `PROPFIND` с глубиной 0 вернул `207`. Ссылки, имена файлов и тело не копировать.
+- Не делать: `Depth: 1`, `Depth: infinity`, `PROPFIND` по найденным путям, `PUT`, `DELETE`, `MOVE`, `COPY`.
+- Тест: `207` с коротким multistatus, evidence без href; `404`; HTML `200`; не HTTP.
+
+### shapo_imap_ntlm — `done`
+
+- Сервис: `imap`. Безымянного порта нет. Порт `993` не добавлять.
+- Запрос: на одном сокете два шага. Сначала `a001 AUTHENTICATE NTLM`. Если строка ответа начинается с `+`, вторым шагом минимальный NTLM Type1 без имени станции и без Type3. Если второй `probe_send` открывает новое соединение, пункт остановить как `blocked` и записать причину, а не склеивать шаги в один пакет.
+- Находка `LOW`: разобран Type2. Подпись `NTLMSSP` и тип сообщения `2`, длина блока сходится с кадром.
+- Чисто: `NO`, `BAD` или продолжение, которое не является Type2. Учётку не пробовали.
+- Ошибка: пустой ответ, обрезанный Type2, длина полей больше кадра.
+- Evidence: сервер прислал Type2. Имя хоста, домен и время не копировать.
+- Не делать: Type3, `LOGIN`, `AUTHENTICATE PLAIN`, перебор.
+- Тест: `+` и короткий корректный Type2, evidence без имён; `a001 NO`; обрезанный Type2.
+
+### shapo_pop3_ntlm — `done`
+
+- Сервис: `pop3`. Безымянного порта нет. Порт `995` не добавлять.
+- Запрос: на одном сокете `AUTH NTLM`, затем при `+` тот же Type1, что у IMAP. Новое соединение на втором шаге останавливает пункт как `blocked`.
+- Находка `LOW`: разобран Type2, те же проверки длины.
+- Чисто: `-ERR` или ответ без Type2.
+- Ошибка: пусто или обрезанный кадр.
+- Evidence: сервер прислал Type2. Имена не копировать.
+- Не делать: Type3, `USER`/`PASS`, `CAPA` сверх того, что уже делает `shapo_cleartext_services`.
+- Тест: `+` и Type2; `-ERR`; обрезанный Type2.
+
+### shapo_smtp_ntlm — `done`
+
+- Сервис: `smtp`. Безымянного порта нет. Порт `465` не добавлять.
+- Запрос: на одном сокете `EHLO shapoclyack.invalid`, затем при коде `250` команда `AUTH NTLM`, затем при `334` тот же Type1. Это наблюдение механизма, не реле и не VRFY. Больше трёх записей не делать. Новый сокет на втором шаге останавливает пункт как `blocked`.
+- Находка `LOW`: после `334` разобран Type2.
+- Чисто: `AUTH` не объявлен, код отказа `5xx`, либо `334` без Type2.
+- Ошибка: пусто, обрезанный кадр, `EHLO` без кода.
+- Evidence: сервер прислал Type2. Имена не копировать.
+- Не делать: `MAIL FROM`, `RCPT TO`, `VRFY`, `EXPN`, Type3.
+- Тест: `250` с `AUTH NTLM`, затем `334` и Type2; `504`; обрезанный Type2.
+
+### shapo_socks_noauth — `done`
+
+- Сервис: своего имени в `probes.json` ещё нет. Сначала проба, которая по ответу `05 00` ставит `socks`. До этой пробы файл не коммитить.
+- Порт без имени, когда проба есть: `1080`, формой `unnamed && port == 1080`.
+- Запрос: один кадр SOCKS5, версия `5`, один метод, метод `0`. `CONNECT` не слать.
+- Находка `LOW`: ровно два байта `05 00`. Это выбранный метод «без аутентификации», не открытый туннель.
+- Чисто: `05 FF` (нет общего метода) и ответ, где выбран любой другой метод.
+- Ошибка: пусто, один байт, версия не `5`.
+- Evidence: сервер выбрал метод без аутентификации. Адрес назначения не бывает, потому что запроса туннеля нет.
+- Не делать: `CONNECT`, `BIND`, `UDP ASSOCIATE`, SOCKS4, подбор учётки.
+- Тест: `05 00`; `05 FF`; один байт `05`.
+
+### shapo_s7_identity — `done`
+
+- Сервис: своего имени в `probes.json` ещё нет. Сначала проба на порт `102`, которая ставит `s7`. До неё файл не коммитить.
+- Порт без имени: `102`, формой `unnamed && port == 102`.
+- Запрос: не больше двух записей на одном сокете. Сначала COTP Connection Request. Если пришёл Connection Confirm, один SZL-запрос идентификации модуля. Записи в память ПЛК нет. Если второй вызов открывает новый сокет, пункт остановить как `blocked`.
+- Находка `LOW`: ответ SZL разобран и длина блока сходится.
+- Чисто: COTP отказ или SZL с кодом ошибки доступа.
+- Ошибка: пусто, длина TPKT не сходится, обрезанный SZL.
+- Evidence: модуль ответил на идентификацию. Номер заказа, серийный номер и имя станции не копировать.
+- Не делать: чтение меркеров, запись выходов, останов CPU, перебор rack/slot.
+- Тест: короткий Confirm и SZL с сходящейся длиной, evidence без серийного номера; отказ COTP; обрезанный TPKT.
+
+### shapo_enip_identity — `done`
+
+- Сервис: своего имени в `probes.json` ещё нет. Сначала проба, которая по List Identity ставит `enip` или `ethernetip`. До неё файл не коммитить.
+- Порт без имени: `44818`, формой `unnamed && port == 44818`. Это TCP. UDP не слать.
+- Запрос: один List Identity, команда `0x0063`, без сессии и без регистрации.
+- Находка `LOW`: ответ с той же командой, статус `0` и один элемент identity, длины сходятся.
+- Чисто: статус команды не ноль.
+- Ошибка: пусто, длина encapsulation не сходится, элемент обрезан.
+- Evidence: устройство ответило на List Identity. Имя продукта, серийный номер и адрес не копировать.
+- Не делать: Register Session, SendRRData, запись атрибутов CIP.
+- Тест: один элемент с сходящейся длиной, evidence без имени продукта; ненулевой статус; обрезанный заголовок.
+
+## Фаза 9 — топ недостающих проверок против NSE
+
+Статус фазы: `todo`. Это хвост сравнения 611 скриптов NSE
+(`/opt/homebrew/share/nmap/scripts`, категории `safe` / `discovery` /
+`version` / `default`) с 50 плагинами, которые уже были до фазы 8, и с
+шестью пунктами фазы 8. Ранг — польза для продукта при одном безопасном
+TCP-обмене, не обещание перенести скрипт.
+
+NSE здесь — программа на Lua: несколько сокетов, UDP, TLS, чужой хост,
+библиотеки, подбор, вердикт «пропатчено» и свободный текст. Плагин Pulse —
+один обмен на уже открытом порту, гейт по `service` пробы, отказ в доступе
+молчит, обрезанный ответ — ошибка, evidence без тела. Поэтому большинство
+скриптов NSE в этот контракт не встаёт. `todo` можно писать, когда у пункта
+появится имя сервиса пробы или когда шум на каждом `http` будет принят
+отдельной записью журнала. `blocked` не писать.
+
+Ранги 1–6 — уже сделанные пункты фазы 8. Семь задач со статусом `todo`
+(WebDAV, NTLM на IMAP/POP3/SMTP, SOCKS без аутентификации, идентификация S7
+и EtherNet/IP) тоже лежат в фазе 8 и эту нумерацию не сдвигают. Дальше:
+
+| # | Имя | NSE | Статус | Почему не код в этой волне |
+|---|---|---|---|---|
+| 7 | `shapo_http_methods` | `http-methods` | `todo` | Один `OPTIONS /` на `http`. Находка только если `Allow` содержит отдельный токен `PUT`, `DELETE` или `CONNECT`. Шумно на обычном API, поэтому не включено в фазу 8. TRACE уже делает `shapo_http_trace`. |
+| 8 | `shapo_http_cookie_flags` | `http-cookie-flags` | `todo` | Один ответ, флаг `Set-Cookie` без `HttpOnly`. Шумно. `Secure` на голом HTTP не доказывает дефект. |
+| 9 | `shapo_http_cors` | `http-cors` | `todo` | Один ответ с `Access-Control-Allow-Origin: *` и `Allow-Credentials: true`. Остальные сочетания не находка. |
+| 10 | `shapo_http_ntlm_info` | `http-ntlm-info` | `todo` | Один Type1, разбор Type2 как у RDP. Имена хоста и домена в evidence не копировать. Парсер легко ошибается, в фазу 8 не входил. |
+| 11 | `shapo_cassandra_ready` | `cassandra-info` | `todo` | Нужна проба `cassandra`. `STARTUP` без учётных данных: `READY` — принятая сессия, `AUTHENTICATE` — чисто. Порт `9042`. |
+| 12 | `shapo_jdwp_handshake` | `jdwp-info` | `todo` | Нужна проба `jdwp`. Эхо `JDWP-Handshake` — принятый отладочный канал, как X11. Команду JDWP не слать. Порт `8000` в безымянный гейт не ставить. |
+| 13 | `shapo_mssql_prelogin` | `ms-sql-info` | `todo` | Нужна проба `mssql`. Только prelogin: версия и шифрование. Логин TDS, пустой пароль и `xp_cmdshell` не слать. |
+| 14 | `shapo_oracle_tns_version` | `oracle-tns-version` | `todo` | Нужна проба `oracle`. Один пакет версии. `(CONNECT_DATA)` с пользователем не слать. |
+| 15 | `shapo_modbus_identity` | `modbus-discover` | `todo` | Нужна проба `modbus`. Один read Device Identification, функция 43. Запись регистра не слать. NSE помечает скрипт intrusive: переносить только этот кадр. |
+| 16 | `shapo_rmi_registry` | `rmi-dumpregistry` | `todo` | Нужна проба `rmi`. Находка — реестр ответил. Имена объектов в evidence не копировать. |
+| 17 | `shapo_epmd_names` | `epmd-info` | `todo` | Нужна проба `epmd`. Находка — порт ответил списком. Имена узлов не копировать. |
+| 18 | `shapo_iscsi_text` | `iscsi-info` | `todo` | Нужна проба `iscsi`. Один Login без `AuthMethod` и без CHAP. Сессию диска не открывать. |
+| 19 | `shapo_nbd_hello` | `nbd-info` | `todo` | Нужна проба `nbd`. Только приветствие. `NBD_OPT_EXPORT_NAME` не слать. |
+| 20 | `shapo_drda_exchange` | `drda-info` | `todo` | Нужна проба `drda`. Один EXCSAT. SQL не слать. |
+| 21 | `shapo_giop_locate` | `giop-info` | `todo` | Нужна проба `giop`. Один LocateRequest. Вызов метода не слать. |
+| 22 | `shapo_kafka_metadata` | нет отдельного NSE | `blocked` | Metadata перечисляет топики. `shapo_kafka_apiversions` уже закрывает рукопожатие. |
+| 23 | `shapo_mongodb_databases` | `mongodb-databases` | `blocked` | Список баз. `hello` уже есть. |
+| 24 | `shapo_couchdb_databases` | `couchdb-databases` | `blocked` | `/_all_dbs` перечисляет базы. Корень уже есть. |
+| 25 | `shapo_redis_config` | часть `redis-info` | `blocked` | `CONFIG GET` читает конфигурацию, не статус. `INFO SERVER` уже есть. |
+| 26 | `shapo_docker_containers` | нет | `blocked` | `/containers/json` перечисляет контейнеры. `/version` уже есть. |
+| 27 | `shapo_etcd_keys` | нет | `blocked` | Диапазон ключей. `/version` уже есть. |
+| 28 | `shapo_consul_catalog` | нет | `blocked` | Каталог и KV. Лидер уже есть. |
+| 29 | `shapo_kube_pods` | нет | `blocked` | Объекты API, exec, kubelet. `/version` уже есть. |
+| 30 | `shapo_rabbitmq_queues` | нет | `blocked` | Очереди и пользователи. `whoami` уже есть. |
+| 31 | `shapo_postgres_trust` | нет прямого NSE | `blocked` | Приветствие уже пишет проба. Старт с пользователем `postgres` — попытка входа, эти фазы её не берут. |
+| 32 | `shapo_mysql_empty` | `mysql-empty-password` | `blocked` | Подбор пустого пароля. Проба уже называет MySQL. |
+| 33 | `shapo_mysql_info` | `mysql-info` | `blocked` | Разбор приветствия повторяет пробу и ставит находку на открытый порт. |
+| 34 | `shapo_mssql_empty` | `ms-sql-empty-password` | `blocked` | Пустой пароль и логин. |
+| 35 | `shapo_mssql_query` | `ms-sql-query` | `blocked` | Запрос к данным. |
+| 36 | `shapo_mssql_hashes` | `ms-sql-dump-hashes` | `blocked` | Дамп хешей. |
+| 37 | `shapo_mssql_cmdshell` | `ms-sql-xp-cmdshell` | `blocked` | Команда на сервере. |
+| 38 | `shapo_mysql_users` | `mysql-users` | `blocked` | Перечисление учёток. |
+| 39 | `shapo_mysql_databases` | `mysql-databases` | `blocked` | Список баз. |
+| 40 | `shapo_smtp_relay` | `smtp-open-relay` | `blocked` | Отправка почты. STARTTLS уже смотрит `shapo_cleartext_services`. |
+| 41 | `shapo_smtp_vrfy` | `smtp-enum-users` | `blocked` | VRFY и EXPN перечисляют пользователей. |
+| 42 | `shapo_ftp_bounce` | `ftp-bounce` | `blocked` | Второй адрес. |
+| 43 | `shapo_ftp_list` | `ftp-anon` листинг | `blocked` | `shapo_ftp_anonymous` уже есть и без каталога. PASV — второй порт. |
+| 44 | `shapo_ftp_syst` | `ftp-syst` | `blocked` | Сознательно не находка: это строка пробы. |
+| 45 | `shapo_snmp_guess` | `snmp-brute` и родственные | `blocked` | Подбор community. Один GET `public` уже есть и только как отдельный UDP. |
+| 46 | `shapo_snmp_walk` | `snmp-interfaces`, `snmp-processes` | `blocked` | Обход дерева и дамп. UDP в боевой квитанции нет. |
+| 47 | `shapo_dns_recursion` | `dns-recursion` | `blocked` | Фаза 5. Боевой адаптер TCP-only. Рекурсия и AXFR своих зон — Python `dns_hygiene`. |
+| 48 | `shapo_dns_axfr` | `dns-zone-transfer` | `blocked` | То же. Не плагин на каждый открытый 53. |
+| 49 | `shapo_smb_enum_shares` | `smb-enum-shares` | `blocked` | Список шар с пустой учёткой. |
+| 50 | `shapo_smb_enum_users` | `smb-enum-users` | `blocked` | Перечисление пользователей. |
+| 51 | `shapo_smb_ls` | `smb-ls` | `blocked` | Чтение файлов. |
+| 52 | `shapo_smb_os` | `smb-os-discovery` | `todo` | Можно одним negotiate, но кадр уже частично есть в `shapo_smb_protocols`. Имя хоста в evidence не копировать. Отдельная запись журнала, прежде чем писать. |
+| 53 | `shapo_rdp_ciphers` | `rdp-enum-encryption` | `blocked` | Полный перебор шифров. Выбор слоя уже делает `shapo_rdp_negotiation`. |
+| 54 | `shapo_rdp_ms12_020` | `rdp-vuln-ms12-020` | `blocked` | DoS-проверка. |
+| 55 | `shapo_ms17_confirm` | `smb-vuln-ms17-010` сверх гипотезы | `blocked` | Эксплуатация и вердикт «пропатчено». Гипотеза уже есть. |
+| 56 | `shapo_ms10_061` | `smb-vuln-ms10-061` | `blocked` | Печать и второй канал. |
+| 57 | `shapo_vnc_session` | `vnc-title`, `realvnc-auth-bypass` | `blocked` | Выбор security и сессия рабочего стола. Типы уже объявляет `shapo_vnc_security`. |
+| 58 | `shapo_ssl_heartbleed` | `ssl-heartbleed` | `blocked` | Нет TLS в песочнице. Проверка бьёт по сервису. Это не пункт `tls_posture`. |
+| 59 | `shapo_ssl_ccs` | `ssl-ccs-injection` | `blocked` | Нет TLS. В покрытии NSE это отдельная дыра TLS, не Rhai. |
+| 60 | `shapo_ssl_poodle` | `ssl-poodle` | `blocked` | SSLv3 смотрит `tls_posture`, не плагин. |
+| 61 | `shapo_ssl_ticketbleed` | `tls-ticketbleed` | `blocked` | Нет TLS. |
+| 62 | `shapo_https_trace` | `http-trace` на 443 | `blocked` | Песочница не начинает TLS. Голый HTTP уже есть. |
+| 63 | `shapo_http_enum` | `http-enum` | `blocked` | Каталог путей, это DAST. |
+| 64 | `shapo_http_put` | `http-put` | `blocked` | Запись на сервер. |
+| 65 | `shapo_http_passwd` | `http-passwd` | `blocked` | Чтение файла с хешами. |
+| 66 | `shapo_http_env` | нет, сосед `http-config-backup` | `blocked` | Чтение `.env` и резервных копий. Утечки учёток в плагин не класть. |
+| 67 | `shapo_http_git_config` | часть `http-git` | `blocked` | `config` может содержать URL с секретом. Фаза 8 читает только строку HEAD. |
+| 68 | `shapo_http_svn` | `http-svn-info` | `todo` | Один `GET /.svn/wc.db` слишком легко спутать с другим `200`. Писать, только если есть точная сигнатура SQLite заголовка и сервис не общий `http` без дополнительного признака. Пока шумно. |
+| 69 | `shapo_http_wordpress_users` | `http-wordpress-users` | `blocked` | Перечисление пользователей. |
+| 70 | `shapo_http_sql_injection` | `http-sql-injection` | `blocked` | DAST. |
+| 71 | `shapo_http_xss` | `http-dombased-xss`, `http-stored-xss` | `blocked` | Краулер. |
+| 72 | `shapo_http_csrf` | `http-csrf` | `blocked` | Краулер. |
+| 73 | `shapo_http_slowloris` | `http-slowloris-check` | `blocked` | DoS. |
+| 74 | `shapo_http_range_dos` | `http-vuln-cve2011-3192` | `blocked` | DoS. |
+| 75 | `shapo_kibana_status` | нет прямого NSE | `blocked` | Фаза 6: `http-head` на `5601` ставит `http`. |
+| 76 | `shapo_jaeger_ready` | нет | `blocked` | Фаза 6: статусный путь перечисляет имена сервисов. |
+| 77 | `shapo_kafka_manager` | нет | `blocked` | Фаза 6: проба уже узнаёт продукт по title. |
+| 78 | `shapo_phpmyadmin_presence` | нет | `blocked` | Фаза 6: title уже ставит сервис. Входа нет. |
+| 79 | `shapo_nexus_status` | нет | `blocked` | Фаза 6: публичный status пустой, `8081` занят. |
+| 80 | `shapo_artifactory_status` | нет | `blocked` | Фаза 6: два возможных ping-пути. |
+| 81 | `shapo_webmin_status` | нет | `blocked` | Фаза 6: обычный слушатель HTTPS `10000`. |
+| 82 | `shapo_cockroach_health` | нет | `blocked` | Фаза 6: `/health` пустой, `/_status` — метрики узла. |
+| 83 | `shapo_sip_options` | `sip-methods` | `blocked` | Фаза 6: проба уже шлёт OPTIONS. REGISTER не слать. |
+| 84 | `shapo_kubelet_health` | нет | `blocked` | Фаза 6: мягкий `Unauthorized`, порт `10250` — TLS. Pod, exec и run не предлагать. |
+| 85 | `shapo_git_daemon` | нет | `blocked` | Фиксированный путь репозитория даёт только ошибку. |
+| 86 | `shapo_elasticsearch_cat` | нет | `blocked` | `/_cat/indices` перечисляет индексы. Корень закрыт фазой 8. |
+| 87 | `shapo_minio_buckets` | нет | `blocked` | Список бакетов. Liveness закрыт фазой 8. |
+| 88 | `shapo_neo4j_cypher` | нет | `blocked` | Запрос графа. HTTP discovery закрыт фазой 8, Bolt — фазой 7. |
+| 89 | `shapo_ldap_users` | `ldap-search` | `blocked` | Поддерево и люди. RootDSE уже есть. |
+| 90 | `shapo_nfs_showmount` | `nfs-showmount` | `blocked` | Portmapper и второй порт. |
+| 91 | `shapo_nfs_ls` | `nfs-ls` | `blocked` | Чтение файлов. |
+| 92 | `shapo_ajp_ghostcat` | `ajp-request` в форме Ghostcat | `blocked` | Чтение файла через AJP. Версию AJP без чтения файлов можно вернуться только отдельной пробой `ajp`. |
+| 93 | `shapo_ipmi_zero` | `ipmi-cipher-zero` | `blocked` | UDP `623` и обход аутентификации. |
+| 94 | `shapo_tftp_enum` | `tftp-enum` | `blocked` | UDP и чтение файлов. |
+| 95 | `shapo_ntp_monlist` | `ntp-monlist` | `blocked` | UDP и усиление. |
+| 96 | `shapo_nat_pmp` | `nat-pmp-mapport` | `blocked` | UDP и создание отображения порта. |
+| 97 | `shapo_vnc_none_login` | часть `vnc-info` | `blocked` | `shapo_vnc_security` уже сообщает объявленный тип None и не открывает сессию. |
+| 98 | `shapo_x11_windows` | часть `x11-access` | `blocked` | Принятие соединения уже есть. Список окон и ввод не слать. |
+| 99 | `shapo_mqtt_subscribe` | `mqtt-subscribe` | `blocked` | Подписка читает чужие сообщения. Анонимный CONNECT уже есть. |
+| 100 | `shapo_jenkins_script` | нет прямого NSE | `blocked` | Консоль скриптов — выполнение кода. `whoAmI` уже есть. |
+
+Новая заготовка, которой нет в таблице, дописывается следующим номером и
+статусом `todo` или `blocked`. Закрытые строки не переписывать: смена смысла
+— новая строка журнала.
+
 ## Не писать
 
 Пункты ниже не ждут критерия. Новый похожий запрос сначала сравнивается с
-этим списком.
+этим списком и с фазой 9.
 
 | Тема | Почему не плагин |
 |---|---|
 | MySQL и PostgreSQL по приветствию | Проба уже пишет продукт. Беспарольный доступ без попытки входа не виден, а попытка входа в эти фазы не входит. |
-| Elasticsearch, OpenSearch, MinIO | Проба ставит `elasticsearch`, `opensearch` и `minio`. Плагин статуса не писать, пока его не попросят. Гейт на `service == "http"` или на все HTTP-порты тест и бюджет не принимают. |
+| Elasticsearch, OpenSearch, MinIO на каждом HTTP | Фаза 8 закрыла гейт по имени сервиса пробы. Гейт на `service == "http"` или на все HTTP-порты по-прежнему не принимается. Списки индексов и бакетов остаются в фазе 9 как `blocked`. |
 | Приветствие HTTP и версия в `Server` | Это результат пробы, не отдельная находка. |
 | Версия TLS из текста баннера | Версии смотрит рукопожатие в `tls_posture.py`. |
 | SMTP-реле, VRFY, EXPN | STARTTLS уже смотрит `shapo_cleartext_services`. Реле — это отправка почты, VRFY — перечисление пользователей. |
@@ -807,6 +1091,9 @@ python3 -m pytest tests/test_nmap_pulse_corpus.py::test_every_shipped_plugin_is_
 
 | Дата | Куда | Что добавлено |
 |---|---|---|
+| 2026-11-11 | фаза 8 | Фаза закрыта как `done`. Реализованы семь оставшихся пунктов: `shapo_http_webdav`, `shapo_imap_ntlm`, `shapo_pop3_ntlm`, `shapo_smtp_ntlm`, `shapo_socks_noauth`, `shapo_s7_identity`, `shapo_enip_identity`. Добавлены пробы `socks5-greeting`, `s7-comm` и `enip-list-identity` в `probes.json`. Обновлены `APPLICABILITY`, `PLUGIN_ONLY`, таблица плагинов, stub-тесты и `CHANGELOG.md`. |
+| 2026-11-11 | фаза 8 | В открытую фазу добавлены семь задач `todo`: WebDAV `PROPFIND` глубины 0, NTLM Type2 на IMAP, POP3 и SMTP, SOCKS5 без аутентификации, идентификация S7 и EtherNet/IP List Identity. У трёх последних сначала нужна проба. Файлы по этим пунктам не писать, пока статус не сменится на `doing`. |
+| 2026-11-11 | фаза 8 | Снят запрет на статус Elasticsearch, OpenSearch и MinIO: гейт по имени сервиса, не по `http`. Добавлены Neo4j HTTP, голый Git HEAD и Apache server-status. Фаза 9 — ранжированный хвост из 94 проверок NSE, которые в этот контракт не входят без новой пробы или потому что это подбор, эксплуатация, UDP, TLS, DAST или перечисление. |
 | 2026-11-10 | Не писать | Elasticsearch, OpenSearch и MinIO проба называет своими именами. Плагины не писать, пока их не попросят. |
 | 2026-11-09 | фаза 7 | `shapo_neo4j_discovery` больше не гейтится на сервис `neo4j`: это HTTP JSON, Bolt остаётся на безымянном порту `7687`. GitLab узнаётся по cookie `_gitlab_session` на `GET /`, Keycloak — по title приветствия и консоли. |
 | 2026-11-09 | фаза 7 | Реализованы все 12 проверок с реестрами, stub-тестами и документацией; полный прогон Pulse 1.4.0 зелёный. В каталоге 50 плагинов. |
