@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from scanner.pipeline.stage_timing import StageTimer, process_resources
+from scanner.pipeline.stage_timing import StageTimer, process_resources, stage_outcome
 
 
 def test_run_records_duration(tmp_path: Path) -> None:
@@ -39,6 +39,72 @@ def test_run_records_error_then_reraises() -> None:
 
     assert timer.records[0].status == "error"
     assert timer.records[0].name == "broken"
+
+
+def test_incomplete_coverage_is_not_recorded_as_ok() -> None:
+    timer = StageTimer()
+    timer.run("nuclei", lambda: {"coverage": {"ran": False, "returncode": 1}})
+    timer.annotate("nuclei", *stage_outcome({"coverage": {"ran": False, "returncode": 1}, "skipped_reason": "nuclei_run_failed"}))
+    assert timer.records[0].status == "incomplete"
+    assert "returncode=1" in timer.records[0].detail
+    assert timer.as_dict()["top_stages"][0]["name"] == "nuclei"
+    assert stage_outcome({"skipped_reason": "mail_posture.disabled"}) == ("skipped", "mail_posture.disabled")
+    assert stage_outcome({"coverage": {"ran": True, "returncode": 0}}) is None
+    disabled = {"coverage": {"ran": False, "returncode": None}, "skipped_reason": "nuclei.disabled"}
+    assert stage_outcome(disabled) == ("skipped", "nuclei.disabled")
+    quiet = {"coverage": {"ran": False, "returncode": None}, "skipped_reason": "no_web_ports", "findings": []}
+    assert stage_outcome(quiet) == ("skipped", "no_web_ports")
+    partial = {**quiet, "findings": [{"template": "x"}]}
+    assert stage_outcome(partial)[0] == "incomplete"
+    failed = {"coverage": {"ran": False, "returncode": None}, "skipped_reason": "nuclei_run_failed"}
+    assert stage_outcome(failed)[0] == "incomplete"
+    finished_network = {
+        "coverage": {
+            "ran": False,
+            "returncode": None,
+            "network": {"ran": True, "skipped_reason": None, "passes": [{"ran": True, "returncode": 0}]},
+        },
+        "skipped_reason": "no_web_ports",
+        "findings": [{"template": "smb", "pass": "network"}],
+    }
+    assert stage_outcome(finished_network) is None
+    failed_network = {
+        "coverage": {
+            "ran": True,
+            "returncode": 0,
+            "network": {
+                "ran": False,
+                "skipped_reason": "not_all_passes_ran",
+                "passes": [{"ran": False, "returncode": 1, "skipped_reason": "nuclei_run_failed"}],
+            },
+        },
+        "findings": [],
+    }
+    assert stage_outcome(failed_network) == ("incomplete", "not_all_passes_ran; returncode=1")
+    quiet_network = {
+        "coverage": {
+            "ran": False,
+            "returncode": None,
+            "network": {
+                "ran": False,
+                "skipped_reason": "not_all_passes_ran",
+                "passes": [{"ran": False, "skipped_reason": "nuclei_run_failed"}],
+            },
+        },
+        "skipped_reason": "no_web_ports",
+        "findings": [],
+    }
+    assert stage_outcome(quiet_network)[0] == "incomplete"
+    disabled_network = {
+        "coverage": {
+            "ran": False,
+            "returncode": None,
+            "network": {"ran": False, "skipped_reason": "network_templates_disabled", "passes": []},
+        },
+        "skipped_reason": "no_web_ports",
+        "findings": [],
+    }
+    assert stage_outcome(disabled_network) == ("skipped", "no_web_ports")
 
 
 def test_skip_and_write_json(tmp_path: Path) -> None:

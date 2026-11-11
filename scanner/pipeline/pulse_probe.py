@@ -131,6 +131,12 @@ REPORT_SCHEMAS = ("pulse.scan.v2", "pulse.scan.v3")
 REPORT_SCHEMA_MAX_LEN = 64
 #: Distinct unknown values kept per run (a hostile report could vary it per chunk).
 REPORT_SCHEMAS_MAX = 8
+#: Pulse plugin rows put ``SCRIPT-<NAME>`` in ``cve_id``. That is not a CVE.
+_CVE_ID = re.compile(r"CVE-\d{4}-\d{4,}", re.I)
+
+
+def _rows_with_cve_id(rows: Iterable[Any]) -> int:
+    return sum(1 for row in rows if _CVE_ID.fullmatch(str(getattr(row, "cve_id", "") or "")))
 
 
 def _report_schema(value: Any) -> str:
@@ -530,6 +536,51 @@ def _distro_fields(row: dict[str, Any], version: str, banner: str) -> tuple[str,
     return distro, read_revision if read_distro == distro else ""
 
 
+def _port_label_finding(
+    plugin: str | None,
+    *,
+    title: str,
+    port: int,
+    banner: str,
+    severity: str,
+    confidence: int,
+    requires_confirmation: bool,
+    summary: str,
+    evidence: str,
+) -> tuple[str, int, bool, str, str]:
+    """Downgrade an exposure that the historical plugin confirmed from a port label.
+
+    ``shapo_cleartext_services`` and ``shapo_remote_admin_exposure`` are pinned
+    byte-for-byte by the Nmap/Pulse corpus, so the probe still emits the old
+    rows. A scan stores this adapter's reading: Telnet needs a banner, and
+    RDP or a VNC label without an ``RFB`` greeting stays unconfirmed.
+    """
+    if plugin == "shapo_cleartext_services" and title == "Telnet service exposed":
+        pieces = [piece.strip() for piece in banner.replace("\r", "\n").split("\n")]
+        text = " | ".join(piece for piece in pieces if piece)
+        if text:
+            return (
+                "high",
+                90,
+                False,
+                "Telnet sends the login and every command in cleartext and has no TLS mode.",
+                f"Telnet banner on port {port}: {text[:120]}",
+            )
+        return (
+            "low",
+            45,
+            True,
+            f"Port {port} is labeled telnet, but no telnet banner was read. "
+            "A cleartext login was not confirmed.",
+            f"No telnet banner on port {port}",
+        )
+    if plugin == "shapo_remote_admin_exposure":
+        if title.endswith("(VNC)") and banner.lower().startswith("rfb "):
+            return severity, confidence, requires_confirmation, summary, evidence
+        return severity, confidence, True, summary, evidence
+    return severity, confidence, requires_confirmation, summary, evidence
+
+
 def parse_pulse_json(
     payload: dict[str, Any], plugin_shas: Mapping[str, str] | None = None
 ) -> tuple[list[ServiceRecord], list[OsRecord], list[CveRecord]]:
@@ -623,6 +674,7 @@ def parse_pulse_json(
             )
         )
 
+    banners = {(svc.ip, svc.port): svc.banner for svc in services}
     cves: list[CveRecord] = []
     # Prefer full findings array; fall back to cves key.
     cve_rows = payload.get("findings") or payload.get("cves") or []
@@ -666,7 +718,10 @@ def parse_pulse_json(
             confidence = 0
         severity = str(row.get("severity") or "unknown")
         evidence = str(row.get("evidence") or "")
+        summary = str(row.get("summary") or "")
+        title = str(row.get("title") or cve_id)
         ruleset_version = str(row.get("ruleset_version") or "")
+        requires_confirmation = bool(row.get("requires_confirmation"))
         if finding_class == PLUGIN_CLASS or str(row.get("source") or "") == PLUGIN_SOURCE:
             finding_class = PLUGIN_CLASS
             # A plugin's severity is a string it chose; the CVE ruleset version
@@ -684,6 +739,19 @@ def parse_pulse_json(
                     )
                     continue
                 ruleset_version = f"sha256:{sha}"
+                # The corpus pins those two sources. This is the scan's copy.
+                ip = str(row.get("ip") or "")
+                severity, confidence, requires_confirmation, summary, evidence = _port_label_finding(
+                    plugin,
+                    title=title,
+                    port=port,
+                    banner=banners.get((ip, port), ""),
+                    severity=severity,
+                    confidence=confidence,
+                    requires_confirmation=requires_confirmation,
+                    summary=summary,
+                    evidence=evidence,
+                )
         cves.append(
             CveRecord(
                 cve_id=cve_id,
@@ -693,14 +761,14 @@ def parse_pulse_json(
                 service=str(row.get("service") or ""),
                 cvss=cvss,
                 severity=severity,
-                title=str(row.get("title") or cve_id),
-                summary=str(row.get("summary") or ""),
+                title=title,
+                summary=summary,
                 match_reason=str(row.get("match_reason") or ""),
                 source=str(row.get("source") or "pulse"),
                 refs=[str(r) for r in refs],
                 finding_class=finding_class,
                 confidence=max(0, min(100, confidence)),
-                requires_confirmation=bool(row.get("requires_confirmation")),
+                requires_confirmation=requires_confirmation,
                 evidence=evidence,
                 ruleset_version=ruleset_version,
                 epss=epss,
@@ -1531,11 +1599,13 @@ def _run_pulse_probe(
     # Mark report preference: explicit flag, else OCTO_SERVICE_BACKEND env.
     sync_report_primary_marker(pulse_dir, report_primary)
 
+    cve_ids = _rows_with_cve_id(all_cves)
     logging.info(
-        "pulse_probe done: %s services, %s os, %s cves, %s tls%s",
+        "pulse_probe done: %s services, %s os, %s findings (%s with a CVE id), %s tls%s",
         len(deduped),
         len(all_os),
         len(all_cves),
+        cve_ids,
         len(tls_deduped),
         " (OS detection skipped: no raw sockets)" if os_detect_degraded else "",
     )

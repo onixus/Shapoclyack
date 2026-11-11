@@ -20,6 +20,116 @@ T = TypeVar("T")
 logger = logging.getLogger(__name__)
 
 
+# A network block with one of these reasons never started a nuclei process.
+# ``not_all_passes_ran``, ``nuclei_run_failed`` and ``network_pass_error`` did.
+_NETWORK_NOT_STARTED = frozenset({
+    None,
+    "network_templates_disabled",
+    "nuclei.disabled",
+    "nuclei_binary_missing",
+    "templates_dir_missing",
+    "no_network_targets",
+})
+
+
+def _web_findings(result: dict) -> list:
+    findings = result.get("findings")
+    if not isinstance(findings, list):
+        return []
+    return [
+        row for row in findings
+        if not (isinstance(row, dict) and row.get("pass") == "network")
+    ]
+
+
+def _nuclei_attempted(result: dict, coverage: dict) -> bool:
+    """True when the web sweep itself started, so a later ``skipped_reason`` is not a skip.
+
+    Disabled, missing-binary and no-target results keep ``coverage.ran`` false
+    and also set ``skipped_reason``. A failed or partial pass does the same,
+    and that one must stay incomplete. Findings from the network pass are not
+    evidence that the web sweep ran.
+    """
+    if result.get("skipped_reason") == "nuclei_run_failed":
+        return True
+    returncode = coverage.get("returncode")
+    if isinstance(returncode, int) and returncode != 0:
+        return True
+    if _web_findings(result):
+        return True
+    checked = result.get("checked_count")
+    return isinstance(checked, int) and checked > 0
+
+
+def _incomplete(reason: Any, returncode: Any) -> tuple[str, str]:
+    detail = str(reason or "coverage_not_counted")
+    if isinstance(returncode, int) and returncode != 0:
+        detail = f"{detail}; returncode={returncode}"
+    return "incomplete", detail
+
+
+def _network_outcome(network: dict) -> tuple[str, str] | None:
+    """Incomplete when a network pass started and did not finish. Otherwise silent.
+
+    A finished pass (``ran`` true) and a pass that was switched off or had
+    nothing to scan leave the web sweep's own status in place.
+    """
+    if network.get("ran") is True:
+        return None
+    reason = network.get("skipped_reason")
+    passes = network.get("passes")
+    started = (isinstance(passes, list) and bool(passes)) or reason not in _NETWORK_NOT_STARTED
+    if not started:
+        return None
+    returncode = None
+    if isinstance(passes, list):
+        for entry in passes:
+            code = entry.get("returncode") if isinstance(entry, dict) else None
+            if isinstance(code, int) and code != 0:
+                returncode = code
+                break
+    return _incomplete(reason, returncode)
+
+
+def stage_outcome(result: Any) -> tuple[str, str] | None:
+    """Status the timing record should show for a stage that returned normally.
+
+    Nuclei initialises ``coverage.ran`` to false and leaves it there both when
+    the web sweep never started and when a pass did not finish. ``skipped_reason``
+    wins only for the former, so a disabled nuclei job is not counted as
+    unfinished work. The network pass lives under ``coverage["network"]`` and
+    is combined with the sweep: a finished network pass keeps a web sweep that
+    had nothing to scan from becoming incomplete, and a network pass that
+    started and did not finish is incomplete even when the sweep completed.
+    ``None`` leaves the record ``ok``.
+    """
+    if not isinstance(result, dict):
+        return None
+    coverage = result.get("coverage")
+    reason = result.get("skipped_reason")
+    if not isinstance(coverage, dict):
+        if reason:
+            return "skipped", str(reason)
+        return None
+    web: tuple[str, str] | None = None
+    if coverage.get("ran") is False:
+        if reason and not _nuclei_attempted(result, coverage):
+            web = ("skipped", str(reason))
+        else:
+            web = _incomplete(reason, coverage.get("returncode"))
+    elif reason:
+        web = ("skipped", str(reason))
+    network = coverage.get("network")
+    net = _network_outcome(network) if isinstance(network, dict) else None
+    if web and web[0] == "incomplete":
+        return web
+    if net and net[0] == "incomplete":
+        return net
+    if isinstance(network, dict) and network.get("ran") is True and web and web[0] == "skipped":
+        return None
+    return web or net
+
+
 def process_resources() -> dict[str, float] | None:
     """CPU-seconds and peak memory of this scan and of the tools it ran (#337).
 
@@ -52,7 +162,7 @@ def process_resources() -> dict[str, float] | None:
 class StageRecord:
     name: str
     duration_sec: float
-    status: str = "ok"  # ok | skipped | error
+    status: str = "ok"  # ok | incomplete | skipped | error
     detail: str = ""
 
 
@@ -88,6 +198,23 @@ class StageTimer:
         logger.info("stage %s finished in %.3fs%s", name, elapsed, f" ({detail})" if detail else "")
         return result
 
+    def annotate(self, name: str, status: str, detail: str = "") -> None:
+        """Correct the latest record after the stage returned a partial result.
+
+        ``run`` records ``ok`` as soon as the function returns. A nuclei pass
+        that exits non-zero, or a control stage that was switched off, still
+        returns. The pipeline keeps going; the timing file must not call that
+        ``ok``.
+        """
+        with self._lock:
+            for record in reversed(self.records):
+                if record.name == name:
+                    record.status = status
+                    if detail:
+                        record.detail = detail[:200]
+                    logger.info("stage %s recorded as %s%s", name, status, f" ({record.detail})" if record.detail else "")
+                    return
+
     def skip(self, name: str, reason: str = "checkpoint") -> None:
         self._append(StageRecord(name=name, duration_sec=0.0, status="skipped", detail=reason))
         logger.info("stage %s skipped (%s)", name, reason)
@@ -100,7 +227,7 @@ class StageTimer:
             snapshot = list(self.records)
         total_stages = round(sum(r.duration_sec for r in snapshot if r.status != "skipped"), 3)
         ranked = sorted(
-            [r for r in snapshot if r.status == "ok"],
+            [r for r in snapshot if r.status in {"ok", "incomplete"}],
             key=lambda r: r.duration_sec,
             reverse=True,
         )
