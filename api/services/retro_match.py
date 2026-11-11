@@ -546,6 +546,11 @@ UNMAPPED_PROBE_PRODUCTS: dict[str, str] = {
         "Telnet daemon", "MikroTik RouterOS telnetd", "Cisco IOS telnetd", "Telnet service",
         # Phase 8 probes name a protocol, not a versioned product.
         "SOCKS5 proxy (no auth)", "SOCKS5 proxy", "Siemens S7 PLC", "EtherNet/IP device",
+        # Phase 9 probes name a protocol, not a versioned product.
+        "Apache Cassandra", "Apache Cassandra (auth required)", "Java Debug Wire Protocol",
+        "Modbus TCP", "Microsoft SQL Server", "Oracle TNS Listener", "Java RMI registry",
+        "Erlang Port Mapper Daemon", "Network Block Device", "iSCSI target", "CORBA IIOP/GIOP",
+        "IBM DB2 DRDA",
     ),
 }
 
