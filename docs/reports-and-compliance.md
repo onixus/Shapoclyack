@@ -81,7 +81,7 @@ process is what covers it, and hiding the acceptance would be worse than either.
 | ФСТЭК № 117 (ГИС), 2025 + МД 12.04.2026 | КК, КУ, КУ-сроки, КО, ОД, ПК, ИАФ.3, МСЭ.3, МСЭ.4, ЗКС.1, ЗКУ.2 | Protection classes, threat modelling, documentation, ГосСОПКА, physical protection, organisational measures |
 | ФСТЭК № 21 (ИСПДн), 2013 | ИАФ.4, УПД.3, УПД.13, ОПС.3, АНЗ.1–АНЗ.5, ЗИС.3, ЗИС.17 | Protection level (УЗ-1…УЗ-4), base-set selection, the operator's 152-ФЗ duties (consent, localisation, Roskomnadzor), organisational measures |
 | ФСТЭК № 239 (КИИ), 2017 | АУД.1, АУД.2, ОПО.4, УКФ.3, ИАФ.4, ИАФ.7, УПД.13, ЗИС.2, ЗИС.8, ЗИС.19 | Significance category, base set by category, ГосСОПКА, incident response, organisational measures |
-| 187-ФЗ (КИИ), 2017 | КИИ.ИНВ, КИИ.УЯЗ, КИИ.СРОКИ, КИИ.ОПО, КИИ.КОНФ, КИИ.ИАФ, КИИ.СЕТЬ, КИИ.КАНАЛЫ, КИИ.УДАЛ | Significance categorisation (127-ПП), threat model, ГосСОПКА, organisational measures. `КИИ.*` are this catalogue's labels, not measure codes from orders 235 or 239 |
+| 187-ФЗ (КИИ), 2017 | КИИ.ИНВ, КИИ.УЯЗ, КИИ.СРОКИ, КИИ.ОПО, КИИ.УКФ, КИИ.КОНФ, КИИ.ИАФ, КИИ.СЕТЬ, КИИ.КАНАЛЫ, КИИ.УДАЛ | Significance categorisation (127-ПП), threat model, ГосСОПКА, organisational measures. `КИИ.*` are this catalogue's labels, not measure codes from orders 235 or 239 |
 | ГОСТ Р 57580.1-2017 | ИУ.1, СМЭ.3, ЗВС.1, ЦЗИ.2, ЦЗИ.4–ЦЗИ.9 | Protection level (1–3), security contours, organisational (О/Н) measures, conformity assessment under ГОСТ Р 57580.2 |
 
 ### The Russian catalogues
@@ -117,7 +117,10 @@ a Russian regulator has to say the second thing. Order 117 separates the two
 clocks by measure — КУ-сроки is the regulator's, КО (updates per the
 operator's internal regulation) is the tenant's SLA alone — while 21 АНЗ.2,
 239 ОПО.4 and ГОСТ ЦЗИ.8 are written about "оперативное" installation and
-fail on either clock. The "known vulnerabilities" half reads the same in all
+fail on either clock. 187-ФЗ splits the clocks the same way as order 117:
+КИИ.СРОКИ is the regulator's window, КИИ.ОПО is the tenant's deadline, and
+КИИ.УКФ (УКФ.3) is endpoint software, assessed only from an endpoint inventory.
+The "known vulnerabilities" half reads the same in all
 four (117 КУ, 21 АНЗ.1, 239 АУД.2, ГОСТ ЦЗИ.6): open critical and high CVEs
 and anything on CISA KEV, so an auditor opening the four pages in a row gets
 one answer to "do you remediate", not four.

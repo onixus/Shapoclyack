@@ -771,12 +771,22 @@ _FZ_187 = Framework(
         ),
         Control(
             control_id="КИИ.ОПО",
-            title="Управление обновлениями программного обеспечения (ОПО.4, УКФ.3 № 239)",
-            signals=(sig.OVERDUE_REMEDIATION, sig.UNASSESSABLE_SOFTWARE),
-            requires=(SOURCE_FINDINGS, SOURCE_ENDPOINT_INVENTORY),
+            title="Управление обновлениями программного обеспечения (ОПО.4 № 239)",
+            signals=(sig.OVERDUE_REMEDIATION,),
             rationale=(
-                "Overdue remediation or unassessable third-party software on endpoints introduces "
-                "uncontrolled attack vectors into the protected infrastructure."
+                "A finding past the operator's own remediation deadline. The regulator's "
+                "window is КИИ.СРОКИ; this control reads only the tenant clock and only "
+                "needs findings."
+            ),
+        ),
+        Control(
+            control_id="КИИ.УКФ",
+            title="Контроль состава программного обеспечения на конечных точках (УКФ.3 № 239)",
+            signals=(sig.UNASSESSABLE_SOFTWARE,),
+            requires=(SOURCE_ENDPOINT_INVENTORY,),
+            rationale=(
+                "Installed software the advisory matcher could not assess on an endpoint. "
+                "The control is assessed when an endpoint inventory is present."
             ),
         ),
         Control(
@@ -802,16 +812,16 @@ _FZ_187 = Framework(
             title="Защита периметра и сегментирование сетей объектов КИИ (ЗИС.2, УПД.3 № 239)",
             combinations=(_ADMIN_FROM_UNTRUSTED,),
             rationale=(
-                "Unrestricted internet or untrusted exposure of administrative services and unencrypted "
-                "protocols violates network boundary and segmentation controls."
+                "Administrative or database services reachable from an untrusted network "
+                "violate network boundary and segmentation controls."
             ),
         ),
         Control(
             control_id="КИИ.КАНАЛЫ",
             title="Криптографическая защита данных при передаче по каналам связи (ЗИС.19 № 239)",
-            signals=(sig.WEAK_CRYPTOGRAPHY,),
+            signals=(sig.WEAK_CRYPTOGRAPHY, sig.INSECURE_PROTOCOL),
             rationale=(
-                "Outdated or weak ciphers, expired certificates or deprecated TLS versions "
+                "Deprecated TLS, weak ciphers, invalid certificates and cleartext services "
                 "fail secure communication requirements for CII."
             ),
         ),
