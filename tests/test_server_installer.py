@@ -31,7 +31,7 @@ def test_prepare_production_and_preserve_secrets(tmp_path):
     credentials = json.loads((tmp_path / "access.json").read_text())
     assert len(credentials["password"]) >= 24
     assert json.loads(api["environment"]["OCTO_API_USERS"])[0]["password"] == credentials["password"]
-    for name in ("a", "b", "c", "d", "e"):
+    for name in ("0", "1", "2", "3", "4"):
         (tmp_path / name).write_text("x")
     with pytest.raises(ValueError, match="not empty") as caught:
         installer.prepare(tmp_path, args)
@@ -46,7 +46,7 @@ def test_prepare_production_and_preserve_secrets(tmp_path):
     assert "compose.json: yes" in message
     assert "access.json: yes" in message
     names = message.split("names: ", 1)[1].split(").", 1)[0]
-    assert names == "'a', 'b', 'c', 'd', 'e', ..."
+    assert names == "'0', '1', '2', '3', '4', ..."
     assert path.read_bytes() == before
 
 
