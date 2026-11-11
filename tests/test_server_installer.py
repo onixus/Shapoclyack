@@ -36,20 +36,36 @@ def test_prepare_production_and_preserve_secrets(tmp_path):
 
 
 def test_prepare_with_bdu_flag(tmp_path):
+    catalogues = tmp_path / "catalogues"
+    catalogues.mkdir()
+    (catalogues / "bdu-overlay.json").write_text("{}\n")
+    (catalogues / "threats-overlay.json").write_text("{}\n")
+    install = tmp_path / "install"
     args = argparse.Namespace(
         image=installer.DEFAULT_IMAGE,
         url="https://scan.example.com",
         port=8080,
-        bdu=True,
+        bdu=catalogues,
     )
-    installer.prepare(tmp_path, args)
-    config = json.loads((tmp_path / "compose.json").read_text())
+    installer.prepare(install, args)
+    config = json.loads((install / "compose.json").read_text())
     api = config["services"]["api"]
+    mount = f"{catalogues.resolve()}:{installer.BDU_MOUNT}:ro"
     assert "OCTO_BDU_FSTEC_FETCH_ENABLED" not in api["environment"]
-    assert api["environment"]["OCTO_BDU_FSTEC_DATABASE"].endswith("bdu-overlay.json")
-    assert api["environment"]["OCTO_BDU_THREATS_DATABASE"].endswith("threats-overlay.json")
-    assert "enrichment:/app/scanner/data/bdu" not in api["volumes"]
+    assert api["environment"]["OCTO_BDU_FSTEC_DATABASE"] == f"{installer.BDU_MOUNT}/bdu-overlay.json"
+    assert api["environment"]["OCTO_BDU_THREATS_DATABASE"] == f"{installer.BDU_MOUNT}/threats-overlay.json"
+    assert mount in api["volumes"]
     assert "enrichment" not in config["volumes"]
+    empty = tmp_path / "empty-bdu"
+    empty.mkdir()
+    with pytest.raises(ValueError, match="bdu-overlay.json"):
+        installer.prepare(tmp_path / "other", argparse.Namespace(
+            image=installer.DEFAULT_IMAGE,
+            url="https://scan.example.com",
+            port=8080,
+            bdu=empty,
+        ))
+    assert not (tmp_path / "other").exists()
 
 
 @pytest.mark.parametrize("value", ["http://scan.example.com", "https://user:pass@x", "https://x/a",

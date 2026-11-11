@@ -45,13 +45,32 @@ def image_ref(value: str) -> str:
     return value
 
 
+BDU_MOUNT = "/var/lib/shapoclyack/bdu"
+BDU_FILES = ("bdu-overlay.json", "threats-overlay.json")
+
+
+def resolve_bdu(path: Path | None) -> Path | None:
+    """Absolute host directory that already holds both overlays.
+
+    install does not fetch the catalogues. The compose file bind-mounts this
+    directory, so the files remain after the container is recreated.
+    """
+    if not path:
+        return None
+    resolved = Path(path).expanduser().resolve()
+    missing = [name for name in BDU_FILES if not (resolved / name).is_file()]
+    if missing:
+        raise ValueError(f"{resolved} must already contain {', '.join(BDU_FILES)}")
+    return resolved
+
+
 def manifest(
     image: str,
     url: str,
     port: int,
     password: str,
     *,
-    bdu_enabled: bool = False,
+    bdu_host: Path | None = None,
 ) -> dict:
     db_password = secrets.token_hex(32)
     log = {"driver": "json-file", "options": {"max-size": "10m", "max-file": "3"}}
@@ -71,13 +90,10 @@ def manifest(
                "config:/app/scanner/config", "inputs:/app/scanner/inputs"]
     vol_names = ["postgres", "output", "state", "config", "inputs"]
 
-    if bdu_enabled:
-        # The API process does not run fetch-enrichment.sh, and an empty named
-        # volume would hide the catalog shipped in the image. Paths stay on
-        # that catalog until an operator bind-mounts a directory that already
-        # holds the overlays.
-        api_env["OCTO_BDU_FSTEC_DATABASE"] = "/app/scanner/data/bdu/bdu-overlay.json"
-        api_env["OCTO_BDU_THREATS_DATABASE"] = "/app/scanner/data/bdu/threats-overlay.json"
+    if bdu_host is not None:
+        api_env["OCTO_BDU_FSTEC_DATABASE"] = f"{BDU_MOUNT}/bdu-overlay.json"
+        api_env["OCTO_BDU_THREATS_DATABASE"] = f"{BDU_MOUNT}/threats-overlay.json"
+        volumes.append(f"{bdu_host}:{BDU_MOUNT}:ro")
 
     return {
         "services": {
@@ -119,11 +135,11 @@ def write_private(path: Path, data: str) -> None:
 def prepare(directory: Path, args: argparse.Namespace) -> None:
     if directory.exists() and any(directory.iterdir()):
         raise ValueError("Installation directory must be empty; use start for an existing installation")
+    bdu_host = resolve_bdu(getattr(args, "bdu", None))
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(directory, 0o700)
     password = secrets.token_hex(16)
-    bdu_enabled = getattr(args, "bdu", False)
-    config = manifest(args.image, args.url, args.port, password, bdu_enabled=bdu_enabled)
+    config = manifest(args.image, args.url, args.port, password, bdu_host=bdu_host)
     # Random, persisted project ID prevents volume collisions between installations.
     config["name"] = "shapoclyack-" + secrets.token_hex(6)
     write_private(directory / "compose.json", json.dumps(config, indent=2) + "\n")
@@ -131,8 +147,8 @@ def prepare(directory: Path, args: argparse.Namespace) -> None:
         {"url": args.url, "username": "admin", "password": password}, indent=2) + "\n")
     print(f"Configuration: {directory / 'compose.json'}")
     print(f"Initial credentials: {directory / 'access.json'} (not printed to logs)")
-    if bdu_enabled:
-        print("BDU paths use the catalog in the image. install does not download it.")
+    if bdu_host is not None:
+        print(f"BDU catalogues mounted from {bdu_host}. install does not download them.")
 
 
 def compose(directory: Path, *args: str, **kwargs) -> subprocess.CompletedProcess:
@@ -210,8 +226,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument(
         "--bdu",
-        action="store_true",
-        help="Enable FSTEC BDU and Threat Bank (УБИ) volume and feeds in configuration",
+        type=Path,
+        metavar="DIR",
+        help=(
+            "Host directory that already holds bdu-overlay.json and threats-overlay.json. "
+            "Mounted read-only into the API container. Does not download the catalogues "
+            "or enable a feed refresh."
+        ),
     )
     args = parser.parse_args(argv)
     if args.command in ("prepare", "install") and not args.url:
