@@ -4,6 +4,8 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+## [0.49-1111-rc1] — 2026-11-11
+
 ### Security
 
 - The nuclei binary in the scanner and all-in-one images is now built against

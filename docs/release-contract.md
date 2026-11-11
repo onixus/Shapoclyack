@@ -11,6 +11,7 @@ policy, and customer-side verification. It does not repeat what other pages own:
 |---|---|
 | Which release lines are supported, and how to report a vulnerability | [Security policy](../.github/SECURITY.md) |
 | What changed in a release | [CHANGELOG.md](../CHANGELOG.md) |
+| Preparing and publishing `0.49-1111-rc1` | [Release notes and checklist](releases/0.49-1111-rc1.md) |
 | Preparing and publishing `0.48-1021` | [Release notes and checklist](releases/0.48-1021.md) |
 | The superseded `0.47-1009-rc1` candidate | [Candidate notes](releases/0.47-1009-rc1.md) |
 | Every bundled tool and dataset, with its licence | [Third-party components](third-party.md) |
