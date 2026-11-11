@@ -40,6 +40,42 @@ def test_untrusted_detector_identity_cannot_reuse_trace_guidance():
     assert not remediation._trace_identity(row)
 
 
+def _trace_row(ruleset):
+    return SimpleNamespace(source="scan", cve=None, script_id="pulse-plugin:shapo_http_trace", port="80",
+        detectors=[{"detector": "pulse-plugin", "ref": "shapo_http_trace", "ruleset": ruleset, "port": "80"}])
+
+
+def test_trace_identity_reads_only_the_configured_plugin_directory(tmp_path, monkeypatch):
+    custom = tmp_path / "plugins"
+    custom.mkdir()
+    body = b"custom-trace-plugin\n"
+    (custom / "shapo_http_trace.rhai").write_bytes(body)
+    settings = make_settings(tmp_path)
+    monkeypatch.setattr(
+        "api.services.config_override.get_overrides",
+        lambda _settings: {"service_probe": {"pulse": {"plugins_dir": str(custom)}}},
+    )
+    assert remediation._trace_identity(_trace_row("sha256:" + hashlib.sha256(body).hexdigest()), settings)
+    checkout = "sha256:" + hashlib.sha256(remediation.TRACE_PLUGIN_FILE.read_bytes()).hexdigest()
+    assert not remediation._trace_identity(_trace_row(checkout), settings)
+    missing = tmp_path / "missing"
+    missing.mkdir()
+    monkeypatch.setattr(
+        "api.services.config_override.get_overrides",
+        lambda _settings: {"service_probe": {"pulse": {"plugins_dir": str(missing)}}},
+    )
+    with pytest.raises(remediation.GatewayError) as caught:
+        remediation._trace_identity(_trace_row(checkout), settings)
+    assert caught.value.code == "operator_source_changed"
+    monkeypatch.setattr(
+        "api.services.config_override.get_overrides",
+        lambda _settings: {"service_probe": {"pulse": {"plugins_dir": "has\nnewline"}}},
+    )
+    with pytest.raises(remediation.GatewayError) as caught:
+        remediation._trace_identity(_trace_row(checkout), settings)
+    assert caught.value.code == "operator_source_changed"
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     settings = make_settings(tmp_path, operator_enabled=True)

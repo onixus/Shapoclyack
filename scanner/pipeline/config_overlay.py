@@ -95,10 +95,11 @@ _ORG_PROFILE_STAGES = (
 
 #: Every dot-path a first-version overlay may set. The console's editable
 #: settings minus the ones that belong to the API's host — the NVD key, a
-#: secret, and ``nuclei.templates_dir``, a directory on the API's filesystem
-#: that a sensor does not have, where nuclei then skipped without a word — plus
-#: what the scan intents set. ``tests/test_agent_config_overlay.py`` holds the
-#: API's lists to :data:`OVERLAY_PATHS`.
+#: secret, ``nuclei.templates_dir``, and ``service_probe.pulse.plugins_dir`` /
+#: ``plugin_sources`` (a path and the git repositories of the host that
+#: fetched the scripts) — plus what the scan intents set.
+#: ``tests/test_agent_config_overlay.py`` holds the API's lists to
+#: :data:`OVERLAY_PATHS`.
 _V1_PATHS: frozenset[str] = frozenset(
     {
         "fingerprint.enabled",

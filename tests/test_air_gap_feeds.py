@@ -152,6 +152,10 @@ OVERRIDES = [
     ("NUCLEI_TEMPLATES_REPO", ["scripts/fetch-nuclei-templates.sh"]),
     ("NUCLEI_TEMPLATES_REF", ["scripts/fetch-nuclei-templates.sh"]),
     ("NUCLEI_TEMPLATES_COMMIT", ["scripts/fetch-nuclei-templates.sh"]),
+    ("PULSE_PLUGINS_REPO", ["scanner/pipeline/pulse_plugin_content.py"]),
+    ("PULSE_PLUGINS_REF", ["scanner/pipeline/pulse_plugin_content.py"]),
+    ("PULSE_PLUGINS_COMMIT", ["scanner/pipeline/pulse_plugin_content.py"]),
+    ("PULSE_PLUGINS_SOURCES", ["scanner/pipeline/pulse_plugin_content.py", "scripts/fetch-pulse-plugins.sh"]),
 ]
 
 

@@ -376,9 +376,11 @@ COPY --from=enrichment /app/scanner/data /app/scanner/data
 # same non-fatal build-step philosophy as the fetches above).
 RUN bash scripts/fetch-nuclei-templates.sh /usr/share/nuclei-templates || true
 
+# The Rhai plugins are not in this image. The directory is where
+# scripts/fetch-pulse-plugins.sh installs them, and where a volume is mounted.
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin scanner && \
-    mkdir -p /app/scanner/output /app/scanner/state && \
-    chown -R scanner:scanner /app
+    mkdir -p /app/scanner/output /app/scanner/state /var/lib/shapoclyack/pulse-plugins && \
+    chown -R scanner:scanner /app /var/lib/shapoclyack/pulse-plugins
 
 USER scanner
 

@@ -27,6 +27,7 @@ from api.services import audit as audit_service
 from api.settings import Settings
 from scanner.pipeline import config_overlay
 from scanner.pipeline.config_schema import NaabuTopPorts, ValidationError, load_config
+from scanner.pipeline.pulse_plugin_content import MAX_SOURCES, PulsePluginSource
 
 LOG = logging.getLogger(__name__)
 
@@ -83,6 +84,45 @@ def _nonempty_str(value: Any) -> str:
     return value
 
 
+def _plugins_dir(value: Any) -> str:
+    """A host path. Empty keeps the usual resolution order."""
+    if not isinstance(value, str) or len(value) > 4096:
+        raise ValueError("expected a path of at most 4096 characters")
+    if any(char in value for char in "\x00\r\n"):
+        raise ValueError("plugins_dir must be a single path")
+    return value
+
+
+def _plugin_source_error(exc: ValidationError) -> str:
+    err = exc.errors()[0]
+    loc = ".".join(str(part) for part in err["loc"])
+    msg = str(err["msg"])
+    prefix = "Value error, "
+    if msg.startswith(prefix):
+        msg = msg[len(prefix) :]
+    return f"{loc}: {msg}" if loc else msg
+
+
+def _plugin_sources(value: Any) -> list[Any]:
+    """The git repositories a fetch installs. The first name wins a file."""
+    if not isinstance(value, list):
+        raise ValueError("expected a list of plugin sources")
+    if len(value) > MAX_SOURCES:
+        raise ValueError(f"at most {MAX_SOURCES} plugin sources")
+    names: list[str] = []
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"source {index} must be an object")
+        try:
+            source = PulsePluginSource.model_validate(item)
+        except ValidationError as exc:
+            raise ValueError(f"source {index}: {_plugin_source_error(exc)}") from exc
+        names.append(source.name)
+    if len(names) != len(set(names)):
+        raise ValueError("plugin source names must be unique")
+    return value
+
+
 def _enum(choices: tuple[str, ...]) -> Callable[[Any], str]:
     def check(value: Any) -> str:
         if value not in choices:
@@ -126,6 +166,10 @@ _STATIC_SPEC: dict[str, Callable[[Any], Any]] = {
     "nuclei.retries": _int_range(0, 5),
     "reporting.pdf_summary": _as_bool,
     "service_probe.backend": _enum(_SERVICE_BACKENDS),
+    # Host content, not a speed-profile knob. The console edits them; a sensor
+    # job does not receive them (HOST_ONLY_PATHS).
+    "service_probe.pulse.plugins_dir": _plugins_dir,
+    "service_probe.pulse.plugin_sources": _plugin_sources,
     "enrichment.cvss4.nvd_api_key": _secret,
 }
 # Per-profile editable leaf → validator (path is profiles.<profile>.<leaf>).
@@ -416,9 +460,17 @@ def overlay_capability(scan_options: dict[str, Any] | None) -> str | None:
     return str(options.get(OVERLAY_CAPABILITY_OPTION) or AGENT_CAPABILITY)
 
 #: Editable settings that stay with the API's own host and are never sent to a
-#: sensor: the NVD key (a secret the sensor's scans do not use) and the nuclei
-#: templates directory (a path on the API's filesystem).
-HOST_ONLY_PATHS: frozenset[str] = SECRET_PATHS | {"nuclei.templates_dir"}
+#: sensor: the NVD key (a secret the sensor's scans do not use), the nuclei
+#: templates directory (a path on the API's filesystem), and the Pulse plugin
+#: directory plus its git repository list. The directory is a path on this
+#: host. The list is the receipt ``fetch-pulse-plugins.sh`` wrote here; a
+#: sensor has its own fetch, and sending the list would unload plugins on a
+#: host whose receipt differs without installing anything.
+HOST_ONLY_PATHS: frozenset[str] = SECRET_PATHS | {
+    "nuclei.templates_dir",
+    "service_probe.pulse.plugins_dir",
+    "service_probe.pulse.plugin_sources",
+}
 
 
 class AgentOverlayUnsupported(PermissionError):
@@ -485,8 +537,10 @@ def agent_overlay(settings: Settings, extra: dict[str, Any] | None) -> dict[str,
     CVE lookup and the CVSS-4 database fetch, neither of which an executor runs
     by default, and the claim response it would travel in is stored on a host
     in somebody else's network; an executor that needs it is given it by its
-    own operator. The templates directory is a path on this host. ``None`` when there is nothing to send, so an agent that predates
-    the overlay keeps taking the jobs of an installation that never used it.
+    own operator. The templates directory, the Pulse plugin directory and the
+    plugin repository list are this host's content. ``None`` when there is
+    nothing to send, so an agent that predates the overlay keeps taking the
+    jobs of an installation that never used it.
     """
     overrides = unflatten(
         {

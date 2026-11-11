@@ -410,6 +410,16 @@ service_probe:
     syn: false
     max_hosts: 65536
     chunk_hosts: 64
+    # Rhai plugins are git content, not part of the image. Empty uses
+    # OCTO_PULSE_PLUGINS_DIR, else the checkout's scanner/pipeline/pulse_data/plugins
+    # when that directory is in the tree, else /var/lib/shapoclyack/pulse-plugins.
+    # Install or refresh with scripts/fetch-pulse-plugins.sh. plugin_sources
+    # lists extra repositories (and the official one, when you pin it here);
+    # a non-empty list must match the receipt in plugins_dir or the plugins
+    # stay off for that run. A speed profile cannot override either field.
+    plugins: true
+    plugins_dir: ""
+    plugin_sources: []
 
 # TLS / certificate posture (Phase 9.2 + Pulse Phase 4): prefers
 # pulse/tls.json from Pulse (the ssl-cert / ssl-enum-ciphers XML of runs recorded

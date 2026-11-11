@@ -8,6 +8,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from scanner.pipeline.pulse_plugin_content import MAX_SOURCES, PulsePluginSource
+
 
 #: One DNS label. Guards config values that are interpolated into a query name
 #: and handed to an external tool (currently mail_posture.dkim_selectors).
@@ -658,14 +660,39 @@ class PulseProbeConfig(BaseModel):
     # its checkpoint as "status: done". Pause and re-probe once when a chunk
     # contradicts the open ports naabu just proved. 0 disables the retry.
     retry_settle_seconds: int = Field(default=15, ge=0, le=600)
-    # Rhai plugins passed to Pulse with --script-dir (scanner/pipeline/pulse_data/
-    # plugins/, docs/pulse-plugins.md): what is left of NSE ``default,safe``
-    # that Pulse's sandbox can do -- weak SSH algorithms, anonymous FTP,
-    # services that cannot start TLS. They open their own connections to the
-    # open ports, outside --rate, so the scan policy turns them off under a
-    # per-host rate ceiling (scan_policy.apply_policy). Only used when Pulse is
-    # the report backend (always, now).
+    # Rhai plugins passed to Pulse with --script-dir (docs/pulse-plugins.md):
+    # what is left of NSE ``default,safe`` that Pulse's sandbox can do -- weak
+    # SSH algorithms, anonymous FTP, services that cannot start TLS. They open
+    # their own connections to the open ports, outside --rate, so the scan
+    # policy turns them off under a per-host rate ceiling
+    # (scan_policy.apply_policy). Only used when Pulse is the report backend
+    # (always, now).
+    #
+    # The scripts are git content, not image layers. Empty ``plugins_dir``
+    # means ``OCTO_PULSE_PLUGINS_DIR``, else the checkout under
+    # ``scanner/pipeline/pulse_data/plugins`` when those files are present,
+    # else ``/var/lib/shapoclyack/pulse-plugins``. ``plugin_sources`` is the
+    # list ``scripts/fetch-pulse-plugins.sh`` installs; when it is non-empty
+    # a run refuses a directory whose receipt is a different set. Neither
+    # field is a per-profile override: a speed profile must not point the
+    # sensor at another repository.
     plugins: bool = True
+    plugins_dir: str = Field(default="", max_length=4096)
+    plugin_sources: list[PulsePluginSource] = Field(default_factory=list, max_length=MAX_SOURCES)
+
+    @field_validator("plugins_dir")
+    @classmethod
+    def _plugins_dir(cls, value: str) -> str:
+        if any(char in value for char in "\x00\r\n"):
+            raise ValueError("plugins_dir must be a single path")
+        return value
+
+    @model_validator(mode="after")
+    def _unique_plugin_sources(self) -> PulseProbeConfig:
+        names = [source.name for source in self.plugin_sources]
+        if len(names) != len(set(names)):
+            raise ValueError("plugin source names must be unique")
+        return self
 
 
 class ServiceProbeConfig(BaseModel):

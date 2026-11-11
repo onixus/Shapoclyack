@@ -53,6 +53,7 @@ def test_system_status_shape():
         "nvd_cpe",
         # The FSTEC BDU identity overlay (#356), optional like the two above.
         "bdu_fstec",
+        "bdu_threats",
     }
     # No bundle was ever installed on the test tree: the field is there and null.
     assert body["enrichment_bundle"] is None
