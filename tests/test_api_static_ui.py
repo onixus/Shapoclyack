@@ -51,6 +51,18 @@ def test_serves_next_directory_index_routes(tmp_path: Path, monkeypatch) -> None
     assert client.get("/login").text == "<html>login-dir</html>"
 
 
+def test_unknown_api_path_is_json_not_the_shell(tmp_path: Path, monkeypatch) -> None:
+    web = tmp_path / "web-dist"
+    web.mkdir()
+    (web / "index.html").write_text("<html>home</html>", encoding="utf-8")
+    client = _client(web, monkeypatch)
+    response = client.get("/api/does-not-exist")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Not Found"
+    assert "home" not in response.text
+    assert client.get("/no-such-page").text == "<html>home</html>"
+
+
 def test_serves_vite_assets_mount(tmp_path: Path, monkeypatch) -> None:
     web = tmp_path / "web-dist"
     web.mkdir()
