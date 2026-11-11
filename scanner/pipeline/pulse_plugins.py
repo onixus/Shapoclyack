@@ -292,6 +292,23 @@ APPLICABILITY: dict[str, dict[str, Any]] = {
     "shapo_remote_admin_exposure": {
         "services": {"rdp", "ms-wbt-server", "vnc"}, "banner": (("rfb ", ""),), "ports": {3389},
     },
+    "shapo_http_methods": {"services": {"http"}, "banner": (("http/", ""),), "ports": set()},
+    "shapo_http_cookie_flags": {"services": {"http"}, "banner": (("http/", ""),), "ports": set()},
+    "shapo_http_cors": {"services": {"http"}, "banner": (("http/", ""),), "ports": set()},
+    "shapo_http_ntlm_info": {"services": {"http"}, "banner": (("http/", ""),), "ports": set()},
+    "shapo_http_svn": {"services": {"http"}, "banner": (("http/", ""),), "ports": set()},
+    "shapo_smb_os": {"services": {"smb", "microsoft-ds", "netbios-ssn"}, "banner": (), "ports": {445, 139}},
+    "shapo_cassandra_ready": {"services": {"cassandra"}, "banner": (), "ports": {9042}},
+    "shapo_jdwp_handshake": {"services": {"jdwp"}, "banner": (), "ports": set()},
+    "shapo_mssql_prelogin": {"services": {"mssql"}, "banner": (), "ports": {1433}},
+    "shapo_oracle_tns_version": {"services": {"oracle"}, "banner": (), "ports": {1521}},
+    "shapo_modbus_identity": {"services": {"modbus"}, "banner": (), "ports": {502}},
+    "shapo_rmi_registry": {"services": {"rmi"}, "banner": (), "ports": set()},
+    "shapo_epmd_names": {"services": {"epmd"}, "banner": (), "ports": {4369}},
+    "shapo_iscsi_text": {"services": {"iscsi"}, "banner": (), "ports": {3260}},
+    "shapo_nbd_hello": {"services": {"nbd"}, "banner": (), "ports": {10809}},
+    "shapo_drda_exchange": {"services": {"drda"}, "banner": (), "ports": {50000}},
+    "shapo_giop_locate": {"services": {"giop"}, "banner": (), "ports": {2809}},
 }
 
 
