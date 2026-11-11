@@ -8,40 +8,6 @@ fn ports() { [] }
 fn head(text, limit) {
     if text.len() > limit { text.sub_string(0, limit) } else { text }
 }
-fn decode_chunked(body) {
-    let out = "";
-    let rest = body;
-    for guard in 0..64 {
-        if rest.len() == 0 { throw "truncated chunked body"; }
-        let eol = rest.index_of("\r\n");
-        if eol < 1 { throw "bad chunk size line"; }
-        let size_line = rest.sub_string(0, eol);
-        let semi = size_line.index_of(";");
-        let size_text = if semi >= 0 { size_line.sub_string(0, semi) } else { size_line };
-        let digits = "0123456789abcdef";
-        let n = 0;
-        let i = 0;
-        while i < size_text.len() {
-            let d = digits.index_of(size_text.sub_string(i, 1).to_lower());
-            if d < 0 { throw "bad chunk size digit"; }
-            n = n * 16 + d;
-            i += 1;
-        }
-        if size_text.len() == 0 || n > 65536 { throw "bad chunk size"; }
-        if n == 0 {
-            let tail = rest.sub_string(eol + 2);
-            if tail.len() == 0 || tail == "\r\n" { return out; }
-            if tail.ends_with("\r\n\r\n") { return out; }
-            throw "bad chunk trailer";
-        }
-        let data_at = eol + 2;
-        if data_at + n + 2 > rest.len() { throw "truncated chunk data"; }
-        out += rest.sub_string(data_at, n);
-        if rest.sub_string(data_at + n, 2) != "\r\n" { throw "bad chunk delimiter"; }
-        rest = rest.sub_string(data_at + n + 2);
-    }
-    throw "too many chunks";
-}
 fn run() {
     let greeting = banner.to_lower();
     if !(service == "http" || greeting.starts_with("http/")) { return; }
@@ -98,6 +64,6 @@ fn run() {
         title: "HTTP Set-Cookie missing HttpOnly flag",
         severity: "LOW",
         summary: "A Set-Cookie header was returned without the HttpOnly attribute on plain HTTP. The cookie value and any associated client-side attack surface were not verified; Secure is not assessed because the request is not TLS.",
-        evidence: "Set-Cookie header lacks HttpOnly: " + head(missing, 80)
+        evidence: "A Set-Cookie header lacks the HttpOnly attribute. The cookie value was not recorded."
     };
 }

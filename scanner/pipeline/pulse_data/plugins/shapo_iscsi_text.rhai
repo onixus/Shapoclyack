@@ -20,14 +20,13 @@ fn run() {
     if reply.len() == 0 { throw "empty iSCSI reply"; }
     if reply.len() < 96 { throw "truncated iSCSI reply"; }
     let opcode = octet(reply, 0) & 0x7f;
-    if opcode == 0x23 {
-        return #{
-            title: "iSCSI login answered without credentials",
-            severity: "LOW",
-            summary: "An iSCSI Login request without AuthMethod or CHAP was answered with a Login Response. No session, digest negotiation or LUN access was attempted.",
-            evidence: "iSCSI Login Response received."
-        };
-    }
-    if opcode == 0x3f { throw "iSCSI reject response"; }
-    throw "unexpected iSCSI response opcode";
+    if opcode == 0x3f { return; }
+    if opcode != 0x23 { throw "unexpected iSCSI response opcode"; }
+    if octet(reply, 36) != 0 { return; }
+    return #{
+        title: "iSCSI login answered without credentials",
+        severity: "LOW",
+        summary: "An iSCSI Login request without AuthMethod or CHAP was answered with a successful Login Response. No session, digest negotiation or LUN access was attempted.",
+        evidence: "iSCSI Login Response received with status class zero."
+    };
 }

@@ -2238,6 +2238,8 @@ HTTP_PHASE_9_CASES = [
      _http_reply("302 Found", b"Location: /elsewhere"), "clean"),
     ("p9-methods-garbage", "shapo_http_methods", "http", "OPTIONS", "/",
      b"NO CARRIER\r\n", "error"),
+    ("p9-methods-broken-chunk", "shapo_http_methods", "http", "OPTIONS", "/",
+     b"HTTP/1.1 200 OK\r\nAllow: PUT\r\nTransfer-Encoding: chunked\r\n\r\nnot-a-chunk", "finding"),
     ("p9-cookie-missing-httponly", "shapo_http_cookie_flags", "http", "HEAD", "/",
      _http_reply("200 OK", b"Set-Cookie: session=abc123; Path=/"), "finding"),
     ("p9-cookie-has-httponly", "shapo_http_cookie_flags", "http", "HEAD", "/",
@@ -2275,6 +2277,10 @@ HTTP_PHASE_9_CASES = [
      _http_reply("200 OK", body=b"not a database"), "clean"),
     ("p9-svn-garbage", "shapo_http_svn", "http", "GET", "/.svn/wc.db",
      b"NO CARRIER\r\n", "error"),
+    ("p9-svn-chunked", "shapo_http_svn", "http", "GET", "/.svn/wc.db",
+     _chunked_http_reply("200 OK", body=b"SQLite format 3\x00"), "finding"),
+    ("p9-svn-lf-only", "shapo_http_svn", "http", "GET", "/.svn/wc.db",
+     b"HTTP/1.1 200 OK\nContent-Length: 16\n\nSQLite format 3\x00", "finding"),
 ]
 
 
@@ -2292,6 +2298,11 @@ def test_http_plugins_of_phase_9(plugin, service, method, target, reply, expect,
     assert b"Connection: close\r\n" in request
     if expect == "finding":
         assert seen and seen[0] == "LOW" and not errors.strip()
+        if plugin == "shapo_http_cookie_flags":
+            # The finding names the header. It must not copy the header line or value.
+            assert "abc123" not in seen[1] and "abc123" not in seen[2]
+            assert "Set-Cookie:" not in seen[2]
+            assert "session=" not in seen[2]
     elif expect == "clean":
         assert seen is None and not errors.strip()
     else:
@@ -2301,8 +2312,25 @@ def test_http_plugins_of_phase_9(plugin, service, method, target, reply, expect,
 # --- shapo_smb_os: SMB1 NEGOTIATE returns a Native OS string ----------------
 
 
-def _smb1_negotiate_response(os: bytes = b"Windows Server") -> bytes:
-    """Minimal SMB1 NEGOTIATE response with a null-terminated Native OS string."""
+_SMB1_NEGOTIATE = (
+    "0000008eff534d4272000000001801000000000000000000000000000000000000000000006b00"
+    "025043204e4554574f524b2050524f4752414d20312e3000024d4943524f534f4654204e455457"
+    "4f524b5320312e303300024d4943524f534f4654204e4554574f524b5320332e3000024c414e4d"
+    "414e312e3000024c4d312e325830303200024e54204c4d20302e313200"
+)
+
+
+def _smb1_negotiate_response(
+    os: bytes | None = b"Windows Server",
+    *,
+    capabilities: bytes = b"\x00\x00\x00\x00",
+    challenge_len: int = 8,
+) -> bytes:
+    """SMB1 NEGOTIATE response. Word count 17, little-endian fields.
+
+    ``os is None`` sends only the challenge, so ByteCount is too small for a
+    Native OS string. Capabilities are the four bytes at packet offset 56.
+    """
     word_params = bytes([
         0x11,  # word count
         0x00, 0x00,  # dialect index
@@ -2312,14 +2340,18 @@ def _smb1_negotiate_response(os: bytes = b"Windows Server") -> bytes:
         0x00, 0x00, 0x00, 0x00,  # max buffer
         0x00, 0x00, 0x00, 0x00,  # max raw
         0x00, 0x00, 0x00, 0x00,  # session key
-        0x00, 0x00, 0x00, 0x00,  # capabilities (no extended security)
+    ]) + capabilities + bytes([
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  # system time
         0x00, 0x00,  # timezone
-        0x08,  # challenge length
+        challenge_len,
     ])
-    challenge = b"\x00" * 8
-    byte_count = len(challenge) + len(os) + 1 + 1
-    data = challenge + os + b"\x00" + b"\x00"
+    challenge = b"\x00" * challenge_len
+    if os is None:
+        data = challenge
+        byte_count = len(challenge)
+    else:
+        data = challenge + os + b"\x00" + b"\x00"
+        byte_count = len(data)
     body = word_params + byte_count.to_bytes(2, "little") + data
     smb_header = b"\xffSMB\x72" + b"\x00" * 27  # 32 bytes total
     msg = smb_header + body
@@ -2327,10 +2359,14 @@ def _smb1_negotiate_response(os: bytes = b"Windows Server") -> bytes:
 
 
 @needs_pulse
-@pytest.mark.parametrize("case", ["native-os", "empty", "truncated"])
+@pytest.mark.parametrize("case", ["native-os", "extended-security", "no-os", "empty", "truncated"])
 def test_smb_os_reports_native_os_or_raises(case, stub, tmp_path):
     if case == "native-os":
         reply = _smb1_negotiate_response()
+    elif case == "extended-security":
+        reply = _smb1_negotiate_response(capabilities=b"\x00\x00\x00\x80")
+    elif case == "no-os":
+        reply = _smb1_negotiate_response(os=None)
     elif case == "empty":
         reply = b""
     else:
@@ -2338,9 +2374,12 @@ def test_smb_os_reports_native_os_or_raises(case, stub, tmp_path):
     server = stub(b"", lambda _request: reply)
     lines, errors = _run_binary_plugin("shapo_smb_os", "smb", server, tmp_path)
     seen = finding(lines)
+    assert server.received[-1].hex() == _SMB1_NEGOTIATE
     if case == "native-os":
         assert seen and seen[0] == "LOW" and not errors.strip()
-        assert any(request[4:8] == b"\xffSMB" for request in server.received)
+        assert "Windows" not in seen[1] and "Windows" not in seen[2]
+    elif case in {"extended-security", "no-os"}:
+        assert seen is None and not errors.strip()
     else:
         assert seen is None and errors.strip() and "Function not found" not in errors
 
@@ -2349,7 +2388,8 @@ def test_smb_os_reports_native_os_or_raises(case, stub, tmp_path):
 
 
 def _cql_frame(opcode: int, body: bytes = b"") -> bytes:
-    return bytes([0x83, 0x00, 0x00, opcode]) + len(body).to_bytes(4, "big") + body
+    # v3 header: version, flags, 2-byte stream, opcode, 4-byte body length.
+    return bytes([0x83, 0x00, 0x00, 0x00, opcode]) + len(body).to_bytes(4, "big") + body
 
 
 @needs_pulse
@@ -2358,14 +2398,14 @@ def test_cassandra_ready_parses_cql_startup_reply(case, stub, tmp_path):
     if case == "ready":
         reply = _cql_frame(0x02)
     elif case == "authenticate":
-        reply = _cql_frame(0x10)
+        reply = _cql_frame(0x03)
     else:
         reply = _cql_frame(0x02)[:6]
     server = stub(b"", lambda _request: reply)
     lines, errors = _run_binary_plugin("shapo_cassandra_ready", "cassandra", server, tmp_path)
     seen = finding(lines)
     assert server.received[-1].hex() == (
-        "03000001000000160001000b43514c5f56455253494f4e0005332e302e30"
+        "0300000001000000160001000b43514c5f56455253494f4e0005332e302e30"
     )
     if case == "ready":
         assert seen and seen[0] == "LOW" and not errors.strip()
@@ -2414,7 +2454,7 @@ def test_mssql_prelogin_parses_tds_reply(case, stub, tmp_path):
     lines, errors = _run_binary_plugin("shapo_mssql_prelogin", "mssql", server, tmp_path)
     seen = finding(lines)
     assert server.received[-1].hex() == (
-        "1201002f00000100000000000601000600010200070001030008000404000c0001ff00000000000000000000000000"
+        "1201002f0000010000001a00060100200001020021000103002200040400260001ff00000000000002000000000000"
     )
     if case == "prelogin":
         assert seen and seen[0] == "LOW" and not errors.strip()
@@ -2426,11 +2466,14 @@ def test_mssql_prelogin_parses_tds_reply(case, stub, tmp_path):
 
 
 @needs_pulse
-@pytest.mark.parametrize("case", ["version", "accept-only", "truncated"])
+@pytest.mark.parametrize("case", ["version", "refuse", "accept-only", "truncated"])
 def test_oracle_tns_version_looks_for_version_in_accept(case, stub, tmp_path):
     if case == "version":
         body = b"(DESCRIPTION=(ERR=0)(VSNNUM=0)(VERSION=0))"
         reply = (len(body) + 8).to_bytes(2, "big") + b"\x00\x00\x02\x00\x00\x00" + body
+    elif case == "refuse":
+        body = b"(DESCRIPTION=(ERR=12504)(VSNNUM=186646784))"
+        reply = (len(body) + 8).to_bytes(2, "big") + b"\x00\x00\x04\x00\x00\x00" + body
     elif case == "accept-only":
         body = b"(DESCRIPTION=(ERR=0))"
         reply = (len(body) + 8).to_bytes(2, "big") + b"\x00\x00\x02\x00\x00\x00" + body
@@ -2440,10 +2483,14 @@ def test_oracle_tns_version_looks_for_version_in_accept(case, stub, tmp_path):
     lines, errors = _run_binary_plugin("shapo_oracle_tns_version", "oracle", server, tmp_path)
     seen = finding(lines)
     assert server.received[-1].hex() == (
-        "002800000100000028434f4e4e4543545f444154413d28434f4d4d414e443d56455253494f4e2929"
+        "005a0000010000000136012c000008007fff7f08000000010020003a000000000000000000000000"
+        "0000000034e600000001000000000000000028434f4e4e4543545f444154413d28434f4d4d414e443d"
+        "76657273696f6e2929"
     )
-    if case == "version":
+    if case in {"version", "refuse"}:
         assert seen and seen[0] == "LOW" and not errors.strip()
+        assert "186646784" not in seen[1] and "186646784" not in seen[2]
+        assert "VSNNUM" not in seen[2]
     elif case == "accept-only":
         assert seen is None and not errors.strip()
     else:
@@ -2459,13 +2506,13 @@ def test_modbus_identity_parses_function_43_or_exception(case, stub, tmp_path):
     if case == "identity":
         reply = bytes.fromhex("000100000005002b0e0101")
     elif case == "exception":
-        reply = bytes.fromhex("00010000000300ab0e")
+        reply = bytes.fromhex("00010000000300ab01")
     else:
         reply = bytes.fromhex("000100000004002b0e")
     server = stub(b"", lambda _request: reply)
     lines, errors = _run_binary_plugin("shapo_modbus_identity", "modbus", server, tmp_path)
     seen = finding(lines)
-    assert server.received[-1].hex() == "000100000004002b0e01"
+    assert server.received[-1].hex() == "000100000005002b0e0100"
     if case == "identity":
         assert seen and seen[0] == "LOW" and not errors.strip()
     elif case == "exception":
@@ -2478,21 +2525,21 @@ def test_modbus_identity_parses_function_43_or_exception(case, stub, tmp_path):
 
 
 @needs_pulse
-@pytest.mark.parametrize("case", ["ok", "noauth", "other"])
+@pytest.mark.parametrize("case", ["ack", "nack", "other"])
 def test_rmi_registry_reports_protocol_ok(case, stub, tmp_path):
-    if case == "ok":
-        reply = b"\x4f"
-    elif case == "noauth":
+    if case == "ack":
         reply = b"\x4e"
+    elif case == "nack":
+        reply = b"\x4f"
     else:
         reply = b"\x00"
     server = stub(b"", lambda _request: reply)
     lines, errors = _run_binary_plugin("shapo_rmi_registry", "rmi", server, tmp_path)
     seen = finding(lines)
-    assert server.received[-1].hex() == "4a524d490002"
-    if case == "ok":
+    assert server.received[-1].hex() == "4a524d4900024b"
+    if case == "ack":
         assert seen and seen[0] == "LOW" and not errors.strip()
-    elif case == "noauth":
+    elif case == "nack":
         assert seen is None and not errors.strip()
     else:
         assert seen is None and errors.strip() and "Function not found" not in errors
@@ -2505,17 +2552,20 @@ def test_rmi_registry_reports_protocol_ok(case, stub, tmp_path):
 @pytest.mark.parametrize("case", ["node", "empty", "truncated"])
 def test_epmd_names_parses_node_list(case, stub, tmp_path):
     if case == "node":
-        reply = b"\x00\x1f" + b"name\x40host\x00" + b"\x0a"
+        reply = b"\x00\x00\x11\x11" + b"name secretnode at port 9999\n"
     elif case == "empty":
-        reply = b"\x00\x00\x0a"
+        reply = b"\x00\x00\x00\x00"
     else:
-        reply = b"\x00\x1f"
+        reply = b"\x00\x00"
     server = stub(b"", lambda _request: reply)
     lines, errors = _run_binary_plugin("shapo_epmd_names", "epmd", server, tmp_path)
     seen = finding(lines)
-    assert server.received[-1].hex() == "6e"
+    assert server.received[-1].hex() == "00016e"
     if case == "node":
         assert seen and seen[0] == "LOW" and not errors.strip()
+        assert "secretnode" not in seen[1] and "secretnode" not in seen[2]
+    elif case == "empty":
+        assert seen is None and not errors.strip()
     else:
         assert seen is None and errors.strip() and "Function not found" not in errors
 
@@ -2523,13 +2573,22 @@ def test_epmd_names_parses_node_list(case, stub, tmp_path):
 # --- shapo_iscsi_text: Login Response to an unauthenticated login ----------
 
 
+def _iscsi_pdu(opcode: int, status_class: int = 0) -> bytes:
+    packet = bytearray(48)
+    packet[0] = opcode
+    packet[36] = status_class
+    return bytes(packet)
+
+
 @needs_pulse
-@pytest.mark.parametrize("case", ["login-response", "reject", "truncated"])
+@pytest.mark.parametrize("case", ["login-response", "reject", "status-class", "truncated"])
 def test_iscsi_text_parses_login_response(case, stub, tmp_path):
     if case == "login-response":
-        reply = bytes.fromhex("23" + "00" * 47)
+        reply = _iscsi_pdu(0x23)
     elif case == "reject":
-        reply = bytes.fromhex("3f" + "00" * 47)
+        reply = _iscsi_pdu(0x3f)
+    elif case == "status-class":
+        reply = _iscsi_pdu(0x23, 0x02)
     else:
         reply = bytes.fromhex("23" + "00" * 30)
     server = stub(b"", lambda _request: reply)
@@ -2540,8 +2599,8 @@ def test_iscsi_text_parses_login_response(case, stub, tmp_path):
     )
     if case == "login-response":
         assert seen and seen[0] == "LOW" and not errors.strip()
-    elif case == "reject":
-        assert seen is None and errors.strip() and "Function not found" not in errors
+    elif case in {"reject", "status-class"}:
+        assert seen is None and not errors.strip()
     else:
         assert seen is None and errors.strip() and "Function not found" not in errors
 
@@ -2575,17 +2634,20 @@ def test_nbd_hello_reports_init_passwd_magic(case, stub, tmp_path):
 @pytest.mark.parametrize("case", ["excsatrd", "other", "truncated"])
 def test_drda_exchange_parses_excsatrd(case, stub, tmp_path):
     if case == "excsatrd":
-        reply = bytes.fromhex("0010d001000114400000000000000000")
+        reply = bytes.fromhex("0012d0020001000c14430008116d44423258")
     elif case == "other":
-        reply = bytes.fromhex("0010d001000112340000000000000000")
+        reply = bytes.fromhex("0012d0020001000c10410008116d44423258")
     else:
         reply = bytes.fromhex("0010d00100011440")
     server = stub(b"", lambda _request: reply)
     lines, errors = _run_binary_plugin("shapo_drda_exchange", "drda", server, tmp_path)
     seen = finding(lines)
-    assert server.received[-1].hex() == "0021d001000110411404001014030003147c000714400001115e0009736861706f"
+    assert server.received[-1].hex() == (
+        "0032d0010001002c10410004115e0004116d0004115a001814041403000724070008240f0008144000081474000800041147"
+    )
     if case == "excsatrd":
         assert seen and seen[0] == "LOW" and not errors.strip()
+        assert "DB2X" not in seen[1] and "DB2X" not in seen[2]
     elif case == "other":
         assert seen is None and not errors.strip()
     else:
@@ -2599,15 +2661,15 @@ def test_drda_exchange_parses_excsatrd(case, stub, tmp_path):
 @pytest.mark.parametrize("case", ["locate", "not-locate", "truncated"])
 def test_giop_locate_parses_locate_reply(case, stub, tmp_path):
     if case == "locate":
-        reply = bytes.fromhex("47494f50010000040000000400000001")
+        reply = bytes.fromhex("47494f5001000004000000080000000100000000")
     elif case == "not-locate":
-        reply = bytes.fromhex("47494f50010000030000000400000001")
+        reply = bytes.fromhex("47494f5001000003000000080000000100000000")
     else:
         reply = bytes.fromhex("47494f5001000004")
     server = stub(b"", lambda _request: reply)
     lines, errors = _run_binary_plugin("shapo_giop_locate", "giop", server, tmp_path)
     seen = finding(lines)
-    assert server.received[-1].hex() == "47494f50010000030000000400000001"
+    assert server.received[-1].hex() == "47494f5001000003000000080000000100000000"
     if case == "locate":
         assert seen and seen[0] == "LOW" and not errors.strip()
     elif case == "not-locate":

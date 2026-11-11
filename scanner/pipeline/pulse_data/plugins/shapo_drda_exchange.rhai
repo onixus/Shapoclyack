@@ -19,13 +19,13 @@ fn be16(data, pos) {
 fn run() {
     let unnamed = service == "" || service == "unknown";
     if !(service == "drda" || (unnamed && port == 50000)) { return; }
-    let reply = probe_send_hex(port, "0021d001000110411404001014030003147c000714400001115e0009736861706f", 1500).to_lower();
+    let reply = probe_send_hex(port, "0032d0010001002c10410004115e0004116d0004115a001814041403000724070008240f0008144000081474000800041147", 1500).to_lower();
     if reply.len() == 0 { throw "empty DRDA reply"; }
-    if reply.len() < 16 { throw "truncated DRDA reply"; }
+    if reply.len() < 20 { throw "truncated DRDA reply"; }
     let length = be16(reply, 0);
-    if length < 6 || length * 2 != reply.len() { throw "DRDA DDM length mismatch"; }
+    if length < 10 || length * 2 != reply.len() { throw "DRDA DDM length mismatch"; }
     if octet(reply, 2) != 0xd0 { throw "DRDA DDM magic mismatch"; }
-    if be16(reply, 6) == 0x1440 {
+    if be16(reply, 8) == 0x1443 {
         return #{
             title: "DRDA EXCSAT answered",
             severity: "LOW",

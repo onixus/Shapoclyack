@@ -19,15 +19,15 @@ fn be32(data, pos) {
 fn run() {
     let unnamed = service == "" || service == "unknown";
     if !(service == "cassandra" || (unnamed && port == 9042)) { return; }
-    let reply = probe_send_hex(port, "03000001000000160001000b43514c5f56455253494f4e0005332e302e30", 1500).to_lower();
+    // Protocol v3 header is 9 bytes: version, flags, 2-byte stream, opcode, length.
+    let reply = probe_send_hex(port, "0300000001000000160001000b43514c5f56455253494f4e0005332e302e30", 1500).to_lower();
     if reply.len() == 0 { throw "empty Cassandra CQL reply"; }
-    if reply.len() < 16 { throw "truncated Cassandra CQL reply"; }
+    if reply.len() < 18 { throw "truncated Cassandra CQL reply"; }
     if octet(reply, 0) != 0x83 { throw "Cassandra CQL response version mismatch"; }
-    if octet(reply, 1) != 0x00 { throw "Cassandra CQL response flags mismatch"; }
-    let opcode = octet(reply, 3);
-    let size = be32(reply, 4);
-    if size * 2 != reply.len() - 16 { throw "Cassandra CQL body length mismatch"; }
-    if opcode == 0x10 { return; }
+    let opcode = octet(reply, 4);
+    let size = be32(reply, 5);
+    if size * 2 != reply.len() - 18 { throw "Cassandra CQL body length mismatch"; }
+    if opcode == 0x03 { return; }
     if opcode == 0x02 {
         return #{
             title: "Cassandra CQL READY answered without authentication",

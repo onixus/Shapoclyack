@@ -19,7 +19,7 @@ fn be16(data, pos) {
 fn run() {
     let unnamed = service == "" || service == "unknown";
     if !(service == "modbus" || (unnamed && port == 502)) { return; }
-    let reply = probe_send_hex(port, "000100000004002b0e01", 1500).to_lower();
+    let reply = probe_send_hex(port, "000100000005002b0e0100", 1500).to_lower();
     if reply.len() == 0 { throw "empty Modbus reply"; }
     if reply.len() < 18 { throw "truncated Modbus reply"; }
     let trans = be16(reply, 0);
@@ -39,7 +39,10 @@ fn run() {
         };
     }
     if func == 0xab {
-        if length >= 3 && octet(reply, 8) == 0x0e { return; }
+        if length >= 3 {
+            let code = octet(reply, 8);
+            if code >= 0x01 && code <= 0x0b { return; }
+        }
         throw "Modbus exception with unexpected code";
     }
     throw "unexpected Modbus function code";

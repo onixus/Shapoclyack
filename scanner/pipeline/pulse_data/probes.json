@@ -1399,15 +1399,15 @@
       "name": "cassandra-startup",
       "ports": [9042],
       "rarity": 1,
-      "payload_hex": "03000001000000160001000b43514c5f56455253494f4e0005332e302e30",
+      "payload_hex": "0300000001000000160001000b43514c5f56455253494f4e0005332e302e30",
       "matches": [
         {
-          "pattern": "^\\x83\\x00\\x00\\x02",
+          "pattern": "^\\x83\\x00\\x00\\x00\\x02",
           "service": "cassandra",
           "product": "Apache Cassandra"
         },
         {
-          "pattern": "^\\x83\\x00\\x00\\x10",
+          "pattern": "^\\x83\\x00\\x00\\x00\\x03",
           "service": "cassandra",
           "product": "Apache Cassandra (auth required)"
         }
@@ -1430,10 +1430,10 @@
       "name": "modbus-device-id",
       "ports": [502],
       "rarity": 1,
-      "payload_hex": "000100000004002b0e01",
+      "payload_hex": "000100000005002b0e0100",
       "matches": [
         {
-          "pattern": "^..........[\\x2b\\xab]",
+          "pattern": "^.......[\\x2b\\xab]",
           "service": "modbus",
           "product": "Modbus TCP"
         }
@@ -1443,7 +1443,7 @@
       "name": "mssql-prelogin",
       "ports": [1433, 1434],
       "rarity": 1,
-      "payload_hex": "1201002f00000100000000000601000600010200070001030008000404000c0001ff00000000000000000000000000",
+      "payload_hex": "1201002f0000010000001a00060100200001020021000103002200040400260001ff00000000000002000000000000",
       "matches": [
         {
           "pattern": "^\\x04\\x01",
@@ -1456,10 +1456,10 @@
       "name": "oracle-tns-version",
       "ports": [1521],
       "rarity": 1,
-      "payload_hex": "002800000100000028434f4e4e4543545f444154413d28434f4d4d414e443d56455253494f4e2929",
+      "payload_hex": "005a0000010000000136012c000008007fff7f08000000010020003a0000000000000000000000000000000034e600000001000000000000000028434f4e4e4543545f444154413d28434f4d4d414e443d76657273696f6e2929",
       "matches": [
         {
-          "pattern": "^....\\x02\\x00",
+          "pattern": "^....[\\x02\\x04]",
           "service": "oracle",
           "product": "Oracle TNS Listener"
         }
@@ -1469,7 +1469,7 @@
       "name": "rmi-handshake",
       "ports": [1099, 1098, 1199, 8999],
       "rarity": 1,
-      "payload_hex": "4a524d490002",
+      "payload_hex": "4a524d4900024b",
       "matches": [
         {
           "pattern": "^[\\x4e\\x4f]",
@@ -1482,10 +1482,10 @@
       "name": "epmd-names",
       "ports": [4369],
       "rarity": 1,
-      "payload_hex": "6e",
+      "payload_hex": "00016e",
       "matches": [
         {
-          "pattern": "^..[^\\x00\\r\\n]+\\n",
+          "pattern": "^....name ",
           "service": "epmd",
           "product": "Erlang Port Mapper Daemon",
           "soft": true
@@ -1522,7 +1522,7 @@
       "name": "giop-locate",
       "ports": [2809, 1050, 900],
       "rarity": 1,
-      "payload_hex": "47494f50010000030000000400000001",
+      "payload_hex": "47494f5001000003000000080000000100000000",
       "matches": [
         {
           "pattern": "^GIOP....\\x04",
@@ -1535,7 +1535,7 @@
       "name": "drda-excsat",
       "ports": [50000],
       "rarity": 1,
-      "payload_hex": "0021d001000110411404001014030003147c000714400001115e0009736861706f",
+      "payload_hex": "0032d0010001002c10410004115e0004116d0004115a001814041403000724070008240f0008144000081474000800041147",
       "matches": [
         {
           "pattern": "^..\\xd0",

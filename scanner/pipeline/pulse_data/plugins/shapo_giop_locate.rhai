@@ -19,13 +19,14 @@ fn be32(data, pos) {
 fn run() {
     let unnamed = service == "" || service == "unknown";
     if !(service == "giop" || (unnamed && port == 2809)) { return; }
-    let reply = probe_send_hex(port, "47494f50010000030000000400000001", 1500).to_lower();
+    // Body is a request id plus a zero-length object-key sequence.
+    let reply = probe_send_hex(port, "47494f5001000003000000080000000100000000", 1500).to_lower();
     if reply.len() == 0 { throw "empty GIOP locate reply"; }
     if reply.len() < 24 { throw "truncated GIOP locate reply"; }
     if reply.sub_string(0, 8) != "47494f50" { throw "GIOP magic mismatch"; }
     if octet(reply, 7) != 4 { throw "GIOP reply is not LocateReply"; }
     let size = be32(reply, 8);
-    if size < 4 || 12 + size > reply.len() / 2 { throw "GIOP LocateReply size mismatch"; }
+    if size < 8 || 12 + size > reply.len() / 2 { throw "GIOP LocateReply size mismatch"; }
     return #{
         title: "GIOP LocateRequest answered",
         severity: "LOW",

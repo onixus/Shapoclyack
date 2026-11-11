@@ -61,26 +61,23 @@ fn run() {
     if code == "301" || code == "302" || code == "303" || code == "307" || code == "308" { return; }
     if code != "200" { return; }
     let sep = reply.index_of("\r\n\r\n");
+    let header_block = "";
     let body = "";
     if sep >= 0 {
+        header_block = reply.sub_string(0, sep);
         body = reply.sub_string(sep + 4);
     } else {
         let alt = reply.index_of("\n\n");
         if alt < 0 { throw "no end of HTTP headers in the reply"; }
+        header_block = reply.sub_string(0, alt);
         body = reply.sub_string(alt + 2);
     }
     let chunked = false;
-    let header_block = "";
-    if sep >= 0 {
-        header_block = reply.sub_string(0, sep);
-    } else {
-        header_block = reply.sub_string(0, alt);
-    }
     for line in header_block.split("\n") {
         let l = line;
         l.trim();
         let lower = l.to_lower();
-        if l.starts_with("transfer-encoding:") && lower.contains("chunked") { chunked = true; }
+        if lower.starts_with("transfer-encoding:") && lower.contains("chunked") { chunked = true; }
     }
     if chunked {
         body = decode_chunked(body);

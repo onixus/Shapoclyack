@@ -161,7 +161,7 @@ installed sensor or fleet acceptance.
 | `shapo_cassandra_ready` | CQL `STARTUP` without credentials answered with `READY` | LOW; queries, keyspaces and writes are not attempted | `cassandra-info` narrowed to the anonymous startup reply |
 | `shapo_jdwp_handshake` | Echoed `JDWP-Handshake` on the debug port | LOW; JDWP commands and code execution are not sent | `jdwp-info` narrowed to the handshake echo |
 | `shapo_mssql_prelogin` | Complete TDS PRELOGIN response from the engine | LOW; login, queries and commands are not sent | `ms-sql-info` narrowed to prelogin |
-| `shapo_oracle_tns_version` | Oracle TNS listener accepts a `VERSION` request | LOW; CONNECT_DATA user, service and queries are not sent | `oracle-tns-version` narrowed to the version packet |
+| `shapo_oracle_tns_version` | Oracle TNS listener answers a `VERSION` request | LOW; the version value, CONNECT_DATA user, service and queries are not sent | `oracle-tns-version` narrowed to the version packet |
 | `shapo_modbus_identity` | Modbus function 43 read-device-identification response | LOW; register read and write are not attempted | `modbus-discover` narrowed to one safe function |
 | `shapo_rmi_registry` | JRMP handshake protocol-ok marker from a Java RMI registry | LOW; remote object names and invocation are not attempted | `rmi-dumpregistry` narrowed to the handshake |
 | `shapo_epmd_names` | Erlang Port Mapper Daemon `names` reply containing a node entry | LOW; node names and RPC connections are not copied | `epmd-info` narrowed to the names command |

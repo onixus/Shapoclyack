@@ -22,7 +22,8 @@ fn be32(data, pos) {
 fn run() {
     let unnamed = service == "" || service == "unknown";
     if !(service == "mssql" || (unnamed && port == 1433)) { return; }
-    let reply = probe_send_hex(port, "1201002f00000100000000000601000600010200070001030008000404000c0001ff00000000000000000000000000", 1500).to_lower();
+    // Offsets are from the first option byte. Encryption is ENCRYPT_NOT_SUP, not ENCRYPT_ON.
+    let reply = probe_send_hex(port, "1201002f0000010000001a00060100200001020021000103002200040400260001ff00000000000002000000000000", 1500).to_lower();
     if reply.len() == 0 { throw "empty TDS PRELOGIN reply"; }
     if reply.len() < 16 { throw "truncated TDS PRELOGIN reply"; }
     if octet(reply, 0) != 0x04 { throw "TDS PRELOGIN reply type mismatch"; }
@@ -31,7 +32,7 @@ fn run() {
     return #{
         title: "Microsoft SQL Server PRELOGIN answered",
         severity: "LOW",
-        summary: "The SQL Server engine returned a complete TDS PRELOGIN response, disclosing version and encryption negotiation. No login, query or TDS command was sent.",
+        summary: "The SQL Server engine returned a complete TDS PRELOGIN response. The version bytes were not copied. No login, query or TDS command was sent.",
         evidence: "TDS PRELOGIN returned a complete response."
     };
 }

@@ -7,14 +7,15 @@ fn description() { "Detect a Java RMI registry responding to the JRMP handshake.
 fn ports() { [] }
 fn run() {
     if service == "rmi" {
-        let reply = probe_send_hex(port, "4a524d490002", 1500).to_lower();
+        // StreamProtocol (0x4b) is the byte a registry answers with ProtocolAck.
+        let reply = probe_send_hex(port, "4a524d4900024b", 1500).to_lower();
         if reply.len() == 0 { throw "empty RMI handshake reply"; }
         if reply.len() < 2 { throw "truncated RMI handshake reply"; }
         let first = reply.sub_string(0, 2);
-        if first == "4e" {
+        if first == "4f" {
             return;
         }
-        if first == "4f" {
+        if first == "4e" {
             return #{
                 title: "Java RMI registry answered",
                 severity: "LOW",
