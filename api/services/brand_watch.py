@@ -976,7 +976,6 @@ def release_claim(
     three attempts. The owner may release after the lease clock has run out;
     a job that was already applied is left alone.
     """
-    now = _now()
     with get_session(settings.postgres_url) as session:
         job = session.scalars(
             _for_update(

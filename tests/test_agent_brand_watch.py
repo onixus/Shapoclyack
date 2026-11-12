@@ -253,7 +253,7 @@ def test_empty_resolver_list_is_passed_through_not_replaced():
 
     def observe_dns(names, output_dir, *, resolvers):
         seen["resolvers"] = list(resolvers)
-        return [_dns_row(name, status="unanswered")]
+        return [_dns_row(item, status="unanswered") for item in names]
 
     run_claimed_job(
         {"id": "bwj_6", "mode": "dns_only", "payload": {"names": ["lookalike.example"]}},
