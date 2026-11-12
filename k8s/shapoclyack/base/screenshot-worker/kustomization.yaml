@@ -1,0 +1,18 @@
+# Isolated browser runtime (docs/adr/0007-isolated-screenshot-worker.md).
+#
+# Its own directory so the worker is a base component, not a sidecar of the
+# scanner-executor. It lives in network-scan (the parent kustomization's
+# unsetOnly transformer): the pod meets restricted, holds no credential, and
+# must not sit in network-scan-executor, whose Pod Security level is
+# privileged only because the executor needs NET_RAW.
+#
+# Capture is unsupported without this Deployment. The scanner image has no
+# browser; SCREENSHOT_WORKER_URL on the executor and the local-scan Jobs is
+# what points them here.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - networkpolicy.yaml

@@ -256,25 +256,31 @@ def test_profile_nuclei_override_merges_and_is_scoped():
     assert untouched.model_dump() == cfg.nuclei.model_dump()
 
 
-def test_screenshot_capture_is_not_an_editable_product_feature():
-    assert "screenshots.enabled" not in cfg.EDITABLE_PATHS
-    with pytest.raises(ValueError, match="screenshot capture is unsupported"):
-        cfg.validate_overrides({"screenshots": {"enabled": True}})
+def test_screenshot_capture_is_an_editable_opt_in():
+    """Capture is supported again, but only as an opt-in bool. The stage still
+    needs the isolated screenshot-worker; this only checks the setting."""
+    assert "screenshots.enabled" in cfg.EDITABLE_PATHS
+    data = {"screenshots": {"enabled": True}}
+    assert cfg.validate_overrides(data) is data
+    assert cfg.validate_overrides({"screenshots": {"enabled": False}})["screenshots"]["enabled"] is False
 
 
-def test_system_summary_does_not_advertise_legacy_screenshot_setting():
+def test_system_summary_reports_effective_screenshot_stage():
     from api.services.system_status import scan_config_summary
 
-    summary = scan_config_summary(
-        {"screenshots": {"enabled": True}}, {"screenshots.enabled": True}
+    enabled = scan_config_summary(
+        {"screenshots": {"enabled": False}}, {"screenshots.enabled": True}
     )
-    assert "screenshots" not in summary["stages"]
+    assert enabled["stages"]["screenshots"] is True
+    # No override: the base file wins, same pattern as fingerprint.
+    base_only = scan_config_summary({"screenshots": {"enabled": False}}, {})
+    assert base_only["stages"]["screenshots"] is False
 
 
-def test_legacy_screenshot_override_does_not_block_unrelated_runs(monkeypatch):
-    # Withdrawal of a UI control must not turn old saved overrides (including
-    # false) into the removed-Nmap failure that stops every scan.
-    monkeypatch.setattr(cfg, "get_overrides", lambda _settings: {"screenshots": {"enabled": False}})
+def test_screenshot_override_does_not_block_unrelated_runs(monkeypatch):
+    # A stored screenshots.enabled (true or false) is a normal bool override,
+    # not a withdrawn path, and must not fail assert_runnable.
+    monkeypatch.setattr(cfg, "get_overrides", lambda _settings: {"screenshots": {"enabled": True}})
     cfg.assert_runnable(None)
 
 
@@ -294,7 +300,8 @@ def _stored_row(monkeypatch, data: dict) -> None:
     monkeypatch.setattr(cfg, "get_session", _get_session)
 
 
-def test_stored_legacy_screenshot_enable_is_ignored_on_read(monkeypatch, tmp_path):
+def test_stored_screenshot_enable_is_kept_on_read(monkeypatch, tmp_path):
+    """A stored true is no longer stripped on read: capture is an editable opt-in."""
     from types import SimpleNamespace
 
     import yaml
@@ -308,8 +315,12 @@ def test_stored_legacy_screenshot_enable_is_ignored_on_read(monkeypatch, tmp_pat
     settings = SimpleNamespace(postgres_url="unused", config_path=base, state_dir=tmp_path)
 
     overrides = cfg.get_overrides(settings)
-    assert overrides == {"screenshots": {"concurrency": 2}, "fingerprint": {"enabled": False}}
-    # Neither the local scan config nor a remote sensor's overlay re-enables capture.
+    assert overrides["screenshots"]["enabled"] is True
+    assert overrides["fingerprint"]["enabled"] is False
+    # The local scan config keeps the stored true. A remote sensor still cannot
+    # be turned on when its own file has the stage off: config_overlay.py ANDs
+    # the forwarded flag with host.screenshots.enabled.
     merged = yaml.safe_load(open(cfg.effective_config_path(settings, "job-1"), encoding="utf-8"))
-    assert merged["screenshots"]["enabled"] is False
-    assert "screenshots.enabled" not in cfg._flatten(cfg.agent_overlay(settings, None) or {})
+    assert merged["screenshots"]["enabled"] is True
+    flat = cfg._flatten(cfg.agent_overlay(settings, None) or {})
+    assert flat.get("screenshots.enabled") is True

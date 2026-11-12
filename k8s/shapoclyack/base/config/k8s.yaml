@@ -190,6 +190,12 @@ tls_posture:
   enabled: true
   enumerate_ciphers: true
 
+# Opt-in. Capture runs only when the isolated screenshot-worker is deployed
+# and SCREENSHOT_WORKER_URL is reachable. Published scanner images contain
+# no browser. An overlay cannot enable this stage while the host has it off.
+screenshots:
+  enabled: false
+
 reporting:
   markdown_summary: true
   html_summary: true

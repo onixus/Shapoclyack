@@ -1,0 +1,4 @@
+# Isolated screenshot-worker image only. Do not add playwright to
+# requirements.txt or requirements-pip.lock: published scanner and all-in-one
+# images must stay browser-free (ADR: isolated screenshot worker).
+playwright==1.65.1

@@ -1754,9 +1754,9 @@ shorter retention silently shortens the trend line.
 ### Screenshot retention
 
 
-Historical screenshot artifacts retain their automatic policy. A PNG of a
-login page can still hold names after the DOM overlay, so pixels must not
-live as long as the rest of a run directory.
+A PNG of a login page can still hold names after the DOM overlay, so pixels
+must not live as long as the rest of a run directory. The retention policy
+below applies to both new captures and historical artifacts.
 
 The API walks `output_dir/runs/*/screenshots/*.png` every
 `OCTO_SCREENSHOT_RETENTION_INTERVAL_SECONDS` (1h) and unlinks files whose
@@ -1768,10 +1768,15 @@ Several API replicas may sweep the same tree; a missing file is a no-op.
 Disabling `OCTO_SCREENSHOT_RETENTION_ENABLED` stops the worker; existing
 PNGs stay until the run directory is pruned.
 
-Screenshot capture is withdrawn from the supported product (#367); published
-images have no Playwright/Chromium runtime or isolated capture worker. The
-legacy scanner configuration is retained for compatibility and defaults to
-disabled. Retention continues to protect existing PNG artifacts.
+Capture is opt-in (`screenshots.enabled`, default off) and runs only in the
+isolated screenshot-worker Deployment. Published scanner, API, and all-in-one
+images still contain no Playwright or Chromium. A scan whose
+`SCREENSHOT_WORKER_URL` is unset or unreachable writes
+`skipped_reason: worker.unavailable` and no pixels; it does not install a
+browser into the scanner pod. A sensor overlay cannot turn the stage on when
+the sensor's own config has it off. See
+[k8s hardening](k8s-hardening.md) for the worker's namespace, capabilities,
+and network policy.
 
 PNG download is operator-or-higher. A viewer requesting
 `/api/runs/{id}/download/screenshots/…png` gets `404`, same as a missing

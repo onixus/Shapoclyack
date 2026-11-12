@@ -1,0 +1,103 @@
+# Isolated browser runtime for screenshot capture (docs/adr/0007-isolated-screenshot-worker.md).
+# The only image that installs Playwright's Chromium. Dockerfile and
+# Dockerfile.allinone must not: published scanner and API images stay
+# browser-free, and capture is unsupported without this Deployment.
+#
+# Publish gap: not in Jenkinsfile.publish MATRIX. That loop tags every entry
+# `${image}:${TAG}` and, for a non-prerelease, `${image}:latest`. Adding a
+# fourth image would publish :latest on shapoclyack-screenshot-worker and
+# change the release-tag contract (TAG is the k8s tag for scanner/api/aio).
+# Publish this image separately; manifests pin shapoclyack-0.49-screenshot-worker
+# until that happens.
+#
+# Chromium cannot use its user-namespace sandbox here: the pod is non-root,
+# drops every capability (no SYS_ADMIN, no NET_RAW) and runs under
+# RuntimeDefault seccomp. SCREENSHOT_WORKER_NO_SANDBOX=1 tells the worker to
+# pass --no-sandbox / --disable-dev-shm-usage. Do not grant SYS_ADMIN to get
+# the sandbox back.
+#
+# python:3.12-slim digest matches Dockerfile's runtime stage (#313).
+FROM python:3.12-slim@sha256:dddfd7e07f9d15aeeca61529320492139d21cac7f0070c00609243e51e4e0016
+
+LABEL org.opencontainers.image.source="https://github.com/onixus/Shapoclyack" \
+      org.opencontainers.image.title="shapoclyack-screenshot-worker" \
+      org.opencontainers.image.description="Isolated Playwright/Chromium screenshot worker; not in scanner/api/aio images"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    SCREENSHOT_WORKER_BIND=0.0.0.0 \
+    SCREENSHOT_WORKER_PORT=8077 \
+    SCREENSHOT_WORKER_NO_SANDBOX=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+
+# Chromium's shared libraries. playwright install-deps would apt-install a
+# browser too; these are only the libraries the Playwright Chromium build
+# dlopen()s on bookworm. Fonts so a page is not tofu.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        fonts-liberation \
+        fonts-unifont \
+        libasound2 \
+        libatk-bridge2.0-0 \
+        libatk1.0-0 \
+        libatspi2.0-0 \
+        libcairo2 \
+        libcups2 \
+        libdbus-1-3 \
+        libdrm2 \
+        libgbm1 \
+        libglib2.0-0 \
+        libnspr4 \
+        libnss3 \
+        libpango-1.0-0 \
+        libx11-6 \
+        libxcb1 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxext6 \
+        libxfixes3 \
+        libxkbcommon0 \
+        libxrandr2; \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# scanner/pipeline/screenshots.py (REDACT_SCRIPT) imports the pipeline package,
+# which imports pydantic. Install the scanner lock first so that import works,
+# then the worker's own requirements (Playwright). Playwright is not in
+# requirements.txt / requirements.lock.
+COPY requirements-pip.lock requirements.lock /app/
+RUN set -eux; \
+    pip install --no-cache-dir --require-hashes --only-binary=:all: -r /app/requirements-pip.lock; \
+    pip install --no-cache-dir --require-hashes --only-binary=:all: -r /app/requirements.lock
+
+# Created by the worker agent. Must pin playwright (and its hashes, if the
+# file is a lock). Do not add playwright to requirements.txt.
+COPY requirements-screenshot-worker.txt /app/requirements-screenshot-worker.txt
+RUN set -eux; \
+    pip install --no-cache-dir -r /app/requirements-screenshot-worker.txt; \
+    mkdir -p /opt/playwright; \
+    python -m playwright install chromium; \
+    python -m pip uninstall --yes pip; \
+    python -c "import ensurepip, pathlib, shutil; shutil.rmtree(pathlib.Path(ensurepip.__file__).parent)"; \
+    python -c "import importlib.util; assert importlib.util.find_spec('pip') is None"
+
+COPY scanner /app/scanner
+
+# uid 1000, same as the scanner image's non-root user. Chromium under
+# PLAYWRIGHT_BROWSERS_PATH must be readable by that uid. Do not set HOME=/tmp
+# in the image: Playwright resolves its browser directory from $HOME unless
+# PLAYWRIGHT_BROWSERS_PATH is set, and the pod's /tmp is an empty emptyDir.
+# The Deployment sets HOME=/tmp so Chromium's profile has somewhere to write.
+RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin scanner \
+    && chown -R scanner:scanner /app /opt/playwright
+
+USER scanner
+
+EXPOSE 8077
+
+CMD ["python", "-m", "scanner.screenshot_worker"]

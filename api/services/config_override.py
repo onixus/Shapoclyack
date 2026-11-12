@@ -154,6 +154,12 @@ SECRET_PATHS: frozenset[str] = frozenset({"enrichment.cvss4.nvd_api_key"})
 # NucleiConfig pydantic bounds in scanner/pipeline/config_schema.py.
 _STATIC_SPEC: dict[str, Callable[[Any], Any]] = {
     "fingerprint.enabled": _as_bool,
+    # Opt-in capture. Effective only when the isolated screenshot-worker is
+    # deployed and SCREENSHOT_WORKER_URL is reachable. Published scanner
+    # images still contain no browser. An overlay cannot turn the stage on
+    # when the host file has it off (config_overlay.py ANDs with
+    # host.screenshots.enabled).
+    "screenshots.enabled": _as_bool,
     "tls_posture.enabled": _as_bool,
     "tls_posture.hostname_mismatch": _as_bool,
     "nuclei.enabled": _as_bool,
@@ -243,11 +249,7 @@ def validate_overrides(data: dict[str, Any]) -> dict[str, Any]:
     for path, value in _flatten(data).items():
         validator = _validator_for(path)
         if validator is None:
-            hint = (
-                "screenshot capture is unsupported in published images and withdrawn from the UI (#367)"
-                if path == "screenshots.enabled"
-                else _removed_hint(path)
-            )
+            hint = _removed_hint(path)
             errors.append(f"{path}: {hint}" if hint else f"{path}: not an editable setting")
             continue
         try:
@@ -279,11 +281,13 @@ def base_config_dict(settings: Settings) -> dict[str, Any]:
 
 
 #: Settings withdrawn from the product whose stored values are ignored on read.
-#: A row saved before the withdrawal may still carry them; dropping them here
+#: A row saved before a withdrawal may still carry them; dropping them here
 #: keeps them out of every consumer (scan config file, sensor overlay,
-#: configurator snapshot), so an old ``screenshots.enabled: true`` neither
-#: re-enables capture nor makes the next console save fail validation (#367).
-_WITHDRAWN_PATHS: frozenset[str] = frozenset({"screenshots.enabled"})
+#: configurator snapshot). Screenshot capture is supported again as an opt-in
+#: stage (isolated screenshot-worker + ``SCREENSHOT_WORKER_URL``), so
+#: ``screenshots.enabled`` is no longer withdrawn. The helper stays for any
+#: future withdrawal and for callers that import this set.
+_WITHDRAWN_PATHS: frozenset[str] = frozenset()
 
 
 def _drop_withdrawn(data: dict[str, Any]) -> dict[str, Any]:

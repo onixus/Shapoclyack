@@ -189,18 +189,25 @@ run, with its token in `OCTO_INTERACTSH_TOKEN`. What that server and the
 scanned hosts then need to reach is in
 [network requirements](network-requirements.md#out-of-band-testing-interactsh).
 
-## Screenshot compatibility
+## Screenshots
 
-Web screenshot capture is withdrawn from the supported product surface (#367).
-Published images do not contain Playwright or Chromium, and no isolated browser
-worker is shipped. The console does not offer a Screenshots tab or a capture
-setting. Installing a browser inside the scanner is not a supported deployment.
+Web screenshot capture is opt-in and delegated to an isolated browser worker.
+Published scanner, API, and all-in-one images do not contain Playwright or
+Chromium. Installing a browser inside the scanner pod is not a supported
+deployment; the stage skips with `worker.unavailable` when
+`SCREENSHOT_WORKER_URL` is unset or the worker does not answer.
 
-The legacy `screenshots` scanner configuration remains readable for existing
-installations; it defaults to disabled. Historical `screenshots.json` manifests,
-operator-only PNG downloads, and screenshot retention remain supported for
-existing artifacts. These compatibility paths do not imply capture availability.
-See [operations.md](operations.md#screenshot-retention) for artifact retention.
+`screenshots.enabled` defaults to false. The console setting is a bool. A
+sensor overlay cannot enable the stage on a host whose own file has it off.
+The stage reuses already-open web ports (the same candidate set as
+fingerprint). It does not scan new ports. Redaction paints a black overlay on
+obvious credential and payment form fields before the PNG is returned; a name
+in a heading is not redacted. That is why PNG download stays operator-only
+and retention still deletes pixels. `screenshots.json` is a text artifact and
+is kept.
+
+See [operations.md](operations.md#screenshot-retention) for artifact retention
+and [k8s-hardening.md](k8s-hardening.md) for the worker Deployment.
 
 ## Discovery modules
 
@@ -1600,7 +1607,7 @@ Moving an existing installation into a bucket: `scripts/migrate-artifacts.py`
 copies what is on the volume under the same keys new artifacts get. It deletes
 nothing, skips what is already there, and is safe to re-run.
 
-Historical screenshot artifact retention (capture is withdrawn; #367):
+Screenshot artifact retention (capture is opt-in via the isolated worker; pixels still expire):
 
 | Variable | Default | Purpose |
 |---|---|---|

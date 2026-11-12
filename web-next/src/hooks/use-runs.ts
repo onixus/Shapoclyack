@@ -6,6 +6,7 @@ import {
   fetchPorts,
   fetchRun,
   fetchRuns,
+  fetchScreenshots,
   fetchVulns,
   type PageParams,
   type ScanListFilters,
@@ -48,6 +49,15 @@ export function useRunPorts(runId: string) {
     queryKey: queryKeys.runPorts(runId),
     queryFn: () => fetchPorts(runId),
     enabled: Boolean(runId),
+  });
+}
+
+/** Operator-only. `enabled` must be false for a viewer so the manifest is never fetched. */
+export function useRunScreenshots(runId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.runScreenshots(runId),
+    queryFn: () => fetchScreenshots(runId),
+    enabled: Boolean(runId) && enabled,
   });
 }
 

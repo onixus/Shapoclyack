@@ -946,15 +946,17 @@ class ReachabilityConfig(BaseModel):
 
 
 class ScreenshotConfig(BaseModel):
-    """Legacy screenshot settings retained for compatibility (#367).
+    """Opt-in web screenshot capture via the isolated screenshot-worker.
 
-    Capture is withdrawn from the supported product; no browser runtime or
-    isolated worker ships in published images.
+    Supported only when that worker is deployed and ``SCREENSHOT_WORKER_URL``
+    is reachable. Default off. Published scanner images still contain no
+    browser; the stage must not launch one. An overlay cannot enable the
+    stage on a host whose own file has it off (``config_overlay.py`` ANDs
+    the overlay flag with ``host.screenshots.enabled``).
 
-    Same already-open web ports as ``fingerprint.py`` — no new scan. Disabled
-    by default. Capture needs Playwright; without it the stage skips. Images
-    are redacted in-DOM (obvious credential/PII form fields only) before
-    they hit disk. Retention and operator-only access live in the API.
+    Same already-open web ports as ``fingerprint.py`` — no new scan. The
+    worker redacts obvious credential/PII form fields before returning
+    pixels. Retention and operator-only access live in the API.
     """
 
     enabled: bool = False

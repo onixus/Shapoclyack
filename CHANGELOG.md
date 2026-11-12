@@ -4,6 +4,21 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Web screenshot capture is supported again, only through an isolated
+  screenshot-worker ([ADR 0007](docs/adr/0007-isolated-screenshot-worker.md)).
+  The stage stays opt-in (`screenshots.enabled`, default off) and still
+  captures already-open web ports, with the same DOM redaction, operator-only
+  PNG access and retention. `python -m scanner.screenshot_worker` is the only
+  process that launches Chromium. `Dockerfile.screenshot-worker` and
+  `k8s/shapoclyack/base/screenshot-worker/` ship that runtime; scanner, API
+  and all-in-one images still do not. A scan whose `SCREENSHOT_WORKER_URL`
+  is unset or unanswered writes `skipped_reason: worker.unavailable` and no
+  pixels. The console configurator can toggle the stage, and the run view
+  shows a Screenshots tab to operators and admins. A sensor overlay still
+  cannot enable the stage when the sensor's own file has it off.
+
 ## [0.49-1111-rc1] — 2026-11-11
 
 ### Security
