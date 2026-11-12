@@ -328,9 +328,10 @@ fingerprint:
   https_ports: [443, 8443]
   verify_tls: false   # self-signed/internal certs are common; TLS posture is Phase 9.2
 
-# Legacy screenshot configuration, retained for compatibility (#367).
-# Capture is unsupported: published images ship no browser runtime or isolated
-# worker. Keep disabled. Historical artifact retention remains API-side.
+# Opt-in web screenshot capture. Supported only when the isolated
+# screenshot-worker is deployed and SCREENSHOT_WORKER_URL is reachable.
+# Default off. Published scanner images still contain no browser. An overlay
+# cannot enable this stage on a host that has it off.
 screenshots:
   enabled: false
   concurrency: 4

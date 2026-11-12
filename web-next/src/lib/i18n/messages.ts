@@ -2395,6 +2395,36 @@ export const en = {
   "problems.selectAll": "Select every problem on this page",
   "campaign.members.excludeCount":
     "{count} findings will be excluded; the history keeps who did it and why.",
+
+  "ui.screenshots": "Screenshots",
+  "screenshots.loading": "Loading screenshots…",
+  "screenshots.loadFailed": "Failed to load screenshots",
+  "screenshots.redactionWarning":
+    "Redaction covers obvious form fields only (password, token, SSN, card, OTP). A name in a heading is not covered. These images can still hold personal data — that is why they are operator-only.",
+  "screenshots.retentionDays":
+    "Retention deletes pixels older than {days} days. The JSON manifest stays.",
+  "screenshots.retentionOff": "Pixel retention is off; files live with the run directory.",
+  "screenshots.capped":
+    "Capture was capped at the configured maximum. Remaining web ports were not visited.",
+  "screenshots.empty": "No screenshots were kept for this run.",
+  "screenshots.skip.disabled": "Screenshots were off for this run. The stage is opt-in.",
+  "screenshots.skip.workerUnavailable":
+    "Capture runs in the isolated worker and is skipped with worker.unavailable when that worker is not deployed. No pixels were taken.",
+  "screenshots.skip.playwrightUnavailable":
+    "Legacy run: Playwright was not installed on the scanner. No pixels were taken.",
+  "screenshots.skip.noWebPorts":
+    "No already-open web ports to capture. The stage does not scan new ports.",
+  "screenshots.badge.redactedOne": "{count} field redacted",
+  "screenshots.badge.redactedMany": "{count} fields redacted",
+  "screenshots.badge.noneCovered": "no form fields covered",
+  "screenshots.badge.deleted": "deleted by retention",
+  "screenshots.open": "Open screenshot",
+  "screenshots.save": "Save",
+  "screenshots.saving": "Saving…",
+  "screenshots.downloadFailed": "Download failed",
+  "screenshots.imageUnavailable": "Image unavailable",
+  "screenshots.pixelsDeleted": "Pixels deleted",
+  "screenshots.imageLoading": "Loading image…",
 } as const;
 
 export type MsgKey = keyof typeof en;
@@ -4789,6 +4819,36 @@ export const ru: Record<MsgKey, string> = {
   "problems.selectAll": "Выбрать все проблемы на этой странице",
   "campaign.members.excludeCount":
     "Будет исключено находок: {count}; в истории останутся автор и причина.",
+
+  "ui.screenshots": "Скриншоты",
+  "screenshots.loading": "Загрузка скриншотов…",
+  "screenshots.loadFailed": "Не удалось загрузить скриншоты",
+  "screenshots.redactionWarning":
+    "Редакция закрывает только очевидные поля форм (пароль, токен, SSN, карта, OTP). Имя в заголовке не закрывается. В изображениях всё ещё могут быть персональные данные — поэтому вкладка только для оператора.",
+  "screenshots.retentionDays":
+    "Хранение удаляет пиксели старше {days} дн. JSON-манифест остаётся.",
+  "screenshots.retentionOff": "Удаление пикселей выключено; файлы живут вместе с каталогом прогона.",
+  "screenshots.capped":
+    "Съёмка ограничена настроенным максимумом. Остальные веб-порты не посещались.",
+  "screenshots.empty": "Скриншоты для этого прогона не сохранены.",
+  "screenshots.skip.disabled": "Скриншоты для этого прогона были выключены. Стадия включается отдельно.",
+  "screenshots.skip.workerUnavailable":
+    "Съёмка идёт в изолированном воркере и пропускается с worker.unavailable, если этот воркер не развёрнут. Пиксели не снимались.",
+  "screenshots.skip.playwrightUnavailable":
+    "Старый прогон: Playwright на сканере не был установлен. Пиксели не снимались.",
+  "screenshots.skip.noWebPorts":
+    "Уже открытых веб-портов для съёмки нет. Стадия не сканирует новые порты.",
+  "screenshots.badge.redactedOne": "закрыто полей: {count}",
+  "screenshots.badge.redactedMany": "закрыто полей: {count}",
+  "screenshots.badge.noneCovered": "поля форм не закрыты",
+  "screenshots.badge.deleted": "удалено хранением",
+  "screenshots.open": "Открыть скриншот",
+  "screenshots.save": "Сохранить",
+  "screenshots.saving": "Сохранение…",
+  "screenshots.downloadFailed": "Не удалось скачать",
+  "screenshots.imageUnavailable": "Изображение недоступно",
+  "screenshots.pixelsDeleted": "Пиксели удалены",
+  "screenshots.imageLoading": "Загрузка изображения…",
 };
 
 export const STATUS_EN: Record<string, string> = {

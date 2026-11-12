@@ -19,6 +19,7 @@ other pod — the API, the databases, the backup and enrichment jobs — runs in
 - [Namespaces and Pod Security levels](#namespaces-and-pod-security-levels)
 - [Workloads](#workloads)
 - [Deviations from restricted](#deviations-from-restricted)
+- [The screenshot worker](#the-screenshot-worker)
 - [The scanner-executor](#the-scanner-executor)
 - [Traffic between the executor and the API](#traffic-between-the-executor-and-the-api)
 - [Enrolling the scanner-executor](#enrolling-the-scanner-executor)
@@ -111,6 +112,7 @@ root filesystem is read-only everywhere except where noted.
 | `CronJob/shapoclyack-clickhouse-backup` ([#333](https://github.com/onixus/Shapoclyack/issues/333)) | `network-scan` | 101:101 | `/tmp` (16Mi in memory: `clickhouse-client`'s `HOME`/`TMPDIR` and the script's `mktemp -d` for query output; the server itself uploads the backup, so nothing is staged here) | yes |
 | `CronJob/enrichment-refresh` (base/enrichment) | `network-scan` | 1000:1000 | `scanner/data` (PVC `enrichment-data`); `/tmp` (the geoip/asn/epss/kev fetchers download into `mktemp -d`) | yes |
 | `CronJob/enrichment-bundle-load` (base/enrichment-bundle, [#339](https://github.com/onixus/Shapoclyack/issues/339)) | `network-scan` | 1000:1000 | `scanner/data` (PVC `enrichment-data`: the bundle is staged and installed there, so the swap is a rename on one filesystem); `/tmp`; the inbox PVC is mounted read-only | yes |
+| `Deployment/shapoclyack-screenshot-worker` | `network-scan` | 1000:1000 | `/tmp` (emptyDir: the browser profile; the pod sets `HOME=/tmp`) | yes |
 | `StatefulSet/shapoclyack-scanner-executor` | `network-scan-executor` | 1000:1000 | `/var/lib/shapoclyack/sensor-key` (a 16Mi PVC per pod from `volumeClaimTemplates`, writable through `fsGroup`: the sensor's result-signing key, which must outlive the pod, #366); `scanner/output`, `scanner/state` (the run and its checkpoints); `/tmp` (the sensor's per-job workdir: target lists and the run archive before upload); `/home/octo` (nuclei, naabu and dnsx write `~/.config/<tool>/config.yaml` on every start and exit when they cannot — projectdiscovery/goflags) | **no** — see below |
 | `Job/network-scan`, `CronJob/network-scan-scheduled`, `Job/network-scan-resume` (base/local-scan only) | `network-scan` | 1000:1000 | as the executor, with `scanner/output`/`state` on the `scanner-data` PVC | **no** — see below |
 | `StatefulSet/shapoclyack-agent` (examples, a sensor in another cluster) | yours, not `network-scan` | 1000:1000 | as the executor | **no** — see below |
@@ -230,6 +232,38 @@ no privilege escalation, seccomp and no token — `baseline`, not `restricted`.
 Which paths it writes besides `/data` has not been verified, so its root
 filesystem stays writable. Not for production.
 
+## The screenshot worker
+
+`base/screenshot-worker/` is the only browser runtime. Playwright and Chromium
+ship in `ghcr.io/onixus/shapoclyack-screenshot-worker` and in no other image;
+the scanner, the API and the all-in-one image do not install them. Capture is
+unsupported without this Deployment: a scanner whose `SCREENSHOT_WORKER_URL`
+is empty or unanswered writes `skipped_reason: worker.unavailable` and no
+pixels.
+
+The pod meets the restricted baseline in full. It drops every capability and
+adds none — no `NET_RAW`, no `NET_ADMIN`, no `SYS_ADMIN`. Chromium's own
+sandbox needs user namespaces and `SYS_ADMIN`, which this pod does not have,
+so the container sets `SCREENSHOT_WORKER_NO_SANDBOX=1` and the worker passes
+`--no-sandbox`. That is the trade: the sandbox is the pod (non-root,
+`readOnlyRootFilesystem`, `RuntimeDefault` seccomp, no added capabilities),
+not Chromium's. Do not grant `SYS_ADMIN` to turn the browser sandbox back on.
+
+Ingress is TCP 8077 from namespace `network-scan-executor`, plus the
+local-scan Jobs in `network-scan` (`scan-job`, `scan-cronjob`,
+`scan-job-resume`). A `podSelector` cannot cross namespaces, so the executor
+rule is a namespace selector; that namespace holds the executor and nothing
+else. The in-namespace selectors match only those Job labels, not every pod
+in `network-scan`. Egress is unrestricted
+for the same reason as the executor's: the worker opens URLs the scanner
+already found, and those are arbitrary addresses. A deny-all egress policy
+would make every capture fail.
+
+The executor and the local-scan Jobs set
+`SCREENSHOT_WORKER_URL=http://shapoclyack-screenshot-worker.network-scan.svc:8077`.
+The worker is not a sidecar of the executor: that pod holds raw sockets and
+the provisioning key, and a browser does not belong next to either.
+
 ## The scanner-executor
 
 `base/scanner-executor/` is the sensor (`python -m agent`, `agent/worker.py`)
@@ -284,8 +318,9 @@ file stays the limit**: discovery and port rates, nuclei's rate limit and
 and concurrency take the lower of the file's value and the
 overlay's; nuclei's excluded tags are the union of the two, so an override
 cannot re-enable `intrusive`, `fuzz` or `dos` templates a sensor excludes. Legacy
-screenshot overlays cannot enable capture against a disabled host setting, but
-capture itself is withdrawn from the supported product (#367). An overlay can make
+screenshot overlays cannot enable capture against a disabled host setting.
+Capture itself runs only in the isolated screenshot-worker Deployment; this
+image has no browser. An overlay can make
 a sensor gentler, never rougher — to make a sensor faster, raise its own file.
 Stage switches (nuclei on or off, the organisation-profile stages) follow the
 overlay, since that is what an intent is.

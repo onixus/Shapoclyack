@@ -65,11 +65,13 @@ def test_system_status_shape():
 
     assert set(body["scan_config"]["stages"]) >= {
         "fingerprint",
+        "screenshots",
         "tls_posture",
         "nuclei",
         "pdf_summary",
     }
-    assert "screenshots" not in body["scan_config"]["stages"]
+    # Default off. The key is present so the panel can show the opt-in.
+    assert body["scan_config"]["stages"]["screenshots"] is False
     assert "balanced" in body["scan_config"]["profiles"]
     assert body["scan_config"].get("service_backend") in ("pulse", None)
     assert "nse_profiles" not in body["scan_config"]
@@ -264,7 +266,13 @@ def test_system_status_reflects_config_overrides():
 
     put_response = client.put(
         "/api/config",
-        json={"overrides": {"fingerprint.enabled": True, "tls_posture.enabled": True}},
+        json={
+            "overrides": {
+                "fingerprint.enabled": True,
+                "tls_posture.enabled": True,
+                "screenshots.enabled": True,
+            }
+        },
         headers=headers,
     )
     assert put_response.status_code == 200
@@ -272,6 +280,9 @@ def test_system_status_reflects_config_overrides():
         stages = client.get("/api/system", headers=headers).json()["scan_config"]["stages"]
         assert stages["fingerprint"] is True
         assert stages["tls_posture"] is True
+        # Opt-in capture: the panel reports the effective override, not the
+        # base file (still false until the isolated worker is actually used).
+        assert stages["screenshots"] is True
         # Nuclei is enabled by default (Phase 4.2); only check editable stages we flipped.
         assert stages["nuclei"] is True
     finally:

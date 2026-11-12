@@ -1046,13 +1046,18 @@ def _run_pipeline_body(
         checkpoint.mark_done("fingerprint")
 
     # P4.4 / Phase 9.3: screenshots of already-open web ports. Opt-in,
-    # redacted in-DOM, never a new scan. Playwright missing → skip.
+    # redacted in the worker's DOM, never a new scan. No worker → skip.
     if args.resume and checkpoint.is_done("screenshots"):
         timer.skip("screenshots")
     else:
         _run_policy_controlled_secondary_stage(
             "screenshots",
-            lambda: capture_screenshots_sync(open_ports, config.screenshots, paths.output_dir),
+            lambda: capture_screenshots_sync(
+                open_ports,
+                config.screenshots,
+                paths.output_dir,
+                hostnames=hostnames_map,
+            ),
         )
         checkpoint.mark_done("screenshots")
 

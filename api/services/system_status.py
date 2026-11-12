@@ -320,11 +320,15 @@ def scan_config_summary(config: dict[str, Any], effective: dict[str, Any] | None
         "profiles": sorted(profiles.keys()) if isinstance(profiles, dict) else [],
         "service_backend": backend,
         "stages": {
-            # fingerprint/tls_posture/nuclei/pdf_summary are editable via the
-            # Web UI's config overrides (Postgres-backed, see config_override.py)
+            # fingerprint/screenshots/tls_posture/nuclei/pdf_summary are editable
+            # via the Web UI's config overrides (Postgres-backed, see config_override.py)
             # -- prefer the effective (overridden) value over the base file so
             # this panel doesn't lag behind what an admin actually saved.
             "fingerprint": bool(effective.get("fingerprint.enabled", _stage_enabled(config, "fingerprint"))),
+            # Opt-in. True only means the stage is enabled in config; capture
+            # still needs the isolated screenshot-worker and a reachable
+            # SCREENSHOT_WORKER_URL. Published scanner images ship no browser.
+            "screenshots": bool(effective.get("screenshots.enabled", _stage_enabled(config, "screenshots"))),
             "tls_posture": bool(effective.get("tls_posture.enabled", _stage_enabled(config, "tls_posture"))),
             "nuclei": bool(effective.get("nuclei.enabled", _stage_enabled(config, "nuclei"))),
             "pdf_summary": bool(
