@@ -25,13 +25,14 @@ from api.auth import (
     AgentPrincipal,
     Role,
     TenantPrincipal,
+    get_settings,
     require_agent,
     require_permission,
     require_tenant,
 )
 from api.services import agents as agents_service
 from api.services import brand_watch
-from api.settings import Settings, get_settings
+from api.settings import Settings
 
 router = APIRouter(prefix="/brand-watch", tags=["brand-watch"])
 
@@ -167,7 +168,7 @@ def _agent_for(request: Request, principal: AgentPrincipal, agent_id: str):
     return agents_service.get_agent(agent_id)
 
 
-@router.post("/jobs/claim")
+@router.post("/jobs/claim", response_model=None)
 def claim_job(
     request: Request,
     principal: Annotated[AgentPrincipal, Depends(require_agent)],
@@ -190,6 +191,26 @@ def claim_job(
     if claimed is None:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     return claimed
+
+
+@router.post("/jobs/{job_id}/release")
+def release_job(
+    job_id: str,
+    principal: Annotated[AgentPrincipal, Depends(require_agent)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, Any]:
+    """Return an unapplied claim to the queue. The attempt is not spent."""
+    if not principal.agent_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="agent identity mismatch")
+    try:
+        return brand_watch.release_claim(
+            settings,
+            tenant_id=principal.tenant_id,
+            job_id=job_id,
+            agent_id=principal.agent_id,
+        )
+    except (brand_watch.BrandWatchError, LookupError) as exc:
+        raise _refuse(exc) from exc
 
 
 @router.post("/jobs/{job_id}/result")

@@ -2433,6 +2433,27 @@ export const en = {
   "brandWatch.disposition.whitelisted": "Whitelisted",
   "brandWatch.disposition.confirmed": "Confirmed",
   "brandWatch.dispositionFailed": "Could not save the disposition. Nothing else was changed.",
+  "brandWatch.create": "Add a watched domain",
+  "brandWatch.createHint":
+    "Saving a profile does not start a scan and does not approve the domains. Names are generated on the daily rebuild.",
+  "brandWatch.createSubmit": "Save profile",
+  "brandWatch.createFailed": "Could not save the profile. Nothing was created.",
+  "brandWatch.field.name": "Name",
+  "brandWatch.field.domains": "Official domains",
+  "brandWatch.field.strings": "Brand strings",
+  "brandWatch.field.onePerLine": "One per line",
+  "brandWatch.approve": "Approve",
+  "brandWatch.approveTitle": "Approve {name}",
+  "brandWatch.approveConfirm":
+    "Confirm that these are this tenant's own domains. Approval does not start a scan.",
+  "brandWatch.approveSubmit": "These are our domains",
+  "brandWatch.approveFailed": "Could not approve the profile. It stays unapproved.",
+  "brandWatch.candidates": "Candidates",
+  "brandWatch.candidatesFor": "Candidates for {name}",
+  "brandWatch.candidatesEmpty":
+    "No names yet. They appear after the daily rebuild, not after a scan.",
+  "brandWatch.candidatesFailed": "Candidates are not available yet.",
+  "brandWatch.col.candidateState": "State",
 } as const;
 
 export type MsgKey = keyof typeof en;
@@ -4865,6 +4886,27 @@ export const ru: Record<MsgKey, string> = {
   "brandWatch.disposition.whitelisted": "В белом списке",
   "brandWatch.disposition.confirmed": "Подтверждён",
   "brandWatch.dispositionFailed": "Не удалось сохранить решение. Больше ничего не изменилось.",
+  "brandWatch.create": "Добавить наблюдаемый домен",
+  "brandWatch.createHint":
+    "Сохранение профиля не запускает скан и не утверждает домены. Имена появляются при ежедневной пересборке.",
+  "brandWatch.createSubmit": "Сохранить профиль",
+  "brandWatch.createFailed": "Не удалось сохранить профиль. Ничего не создано.",
+  "brandWatch.field.name": "Имя",
+  "brandWatch.field.domains": "Официальные домены",
+  "brandWatch.field.strings": "Строки бренда",
+  "brandWatch.field.onePerLine": "По одной в строке",
+  "brandWatch.approve": "Утвердить",
+  "brandWatch.approveTitle": "Утвердить {name}",
+  "brandWatch.approveConfirm":
+    "Подтвердите, что это собственные домены этого арендатора. Утверждение не запускает скан.",
+  "brandWatch.approveSubmit": "Это наши домены",
+  "brandWatch.approveFailed": "Не удалось утвердить профиль. Он остаётся неутверждённым.",
+  "brandWatch.candidates": "Кандидаты",
+  "brandWatch.candidatesFor": "Кандидаты для {name}",
+  "brandWatch.candidatesEmpty":
+    "Имён пока нет. Они появляются после ежедневной пересборки, а не после скана.",
+  "brandWatch.candidatesFailed": "Кандидаты пока недоступны.",
+  "brandWatch.col.candidateState": "Состояние",
 };
 
 export const STATUS_EN: Record<string, string> = {

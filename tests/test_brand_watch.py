@@ -205,6 +205,42 @@ def _apply(observations, **kwargs):
     return brand_watch.apply_result(_settings(), **payload)
 
 
+def test_release_returns_the_claim_and_undoes_the_attempt(db):
+    _profile(db)
+    _leased_job(db, attempts=2, lease_until=datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1))
+    released = brand_watch.release_claim(
+        _settings(), tenant_id="acme", job_id="bwj_test", agent_id="sensor-1"
+    )
+    assert released["released"] is True
+    assert released["attempts"] == 1
+    with db("") as session:
+        job = session.get(models.BrandWatchJob, "bwj_test")
+        assert job.status == "queued"
+        assert job.lease_owner is None
+
+
+def test_enqueue_keeps_the_rest_of_a_long_list_for_the_next_tick(db):
+    _profile(db)
+    with db("") as session:
+        now = datetime.now(UTC).replace(tzinfo=None)
+        for index in range(brand_watch.MAX_NAMES_PER_JOB + 3):
+            session.add(models.BrandCandidate(
+                id=f"bwc_{index}",
+                tenant_id="acme",
+                profile_id="bwp_test",
+                name_unicode=f"name-{index:03d}.example",
+                name_punycode=f"name-{index:03d}.example",
+                state="unregistered",
+                disposition="open",
+                created_at=now,
+                updated_at=now,
+            ))
+        profile = session.get(models.BrandProfile, "bwp_test")
+        job = brand_watch.enqueue_for_profile(session, profile, force=True)
+        assert len(job.payload["names"]) == brand_watch.MAX_NAMES_PER_JOB
+        assert profile.last_dispatched_at is None
+
+
 def test_repeat_job_id_is_idempotent(db):
     _profile(db, approved=True, our_brand=True)
     _candidate(db)
@@ -543,3 +579,50 @@ def test_rebuild_keeps_the_prefix_at_the_cap(db, monkeypatch):
     )
     assert again["created"] == 0
     assert again["kept"] == 2
+
+
+def test_apply_result_enqueues_the_diff_and_survives_a_raise(db, monkeypatch):
+    """A state change is handed to the webhook queue after commit.
+
+    A raise from the queue is logged, not returned to the sensor: the job is
+    already applied. A repeat post emits nothing and does not enqueue again.
+    """
+    queued: list[dict] = []
+
+    def _record(envelope):
+        queued.append(envelope)
+        if envelope["data"]["to_state"] == "resolving":
+            raise RuntimeError("queue down")
+
+    import api.services.integrations.webhooks as webhook_impl
+
+    monkeypatch.setattr(webhook_impl, "enqueue_event", _record)
+    _profile(db, approved=True, our_brand=True)
+    _candidate(db)
+    _leased_job(db)
+    first = _apply([{"name": "acmebank-login.example", "ns": ["ns1.example"], "addresses": []}])
+    assert first["status"] == "done"
+    assert first["events"][0]["new_state"] == "registered"
+    assert queued[0]["kind"] == "brand_watch.diff"
+    assert queued[0]["tenant_id"] == "acme"
+    assert queued[0]["data"]["to_state"] == "registered"
+    assert "html" not in queued[0]["data"]
+    again = _apply([{"name": "acmebank-login.example", "ns": ["ns1.example"], "addresses": []}])
+    assert again["idempotent"] is True
+    assert len(queued) == 1
+
+    _leased_job(db, job_id="bwj_http", mode="dns_only")
+    with db("") as session:
+        candidate = session.get(models.BrandCandidate, "bwc_test")
+        candidate.state = "registered"
+    raised = brand_watch.apply_result(
+        _settings(),
+        tenant_id="acme",
+        job_id="bwj_http",
+        observations=[{"name": "acmebank-login.example", "addresses": ["203.0.113.9"]}],
+        agent_id="sensor-1",
+        capabilities=["brand_watch"],
+    )
+    assert raised["status"] == "done"
+    assert raised["events"][0]["new_state"] == "resolving"
+    assert len(queued) == 2

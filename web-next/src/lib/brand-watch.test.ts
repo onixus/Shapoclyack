@@ -1,5 +1,15 @@
-import { describe, expect, it } from "vitest";
-import { canSetBrandWatchDisposition, punycodeDisplay, severityLabel, sinceInstant } from "@/lib/brand-watch";
+import { describe, expect, it, vi } from "vitest";
+import {
+  canSetBrandWatchDisposition,
+  canWriteBrandWatch,
+  createBrandWatchProfile,
+  linesToList,
+  parseCandidate,
+  punycodeDisplay,
+  severityLabel,
+  sinceInstant,
+} from "@/lib/brand-watch";
+import { api } from "@/lib/api";
 
 describe("brand-watch formatters", () => {
   it("labels known severities and leaves unknown text alone", () => {
@@ -26,6 +36,51 @@ describe("brand-watch formatters", () => {
     expect(canSetBrandWatchDisposition(["brand_watch.read"])).toBe(false);
     expect(canSetBrandWatchDisposition(undefined, true)).toBe(true);
     expect(canSetBrandWatchDisposition(undefined, false)).toBe(false);
+  });
+
+  it("lets a writer create a profile and leaves a reader without the form", () => {
+    expect(canWriteBrandWatch(["brand_watch.read", "brand_watch.write"])).toBe(true);
+    expect(canWriteBrandWatch(["brand_watch.read", "brand_watch.disposition"])).toBe(false);
+    expect(canWriteBrandWatch(undefined)).toBe(false);
+    expect(canWriteBrandWatch([])).toBe(false);
+  });
+
+  it("keeps one entry per non-empty line", () => {
+    expect(linesToList(" example.com \n\nacme.test\r\n")).toEqual(["example.com", "acme.test"]);
+    expect(linesToList("   \n")).toEqual([]);
+  });
+
+  it("reads a candidate name from the unicode field the API returns", () => {
+    expect(
+      parseCandidate({
+        id: "bwc_1",
+        name_unicode: "examp1e.com",
+        name_punycode: "examp1e.com",
+        state: "registered",
+        disposition: "open",
+      }),
+    ).toMatchObject({ id: "bwc_1", name: "examp1e.com", state: "registered", disposition: "open" });
+    expect(parseCandidate({ name_unicode: "missing-id.com" })).toBeNull();
+  });
+
+  it("creates a profile as not ours and does not claim a scan starts", async () => {
+    const post = vi.spyOn(api, "post").mockResolvedValue({
+      data: { id: "bwp_1", name: "Acme", official_domains: ["acme.test"], approved: false, our_brand: false },
+    });
+    const created = await createBrandWatchProfile({
+      name: "Acme",
+      official_domains: ["acme.test"],
+      brand_strings: ["acme"],
+      our_brand: false,
+    });
+    expect(post).toHaveBeenCalledWith("/brand-watch/profiles", {
+      name: "Acme",
+      official_domains: ["acme.test"],
+      brand_strings: ["acme"],
+      our_brand: false,
+    });
+    expect(created.approved).toBe(false);
+    post.mockRestore();
   });
 
   it("turns a relative window into an ISO instant and leaves a blank window empty", () => {

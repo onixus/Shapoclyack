@@ -6,7 +6,19 @@ import { type ColumnDef } from "@tanstack/react-table";
 import { Eye } from "lucide-react";
 import { DataTable } from "@/components/data-table";
 import { PageHeader } from "@/components/page-header";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -14,16 +26,23 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { useAuthStore } from "@/lib/auth-store";
 import { useT } from "@/lib/i18n";
 import {
+  approveBrandWatchProfile,
   canSetBrandWatchDisposition,
+  canWriteBrandWatch,
+  createBrandWatchProfile,
+  fetchBrandWatchCandidates,
   fetchBrandWatchDiff,
   fetchBrandWatchProfiles,
+  linesToList,
   punycodeDisplay,
   setCandidateDisposition,
   severityLabel,
   sinceInstant,
+  type BrandWatchCandidate,
   type BrandWatchDiffRow,
   type BrandWatchDisposition,
   type BrandWatchProfile,
@@ -50,7 +69,13 @@ function yesNo(value: boolean | null, yes: string, no: string): string {
   return value ? yes : no;
 }
 
-function DispositionControl({ row, canDispose }: { row: BrandWatchDiffRow; canDispose: boolean }) {
+function DispositionControl({
+  row,
+  canDispose,
+}: {
+  row: { id: string; disposition?: string | null };
+  canDispose: boolean;
+}) {
   const t = useT();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
@@ -58,7 +83,7 @@ function DispositionControl({ row, canDispose }: { row: BrandWatchDiffRow; canDi
     mutationFn: (next: BrandWatchDisposition) => setCandidateDisposition(row.id, next),
     onSuccess: async () => {
       setError(null);
-      await queryClient.invalidateQueries({ queryKey: ["brand-watch", "diff"] });
+      await queryClient.invalidateQueries({ queryKey: ["brand-watch"] });
     },
     onError: (err: unknown) => {
       setError(err instanceof Error ? err.message : t("brandWatch.dispositionFailed"));
@@ -85,9 +110,9 @@ function DispositionControl({ row, canDispose }: { row: BrandWatchDiffRow; canDi
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {DISPOSITIONS.map((disposition) => (
-            <SelectItem key={disposition} value={disposition}>
-              {t(`brandWatch.disposition.${disposition}`)}
+          {DISPOSITIONS.map((item) => (
+            <SelectItem key={item} value={item}>
+              {t(`brandWatch.disposition.${item}`)}
             </SelectItem>
           ))}
         </SelectContent>
@@ -101,10 +126,148 @@ function DispositionControl({ row, canDispose }: { row: BrandWatchDiffRow; canDi
   );
 }
 
+function CreateProfileForm() {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [name, setName] = useState("");
+  const [domains, setDomains] = useState("");
+  const [strings, setStrings] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const mutation = useMutation({
+    mutationFn: () =>
+      createBrandWatchProfile({
+        name: name.trim(),
+        official_domains: linesToList(domains),
+        brand_strings: linesToList(strings),
+        our_brand: false,
+      }),
+    onSuccess: async () => {
+      setError(null);
+      setName("");
+      setDomains("");
+      setStrings("");
+      await queryClient.invalidateQueries({ queryKey: ["brand-watch", "profiles"] });
+    },
+    onError: (err: unknown) => {
+      setError(err instanceof Error ? err.message : t("brandWatch.createFailed"));
+    },
+  });
+  const ready = name.trim().length > 0 && linesToList(domains).length > 0;
+
+  return (
+    <form
+      className="space-y-3 rounded-lg border border-border p-4"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!ready || mutation.isPending) return;
+        mutation.mutate();
+      }}
+    >
+      <div className="space-y-1">
+        <h2 className="text-sm font-semibold text-foreground">{t("brandWatch.create")}</h2>
+        <p className="text-xs text-muted-foreground">{t("brandWatch.createHint")}</p>
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="brand-watch-name">{t("brandWatch.field.name")}</Label>
+        <Input
+          id="brand-watch-name"
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          autoComplete="off"
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="brand-watch-domains">{t("brandWatch.field.domains")}</Label>
+        <Textarea
+          id="brand-watch-domains"
+          value={domains}
+          onChange={(event) => setDomains(event.target.value)}
+          placeholder={t("brandWatch.field.onePerLine")}
+          rows={3}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="brand-watch-strings">{t("brandWatch.field.strings")}</Label>
+        <Textarea
+          id="brand-watch-strings"
+          value={strings}
+          onChange={(event) => setStrings(event.target.value)}
+          placeholder={t("brandWatch.field.onePerLine")}
+          rows={3}
+        />
+      </div>
+      {error ? (
+        <p className="text-xs text-muted-foreground" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <Button type="submit" size="sm" disabled={!ready || mutation.isPending}>
+        {t("brandWatch.createSubmit")}
+      </Button>
+    </form>
+  );
+}
+
+function ApproveControl({ profile }: { profile: BrandWatchProfile }) {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const mutation = useMutation({
+    mutationFn: () => approveBrandWatchProfile(profile.id),
+    onSuccess: async () => {
+      setError(null);
+      setOpen(false);
+      await queryClient.invalidateQueries({ queryKey: ["brand-watch", "profiles"] });
+    },
+    onError: (err: unknown) => {
+      setError(err instanceof Error ? err.message : t("brandWatch.approveFailed"));
+    },
+  });
+
+  return (
+    <div className="space-y-1">
+      <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>
+        {t("brandWatch.approve")}
+      </Button>
+      {error ? (
+        <p className="max-w-[14rem] text-xs text-muted-foreground" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <AlertDialog open={open} onOpenChange={setOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("brandWatch.approveTitle", { name: profile.name })}</AlertDialogTitle>
+            <AlertDialogDescription>{t("brandWatch.approveConfirm")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          {profile.official_domains.length ? (
+            <p className="text-sm text-foreground">{profile.official_domains.join(", ")}</p>
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={mutation.isPending}
+              onClick={(event) => {
+                event.preventDefault();
+                mutation.mutate();
+              }}
+            >
+              {t("brandWatch.approveSubmit")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
 export default function BrandWatchPage() {
   const t = useT();
   const canDispose = useAuthStore((s) => canSetBrandWatchDisposition(s.user?.permissions, s.canOperate));
+  const canWrite = useAuthStore((s) => canWriteBrandWatch(s.user?.permissions));
   const [since, setSince] = useState<(typeof SINCE_OPTIONS)[number]>("");
+  const [openProfileId, setOpenProfileId] = useState<string | null>(null);
 
   const profilesQuery = useQuery({
     queryKey: ["brand-watch", "profiles"],
@@ -114,30 +277,75 @@ export default function BrandWatchPage() {
     queryKey: ["brand-watch", "diff", since],
     queryFn: () => fetchBrandWatchDiff({ since: sinceInstant(since) }),
   });
+  const candidatesQuery = useQuery({
+    queryKey: ["brand-watch", "candidates", openProfileId],
+    queryFn: () => fetchBrandWatchCandidates(openProfileId as string),
+    enabled: openProfileId != null,
+  });
 
   const profileColumns = useMemo<ColumnDef<BrandWatchProfile>[]>(
     () => [
       {
         accessorKey: "name",
         header: t("brandWatch.col.name"),
-        cell: ({ row }) => <span className="font-medium text-foreground">{row.original.name}</span>,
+        cell: ({ row }) => (
+          <button
+            type="button"
+            className="font-medium text-foreground underline-offset-4 hover:underline"
+            aria-pressed={openProfileId === row.original.id}
+            onClick={() =>
+              setOpenProfileId((current) => (current === row.original.id ? null : row.original.id))
+            }
+          >
+            {row.original.name}
+          </button>
+        ),
       },
       {
         accessorKey: "approved",
         header: t("brandWatch.col.approved"),
         cell: ({ row }) =>
-          row.original.approved ? t("brandWatch.approved") : t("brandWatch.notApproved"),
+          row.original.approved ? (
+            t("brandWatch.approved")
+          ) : canWrite ? (
+            <ApproveControl profile={row.original} />
+          ) : (
+            t("brandWatch.notApproved")
+          ),
       },
       {
         id: "official_domains",
         header: t("brandWatch.col.domains"),
         cell: ({ row }) =>
-          row.original.official_domains.length
-            ? row.original.official_domains.join(", ")
-            : "—",
+          row.original.official_domains.length ? row.original.official_domains.join(", ") : "—",
       },
     ],
-    [t],
+    [t, canWrite, openProfileId],
+  );
+
+  const candidateColumns = useMemo<ColumnDef<BrandWatchCandidate>[]>(
+    () => [
+      {
+        accessorKey: "name",
+        header: t("brandWatch.col.name"),
+        cell: ({ row }) => (
+          <span className="font-medium text-foreground">
+            {punycodeDisplay(row.original.name, row.original.punycode)}
+          </span>
+        ),
+      },
+      {
+        accessorKey: "state",
+        header: t("brandWatch.col.candidateState"),
+        cell: ({ row }) => row.original.state || "—",
+      },
+      {
+        id: "disposition",
+        header: t("brandWatch.disposition"),
+        cell: ({ row }) => <DispositionControl row={row.original} canDispose={canDispose} />,
+      },
+    ],
+    [t, canDispose],
   );
 
   const diffColumns = useMemo<ColumnDef<BrandWatchDiffRow>[]>(
@@ -186,7 +394,9 @@ export default function BrandWatchPage() {
   );
 
   const profiles = profilesQuery.data ?? [];
+  const openProfile = profiles.find((profile) => profile.id === openProfileId) ?? null;
   const diff = diffQuery.data ?? [];
+  const candidates = candidatesQuery.data ?? [];
   const loadError = profilesQuery.error ?? diffQuery.error;
 
   return (
@@ -223,6 +433,7 @@ export default function BrandWatchPage() {
               onClick={() => {
                 void profilesQuery.refetch();
                 void diffQuery.refetch();
+                if (openProfileId) void candidatesQuery.refetch();
               }}
             >
               {t("brandWatch.refresh")}
@@ -237,6 +448,8 @@ export default function BrandWatchPage() {
         </p>
       ) : null}
 
+      {canWrite ? <CreateProfileForm /> : null}
+
       <section className="space-y-3">
         <h2 className="text-sm font-semibold text-foreground">{t("brandWatch.profiles")}</h2>
         <DataTable
@@ -248,6 +461,29 @@ export default function BrandWatchPage() {
           loadingMessage={t("brandWatch.loading")}
         />
       </section>
+
+      {openProfile ? (
+        <section className="space-y-3" aria-label={t("brandWatch.candidates")}>
+          <h2 className="text-sm font-semibold text-foreground">
+            {t("brandWatch.candidatesFor", { name: openProfile.name })}
+          </h2>
+          {candidatesQuery.error ? (
+            <p className="text-sm text-muted-foreground" role="alert">
+              {candidatesQuery.error instanceof Error
+                ? candidatesQuery.error.message
+                : t("brandWatch.candidatesFailed")}
+            </p>
+          ) : null}
+          <DataTable
+            columns={candidateColumns}
+            data={candidates}
+            isLoading={candidatesQuery.isLoading}
+            error={candidatesQuery.error}
+            emptyMessage={t("brandWatch.candidatesEmpty")}
+            loadingMessage={t("brandWatch.loading")}
+          />
+        </section>
+      ) : null}
 
       <section className="space-y-3">
         <h2 className="text-sm font-semibold text-foreground">{t("brandWatch.diff")}</h2>

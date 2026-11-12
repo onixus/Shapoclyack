@@ -20,7 +20,9 @@ HTTP observation is a property of the *profile*, not of the quota: if
 
 Notifications are diffs only (new state, content-hash change, MX appearance).
 A dismissed or whitelisted candidate still gets a daily DNS check, but does
-not emit a diff.
+not emit a diff. A diff is handed to the existing webhook queue as kind
+``brand_watch.diff`` — not published as an asset event, and not written to a
+second queue. A subscription receives it only when it lists that kind.
 """
 
 from __future__ import annotations
@@ -65,10 +67,14 @@ MODES = frozenset({"dns_only", "http_allowed"})
 JOB_STATUSES = frozenset({"queued", "claimed", "done", "failed"})
 
 CAPABILITY = "brand_watch"
+DIFF_KIND = "brand_watch.diff"
 
 MAX_PROFILES = 20
 MAX_CANDIDATES = 5000
 MAX_HTTP_PER_DAY = 200
+#: One claim. A profile can hold thousands of names; handing them all to the
+#: sensor would hold its poll loop, and the lease, until the scan queue starved.
+MAX_NAMES_PER_JOB = 40
 
 # A brand string this short, or one of these generics, matches half the web.
 GENERIC_BRAND_STRINGS = frozenset({
@@ -761,11 +767,16 @@ def enqueue_for_profile(
     names = [
         row.name_punycode
         for row in session.scalars(
-            select(models.BrandCandidate).where(
-                models.BrandCandidate.profile_id == profile.id
-            )
+            select(models.BrandCandidate)
+            .where(models.BrandCandidate.profile_id == profile.id)
+            .order_by(models.BrandCandidate.name_punycode)
         ).all()
     ]
+    # The rest stay for the next tick. last_dispatched_at is set only when
+    # this slice covers the list, so a long profile is not "done for the day"
+    # after the first 40 names.
+    remaining = names[MAX_NAMES_PER_JOB:]
+    names = names[:MAX_NAMES_PER_JOB]
     http_names: list[str] = []
     dns_names = names
     if mode == "http_allowed":
@@ -781,7 +792,8 @@ def enqueue_for_profile(
             session, profile, moment=moment, mode="dns_only", names=dns_names if job else names
         )
         job = job or dns_job
-    profile.last_dispatched_at = moment
+    if not remaining:
+        profile.last_dispatched_at = moment
     profile.updated_at = moment
     return job
 
@@ -872,6 +884,42 @@ def claim_job(
 
 def _carried(raw: dict[str, Any], keys: tuple[str, ...]) -> bool:
     return any(key in raw for key in keys)
+
+
+def release_claim(
+    settings: Settings,
+    *,
+    tenant_id: str,
+    job_id: str,
+    agent_id: str,
+) -> dict[str, Any]:
+    """Give an unapplied claim back to the queue and undo its attempt.
+
+    A result that never arrived must not keep the lease or spend one of the
+    three attempts. The owner may release after the lease clock has run out;
+    a job that was already applied is left alone.
+    """
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        job = session.scalars(
+            _for_update(
+                select(models.BrandWatchJob).where(models.BrandWatchJob.id == job_id),
+                session,
+            )
+        ).first()
+        if job is None or job.tenant_id != tenant_id:
+            raise LookupError("job not found")
+        if job.applied_at is not None:
+            return {"id": job.id, "status": job.status, "released": False}
+        if job.lease_owner != agent_id:
+            raise LeaseDenied("job is not leased to this sensor")
+        job.status = "queued"
+        job.lease_owner = None
+        job.lease_until = None
+        job.attempts = max(0, (job.attempts or 0) - 1)
+        job.finished_at = None
+        session.flush()
+        return {"id": job.id, "status": job.status, "released": True, "attempts": job.attempts}
 
 
 def apply_result(
@@ -1024,7 +1072,76 @@ def apply_result(
         job.applied_at = now
         job.finished_at = now
         session.flush()
-        return {"id": job.id, "status": job.status, "idempotent": False, "events": events}
+        # Read before the session closes. The enqueue below runs after commit
+        # on purpose, and a lazy refresh of a detached row would raise after
+        # the observation was already applied.
+        applied = {"id": job.id, "status": job.status, "idempotent": False, "events": events}
+    _enqueue_diffs(tenant_id, job_id, events)
+    return applied
+
+
+def _enqueue_diffs(tenant_id: str, job_id: str, events: list[dict[str, Any]]) -> None:
+    """Hand each diff to the existing webhook queue. Never raises.
+
+    Called after the result session has committed, so a delivery failure
+    cannot roll the applied observation back. The kind is ``brand_watch.diff``
+    and nothing else: it is not an asset event, and a subscription that did
+    not list it does not receive it. A raise is logged; the result still
+    returns.
+    """
+    if not events:
+        return
+    try:
+        from api.services.integrations import webhooks as webhooks_service
+    except Exception:
+        _log.warning("brand-watch webhook import failed", exc_info=True)
+        return
+    enqueue = getattr(webhooks_service, "enqueue_event", None)
+    if enqueue is None:
+        return
+    for event in events:
+        try:
+            enqueue(_webhook_envelope(tenant_id, job_id, event))
+        except Exception:
+            _log.warning(
+                "brand-watch webhook enqueue failed for job %s candidate %s",
+                job_id,
+                event.get("id"),
+                exc_info=True,
+            )
+
+
+def _webhook_envelope(tenant_id: str, job_id: str, event: dict[str, Any]) -> dict[str, Any]:
+    """One diff as the envelope ``enqueue_event`` already routes.
+
+    ``event_id`` is the candidate plus the transition instant, so a repeat
+    post of the same job (which emits nothing) cannot double-page, and a
+    later change of the same name still delivers. The page body is the diff,
+    not the scanned domain and not the candidate list.
+    """
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    changed = str(event.get("last_changed") or "")
+    candidate_id = str(event.get("id") or "")
+    identity = f"{tenant_id}|{DIFF_KIND}|{candidate_id}|{changed}"
+    return {
+        "kind": DIFF_KIND,
+        "tenant_id": tenant_id,
+        "event_id": hashlib.sha256(identity.encode("utf-8")).hexdigest()[:48],
+        "subject_id": candidate_id or job_id,
+        "occurred_at": changed or None,
+        "source": "brand_watch",
+        "data": {
+            "name": event.get("name"),
+            "punycode": event.get("punycode"),
+            "from_state": payload.get("from_state", event.get("previous_state")),
+            "to_state": payload.get("to_state", event.get("new_state")),
+            "severity": payload.get("severity", event.get("severity")),
+            "reasons": list(payload.get("reasons") or []),
+            "candidate_id": candidate_id or None,
+            "profile_id": event.get("profile_id"),
+            "job_id": job_id,
+        },
+    }
 
 
 def _change_reasons(

@@ -103,7 +103,18 @@ UPLOAD_RATE_LIMIT_WAIT_SECONDS = 600.0
 # overlay: ``config_overlay.v2`` is ``nuclei.template_ids``, which only a
 # verification re-scan sends. Kept equal to
 # scanner/pipeline/config_overlay.CAPABILITIES.
-CAPABILITIES: tuple[str, ...] = ("scan_policy", "config_overlay.v1", "config_overlay.v2", "config_overlay.v3")
+#
+# ``brand_watch``: this build claims ``POST /api/brand-watch/jobs/claim`` and
+# posts DNS (and, only when the job says ``http_allowed``, HTTP) observations.
+# The API hands a brand-watch job only to a sensor that advertised it. The
+# names are never scanned and never added to scan scope.
+CAPABILITIES: tuple[str, ...] = (
+    "scan_policy",
+    "config_overlay.v1",
+    "config_overlay.v2",
+    "config_overlay.v3",
+    "brand_watch",
+)
 
 SUBJECT_JOBS_SCAN_PREFIX = "jobs.scan"
 STREAM_JOBS = "JOBS"
@@ -928,6 +939,30 @@ class AgentClient:
             {"agent_id": agent_id, **({"job_id": job_id} if job_id else {})}
         )
         return self._request("POST", f"/api/agent/jobs/claim?{query}")
+
+    def claim_brand_watch(self, agent_id: str) -> dict[str, Any] | None:
+        """``POST /api/brand-watch/jobs/claim``. ``None`` is a 204: nothing queued.
+
+        A body is one job (``id``, ``mode``, ``payload.names``). This is not a
+        scan claim and must not be passed to ``_execute_job``.
+        """
+        query = urllib.parse.urlencode({"agent_id": agent_id})
+        return self._request("POST", f"/api/brand-watch/jobs/claim?{query}")
+
+    def post_brand_watch_result(self, job_id: str, observations: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """``POST /api/brand-watch/jobs/{id}/result``. Observations only."""
+        return self._request(
+            "POST",
+            f"/api/brand-watch/jobs/{urllib.parse.quote(job_id, safe='')}/result",
+            body=json.dumps({"observations": observations}).encode("utf-8"),
+        )
+
+    def release_brand_watch(self, job_id: str) -> dict[str, Any] | None:
+        """``POST /api/brand-watch/jobs/{id}/release``. Undoes a claim whose result never landed."""
+        return self._request(
+            "POST",
+            f"/api/brand-watch/jobs/{urllib.parse.quote(job_id, safe='')}/release",
+        )
 
     def upload_results(
         self,
@@ -2195,6 +2230,12 @@ def run_loop(args: argparse.Namespace) -> int:
                     job = client.claim(agent_id)
 
                 if job is None:
+                    # Brand-watch is a second queue, claimed only when no scan
+                    # job was taken. One job per poll; a failure stays inside
+                    # poll_once and never starts a scan of those names.
+                    from agent.brand_watch_runner import poll_in_background
+
+                    poll_in_background(client, agent_id, config_path=Path(args.config))
                     if nats_session is None:
                         time.sleep(args.poll_interval)
                     continue

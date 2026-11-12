@@ -25,6 +25,18 @@ export function canSetBrandWatchDisposition(
   return permissions.includes("brand_watch.disposition");
 }
 
+/**
+ * Whether this principal may create and approve a profile. The API grants
+ * `brand_watch.write` to the tenant admin, not to an operator. A missing
+ * permission list hides the form: showing it and collecting a 403 is worse
+ * than waiting for a principal that names the permission.
+ */
+export function canWriteBrandWatch(
+  permissions: readonly string[] | null | undefined,
+): boolean {
+  return Boolean(permissions?.includes("brand_watch.write"));
+}
+
 /** A watched brand: official names and the domains that are already ours. */
 export type BrandWatchProfile = {
   id: string;
@@ -35,6 +47,28 @@ export type BrandWatchProfile = {
   official_domains: string[];
   created_at?: string | null;
   updated_at?: string | null;
+};
+
+/** Body for POST /brand-watch/profiles. Creating does not start a scan. */
+export type BrandWatchProfileCreate = {
+  name: string;
+  official_domains: string[];
+  brand_strings: string[];
+  /** Always false on create. Approval is a separate, explicit confirmation. */
+  our_brand: false;
+};
+
+/**
+ * One generated name for a profile. `name` is text, never HTML. Empty until
+ * the daily rebuild; opening this list does not scan the name.
+ */
+export type BrandWatchCandidate = {
+  id: string;
+  profile_id?: string | null;
+  name: string;
+  state: string | null;
+  disposition?: string | null;
+  punycode?: string | null;
 };
 
 /** One name whose observation changed. `name` is text, never HTML. */
@@ -143,6 +177,34 @@ export function parseProfile(value: unknown): BrandWatchProfile | null {
   };
 }
 
+/** Non-empty lines, trimmed. Blank lines are not sent as domains or strings. */
+export function linesToList(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+export function parseCandidate(value: unknown): BrandWatchCandidate | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const id = asString(record.id) ?? asString(record.candidate_id);
+  const name =
+    asString(record.name) ??
+    asString(record.name_unicode) ??
+    asString(record.candidate) ??
+    asString(record.domain);
+  if (!id || name == null) return null;
+  return {
+    id,
+    profile_id: asString(record.profile_id),
+    name,
+    state: asString(record.state),
+    disposition: asString(record.disposition),
+    punycode: asString(record.punycode) ?? asString(record.name_punycode),
+  };
+}
+
 export function parseDiffRow(value: unknown): BrandWatchDiffRow | null {
   const record = asRecord(value);
   if (!record) return null;
@@ -195,6 +257,56 @@ export async function fetchBrandWatchDiff(
     });
     return unwrapList(data, ["items", "diff", "changes"]).flatMap((item) => {
       const parsed = parseDiffRow(item);
+      return parsed ? [parsed] : [];
+    });
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function createBrandWatchProfile(
+  body: BrandWatchProfileCreate,
+): Promise<BrandWatchProfile> {
+  try {
+    const { data } = await api.post<unknown>("/brand-watch/profiles", {
+      name: body.name,
+      official_domains: body.official_domains,
+      brand_strings: body.brand_strings,
+      our_brand: false,
+    });
+    const parsed = parseProfile(data);
+    if (!parsed) throw new Error("Profile was not returned.");
+    return parsed;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/**
+ * Confirm that the listed domains belong to this tenant. `our_brand` must be
+ * true; the API refuses an approval that does not say so.
+ */
+export async function approveBrandWatchProfile(profileId: string): Promise<BrandWatchProfile> {
+  try {
+    const { data } = await api.post<unknown>(
+      `/brand-watch/profiles/${encodeURIComponent(profileId)}/approve`,
+      { our_brand: true },
+    );
+    const parsed = parseProfile(data);
+    if (!parsed) throw new Error("Profile was not returned.");
+    return parsed;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchBrandWatchCandidates(profileId: string): Promise<BrandWatchCandidate[]> {
+  try {
+    const { data } = await api.get<unknown>(
+      `/brand-watch/profiles/${encodeURIComponent(profileId)}/candidates`,
+    );
+    return unwrapList(data, ["items", "candidates"]).flatMap((item) => {
+      const parsed = parseCandidate(item);
       return parsed ? [parsed] : [];
     });
   } catch (error) {

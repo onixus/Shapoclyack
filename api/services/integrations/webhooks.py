@@ -60,6 +60,13 @@ DELIVERY_STATUSES = ("pending", "delivered", "dead")
 # it can never come off the event bus, only from an operator pressing "test".
 TEST_EVENT_KIND = "test"
 
+# Brand-watch state change. Opt-in, and deliberately not an asset event: a
+# lookalike name is not a scanned host, and adding the kind to
+# ``asset_events.EVENT_KINDS`` would publish it on ``events.asset.*`` and
+# deliver it to every subscription whose ``event_kinds`` is empty. Those
+# subscriptions mean "every asset event", not "and the lookalike feed too".
+BRAND_WATCH_DIFF_KIND = "brand_watch.diff"
+
 
 def configure(settings: Settings) -> None:
     global _settings
@@ -250,12 +257,14 @@ def _validate_event_kinds(kinds: list[str] | None) -> list[str]:
         if (
             kind not in asset_events.EVENT_KINDS
             and kind not in workflow_events.WORKFLOW_EVENT_KINDS
+            and kind != BRAND_WATCH_DIFF_KIND
             and not _is_audit_kind(kind)
         ):
             raise ValueError(
                 f"unknown event kind {kind!r}; known kinds: "
                 f"{', '.join(asset_events.EVENT_KINDS)}, "
                 f"{', '.join(workflow_events.WORKFLOW_EVENT_KINDS)}, "
+                f"{BRAND_WATCH_DIFF_KIND}, "
                 f"{audit_events.KIND_WILDCARD} (or one action, e.g. "
                 f"{audit_events.event_kind('user.role_change')})"
             )
@@ -570,6 +579,13 @@ def matches(subscription: dict[str, Any], envelope: dict[str, Any]) -> bool:
     version of the same argument: a receiver configured for new criticals must
     not start taking a message every time an operator reassigns a finding
     because a version was bumped.
+
+    ``brand_watch.diff`` is opt-in for the same reason, and a sharper one: the
+    payload names a lookalike domain the tenant asked to watch, which a CVE
+    receiver was never configured to hold. An empty ``event_kinds`` does not
+    match it. Severity is not a filter here either — the kind is not in
+    ``_SEVERITY_BEARING_KINDS``, so "critical only" cannot swallow a
+    registration that the subscription explicitly asked for.
     """
     if not subscription.get("enabled"):
         return False
@@ -579,7 +595,11 @@ def matches(subscription: dict[str, Any], envelope: dict[str, Any]) -> bool:
     if not kinds:
         # "Every kind" ends at the asset events; see above. Falls through to the
         # severity filter for anything else, which is what it always did.
-        if is_audit or kind in workflow_events.WORKFLOW_EVENT_KINDS:
+        if (
+            is_audit
+            or kind in workflow_events.WORKFLOW_EVENT_KINDS
+            or kind == BRAND_WATCH_DIFF_KIND
+        ):
             return False
     elif kind not in kinds:
         wildcarded = audit_events.KIND_WILDCARD in kinds and is_audit
@@ -634,7 +654,9 @@ def enqueue_event(envelope: dict[str, Any]) -> list[str]:
     """Fan one event out to the tenant's matching subscriptions.
 
     Takes both envelope shapes — an asset event and, since #328, an
-    ``audit.<action>`` one — because they carry the same routing fields.
+    ``audit.<action>`` one — because they carry the same routing fields. A
+    ``brand_watch.diff`` envelope uses the same fields and is matched only by
+    a subscription that names the kind.
 
     Returns the ids of the deliveries created. Re-enqueueing the same
     ``(subscription, event_id)`` is a no-op rather than a second call: the
