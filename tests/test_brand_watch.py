@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine, func, select
@@ -167,34 +167,61 @@ def test_approved_our_brand_may_enqueue_http(db):
         assert job.mode == "http_allowed"
 
 
+def _leased_job(
+    session_factory,
+    *,
+    mode: str = "dns_only",
+    owner: str = "sensor-1",
+    status: str = "claimed",
+    attempts: int = 1,
+    lease_until: datetime | None = None,
+    job_id: str = "bwj_test",
+) -> None:
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with session_factory("") as session:
+        session.add(models.BrandWatchJob(
+            id=job_id,
+            tenant_id="acme",
+            profile_id="bwp_test",
+            status=status,
+            mode=mode,
+            payload={"names": ["acmebank-login.example"], "mode": mode},
+            lease_owner=owner if status == "claimed" else None,
+            lease_until=lease_until if lease_until is not None else now + timedelta(seconds=600),
+            attempts=attempts,
+            created_at=now,
+        ))
+
+
+def _apply(observations, **kwargs):
+    payload = dict(
+        tenant_id="acme",
+        job_id="bwj_test",
+        observations=observations,
+        agent_id="sensor-1",
+        capabilities=["brand_watch"],
+    )
+    payload.update(kwargs)
+    return brand_watch.apply_result(_settings(), **payload)
+
+
 def test_repeat_job_id_is_idempotent(db):
     _profile(db, approved=True, our_brand=True)
     _candidate(db)
-    now = datetime.now(UTC).replace(tzinfo=None)
-    with db("") as session:
-        session.add(models.BrandWatchJob(
-            id="bwj_test",
-            tenant_id="acme",
-            profile_id="bwp_test",
-            status="claimed",
-            mode="dns_only",
-            payload={"names": ["acmebank-login.example"], "mode": "dns_only"},
-            attempts=1,
-            created_at=now,
-        ))
+    _leased_job(db)
     observation = {"name": "acmebank-login.example", "ns": ["ns1.example"], "addresses": []}
-    first = brand_watch.apply_result(
-        _settings(), tenant_id="acme", job_id="bwj_test", observations=[observation]
-    )
+    first = _apply([observation])
     assert first["idempotent"] is False
     assert first["events"]
+    assert first["events"][0]["previous_state"] == "unregistered"
+    assert first["events"][0]["severity"] == "informational"
     with db("") as session:
         candidate = session.get(models.BrandCandidate, "bwc_test")
         assert candidate.state == "registered"
+        assert candidate.previous_state == "unregistered"
+        assert candidate.severity == "informational"
         observations = session.scalar(select(func.count()).select_from(models.BrandObservation))
-    second = brand_watch.apply_result(
-        _settings(), tenant_id="acme", job_id="bwj_test", observations=[observation]
-    )
+    second = _apply([observation])
     assert second["idempotent"] is True
     assert second["events"] == []
     with db("") as session:
@@ -301,3 +328,218 @@ def test_dispatcher_does_not_enqueue_http_for_unapproved(db, monkeypatch):
         modes = set(session.scalars(select(models.BrandWatchJob.mode)).all())
         assert "http_allowed" not in modes
         assert modes == {"dns_only"}
+
+
+def test_naive_utc_converts_an_offset():
+    moment = datetime(2026, 11, 12, 0, 0, tzinfo=timezone(timedelta(hours=3)))
+    assert brand_watch.naive_utc(moment) == datetime(2026, 11, 11, 21, 0)
+    naive = datetime(2026, 11, 12, 0, 0)
+    assert brand_watch.naive_utc(naive) is naive
+    assert brand_watch.naive_utc(None) is None
+
+
+def test_first_unchanged_observation_is_a_baseline(db):
+    _profile(db)
+    _candidate(db)
+    _leased_job(db)
+    quiet = {
+        "name": "acmebank-login.example",
+        "status": "unregistered",
+        "ns": [],
+        "addresses": [],
+        "mx_present": False,
+    }
+    first = _apply([quiet])
+    assert first["events"] == []
+    with db("") as session:
+        candidate = session.get(models.BrandCandidate, "bwc_test")
+        assert candidate.state == "unregistered"
+        assert candidate.last_changed is None
+        assert candidate.content_hash
+    assert _apply([quiet])["idempotent"] is True
+
+
+def test_http_and_unanswered_do_not_wipe_dns(db):
+    _profile(db, approved=True, our_brand=True)
+    _candidate(db)
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with db("") as session:
+        candidate = session.get(models.BrandCandidate, "bwc_test")
+        candidate.state = "resolving"
+        candidate.ns = ["ns1.example"]
+        candidate.addresses = ["203.0.113.9", "203.0.113.10"]
+        candidate.mx_present = True
+        candidate.content_hash = "stored"
+    _leased_job(db, mode="http_allowed")
+    http = _apply([{
+        "name": "acmebank-login.example",
+        "live": True,
+        "has_site": True,
+        "password_form": True,
+        "address": "1.1.1.1",
+        "status": 200,
+    }])
+    assert http["events"]
+    assert http["events"][0]["severity"] == "low"
+    with db("") as session:
+        candidate = session.get(models.BrandCandidate, "bwc_test")
+        assert candidate.ns == ["ns1.example"]
+        assert candidate.addresses == ["203.0.113.9", "203.0.113.10"]
+        assert candidate.mx_present is True
+        assert candidate.severity == "low"
+        candidate.last_changed = now
+    # A second job: an unanswered DNS row must not clear the stored picture.
+    _leased_job(db, job_id="bwj_later", mode="dns_only")
+    unanswered = brand_watch.apply_result(
+        _settings(),
+        tenant_id="acme",
+        job_id="bwj_later",
+        observations=[{
+            "name": "acmebank-login.example",
+            "status": "unanswered",
+            "ns": [],
+            "a": [],
+            "aaaa": [],
+            "mx_present": False,
+        }],
+        agent_id="sensor-1",
+        capabilities=["brand_watch"],
+    )
+    assert unanswered["events"] == []
+    with db("") as session:
+        candidate = session.get(models.BrandCandidate, "bwc_test")
+        assert candidate.ns == ["ns1.example"]
+        assert candidate.addresses == ["203.0.113.9", "203.0.113.10"]
+        assert candidate.mx_present is True
+        rows = brand_watch.diff_since(_settings(), "acme", since=None)
+    assert rows[0]["previous_state"] == "resolving"
+    assert rows[0]["severity"] == "low"
+
+
+def test_result_requires_the_lease_owner(db):
+    _profile(db)
+    _candidate(db)
+    _leased_job(db, owner="sensor-1")
+    with pytest.raises(brand_watch.LeaseDenied):
+        _apply([{"name": "acmebank-login.example", "ns": ["ns1.example"]}], agent_id="sensor-2")
+    with pytest.raises(brand_watch.LeaseDenied):
+        _apply(
+            [{"name": "acmebank-login.example", "ns": ["ns1.example"]}],
+            capabilities=["scan"],
+        )
+    past = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=5)
+    with db("") as session:
+        job = session.get(models.BrandWatchJob, "bwj_test")
+        job.lease_until = past
+    with pytest.raises(brand_watch.LeaseDenied):
+        _apply([{"name": "acmebank-login.example", "ns": ["ns1.example"]}])
+    with db("") as session:
+        job = session.get(models.BrandWatchJob, "bwj_test")
+        assert job.status == "claimed"
+        assert job.applied_at is None
+
+
+def test_expired_lease_is_reclaimed_until_attempts_run_out(db):
+    _profile(db)
+    past = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=5)
+    _leased_job(db, status="claimed", attempts=1, lease_until=past, owner="sensor-old")
+    claimed = brand_watch.claim_job(
+        _settings(), tenant_id="acme", agent_id="sensor-1", capabilities=["brand_watch"]
+    )
+    assert claimed is not None
+    assert claimed["id"] == "bwj_test"
+    with db("") as session:
+        job = session.get(models.BrandWatchJob, "bwj_test")
+        assert job.lease_owner == "sensor-1"
+        assert job.attempts == 2
+        job.lease_until = past
+        job.attempts = brand_watch.MAX_ATTEMPTS
+    assert brand_watch.claim_job(
+        _settings(), tenant_id="acme", agent_id="sensor-1", capabilities=["brand_watch"]
+    ) is None
+    with db("") as session:
+        job = session.get(models.BrandWatchJob, "bwj_test")
+        assert job.status == "failed"
+
+
+def test_expired_claim_does_not_block_the_next_enqueue(db):
+    _profile(db, approved=True, our_brand=True)
+    _candidate(db)
+    past = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=2)
+    _leased_job(db, lease_until=past)
+    with db("") as session:
+        profile = session.get(models.BrandProfile, "bwp_test")
+        profile.last_dispatched_at = past
+        job = brand_watch.enqueue_for_profile(session, profile, now=datetime.now(UTC).replace(tzinfo=None))
+        assert job is not None
+        assert job.id != "bwj_test"
+        assert job.status == "queued"
+        stale = session.get(models.BrandWatchJob, "bwj_test")
+        assert stale.status == "failed"
+
+
+def test_http_budget_counts_names(db, monkeypatch):
+    monkeypatch.setattr(brand_watch, "MAX_HTTP_PER_DAY", 1)
+    _profile(db, approved=True, our_brand=True)
+    _candidate(db, "one.example")
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with db("") as session:
+        session.add(models.BrandCandidate(
+            id="bwc_two",
+            tenant_id="acme",
+            profile_id="bwp_test",
+            name_unicode="two.example",
+            name_punycode="two.example",
+            seed="acme.example",
+            generator_class="omission",
+            reason="omission",
+            state="unregistered",
+            ns=[],
+            addresses=[],
+            mx_present=False,
+            reasons=[],
+            disposition="open",
+            created_at=now,
+            updated_at=now,
+        ))
+        profile = session.get(models.BrandProfile, "bwp_test")
+        job = brand_watch.enqueue_for_profile(session, profile, force=True)
+        assert job is not None
+        assert job.mode == "http_allowed"
+        assert len(job.payload["names"]) == 1
+        modes = {
+            row.mode: row.payload["names"]
+            for row in session.scalars(select(models.BrandWatchJob)).all()
+        }
+    assert set(modes) == {"http_allowed", "dns_only"}
+    assert len(modes["dns_only"]) == 1
+    assert set(modes["http_allowed"] + modes["dns_only"]) == {"one.example", "two.example"}
+
+
+def test_rebuild_keeps_the_prefix_at_the_cap(db, monkeypatch):
+    monkeypatch.setattr(brand_watch, "MAX_CANDIDATES", 2)
+    created = brand_watch.create_profile(
+        _settings(),
+        tenant_id="acme",
+        name="Acme",
+        official_domains=["acme.example"],
+        brand_strings=["acmebank"],
+    )
+    generated = [
+        {"name": f"name{i}.example", "name_punycode": f"name{i}.example", "generator_class": "omission"}
+        for i in range(4)
+    ]
+    result = brand_watch.rebuild_candidates(
+        _settings(), tenant_id="acme", profile_id=created["id"], generated=generated
+    )
+    assert result["created"] == 2
+    with db("") as session:
+        names = set(session.scalars(select(models.BrandCandidate.name_punycode)).all())
+        profile = session.get(models.BrandProfile, created["id"])
+        assert profile.last_rebuilt_at is not None
+    assert names == {"name0.example", "name1.example"}
+    again = brand_watch.rebuild_candidates(
+        _settings(), tenant_id="acme", profile_id=created["id"], generated=generated
+    )
+    assert again["created"] == 0
+    assert again["kept"] == 2

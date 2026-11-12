@@ -199,6 +199,27 @@ def test_at_most_two_gets_and_byte_caps():
     assert FAVICON_MAX_BYTES == 32 * 1024
 
 
+def test_https_favicon_keeps_the_name_as_sni_after_a_capped_body():
+    """A truncated root body closes the stream, so the favicon is a new handshake."""
+    huge = b"<html><title>Big</title><body>" + (b"A" * (BODY_MAX_BYTES + 100)) + b"</body></html>"
+    icon = b"icon-bytes"
+    seen: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.path, request.extensions.get("sni_hostname")))
+        if request.url.path == "/favicon.ico":
+            return httpx.Response(200, content=icon)
+        return httpx.Response(200, content=huge)
+
+    pack = observe_http(
+        HttpObservationRequest(name=NAME, address=PUBLIC, brand="Acme", scheme="https", now=NOW),
+        transport=httpx.MockTransport(handler),
+    )
+    assert seen == [("/", NAME), ("/favicon.ico", NAME)]
+    assert pack["truncated"] is True
+    assert pack["favicon_sha256"] == hashlib.sha256(icon).hexdigest()
+
+
 def test_body_is_capped_and_raw_html_is_not_returned():
     huge = b"<html><title>Big</title><body>" + (b"A" * (BODY_MAX_BYTES + 5000)) + b"</body></html>"
     script = _Script(huge, favicon=None)

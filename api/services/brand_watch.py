@@ -12,7 +12,7 @@ Quotas are enforced here against fixed defaults rather than a new
 
 * ``brand_watch_profiles`` <= 20
 * ``brand_watch_candidates`` <= 5000
-* ``brand_watch_http_per_day`` <= 200
+* ``brand_watch_http_per_day`` <= 200 names placed in ``http_allowed`` jobs
 
 HTTP observation is a property of the *profile*, not of the quota: if
 ``approved_at`` is null or ``our_brand`` is false, every enqueued job is
@@ -32,7 +32,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from api.db import models
@@ -78,8 +78,16 @@ GENERIC_BRAND_STRINGS = frozenset({
 MIN_BRAND_STRING = 4
 
 LEASE_SECONDS = 600
+# A sensor that dies mid-batch is retried this many claims, then the job fails
+# so the profile can be queued again.
+MAX_ATTEMPTS = 3
 DAILY = timedelta(days=1)
 WEEKLY = timedelta(days=7)
+
+# DNS keys. An HTTP pack's single dialled ``address`` is not one of them:
+# copying it would replace the address set learned from DNS.
+_DNS_NS_KEYS = ("ns", "has_ns", "has_soa")
+_DNS_ADDR_KEYS = ("addresses", "a", "aaaa", "has_a", "has_aaaa")
 
 # Keys a result document must not carry. Observations are not a page archive.
 _HTML_KEYS = ("html", "body", "raw_html", "page", "pem", "peer_cert")
@@ -93,8 +101,19 @@ class QuotaExceeded(BrandWatchError):
     """profiles / candidates / http-per-day ceiling."""
 
 
+class LeaseDenied(BrandWatchError):
+    """This sensor does not hold a live lease on the job."""
+
+
 def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def naive_utc(moment: datetime | None) -> datetime | None:
+    """Naive UTC. An offset is converted, not stripped."""
+    if moment is None or moment.tzinfo is None:
+        return moment
+    return moment.astimezone(UTC).replace(tzinfo=None)
 
 
 def _new_id(prefix: str) -> str:
@@ -324,8 +343,13 @@ def _generate(profile: models.BrandProfile) -> list[dict[str, Any]]:
     generate = lookalike.generate
     exclude = set(profile.official_domains or []) | set(profile.whitelist or [])
     rows: list[dict[str, Any]] = []
+    # One profile shares the candidate cap across every official domain.
+    # The first domains fill it; later domains are not generated past the cap.
     for domain in profile.official_domains or []:
-        for item in generate(domain, MAX_CANDIDATES, exclude=exclude):
+        room = MAX_CANDIDATES - len(rows)
+        if room <= 0:
+            break
+        for item in generate(domain, room, exclude=exclude):
             name = str(item.get("name") or item.get("name_unicode") or "")
             rows.append({
                 "name": name,
@@ -335,6 +359,8 @@ def _generate(profile: models.BrandProfile) -> list[dict[str, Any]]:
                 "seed": domain,
                 "reason": str(item.get("generator") or ""),
             })
+            if len(rows) >= MAX_CANDIDATES:
+                break
     return rows
 
 
@@ -368,6 +394,8 @@ def _candidate_dict(row: models.BrandCandidate) -> dict[str, Any]:
         "generator_class": row.generator_class,
         "reason": row.reason,
         "state": row.state,
+        "previous_state": row.previous_state,
+        "severity": row.severity,
         "first_seen": row.first_seen.isoformat() if row.first_seen else None,
         "last_checked": row.last_checked.isoformat() if row.last_checked else None,
         "last_changed": row.last_changed.isoformat() if row.last_changed else None,
@@ -549,16 +577,29 @@ def rebuild_candidates(
             ).all()
         }
         seen: set[str] = set()
-        created = 0
+        ordered: list[tuple[str, dict[str, Any]]] = []
         for item in produced:
             puny = _norm_name(str(item.get("name_punycode") or item.get("name") or ""))
             if not puny or puny in own or puny in seen:
                 continue
             seen.add(puny)
+            ordered.append((puny, item))
+        removed = 0
+        for puny, row in list(existing.items()):
+            if puny not in seen:
+                session.delete(row)
+                del existing[puny]
+                removed += 1
+        # Names the generator still emits stay, disposition included. New names
+        # fill whatever room the cap has left and the rest are left off this
+        # rebuild instead of rolling the kept rows back.
+        room = MAX_CANDIDATES - len(existing)
+        created = 0
+        for puny, item in ordered:
             if puny in existing:
                 continue
-            if len(existing) + created >= MAX_CANDIDATES:
-                raise QuotaExceeded(f"brand_watch_candidates limit is {MAX_CANDIDATES}")
+            if created >= room:
+                break
             session.add(models.BrandCandidate(
                 id=_new_id("bwc"),
                 tenant_id=tenant_id,
@@ -578,15 +619,10 @@ def rebuild_candidates(
                 updated_at=now,
             ))
             created += 1
-        removed = 0
-        for puny, row in existing.items():
-            if puny not in seen:
-                session.delete(row)
-                removed += 1
         profile.last_rebuilt_at = now
         profile.updated_at = now
         session.flush()
-        return {"created": created, "removed": removed, "kept": len(seen & set(existing))}
+        return {"created": created, "removed": removed, "kept": len(existing)}
 
 
 def diff_since(
@@ -609,9 +645,9 @@ def diff_since(
         for row in rows:
             events.append(diff_event(
                 name=row.name_unicode,
-                from_state=None,
+                from_state=row.previous_state,
                 to_state=row.state,
-                severity=severity_for(row.state, {"mx_present": row.mx_present}),
+                severity=row.severity or severity_for(row.state, {"mx_present": row.mx_present}),
                 reasons=list(row.reasons or [])[:8],
                 candidate_id=row.id,
                 profile_id=row.profile_id,
@@ -623,53 +659,35 @@ def diff_since(
         return events
 
 
-def enqueue_for_profile(
+def _http_names_used(session: Session, tenant_id: str, since: datetime) -> int:
+    """Names already placed in ``http_allowed`` jobs since ``since``.
+
+    The daily cap is a name budget. Counting jobs would let one profile's
+    full candidate list through, because a tenant never has 200 profiles.
+    """
+    payloads = session.scalars(
+        select(models.BrandWatchJob.payload).where(
+            models.BrandWatchJob.tenant_id == tenant_id,
+            models.BrandWatchJob.mode == "http_allowed",
+            models.BrandWatchJob.created_at >= since,
+        )
+    ).all()
+    used = 0
+    for payload in payloads:
+        names = payload.get("names") if isinstance(payload, dict) else None
+        if isinstance(names, list):
+            used += len(names)
+    return used
+
+
+def _add_watch_job(
     session: Session,
     profile: models.BrandProfile,
     *,
-    now: datetime | None = None,
-    force: bool = False,
-) -> models.BrandWatchJob | None:
-    """Queue one brand-watch job. Never a scan job, never ``http_allowed``
-    unless the profile is approved and marked ours.
-
-    A profile that already has a queued or claimed job is left alone. Daily
-    cadence is ``last_dispatched_at``; ``force`` is the weekly rebuild's
-    companion and still respects the HTTP rule.
-    """
-    moment = now or _now()
-    mode = watch_mode(profile)
-    if not force and profile.last_dispatched_at and (
-        moment - profile.last_dispatched_at < DAILY
-    ):
-        return None
-    open_job = session.scalar(
-        select(models.BrandWatchJob.id).where(
-            models.BrandWatchJob.profile_id == profile.id,
-            models.BrandWatchJob.status.in_(("queued", "claimed")),
-        )
-    )
-    if open_job:
-        return None
-    if mode == "http_allowed":
-        since = moment - DAILY
-        http_today = session.scalar(
-            select(func.count()).select_from(models.BrandWatchJob).where(
-                models.BrandWatchJob.tenant_id == profile.tenant_id,
-                models.BrandWatchJob.mode == "http_allowed",
-                models.BrandWatchJob.created_at >= since,
-            )
-        ) or 0
-        if http_today >= MAX_HTTP_PER_DAY:
-            mode = "dns_only"
-    names = [
-        row.name_punycode
-        for row in session.scalars(
-            select(models.BrandCandidate).where(
-                models.BrandCandidate.profile_id == profile.id
-            )
-        ).all()
-    ]
+    moment: datetime,
+    mode: str,
+    names: list[str],
+) -> models.BrandWatchJob:
     job = models.BrandWatchJob(
         id=_new_id("bwj"),
         tenant_id=profile.tenant_id,
@@ -681,6 +699,88 @@ def enqueue_for_profile(
         created_at=moment,
     )
     session.add(job)
+    return job
+
+
+def _fail_expired(session: Session, profile_id: str, moment: datetime) -> None:
+    """Drop claims whose lease has ended so a new day is not a second copy."""
+    expired = session.scalars(
+        select(models.BrandWatchJob).where(
+            models.BrandWatchJob.profile_id == profile_id,
+            models.BrandWatchJob.status == "claimed",
+            models.BrandWatchJob.lease_until.is_not(None),
+            models.BrandWatchJob.lease_until <= moment,
+        )
+    ).all()
+    for row in expired:
+        row.status = "failed"
+        row.finished_at = moment
+        row.lease_owner = None
+        row.lease_until = None
+
+
+def enqueue_for_profile(
+    session: Session,
+    profile: models.BrandProfile,
+    *,
+    now: datetime | None = None,
+    force: bool = False,
+) -> models.BrandWatchJob | None:
+    """Queue today's watch. Never a scan job, never ``http_allowed`` unless
+    the profile is approved and marked ours.
+
+    A live queued or claimed job is left alone. A claim whose lease has
+    ended does not block the next day; it is failed and replaced. When HTTP
+    is on, only the remaining name budget goes into the ``http_allowed``
+    job. The rest of the list is a ``dns_only`` job.
+    """
+    moment = now or _now()
+    mode = watch_mode(profile)
+    if not force and profile.last_dispatched_at and (
+        moment - profile.last_dispatched_at < DAILY
+    ):
+        return None
+    open_job = session.scalar(
+        select(models.BrandWatchJob.id).where(
+            models.BrandWatchJob.profile_id == profile.id,
+            or_(
+                models.BrandWatchJob.status == "queued",
+                and_(
+                    models.BrandWatchJob.status == "claimed",
+                    or_(
+                        models.BrandWatchJob.lease_until.is_(None),
+                        models.BrandWatchJob.lease_until > moment,
+                    ),
+                ),
+            ),
+        )
+    )
+    if open_job:
+        return None
+    _fail_expired(session, profile.id, moment)
+    names = [
+        row.name_punycode
+        for row in session.scalars(
+            select(models.BrandCandidate).where(
+                models.BrandCandidate.profile_id == profile.id
+            )
+        ).all()
+    ]
+    http_names: list[str] = []
+    dns_names = names
+    if mode == "http_allowed":
+        used = _http_names_used(session, profile.tenant_id, moment - DAILY)
+        remaining = max(0, MAX_HTTP_PER_DAY - used)
+        http_names = names[:remaining]
+        dns_names = names[remaining:]
+    job: models.BrandWatchJob | None = None
+    if http_names:
+        job = _add_watch_job(session, profile, moment=moment, mode="http_allowed", names=http_names)
+    if dns_names or job is None:
+        dns_job = _add_watch_job(
+            session, profile, moment=moment, mode="dns_only", names=dns_names if job else names
+        )
+        job = job or dns_job
     profile.last_dispatched_at = moment
     profile.updated_at = moment
     return job
@@ -696,6 +796,16 @@ def due_profiles(session: Session, now: datetime) -> list[models.BrandProfile]:
     ).all())
 
 
+def _for_update(query, session: Session, *, skip_locked: bool = False):
+    """Row lock on Postgres. SQLite tests run the same statement without it."""
+    bind = session.get_bind()
+    if bind is None or bind.dialect.name != "postgresql":
+        return query
+    if skip_locked:
+        return query.with_for_update(skip_locked=True)
+    return query.with_for_update()
+
+
 def claim_job(
     settings: Settings,
     *,
@@ -703,41 +813,65 @@ def claim_job(
     agent_id: str,
     capabilities: list[str] | None,
 ) -> dict[str, Any] | None:
-    """Claim one queued brand-watch job for this tenant.
+    """Claim one brand-watch job for this tenant.
 
-    A sensor that did not present ``brand_watch`` gets nothing. This never
-    selects from ``jobs`` (scan jobs).
+    A sensor that did not present ``brand_watch`` gets nothing. Queued jobs
+    and claims whose lease has ended are both eligible. A row that has
+    already been claimed ``MAX_ATTEMPTS`` times is failed and skipped. This
+    never selects from ``jobs`` (scan jobs).
     """
     if not sensor_may_claim(capabilities):
         return None
     now = _now()
     lease_until = now + timedelta(seconds=LEASE_SECONDS)
     with get_session(settings.postgres_url) as session:
-        row = session.scalars(
-            select(models.BrandWatchJob)
-            .where(
-                models.BrandWatchJob.tenant_id == tenant_id,
-                models.BrandWatchJob.status == "queued",
-            )
-            .order_by(models.BrandWatchJob.created_at)
-            .limit(1)
-            .with_for_update(skip_locked=True)
-        ).first()
-        if row is None:
-            return None
-        row.status = "claimed"
-        row.lease_owner = agent_id
-        row.lease_until = lease_until
-        row.attempts = (row.attempts or 0) + 1
-        session.flush()
-        return {
-            "id": row.id,
-            "tenant_id": row.tenant_id,
-            "profile_id": row.profile_id,
-            "mode": row.mode,
-            "payload": row.payload,
-            "lease_until": lease_until.isoformat(),
-        }
+        while True:
+            row = session.scalars(
+                _for_update(
+                    select(models.BrandWatchJob)
+                    .where(
+                        models.BrandWatchJob.tenant_id == tenant_id,
+                        or_(
+                            models.BrandWatchJob.status == "queued",
+                            and_(
+                                models.BrandWatchJob.status == "claimed",
+                                models.BrandWatchJob.lease_until.is_not(None),
+                                models.BrandWatchJob.lease_until <= now,
+                            ),
+                        ),
+                    )
+                    .order_by(models.BrandWatchJob.created_at)
+                    .limit(1),
+                    session,
+                    skip_locked=True,
+                )
+            ).first()
+            if row is None:
+                return None
+            if (row.attempts or 0) >= MAX_ATTEMPTS:
+                row.status = "failed"
+                row.finished_at = now
+                row.lease_owner = None
+                row.lease_until = None
+                session.flush()
+                continue
+            row.status = "claimed"
+            row.lease_owner = agent_id
+            row.lease_until = lease_until
+            row.attempts = (row.attempts or 0) + 1
+            session.flush()
+            return {
+                "id": row.id,
+                "tenant_id": row.tenant_id,
+                "profile_id": row.profile_id,
+                "mode": row.mode,
+                "payload": row.payload,
+                "lease_until": lease_until.isoformat(),
+            }
+
+
+def _carried(raw: dict[str, Any], keys: tuple[str, ...]) -> bool:
+    return any(key in raw for key in keys)
 
 
 def apply_result(
@@ -746,20 +880,30 @@ def apply_result(
     tenant_id: str,
     job_id: str,
     observations: list[dict[str, Any]],
+    agent_id: str,
+    capabilities: list[str] | None,
 ) -> dict[str, Any]:
     """Apply a sensor result. Repeating the same job id is a no-op.
 
-    Idempotency is ``applied_at`` plus a fingerprint of the result document.
-    A second post of the same job does not move candidate state and does not
-    emit another diff.
+    The caller must hold ``brand_watch`` and be the current lease owner,
+    with the lease still running and the job ``claimed``. The job row is
+    locked before the ``applied_at`` check. Idempotency is ``applied_at``:
+    a second post does not move candidate state and does not emit another diff.
     """
+    if not sensor_may_claim(capabilities):
+        raise LeaseDenied("brand_watch capability is required")
     fingerprint = hashlib.sha256(
         json.dumps(observations, sort_keys=True, default=str).encode()
     ).hexdigest()
     now = _now()
     events: list[dict[str, Any]] = []
     with get_session(settings.postgres_url) as session:
-        job = session.get(models.BrandWatchJob, job_id)
+        job = session.scalars(
+            _for_update(
+                select(models.BrandWatchJob).where(models.BrandWatchJob.id == job_id),
+                session,
+            )
+        ).first()
         if job is None or job.tenant_id != tenant_id:
             raise LookupError("job not found")
         if job.applied_at is not None:
@@ -769,6 +913,10 @@ def apply_result(
                 "idempotent": True,
                 "events": [],
             }
+        if job.status != "claimed" or job.lease_owner != agent_id:
+            raise LeaseDenied("job is not leased to this sensor")
+        if job.lease_until is None or job.lease_until <= now:
+            raise LeaseDenied("lease expired")
         by_name = {
             row.name_punycode: row
             for row in session.scalars(
@@ -779,6 +927,8 @@ def apply_result(
             ).all()
         }
         for raw in observations:
+            if not isinstance(raw, dict):
+                continue
             cleaned = normalize_observation(raw)
             name = _norm_name(str(cleaned.get("name") or cleaned.get("name_punycode") or cleaned.get("punycode") or ""))
             candidate = by_name.get(name)
@@ -786,17 +936,13 @@ def apply_result(
                 continue
             previous = candidate.state
             new_state = transition(previous, cleaned)
-            content = _fingerprint(cleaned)
-            mx_now = bool(cleaned.get("mx_present"))
+            previous_hash = candidate.content_hash
             mx_was = bool(candidate.mx_present)
-            changed = (
-                new_state != previous
-                or content != (candidate.content_hash or "")
-                or mx_now != mx_was
-            )
-            reasons = _change_reasons(previous, new_state, content, candidate.content_hash, mx_was, mx_now)
+            unanswered = str(raw.get("status") or "") == "unanswered"
             http_summary = None
-            if job.mode == "http_allowed" and (cleaned.get("http") or cleaned.get("live") or cleaned.get("status_code") is not None):
+            if job.mode == "http_allowed" and (
+                cleaned.get("http") or cleaned.get("live") or cleaned.get("status_code") is not None
+            ):
                 http_summary = _http_hook(cleaned, previous_state=previous)
                 if http_summary is not None:
                     candidate.http = http_summary.get("evidence")
@@ -804,21 +950,50 @@ def apply_result(
                     scored_state = scored.get("state")
                     if scored_state in STATES and scored_state != "confirmed":
                         new_state = scored_state
-                    if scored.get("severity"):
-                        reasons = list(scored.get("reasons") or reasons)
+            if not unanswered:
+                if _carried(raw, _DNS_NS_KEYS):
+                    candidate.ns = list(cleaned.get("ns") or [])
+                if _carried(raw, _DNS_ADDR_KEYS):
+                    candidate.addresses = list(cleaned.get("addresses") or [])
+                if "mx_present" in raw:
+                    candidate.mx_present = bool(cleaned.get("mx_present"))
+                if cleaned.get("rdap") is not None:
+                    candidate.rdap = (
+                        cleaned.get("rdap") if isinstance(cleaned.get("rdap"), dict) else {"present": True}
+                    )
+            mx_now = bool(candidate.mx_present)
+            content = _fingerprint({
+                "nxdomain": False if unanswered else bool(cleaned.get("nxdomain")),
+                "ns": candidate.ns,
+                "addresses": candidate.addresses,
+                "mx_present": mx_now,
+                "rdap": candidate.rdap,
+            })
+            if unanswered:
+                changed = new_state != previous
+            else:
+                changed = (
+                    new_state != previous
+                    or (previous_hash is not None and content != previous_hash)
+                    or ("mx_present" in raw and mx_now != mx_was)
+                )
+                candidate.content_hash = content
+            reasons = _change_reasons(previous, new_state, content, previous_hash, mx_was, mx_now)
+            event_severity = severity_for(new_state, cleaned)
+            if http_summary is not None:
+                scored = http_summary.get("score") or {}
+                if scored.get("severity"):
+                    event_severity = str(scored["severity"])
+                    reasons = list(scored.get("reasons") or reasons)
             candidate.state = new_state
-            candidate.ns = list(cleaned.get("ns") or [])
-            candidate.addresses = list(cleaned.get("addresses") or [])
-            candidate.mx_present = mx_now
-            if cleaned.get("rdap") is not None:
-                candidate.rdap = cleaned.get("rdap") if isinstance(cleaned.get("rdap"), dict) else {"present": True}
-            candidate.content_hash = content
             candidate.last_checked = now
             candidate.updated_at = now
             if candidate.first_seen is None and new_state != "unregistered":
                 candidate.first_seen = now
             if changed:
                 candidate.last_changed = now
+                candidate.previous_state = previous
+                candidate.severity = event_severity
                 candidate.reasons = reasons
             session.add(models.BrandObservation(
                 id=_new_id("bwo"),
@@ -834,7 +1009,7 @@ def apply_result(
                     name=candidate.name_unicode,
                     from_state=previous,
                     to_state=new_state,
-                    severity=severity_for(new_state, cleaned),
+                    severity=event_severity,
                     reasons=reasons,
                     candidate_id=candidate.id,
                     profile_id=candidate.profile_id,

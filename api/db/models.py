@@ -3957,6 +3957,9 @@ class BrandCandidate(Base):
     generator_class: Mapped[str] = mapped_column(default="")
     reason: Mapped[str] = mapped_column(default="")
     state: Mapped[str] = mapped_column(default="unregistered")
+    # Last transition, stored so the diff feed does not recompute it from DNS alone.
+    previous_state: Mapped[str | None] = mapped_column(default=None)
+    severity: Mapped[str | None] = mapped_column(default=None)
     first_seen: Mapped[datetime | None] = mapped_column(default=None)
     last_checked: Mapped[datetime | None] = mapped_column(default=None)
     last_changed: Mapped[datetime | None] = mapped_column(default=None)

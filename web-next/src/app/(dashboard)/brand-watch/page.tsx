@@ -14,8 +14,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useAuthStore } from "@/lib/auth-store";
 import { useT } from "@/lib/i18n";
 import {
+  canSetBrandWatchDisposition,
   fetchBrandWatchDiff,
   fetchBrandWatchProfiles,
   punycodeDisplay,
@@ -48,13 +50,12 @@ function yesNo(value: boolean | null, yes: string, no: string): string {
   return value ? yes : no;
 }
 
-function DispositionControl({ row }: { row: BrandWatchDiffRow }) {
+function DispositionControl({ row, canDispose }: { row: BrandWatchDiffRow; canDispose: boolean }) {
   const t = useT();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const mutation = useMutation({
-    mutationFn: (disposition: BrandWatchDisposition) =>
-      setCandidateDisposition(row.id, disposition),
+    mutationFn: (next: BrandWatchDisposition) => setCandidateDisposition(row.id, next),
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: ["brand-watch", "diff"] });
@@ -63,6 +64,12 @@ function DispositionControl({ row }: { row: BrandWatchDiffRow }) {
       setError(err instanceof Error ? err.message : t("brandWatch.dispositionFailed"));
     },
   });
+  const disposition = DISPOSITIONS.find((item) => item === row.disposition) ?? "open";
+  if (!canDispose) {
+    return (
+      <span className="text-sm text-muted-foreground">{t(`brandWatch.disposition.${disposition}`)}</span>
+    );
+  }
 
   return (
     <div className="space-y-1">
@@ -96,6 +103,7 @@ function DispositionControl({ row }: { row: BrandWatchDiffRow }) {
 
 export default function BrandWatchPage() {
   const t = useT();
+  const canDispose = useAuthStore((s) => canSetBrandWatchDisposition(s.user?.permissions, s.canOperate));
   const [since, setSince] = useState<(typeof SINCE_OPTIONS)[number]>("");
 
   const profilesQuery = useQuery({
@@ -171,10 +179,10 @@ export default function BrandWatchPage() {
       {
         id: "disposition",
         header: t("brandWatch.disposition"),
-        cell: ({ row }) => <DispositionControl row={row.original} />,
+        cell: ({ row }) => <DispositionControl row={row.original} canDispose={canDispose} />,
       },
     ],
-    [t],
+    [t, canDispose],
   );
 
   const profiles = profilesQuery.data ?? [];

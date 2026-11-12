@@ -104,6 +104,8 @@ def upgrade() -> None:
         sa.Column("generator_class", sa.String(), nullable=False, server_default=""),
         sa.Column("reason", sa.String(), nullable=False, server_default=""),
         sa.Column("state", sa.String(), nullable=False, server_default="unregistered"),
+        sa.Column("previous_state", sa.String(), nullable=True),
+        sa.Column("severity", sa.String(), nullable=True),
         sa.Column("first_seen", sa.DateTime(), nullable=True),
         sa.Column("last_checked", sa.DateTime(), nullable=True),
         sa.Column("last_changed", sa.DateTime(), nullable=True),

@@ -64,6 +64,8 @@ def _settings_dep(settings: Annotated[Settings, Depends(get_settings)]) -> Setti
 def _refuse(exc: Exception) -> HTTPException:
     if isinstance(exc, brand_watch.QuotaExceeded):
         return HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc))
+    if isinstance(exc, brand_watch.LeaseDenied):
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     if isinstance(exc, LookupError):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     if isinstance(exc, brand_watch.BrandWatchError):
@@ -137,8 +139,7 @@ def diff(
     settings: Annotated[Settings, Depends(get_settings)],
     since: Annotated[datetime | None, Query()] = None,
 ) -> list[dict[str, Any]]:
-    moment = since.replace(tzinfo=None) if since is not None and since.tzinfo else since
-    return brand_watch.diff_since(settings, principal.tenant_id, since=moment)
+    return brand_watch.diff_since(settings, principal.tenant_id, since=brand_watch.naive_utc(since))
 
 
 @router.post("/candidates/{candidate_id}/disposition")
@@ -193,17 +194,27 @@ def claim_job(
 
 @router.post("/jobs/{job_id}/result")
 def post_result(
+    request: Request,
     job_id: str,
     body: ResultBody,
     principal: Annotated[AgentPrincipal, Depends(require_agent)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> dict[str, Any]:
+    if not principal.agent_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="agent identity mismatch")
+    agent = _agent_for(request, principal, principal.agent_id)
+    if agent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown agent_id")
+    if agent.tenant_id != principal.tenant_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-tenant agent access denied")
     try:
         return brand_watch.apply_result(
             settings,
             tenant_id=principal.tenant_id,
             job_id=job_id,
             observations=body.observations,
+            agent_id=principal.agent_id,
+            capabilities=list(agent.capabilities or []),
         )
-    except LookupError as exc:
+    except (brand_watch.BrandWatchError, LookupError) as exc:
         raise _refuse(exc) from exc

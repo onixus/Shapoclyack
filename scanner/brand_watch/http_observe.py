@@ -399,6 +399,7 @@ def observe_http(
                 client,
                 origin=origin,
                 name=request.name,
+                scheme=scheme,
                 references=request.favicon_references,
                 allowed=not off_host and status < 400 and requests_made < MAX_REQUESTS,
             )
@@ -568,15 +569,25 @@ def _fetch_favicon(
     *,
     origin: str,
     name: str,
+    scheme: str,
     references: tuple[str, ...],
     allowed: bool,
 ) -> tuple[str | None, bool, int]:
-    """One GET of ``/favicon.ico``, capped. Skipped when the root did not answer."""
+    """One GET of ``/favicon.ico``, capped. Skipped when the root did not answer.
+
+    ``sni_hostname`` matches the root GET. The URL host is the pinned address,
+    so without it a new TLS session verifies the certificate against the IP.
+    """
     if not allowed:
         return None, False, 0
     try:
         response = client.send(
-            client.build_request("GET", f"{origin}/favicon.ico", headers={"Host": name}),
+            client.build_request(
+                "GET",
+                f"{origin}/favicon.ico",
+                headers={"Host": name},
+                extensions={"sni_hostname": name} if scheme == "https" else {},
+            ),
             stream=True,
         )
     except httpx.HTTPError:

@@ -13,6 +13,18 @@ export type BrandWatchSeverity = "informational" | "low" | "medium" | "high" | "
 /** Exact values accepted by POST …/candidates/{id}/disposition. */
 export type BrandWatchDisposition = "open" | "false_positive" | "whitelisted" | "confirmed";
 
+/**
+ * Whether this principal may set a disposition. Viewers can read the feed.
+ * `fallback` covers an API that sent no permission list: operators still may.
+ */
+export function canSetBrandWatchDisposition(
+  permissions: readonly string[] | null | undefined,
+  fallback = false,
+): boolean {
+  if (!permissions) return fallback;
+  return permissions.includes("brand_watch.disposition");
+}
+
 /** A watched brand: official names and the domains that are already ours. */
 export type BrandWatchProfile = {
   id: string;

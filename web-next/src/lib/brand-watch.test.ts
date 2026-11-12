@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { punycodeDisplay, severityLabel, sinceInstant } from "@/lib/brand-watch";
+import { canSetBrandWatchDisposition, punycodeDisplay, severityLabel, sinceInstant } from "@/lib/brand-watch";
 
 describe("brand-watch formatters", () => {
   it("labels known severities and leaves unknown text alone", () => {
@@ -19,6 +19,13 @@ describe("brand-watch formatters", () => {
     expect(punycodeDisplay("example.com", "example.com")).toBe("example.com");
     expect(punycodeDisplay("example.com", null)).toBe("example.com");
     expect(punycodeDisplay("  Example.COM  ", "example.com")).toBe("Example.COM");
+  });
+
+  it("lets an operator dispose and leaves a viewer with the label only", () => {
+    expect(canSetBrandWatchDisposition(["brand_watch.read", "brand_watch.disposition"])).toBe(true);
+    expect(canSetBrandWatchDisposition(["brand_watch.read"])).toBe(false);
+    expect(canSetBrandWatchDisposition(undefined, true)).toBe(true);
+    expect(canSetBrandWatchDisposition(undefined, false)).toBe(false);
   });
 
   it("turns a relative window into an ISO instant and leaves a blank window empty", () => {
