@@ -131,6 +131,10 @@ spec:
             # few seconds). Leaving NATS out keeps the broker's `agent` password
             # out of this namespace and the NATS port closed to it
             # (base/networkpolicy-datastores.yaml admits only the API).
+            # Screenshot capture delegates to the isolated worker. Empty or
+            # unset is "no worker"; this image has no browser of its own.
+            - name: SCREENSHOT_WORKER_URL
+              value: http://shapoclyack-screenshot-worker.network-scan.svc:8077
           securityContext:
             # Deviations from `restricted`, each needed and each listed in
             # docs/k8s-hardening.md (#338):

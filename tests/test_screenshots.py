@@ -1,7 +1,12 @@
-"""Web screenshots (P4.4 / Phase 9.3). Playwright is not required — capture is injected."""
+"""Web screenshots (P4.4 / Phase 9.3).
+
+Capture is delegated to the isolated worker. These tests inject the capture
+callable, so Playwright is not imported and Chromium is not launched.
+"""
 
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 
@@ -44,16 +49,160 @@ def test_no_web_ports(tmp_path: Path):
     assert not (tmp_path / "screenshots").exists()
 
 
-def test_playwright_missing_skips_without_pixels(tmp_path: Path, monkeypatch):
+def test_worker_unavailable_skips_without_pixels(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("SCREENSHOT_WORKER_URL", raising=False)
     monkeypatch.setattr(
-        "scanner.pipeline.screenshots._playwright_available", lambda: False
+        "scanner.pipeline.screenshots._worker_reachable", lambda timeout: False
     )
     result = capture_screenshots_sync(
         ["10.0.0.1:80/tcp"], ScreenshotConfig(enabled=True), tmp_path
     )
-    assert result["skipped_reason"] == "playwright.unavailable"
+    assert result["skipped_reason"] == "worker.unavailable"
+    assert result["captured_count"] == 0
+    assert result["findings"] == []
+    assert not (tmp_path / "screenshots").exists()
+
+
+def test_empty_worker_url_is_unavailable(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("SCREENSHOT_WORKER_URL", "  ")
+    result = capture_screenshots_sync(
+        ["10.0.0.1:80/tcp"], ScreenshotConfig(enabled=True), tmp_path
+    )
+    assert result["skipped_reason"] == "worker.unavailable"
     assert result["captured_count"] == 0
     assert not (tmp_path / "screenshots").exists()
+
+
+def test_worker_png_is_written(tmp_path: Path, monkeypatch):
+    png = PNG + b"from-worker"
+    captured: list[tuple[str, float, bool]] = []
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            url = captured[-1][0]
+            body = {
+                "png_base64": base64.standard_b64encode(
+                    png + url.encode("ascii")
+                ).decode("ascii"),
+                "redacted_fields": 2,
+            }
+            return json.dumps(body).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        assert request.full_url == "http://127.0.0.1:8077/capture"
+        assert timeout == 15 + 5
+        payload = json.loads(request.data.decode("utf-8"))
+        captured.append(
+            (payload["url"], payload["timeout_seconds"], payload["verify_tls"])
+        )
+        return _Response()
+
+    monkeypatch.delenv("SCREENSHOT_WORKER_URL", raising=False)
+    monkeypatch.setattr(
+        "scanner.pipeline.screenshots._worker_reachable", lambda timeout: True
+    )
+    monkeypatch.setattr("scanner.pipeline.screenshots.urlopen", fake_urlopen)
+    result = capture_screenshots_sync(
+        ["203.0.113.10:443/tcp"], ScreenshotConfig(enabled=True), tmp_path
+    )
+    assert result["skipped_reason"] is None
+    assert result["captured_count"] == 1
+    assert result["redacted_fields"] == 2
+    assert captured == [("https://203.0.113.10:443/", 15.0, False)]
+    name = screenshot_filename("203.0.113.10", 443, "https")
+    on_disk = (tmp_path / "screenshots" / name).read_bytes()
+    assert on_disk.startswith(PNG)
+    assert b"203.0.113.10" in on_disk
+
+
+def test_worker_bad_base64_is_capture_failed(tmp_path: Path, monkeypatch):
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"png_base64": "!!!!not-base64!!!!", "redacted_fields": 0}'
+
+    monkeypatch.setattr(
+        "scanner.pipeline.screenshots._worker_reachable", lambda timeout: True
+    )
+    monkeypatch.setattr(
+        "scanner.pipeline.screenshots.urlopen", lambda request, timeout: _Response()
+    )
+    result = capture_screenshots_sync(
+        ["10.0.0.1:80/tcp"], ScreenshotConfig(enabled=True), tmp_path
+    )
+    assert result["skipped_reason"] is None
+    assert result["captured_count"] == 0
+    assert result["findings"][0]["error"] == "capture_failed"
+    assert list((tmp_path / "screenshots").glob("*.png")) == []
+
+
+def test_worker_capture_failed_does_not_fail_the_scan(tmp_path: Path, monkeypatch):
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"error": "capture_failed"}'
+
+    monkeypatch.setattr(
+        "scanner.pipeline.screenshots._worker_reachable", lambda timeout: True
+    )
+    monkeypatch.setattr(
+        "scanner.pipeline.screenshots.urlopen", lambda request, timeout: _Response()
+    )
+    result = capture_screenshots_sync(
+        ["10.0.0.1:80/tcp"], ScreenshotConfig(enabled=True), tmp_path
+    )
+    assert result["skipped_reason"] is None
+    assert result["captured_count"] == 0
+    assert result["findings"][0]["error"] == "capture_failed"
+    assert list((tmp_path / "screenshots").glob("*.png")) == []
+
+
+def test_forward_name_is_opened_instead_of_the_address(tmp_path: Path):
+    seen: list[str] = []
+
+    def capture(url: str, timeout: float, verify_tls: bool) -> tuple[bytes, int]:
+        seen.append(url)
+        return PNG, 0
+
+    result = capture_screenshots_sync(
+        ["203.0.113.10:443/tcp"],
+        ScreenshotConfig(enabled=True),
+        tmp_path,
+        capture=capture,
+        hostnames={"203.0.113.10": {"forward": ["onixus.ru", "onixus.duckdns.org"]}},
+    )
+    assert seen == [
+        "https://onixus.ru:443/",
+        "https://onixus.duckdns.org:443/",
+    ]
+    assert result["captured_count"] == 2
+    assert [item["host"] for item in result["findings"]] == [
+        "onixus.ru",
+        "onixus.duckdns.org",
+    ]
+    assert {item["address"] for item in result["findings"]} == {"203.0.113.10"}
 
 
 def test_capture_writes_only_what_capture_returned(tmp_path: Path):
@@ -80,7 +229,9 @@ def test_capture_writes_only_what_capture_returned(tmp_path: Path):
     assert on_disk.startswith(b"\x89PNG")
     assert on_disk.startswith(PNG)
     assert b"203.0.113.10" in on_disk
-    assert list((tmp_path / "screenshots").iterdir()) == [tmp_path / "screenshots" / name]
+    assert list((tmp_path / "screenshots").iterdir()) == [
+        tmp_path / "screenshots" / name
+    ]
 
 
 def test_filename_is_stable_hash_not_raw_host():

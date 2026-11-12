@@ -37,6 +37,9 @@ spec:
               image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.48-1021@sha256:70ac7f954fa68de9c99025cc584817fc35db71fd1f4dc6c4a7118066c66d10d4
               imagePullPolicy: IfNotPresent
               command: ["python", "-m", "scanner.main"]
+              env:
+                - name: SCREENSHOT_WORKER_URL
+                  value: http://shapoclyack-screenshot-worker.network-scan.svc:8077
               args:
                 - --config
                 - /app/scanner/config/k8s.yaml

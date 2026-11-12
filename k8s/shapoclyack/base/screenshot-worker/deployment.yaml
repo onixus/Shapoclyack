@@ -1,0 +1,94 @@
+# The only browser runtime. Not a sidecar of the scanner-executor: a browser
+# in that pod would share the raw-socket capabilities and the provisioning
+# key. This pod has neither.
+#
+# Placeholder tag until Jenkinsfile.publish grows a path that does not tag
+# this image :latest (see the note at the top of Dockerfile.screenshot-worker).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shapoclyack-screenshot-worker
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: screenshot-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: shapoclyack
+      app.kubernetes.io/component: screenshot-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: shapoclyack
+        app.kubernetes.io/component: screenshot-worker
+    spec:
+      serviceAccountName: scanner
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: screenshot-worker
+          image: ghcr.io/onixus/shapoclyack-screenshot-worker:shapoclyack-0.49-screenshot-worker
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "scanner.screenshot_worker"]
+          ports:
+            - name: http
+              containerPort: 8077
+          env:
+            - name: SCREENSHOT_WORKER_BIND
+              value: "0.0.0.0"
+            - name: SCREENSHOT_WORKER_PORT
+              value: "8077"
+            # Chromium's sandbox needs user namespaces and SYS_ADMIN, which
+            # this pod does not have (drop ALL, no added capabilities). The
+            # worker reads this and passes --no-sandbox. Do not add SYS_ADMIN
+            # or NET_RAW to make the sandbox work.
+            - name: SCREENSHOT_WORKER_NO_SANDBOX
+              value: "1"
+            # Chromium's profile and crash dumps. The image keeps
+            # PLAYWRIGHT_BROWSERS_PATH=/opt/playwright, so this does not hide
+            # the browser the image installed.
+            - name: HOME
+              value: /tmp
+            - name: PLAYWRIGHT_BROWSERS_PATH
+              value: /opt/playwright
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: "100m"
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # /healthz checks that Chromium is on disk. It does not launch a
+          # browser: a probe that did would start one per period on top of
+          # whatever capture is in flight.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+          volumeMounts:
+            # Browser profile and Playwright scratch. Nothing else is writable.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
