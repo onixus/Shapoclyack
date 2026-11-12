@@ -164,7 +164,7 @@ export const en = {
   "nav.schedules": "Schedules",
   "nav.wordlists": "Wordlists",
   "nav.runs": "Runs",
-  "nav.brandWatch": "Brand watch",
+  "nav.brandWatch": "Lookalike domains",
   "nav.endpoints": "Devices",
   "nav.attackSurface": "Attack Surface",
   "nav.orgProfile": "Org Profile",
@@ -1532,7 +1532,7 @@ export const en = {
   "nav.hint.agents": "Distributed sensor fleet",
   "nav.hint.jobs": "One scan list; launch sets the perimeter",
   "nav.hint.runs": "Run history and reports",
-  "nav.hint.brandWatch": "Lookalike names for a watched brand; not a scan",
+  "nav.hint.brandWatch": "Names that resemble an official domain; not a scan",
   "nav.hint.schedules": "Recurring scans",
   "nav.hint.reports": "Report factory and artifacts",
   "nav.hint.wordlists": "Brute-force dictionaries",
@@ -2398,17 +2398,17 @@ export const en = {
   "campaign.members.excludeCount":
     "{count} findings will be excluded; the history keeps who did it and why.",
 
-  "brandWatch.title": "Brand watch",
+  "brandWatch.title": "Lookalike domains",
   "brandWatch.subtitle":
-    "Names that resemble a watched brand. This is not a vulnerability scan; candidates are never scanned as assets.",
-  "brandWatch.profiles": "Profiles",
+    "Names that resemble an official domain. This is not a vulnerability scan; candidates are never scanned as assets.",
+  "brandWatch.profiles": "Watched domains",
   "brandWatch.diff": "Changes",
   "brandWatch.profilesEmpty":
-    "No brand profiles yet. This page is separate from scan runs: nothing here is launched as a scan.",
+    "No watched domains yet. This page is separate from scan runs: nothing here is launched as a scan.",
   "brandWatch.diffEmpty":
     "No name changes in this window. Candidates are observations only and are never scanned as assets.",
-  "brandWatch.loading": "Loading brand watch…",
-  "brandWatch.loadFailed": "Brand watch is not available yet.",
+  "brandWatch.loading": "Loading lookalike domains…",
+  "brandWatch.loadFailed": "Lookalike domains are not available yet.",
   "brandWatch.refresh": "Refresh",
   "brandWatch.since": "Since",
   "brandWatch.since.all": "All",
@@ -2603,7 +2603,7 @@ export const ru: Record<MsgKey, string> = {
   "nav.schedules": "Расписания",
   "nav.wordlists": "Словари",
   "nav.runs": "Прогоны",
-  "nav.brandWatch": "Наблюдение за маркой",
+  "nav.brandWatch": "Похожие домены",
   "nav.endpoints": "Устройства",
   "nav.attackSurface": "Поверхность атаки",
   "nav.orgProfile": "Профиль организации",
@@ -3961,7 +3961,7 @@ export const ru: Record<MsgKey, string> = {
   "nav.hint.agents": "Флот распределённых сенсоров",
   "nav.hint.jobs": "Один список сканов; запуск задаёт периметр",
   "nav.hint.runs": "История прогонов и отчёты",
-  "nav.hint.brandWatch": "Похожие имена наблюдаемой марки; это не скан",
+  "nav.hint.brandWatch": "Имена, похожие на официальный домен; это не скан",
   "nav.hint.schedules": "Регулярные сканы",
   "nav.hint.reports": "Фабрика отчётов и артефакты",
   "nav.hint.wordlists": "Словари для перебора",
@@ -4830,17 +4830,17 @@ export const ru: Record<MsgKey, string> = {
   "campaign.members.excludeCount":
     "Будет исключено находок: {count}; в истории останутся автор и причина.",
 
-  "brandWatch.title": "Наблюдение за маркой",
+  "brandWatch.title": "Похожие домены",
   "brandWatch.subtitle":
-    "Имена, похожие на наблюдаемую марку. Это не поиск уязвимостей; кандидаты никогда не сканируются как активы.",
-  "brandWatch.profiles": "Профили",
+    "Имена, похожие на официальный домен. Это не поиск уязвимостей; кандидаты никогда не сканируются как активы.",
+  "brandWatch.profiles": "Наблюдаемые домены",
   "brandWatch.diff": "Изменения",
   "brandWatch.profilesEmpty":
-    "Профилей марки пока нет. Эта страница отдельно от прогонов сканирования: отсюда ничего не запускается как скан.",
+    "Наблюдаемых доменов пока нет. Эта страница отдельно от прогонов: отсюда ничего не запускается как скан.",
   "brandWatch.diffEmpty":
     "В этом окне изменений имён нет. Кандидаты — только наблюдения и никогда не сканируются как активы.",
-  "brandWatch.loading": "Загрузка наблюдения за маркой…",
-  "brandWatch.loadFailed": "Наблюдение за маркой пока недоступно.",
+  "brandWatch.loading": "Загрузка похожих доменов…",
+  "brandWatch.loadFailed": "Похожие домены пока недоступны.",
   "brandWatch.refresh": "Обновить",
   "brandWatch.since": "С",
   "brandWatch.since.all": "Все",

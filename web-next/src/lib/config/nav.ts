@@ -93,8 +93,8 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         hintKey: "nav.hint.compliance",
       },
       {
-        // Viewer-visible, same gate as Runs: no minRole. Brand watch is not a
-        // scan surface — candidates are never launched as jobs.
+        // Viewer-visible, same gate as Runs: no minRole. Lookalike domains are
+        // not a scan surface — candidates are never launched as jobs.
         href: "/brand-watch",
         labelKey: "nav.brandWatch",
         icon: Eye,
