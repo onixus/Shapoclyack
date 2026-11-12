@@ -418,6 +418,61 @@ def _candidate_dict(row: models.BrandCandidate) -> dict[str, Any]:
     }
 
 
+def preview_names(domains: list[str], *, limit: int = 200) -> dict[str, Any]:
+    """Names the rules would watch for these domains. Nothing is stored.
+
+    The same generator the nightly rebuild uses. Official domains themselves
+    are excluded. The caller edits this list before save; a saved list is not
+    regenerated.
+    """
+    cleaned = [_norm_name(item) for item in domains if (item or "").strip()]
+    if not cleaned:
+        raise BrandWatchError("at least one official domain is required")
+    cap = max(1, min(int(limit), MAX_CANDIDATES))
+    from scanner.pipeline.lookalike import generate
+
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for domain in cleaned:
+        room = cap - len(rows)
+        if room <= 0:
+            break
+        for item in generate(domain, room, exclude=set(cleaned)):
+            name = _norm_name(str(item.get("name") or ""))
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            rows.append({
+                "name": name,
+                "punycode": str(item.get("punycode") or name),
+                "rule": str(item.get("generator") or ""),
+            })
+    return {"names": rows, "truncated": len(rows) >= cap}
+
+
+def _manual_rows(names: list[str]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in names:
+        name = _norm_name(raw)
+        if not name or "." not in name or name in seen:
+            continue
+        seen.add(name)
+        from scanner.pipeline.lookalike import punycode_form
+
+        rows.append({
+            "name": name,
+            "name_unicode": name,
+            "name_punycode": punycode_form(name),
+            "generator_class": "manual",
+            "seed": "",
+            "reason": "edited in the console",
+        })
+        if len(rows) >= MAX_CANDIDATES:
+            break
+    return rows
+
+
 def create_profile(
     settings: Settings,
     *,
@@ -428,9 +483,13 @@ def create_profile(
     whitelist: list[str] | None = None,
     reference: dict | None = None,
     our_brand: bool = False,
+    watched_names: list[str] | None = None,
 ) -> dict[str, Any]:
-    strings = validate_brand_strings(brand_strings)
     domains = [_norm_name(item) for item in official_domains if (item or "").strip()]
+    labels = [item.split(".", 1)[0] for item in domains if "." in item]
+    strings = validate_brand_strings(brand_strings or labels)
+    own = set(domains)
+    chosen = [row for row in _manual_rows(watched_names or []) if row["name"] not in own and row["name_punycode"] not in own]
     if not domains:
         raise BrandWatchError("at least one official domain is required")
     now = _now()
@@ -449,7 +508,7 @@ def create_profile(
             official_domains=domains,
             brand_strings=strings,
             whitelist=[_norm_name(item) for item in (whitelist or []) if (item or "").strip()],
-            reference=reference or {},
+            reference={**(reference or {}), "names_edited": bool(chosen)},
             approved_at=None,
             approved_by=None,
             our_brand=bool(our_brand),
@@ -458,7 +517,23 @@ def create_profile(
         )
         session.add(row)
         session.flush()
-        return _profile_dict(row)
+        profile_id = row.id
+    if chosen:
+        rebuild_candidates(
+            settings,
+            tenant_id=tenant_id,
+            profile_id=profile_id,
+            generated=chosen,
+        )
+        # The saved list is the watch. Do not wait for the weekly rebuild:
+        # that path skips an edited list and would never enqueue it.
+        with get_session(settings.postgres_url) as session:
+            stored = session.get(models.BrandProfile, profile_id)
+            if stored is not None:
+                enqueue_for_profile(session, stored, force=True)
+    with get_session(settings.postgres_url) as session:
+        stored = session.get(models.BrandProfile, profile_id)
+        return _profile_dict(stored) if stored is not None else {"id": profile_id}
 
 
 def list_profiles(settings: Settings, tenant_id: str) -> list[dict[str, Any]]:
@@ -571,6 +646,8 @@ def rebuild_candidates(
         profile = session.get(models.BrandProfile, profile_id)
         if profile is None or profile.tenant_id != tenant_id:
             raise LookupError("profile not found")
+        if generated is None and (profile.reference or {}).get("names_edited"):
+            return {"created": 0, "removed": 0, "kept": 0, "skipped": "names_edited"}
         produced = generated if generated is not None else _generate(profile)
         own = _own_names(profile)
         existing = {

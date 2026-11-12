@@ -34,6 +34,7 @@ import {
   canSetBrandWatchDisposition,
   canWriteBrandWatch,
   createBrandWatchProfile,
+  previewLookalikeNames,
   fetchBrandWatchCandidates,
   fetchBrandWatchDiff,
   fetchBrandWatchProfiles,
@@ -131,28 +132,41 @@ function CreateProfileForm() {
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [domains, setDomains] = useState("");
-  const [strings, setStrings] = useState("");
+  const [watched, setWatched] = useState("");
+  const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const preview = useMutation({
+    mutationFn: () => previewLookalikeNames(linesToList(domains)),
+    onSuccess: (result) => {
+      setError(null);
+      setTruncated(result.truncated);
+      setWatched(result.names.map((row) => row.name).join("\n"));
+    },
+    onError: (err: unknown) => {
+      setError(err instanceof Error ? err.message : t("brandWatch.previewFailed"));
+    },
+  });
   const mutation = useMutation({
     mutationFn: () =>
       createBrandWatchProfile({
         name: name.trim(),
         official_domains: linesToList(domains),
-        brand_strings: linesToList(strings),
+        watched_names: linesToList(watched),
         our_brand: false,
       }),
     onSuccess: async () => {
       setError(null);
       setName("");
       setDomains("");
-      setStrings("");
+      setWatched("");
       await queryClient.invalidateQueries({ queryKey: ["brand-watch", "profiles"] });
     },
     onError: (err: unknown) => {
       setError(err instanceof Error ? err.message : t("brandWatch.createFailed"));
     },
   });
-  const ready = name.trim().length > 0 && linesToList(domains).length > 0;
+  const ready =
+    name.trim().length > 0 && linesToList(domains).length > 0 && linesToList(watched).length > 0;
 
   return (
     <form
@@ -181,19 +195,40 @@ function CreateProfileForm() {
         <Textarea
           id="brand-watch-domains"
           value={domains}
-          onChange={(event) => setDomains(event.target.value)}
+          onChange={(event) => {
+            setDomains(event.target.value);
+            setWatched("");
+            setTruncated(false);
+          }}
           placeholder={t("brandWatch.field.onePerLine")}
           rows={3}
         />
       </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={linesToList(domains).length === 0 || preview.isPending}
+          onClick={() => preview.mutate()}
+        >
+          {preview.isPending ? t("brandWatch.previewing") : t("brandWatch.preview")}
+        </Button>
+        <p className="text-xs text-muted-foreground">{t("brandWatch.previewHint")}</p>
+      </div>
+      {truncated ? (
+        <p className="text-xs text-warning" role="status">
+          {t("brandWatch.previewTruncated")}
+        </p>
+      ) : null}
       <div className="space-y-1.5">
-        <Label htmlFor="brand-watch-strings">{t("brandWatch.field.strings")}</Label>
+        <Label htmlFor="brand-watch-names">{t("brandWatch.field.watched")}</Label>
         <Textarea
-          id="brand-watch-strings"
-          value={strings}
-          onChange={(event) => setStrings(event.target.value)}
+          id="brand-watch-names"
+          value={watched}
+          onChange={(event) => setWatched(event.target.value)}
           placeholder={t("brandWatch.field.onePerLine")}
-          rows={3}
+          rows={8}
         />
       </div>
       {error ? (

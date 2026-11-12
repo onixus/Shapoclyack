@@ -70,13 +70,13 @@ describe("brand-watch formatters", () => {
     const created = await createBrandWatchProfile({
       name: "Acme",
       official_domains: ["acme.test"],
-      brand_strings: ["acme"],
+      watched_names: ["login-acme.test"],
       our_brand: false,
     });
     expect(post).toHaveBeenCalledWith("/brand-watch/profiles", {
       name: "Acme",
       official_domains: ["acme.test"],
-      brand_strings: ["acme"],
+      watched_names: ["login-acme.test"],
       our_brand: false,
     });
     expect(created.approved).toBe(false);

@@ -40,10 +40,16 @@ router = APIRouter(prefix="/brand-watch", tags=["brand-watch"])
 class ProfileCreate(BaseModel):
     name: str
     official_domains: list[str]
-    brand_strings: list[str]
+    brand_strings: list[str] = Field(default_factory=list)
     whitelist: list[str] = Field(default_factory=list)
     reference: dict[str, Any] = Field(default_factory=dict)
     our_brand: bool = False
+    watched_names: list[str] = Field(default_factory=list)
+
+
+class PreviewBody(BaseModel):
+    official_domains: list[str]
+    limit: int = Field(default=200, ge=1, le=500)
 
 
 class ApproveBody(BaseModel):
@@ -82,6 +88,19 @@ def list_profiles(
     return brand_watch.list_profiles(settings, principal.tenant_id)
 
 
+@router.post("/preview")
+def preview(
+    body: PreviewBody,
+    principal: Annotated[TenantPrincipal, Depends(require_permission("brand_watch.write"))],
+) -> dict[str, Any]:
+    """Rules for these domains. Nothing is stored and nothing is scanned."""
+    del principal
+    try:
+        return brand_watch.preview_names(body.official_domains, limit=body.limit)
+    except brand_watch.BrandWatchError as exc:
+        raise _refuse(exc) from exc
+
+
 @router.post("/profiles", status_code=status.HTTP_201_CREATED)
 def create_profile(
     body: ProfileCreate,
@@ -98,6 +117,7 @@ def create_profile(
             whitelist=body.whitelist,
             reference=body.reference,
             our_brand=body.our_brand,
+            watched_names=body.watched_names,
         )
     except (brand_watch.BrandWatchError, LookupError) as exc:
         raise _refuse(exc) from exc

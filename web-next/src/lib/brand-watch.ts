@@ -53,9 +53,15 @@ export type BrandWatchProfile = {
 export type BrandWatchProfileCreate = {
   name: string;
   official_domains: string[];
-  brand_strings: string[];
+  /** The edited preview. Empty means the nightly rebuild may generate names. */
+  watched_names: string[];
   /** Always false on create. Approval is a separate, explicit confirmation. */
   our_brand: false;
+};
+
+export type LookalikePreview = {
+  names: { name: string; rule: string }[];
+  truncated: boolean;
 };
 
 /**
@@ -264,6 +270,27 @@ export async function fetchBrandWatchDiff(
   }
 }
 
+export async function previewLookalikeNames(domains: string[]): Promise<LookalikePreview> {
+  try {
+    const { data } = await api.post<unknown>("/brand-watch/preview", {
+      official_domains: domains,
+    });
+    const record = data as { names?: unknown; truncated?: unknown };
+    const names = Array.isArray(record?.names)
+      ? record.names.flatMap((item) => {
+          if (!item || typeof item !== "object") return [];
+          const row = item as { name?: unknown; rule?: unknown };
+          const name = typeof row.name === "string" ? row.name.trim() : "";
+          if (!name) return [];
+          return [{ name, rule: typeof row.rule === "string" ? row.rule : "" }];
+        })
+      : [];
+    return { names, truncated: record?.truncated === true };
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
 export async function createBrandWatchProfile(
   body: BrandWatchProfileCreate,
 ): Promise<BrandWatchProfile> {
@@ -271,7 +298,7 @@ export async function createBrandWatchProfile(
     const { data } = await api.post<unknown>("/brand-watch/profiles", {
       name: body.name,
       official_domains: body.official_domains,
-      brand_strings: body.brand_strings,
+      watched_names: body.watched_names,
       our_brand: false,
     });
     const parsed = parseProfile(data);

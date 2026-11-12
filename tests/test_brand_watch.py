@@ -205,6 +205,37 @@ def _apply(observations, **kwargs):
     return brand_watch.apply_result(_settings(), **payload)
 
 
+def test_preview_uses_the_rules_and_stores_nothing(db):
+    preview = brand_watch.preview_names(["onixus.ru"], limit=20)
+    assert preview["names"]
+    assert all("." in item["name"] and item["name"] != "onixus.ru" for item in preview["names"])
+    with db("") as session:
+        assert session.scalar(select(func.count()).select_from(models.BrandProfile)) == 0
+
+
+def test_edited_list_is_what_gets_watched(db):
+    created = brand_watch.create_profile(
+        _settings(),
+        tenant_id="acme",
+        name="Onixus",
+        official_domains=["onixus.ru"],
+        brand_strings=[],
+        watched_names=["login-onixus.ru", "onixus.ru", "not-a-domain"],
+    )
+    with db("") as session:
+        rows = session.scalars(select(models.BrandCandidate)).all()
+        assert [row.name_punycode for row in rows] == ["login-onixus.ru"]
+        profile = session.get(models.BrandProfile, created["id"])
+        assert profile.reference["names_edited"] is True
+        assert brand_watch.rebuild_candidates(
+            _settings(), tenant_id="acme", profile_id=profile.id
+        )["skipped"] == "names_edited"
+        assert session.scalar(select(func.count()).select_from(models.BrandCandidate)) == 1
+        job = session.scalars(select(models.BrandWatchJob)).first()
+        assert job is not None
+        assert job.payload["names"] == ["login-onixus.ru"]
+
+
 def test_release_returns_the_claim_and_undoes_the_attempt(db):
     _profile(db)
     _leased_job(db, attempts=2, lease_until=datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1))

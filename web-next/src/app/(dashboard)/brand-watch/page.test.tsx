@@ -87,16 +87,29 @@ describe("BrandWatchPage", () => {
 
     expect(await screen.findByRole("button", { name: "Save profile" })).toBeDisabled();
     expect(screen.getByText(/does not start a scan/i)).toBeInTheDocument();
+    post.mockImplementation(async (url: string) => {
+      if (url === "/brand-watch/preview") {
+        return { data: { names: [{ name: "login-new.test", rule: "combosquat" }] } };
+      }
+      return { data: profile({ id: "bwp_2", name: "New" }) };
+    });
     await user.type(screen.getByLabelText("Name"), "New");
-    await user.type(screen.getByLabelText("Official domains"), "new.test\nwww.new.test");
-    await user.type(screen.getByLabelText("Brand strings"), "new");
+    await user.type(screen.getByLabelText("Official domains"), "new.test");
+    await user.click(screen.getByRole("button", { name: "Build lookalike list" }));
+    expect(await screen.findByLabelText("Names to watch")).toHaveValue("login-new.test");
+    await user.clear(screen.getByLabelText("Official domains"));
+    expect(screen.getByLabelText("Names to watch")).toHaveValue("");
+    await user.type(screen.getByLabelText("Official domains"), "new.test");
+    await user.click(screen.getByRole("button", { name: "Build lookalike list" }));
+    expect(await screen.findByLabelText("Names to watch")).toHaveValue("login-new.test");
+    await user.type(screen.getByLabelText("Names to watch"), "\nextra-new.test");
     await user.click(screen.getByRole("button", { name: "Save profile" }));
 
     await waitFor(() =>
       expect(post).toHaveBeenCalledWith("/brand-watch/profiles", {
         name: "New",
-        official_domains: ["new.test", "www.new.test"],
-        brand_strings: ["new"],
+        official_domains: ["new.test"],
+        watched_names: ["login-new.test", "extra-new.test"],
         our_brand: false,
       }),
     );
