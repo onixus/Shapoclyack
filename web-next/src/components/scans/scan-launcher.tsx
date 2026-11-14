@@ -30,6 +30,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { SurfaceBadge } from "@/components/scans/surface-badge";
 import { useAgentGroups } from "@/hooks/use-agent-groups";
 import { useStartScan } from "@/hooks/use-jobs";
+import { useLicense } from "@/hooks/use-license";
 import { useSystemStatus } from "@/hooks/use-system";
 import { useWordlists } from "@/hooks/use-wordlists";
 import {
@@ -178,8 +179,12 @@ export function ScanLauncher({
 
   const mutation = useStartScan();
   const { data: systemStatus } = useSystemStatus();
+  const { data: license } = useLicense();
   const agentMode = systemStatus?.runtime.job_execution_mode === "agent";
   const serviceBackend = systemStatus?.scan_config.service_backend;
+  const licenseBlocksScans =
+    (license != null && !license.new_scans_allowed) ||
+    (systemStatus != null && !systemStatus.runtime.allow_scan_start);
   const wantsWordlists = family !== "internal" && !agentMode;
   const { data: wordlists } = useWordlists(wantsWordlists);
   // Only in agent mode: a local scan runs in the API container, which is in no
@@ -258,12 +263,12 @@ export function ScanLauncher({
 
   function onSubmit(event: FormEvent) {
     event.preventDefault();
-    if (noTargets) return;
+    if (noTargets || licenseBlocksScans) return;
     setConfirmOpen(true);
   }
 
   function startConfirmed() {
-    if (noTargets) return;
+    if (noTargets || licenseBlocksScans) return;
     const body: StartScanBody = {
       mode,
       intent: intent || null,
@@ -684,13 +689,22 @@ export function ScanLauncher({
           <div className="h-px bg-border" />
           <Button
             type="submit"
-            disabled={mutation.isPending || noTargets}
+            disabled={mutation.isPending || noTargets || licenseBlocksScans}
             className="w-full font-semibold"
           >
             <Play className="fill-current" aria-hidden />
             {mutation.isPending ? t("launcher.starting") : t("launcher.start")}
           </Button>
-          {noTargets ? (
+          {licenseBlocksScans ? (
+            <p className="text-xs text-danger">
+              {license?.reason
+                ? t("page.scans.licenseBlocked", { reason: license.reason })
+                : t("launcher.licenseBlocked")}{" "}
+              <Link href="/license" className="font-semibold underline-offset-2 hover:underline">
+                {t("page.scans.licenseLink")}
+              </Link>
+            </p>
+          ) : noTargets ? (
             <p className="text-xs text-muted-foreground">{t("launcher.targetsRequired")}</p>
           ) : null}
         </aside>

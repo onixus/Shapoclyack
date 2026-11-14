@@ -1500,6 +1500,28 @@ export type SystemStatus = {
   endpoint_inventory: EndpointInventoryStatus;
 };
 
+/** Installation product license (ADR 0007 / `GET|POST /api/license`). */
+export type LicenseFeatures = {
+  lariska: boolean;
+  brand_watch: boolean;
+};
+
+export type LicenseStatus = {
+  installed: boolean;
+  active: boolean;
+  enforcement_enabled: boolean;
+  product_active: boolean;
+  new_scans_allowed: boolean;
+  features: LicenseFeatures;
+  license_id: string | null;
+  customer_name: string | null;
+  valid_from: string | null;
+  expires_at: string | null;
+  issued_at: string | null;
+  note: string | null;
+  reason: string | null;
+};
+
 /** What `POST /auth/login` answers, which is now one of two things (#315).
  *
  * A completed login carries `access_token`; one that still owes a second
@@ -2733,6 +2755,29 @@ export async function refreshEndpointCveMatches(deviceId: string, tenantId = "de
 export async function fetchSystemStatus() {
   try {
     const { data } = await api.get<SystemStatus>("/system");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Current product-license status for this installation. Prefer this over any
+ * license summary nested in system status when rendering the license page. */
+export async function getLicense() {
+  try {
+    const { data } = await api.get<LicenseStatus>("/license");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Upload and activate a signed license file (`platform.license.manage`). */
+export async function uploadLicense(file: File) {
+  try {
+    const form = new FormData();
+    form.append("file", file);
+    const { data } = await api.post<LicenseStatus>("/license", form);
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));

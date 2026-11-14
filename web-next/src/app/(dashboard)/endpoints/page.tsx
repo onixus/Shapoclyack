@@ -36,6 +36,7 @@ import { SourceCompleteness } from "@/components/endpoint/source-completeness";
 import { PatchGapPanel } from "@/components/endpoint/patch-gap-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { useEndpointDevices, useRecentSoftwareChanges } from "@/hooks/use-endpoint-inventory";
+import { useLicense } from "@/hooks/use-license";
 import { useSystemStatus } from "@/hooks/use-system";
 import type { EndpointDeviceInfo, EndpointReconciliationStatus } from "@/lib/api";
 import { ENDPOINT_RECONCILIATION_STATUS, SOFTWARE_CHANGE_STATUS } from "@/lib/config/statuses";
@@ -134,6 +135,8 @@ export default function EndpointsPage() {
   const tenantId = activeTenant ?? "default";
 
   const staleHours = useSystemStatus().data?.endpoint_inventory.stale_hours ?? 48;
+  const { data: license } = useLicense();
+  const lariskaOff = license != null && !license.features.lariska;
 
   const devicesQuery = useEndpointDevices(tenantId);
   const raw = useMemo(() => devicesQuery.data || [], [devicesQuery.data]);
@@ -335,6 +338,11 @@ export default function EndpointsPage() {
               ? t("page.endpoints.staleOnly", { hours: staleHours })
               : t("page.endpoints.showStaleOnly")}
           </Button>
+          {lariskaOff ? (
+            <span className="rounded-md border border-warning/40 bg-warning-subtle px-2 py-1 font-semibold text-warning">
+              {t("page.license.feature.lariska")}: {t("page.license.inactive")}
+            </span>
+          ) : null}
           <Select value={reconFilter} onValueChange={setReconFilter}>
             <SelectTrigger className="h-8 w-[160px] text-xs">
               <SelectValue placeholder={t("page.endpoints.filter")} />
@@ -358,6 +366,18 @@ export default function EndpointsPage() {
       <p className="max-w-3xl text-xs leading-relaxed text-muted-foreground">
         {t("page.endpoints.note", { linked: t.label("linked") })}
       </p>
+
+      {lariskaOff ? (
+        <p
+          role="status"
+          className="rounded-lg border border-warning/40 bg-warning-subtle px-3 py-2 text-xs text-warning"
+        >
+          {t("page.endpoints.licenseOff")}{" "}
+          <Link href="/license" className="font-semibold underline-offset-2 hover:underline">
+            {t("page.scans.licenseLink")}
+          </Link>
+        </p>
+      ) : null}
 
       <PatchGapPanel tenantId={tenantId} />
 

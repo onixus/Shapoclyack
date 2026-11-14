@@ -399,5 +399,9 @@ def start_job(
         ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    except RuntimeError as exc:
+    except (RuntimeError, PermissionError) as exc:
+        # RuntimeError: OCTO_ALLOW_SCAN_START. PermissionError: product license
+        # refusals (LicenseExpired / LicenseMissing / LicenseFeatureDenied) and
+        # any other admission PermissionError that escaped the typed handlers
+        # above — all are "you may not start this", not a bad body.
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc

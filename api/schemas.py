@@ -2004,6 +2004,34 @@ class ScanConfigSummary(BaseModel):
     stages: dict[str, bool]
 
 
+class LicenseFeaturesStatus(BaseModel):
+    lariska: bool = False
+    brand_watch: bool = False
+
+
+class LicenseStatusResponse(BaseModel):
+    """Installation product-license posture (ADR 0007).
+
+    Returned by ``GET/POST /api/license`` and embedded (same shape) on
+    ``GET /api/system`` so the console can disable Start Scan when
+    ``new_scans_allowed`` is false.
+    """
+
+    installed: bool
+    active: bool = False
+    enforcement_enabled: bool
+    product_active: bool
+    new_scans_allowed: bool
+    features: LicenseFeaturesStatus
+    license_id: str | None = None
+    customer_name: str | None = None
+    valid_from: str | None = None
+    expires_at: str | None = None
+    issued_at: str | None = None
+    note: str | None = None
+    reason: str | None = None
+
+
 class RuntimeInfo(BaseModel):
     allow_scan_start: bool
     job_execution_mode: str
@@ -2075,6 +2103,7 @@ class SystemStatus(BaseModel):
     runtime: RuntimeInfo
     inventory: InventoryCounts
     endpoint_inventory: EndpointInventoryStatus
+    license: LicenseStatusResponse | None = None
 
 
 class ConfigResponse(BaseModel):

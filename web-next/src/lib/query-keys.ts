@@ -145,5 +145,7 @@ export const queryKeys = {
   scanScope: (tenantId: string) => ["tenants", tenantId, "scan-scope"] as const,
   promotedDomains: (tenantId: string) => ["tenants", tenantId, "promoted-domains"] as const,
   system: ["system"] as const,
+  /** Installation product license (ADR 0007). */
+  license: ["license"] as const,
   config: ["config"] as const,
 };
