@@ -72,6 +72,9 @@ ASSET_IMPORT_LOCK_ID = 8
 OPERATOR_LOCK_ID = 9
 OPERATOR_QUEUE_LOCK_ID = 10
 ASSET_GROUP_LOCK_ID = 11
+# Brand-watch dispatcher (M1). Next free after the asset-group worker. Not a
+# scan-scheduler lock: it guards enqueue of brand_watch_jobs only.
+BRAND_WATCH_DISPATCHER_LOCK_ID = 12
 
 
 class LeaderLock:

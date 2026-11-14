@@ -62,6 +62,7 @@ from api.routes import retention as retention_routes
 from api.routes import tenant_lifecycle as tenant_lifecycle_routes
 from api.routes import runs as runs_routes
 from api.routes import schedules as schedules_routes
+from api.routes import brand_watch as brand_watch_routes
 from api.routes import scim as scim_routes
 from api.routes import scim_tokens as scim_tokens_routes
 from api.routes import service_tokens as service_tokens_routes
@@ -115,6 +116,7 @@ from api.services import service_tokens as service_tokens_service
 from api.services import scim as scim_service
 from api.services import scim_tokens as scim_tokens_service
 from api.services import schedule_dispatcher
+from api.services import brand_watch_dispatcher
 from api.services import tracing as tracing_service
 from api.services import tenant_purge
 from api.services import tenants as tenants_service
@@ -161,6 +163,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Started in every replica, but dispatches only in the one holding the
     # advisory lock (ROADMAP P1.6).
     schedule_dispatcher.start_worker(settings)
+    brand_watch_dispatcher.start_worker(settings)
     endpoint_retention.start_worker(settings)
     screenshot_retention.start_worker(settings)
     run_retention.start_worker(settings)
@@ -221,6 +224,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         tracing_service.shutdown()
         endpoint_retention.stop_worker()
         schedule_dispatcher.stop_worker()
+        brand_watch_dispatcher.stop_worker()
         ch_ingest_worker.stop_worker()
         nats_outbox.stop_worker()
         nats_bus.shutdown_bus()
@@ -617,6 +621,7 @@ def create_app() -> FastAPI:
     include_api_router(system_routes.router)
     include_api_router(config_routes.router)
     include_api_router(schedules_routes.router)
+    include_api_router(brand_watch_routes.router)
     # Three routers from one module (#352): the calendar as its own
     # collection, the per-tenant change freeze, and the provider's read-only
     # view of one customer's calendar.

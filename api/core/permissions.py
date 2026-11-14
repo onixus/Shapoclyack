@@ -176,6 +176,18 @@ VULNERABILITY_EXCEPTION_APPROVE = "vulnerability.exception.approve"
 #: granted it imports at whatever rank it has. Deliberate — a "CMDB sync" role
 #: is the use — and documented, since whoever grants it grants quota spend.
 ASSET_IMPORT = "asset.import"
+#: Read brand-watch profiles, candidates and the diff feed. Viewers reach the
+#: read routes by rank (``require_tenant(Role.viewer)``), the same way they
+#: read schedules; this permission is what a service token is checked against.
+BRAND_WATCH_READ = "brand_watch.read"
+#: Create and approve a brand profile. Admin only: approving ``our_brand`` is
+#: what unlocks HTTP observation of names that are not the tenant's.
+BRAND_WATCH_WRITE = "brand_watch.write"
+#: Set a candidate's disposition (false positive, whitelist, confirmed).
+#: Admin only. An operator token must stay issuable by a rank-2 role that
+#: holds ``config.read`` and ``scan.cancel``; adding a permission here makes
+#: that role weaker than operator. Never auto-applied by the dispatcher.
+BRAND_WATCH_DISPOSITION = "brand_watch.disposition"
 
 #: Every permission with the sentence the catalogue endpoint and migration 0049
 #: publish for it. The dict is the closed set: a permission not in here cannot
@@ -206,6 +218,9 @@ PERMISSIONS: dict[str, str] = {
     TENANT_RETENTION_MANAGE: "Set the tenant's retention windows within the platform bounds",
     PLATFORM_LEGAL_HOLD_MANAGE: "Place and release a legal hold on any tenant",
     ASSET_IMPORT: "Import a CMDB or directory export into the asset registry",
+    BRAND_WATCH_READ: "Read brand-watch profiles, candidates and diffs",
+    BRAND_WATCH_WRITE: "Create and approve brand-watch profiles",
+    BRAND_WATCH_DISPOSITION: "Set a brand-watch candidate disposition",
 }
 
 
@@ -268,6 +283,9 @@ _TENANT_ADMIN_PERMISSIONS = (
     TENANT_RETENTION_READ,
     TENANT_RETENTION_MANAGE,
     ASSET_IMPORT,
+    BRAND_WATCH_READ,
+    BRAND_WATCH_WRITE,
+    BRAND_WATCH_DISPOSITION,
 )
 
 BUILTIN_ROLES: dict[str, RoleDefinition] = {

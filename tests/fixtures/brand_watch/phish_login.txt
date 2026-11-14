@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html>
+<head><title>Acme Secure Login</title></head>
+<body>
+  <h1>Acme account sign-in</h1>
+  <p>Enter the password for your Acme workspace to continue to the dashboard and review your invoices today.</p>
+  <form action="/login" method="post">
+    <input type="text" name="user">
+    <input type="password" name="secret">
+    <button type="submit">Sign in</button>
+  </form>
+</body>
+</html>

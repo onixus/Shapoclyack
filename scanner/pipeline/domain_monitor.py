@@ -82,7 +82,6 @@ never merged into scan scope and never acted upon. Disabled by default
 from __future__ import annotations
 
 import ipaddress
-import itertools
 import json
 import logging
 from collections.abc import Callable, Sequence
@@ -94,157 +93,21 @@ from . import takeover
 from .config_schema import DomainMonitorConfig
 from .dnsx import command as dnsx_command
 from .dnsx import query as dnsx_query
+from .lookalike import (  # noqa: F401 - re-exported; tests import them from here
+    _generate_typosquat_candidates,
+    _split_domain,
+)
 from .public_suffix import has_icann_tld, is_special_use, registrable_domain
 from .safe_http import is_public_address
 from .utils import run_command, save_json, write_lines
 
 LOG = logging.getLogger("shapoclyack.domain-monitor")
 
-_KEYBOARD_ADJACENCY = {
-    "q": "wa", "w": "qes", "e": "wrd", "r": "etf", "t": "ryg", "y": "tuh", "u": "yij",
-    "i": "uok", "o": "ipl", "p": "ol", "a": "qsz", "s": "awdz", "d": "serfx", "f": "drtgc",
-    "g": "ftyhv", "h": "gyujb", "j": "hikun", "k": "jiolm", "l": "kop", "z": "asx",
-    "x": "zsdc", "c": "xdfv", "v": "cfgb", "b": "vghn", "n": "bhjm", "m": "njk",
-}
-_HOMOGLYPH_SUBS = (
-    ("rn", "m"), ("m", "rn"), ("vv", "w"), ("w", "vv"), ("0", "o"), ("o", "0"),
-    ("1", "l"), ("l", "1"), ("5", "s"), ("s", "5"),
-)
-_TLD_SWAP_LIST = ("com", "net", "org", "co", "io", "info", "biz", "cc", "xyz")
-
 #: Where the takeover confirmation knocks, in order. HTTPS first because that
 #: is what a visitor gets; plain HTTP only when HTTPS produced no fingerprint
 #: match, since S3 website endpoints and several hosted-page products answer
 #: the unclaimed page on one scheme only.
 _TAKEOVER_HTTP_PORTS: tuple[tuple[str, int], ...] = (("https", 443), ("http", 80))
-
-
-def _split_domain(domain: str) -> tuple[str, str]:
-    """Split a seed into (registrable label, public suffix) by the Public
-    Suffix List: "example.com" -> ("example", "com"), "bbc.co.uk" ->
-    ("bbc", "co.uk"), "x.github.io" -> ("x", "github.io"). A subdomain seed
-    is cut to its registrable domain first, so "shop.example.com.ru" ->
-    ("example", "com.ru"): the generators then mutate the one label a
-    squatter would register and never a dot or a suffix label.
-
-    A name with no registrable domain (a public suffix itself, an IP literal,
-    a bare label) keeps the old split at the last dot -- "co.uk" ->
-    ("co", "uk") -- so such a seed still yields what it did before."""
-    registrable = registrable_domain(domain)
-    if registrable:
-        label, _, suffix = registrable.partition(".")
-        return label, suffix
-    parts = domain.split(".")
-    if len(parts) < 2:
-        return domain, ""
-    return ".".join(parts[:-1]), parts[-1]
-
-
-def _omission_candidates(label: str, tld: str) -> list[str]:
-    out = []
-    for i in range(len(label)):
-        new_label = label[:i] + label[i + 1 :]
-        if new_label:
-            out.append(f"{new_label}.{tld}")
-    return out
-
-
-def _transposition_candidates(label: str, tld: str) -> list[str]:
-    out = []
-    chars = list(label)
-    for i in range(len(chars) - 1):
-        swapped = chars.copy()
-        swapped[i], swapped[i + 1] = swapped[i + 1], swapped[i]
-        out.append(f"{''.join(swapped)}.{tld}")
-    return out
-
-
-def _keyboard_adjacent_candidates(label: str, tld: str) -> list[str]:
-    out = []
-    for i, ch in enumerate(label):
-        for adj in _KEYBOARD_ADJACENCY.get(ch.lower(), ""):
-            new_label = label[:i] + adj + label[i + 1 :]
-            out.append(f"{new_label}.{tld}")
-    return out
-
-
-def _doubling_candidates(label: str, tld: str) -> list[str]:
-    out = []
-    for i, ch in enumerate(label):
-        out.append(f"{label[:i] + ch + ch + label[i + 1:]}.{tld}")
-    for i in range(len(label) - 1):
-        if label[i] == label[i + 1]:
-            new_label = label[:i] + label[i + 1 :]
-            out.append(f"{new_label}.{tld}")
-    return out
-
-
-def _homoglyph_candidates(label: str, tld: str) -> list[str]:
-    out = []
-    for old, new in _HOMOGLYPH_SUBS:
-        if old in label:
-            out.append(f"{label.replace(old, new)}.{tld}")
-    return out
-
-
-def _tld_swap_candidates(label: str, tld: str) -> list[str]:
-    """Replace the whole public suffix, never just its last label.
-
-    ``tld`` is everything ``_split_domain`` put right of the label, so
-    "bbc" + "co.uk" gives "bbc.com", "bbc.co", ... and not "bbc.co.com". A
-    multi-label suffix also contributes its own TLD, first: "bbc.uk" for
-    "co.uk", "example.ru" for "com.ru" -- the nearest look-alike of such a
-    seed, and one the fixed list does not carry. For a private-section
-    suffix the platform is swapped away too ("x.github.io" -> "x.io",
-    "x.com"): the same name under a registry, not a neighbour on the
-    platform, which the label mutations already cover."""
-    swaps = list(_TLD_SWAP_LIST)
-    if "." in tld:
-        swaps.insert(0, tld.rsplit(".", 1)[1])
-    return [f"{label}.{new_tld}" for new_tld in dict.fromkeys(swaps) if new_tld != tld]
-
-
-def _round_robin(class_lists: list[list[str]]) -> list[str]:
-    """Interleave several candidate-class lists round-robin (one from each
-    class in turn, cycling back), deduping case-insensitively."""
-    result: list[str] = []
-    seen: set[str] = set()
-    for item in itertools.chain.from_iterable(itertools.zip_longest(*class_lists)):
-        if item is None:
-            continue
-        key = item.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(item)
-    return result
-
-
-def _generate_typosquat_candidates(domain: str, max_candidates: int) -> list[str]:
-    """Generate look-alike domain candidates for ``domain`` via six classes
-    of typo/homoglyph generators, interleaved round-robin and capped at
-    ``max_candidates``."""
-    domain = domain.strip().lower().rstrip(".")
-    label, tld = _split_domain(domain)
-    if not label or not tld:
-        return []
-
-    class_lists = [
-        _omission_candidates(label, tld),
-        _transposition_candidates(label, tld),
-        _keyboard_adjacent_candidates(label, tld),
-        _doubling_candidates(label, tld),
-        _homoglyph_candidates(label, tld),
-        _tld_swap_candidates(label, tld),
-    ]
-
-    # The seed itself and, for a subdomain seed, its registrable domain: a
-    # transposition of "bbc" is "bbc" again, and "www.bbc.co.uk" must not
-    # report "bbc.co.uk" as somebody else's look-alike.
-    own = {domain, f"{label}.{tld}"}
-    candidates = _round_robin(class_lists)
-    candidates = [c for c in candidates if c.lower() not in own]
-    return candidates[:max_candidates]
 
 
 def _run_dnsx_a_aaaa(

@@ -51,7 +51,7 @@ describe("navigation groups", () => {
     expect(hrefs).not.toContain("/exposure");
     expect(hrefs).not.toContain("/security");
     expect(NAV_GROUPS).toHaveLength(6);
-    expect(NAV).toHaveLength(22);
+    expect(NAV).toHaveLength(23);
   });
 });
 
@@ -66,6 +66,7 @@ describe("role gating", () => {
       "/",
       "/vulnerabilities",
       "/compliance",
+      "/brand-watch",
       "/assets",
       "/endpoints",
       "/runs",

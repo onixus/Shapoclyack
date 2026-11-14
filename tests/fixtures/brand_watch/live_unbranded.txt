@@ -1,0 +1,9 @@
+<!DOCTYPE html>
+<html>
+<head><title>Welcome to our community garden</title></head>
+<body>
+  <h1>Community garden hours and plot assignments for the coming season</h1>
+  <p>The gate opens at eight. Plots are assigned by the board and watered on a shared rota that the volunteers publish every Sunday evening.</p>
+  <p>Bring your own tools. The shed key lives with the plot captain and is not left on the hook overnight.</p>
+</body>
+</html>

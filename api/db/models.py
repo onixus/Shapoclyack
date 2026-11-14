@@ -7,6 +7,7 @@ from datetime import datetime
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     CheckConstraint,
     ForeignKey,
     LargeBinary,
@@ -3911,3 +3912,111 @@ class AssetGroupSweep(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id", ondelete="CASCADE"), primary_key=True)
     after_asset_id: Mapped[str | None]
     updated_at: Mapped[datetime]
+
+
+# --- Brand watch (M1) -------------------------------------------------------
+# Tenant source of truth for lookalike monitoring. Candidates are never scan
+# targets. Observations store a result document, never a page archive.
+
+
+class BrandProfile(Base):
+    """One brand a tenant asked to watch. HTTP observation stays off until an
+    admin approves it with ``our_brand`` set."""
+
+    __tablename__ = "brand_profiles"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True)
+    name: Mapped[str]
+    official_domains: Mapped[list] = mapped_column(_JSON_DOC, default=list)
+    brand_strings: Mapped[list] = mapped_column(_JSON_DOC, default=list)
+    whitelist: Mapped[list] = mapped_column(_JSON_DOC, default=list)
+    # Favicon hashes and title templates. Empty in M1 is fine.
+    reference: Mapped[dict] = mapped_column(_JSON_DOC, default=dict)
+    approved_at: Mapped[datetime | None] = mapped_column(default=None)
+    approved_by: Mapped[str | None] = mapped_column(default=None)
+    our_brand: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+    last_dispatched_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_rebuilt_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
+class BrandCandidate(Base):
+    """A generated name. ``disposition`` is an operator decision; ``state`` is
+    what DNS (and later HTTP) last said. Unique per profile on punycode."""
+
+    __tablename__ = "brand_candidates"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True)
+    profile_id: Mapped[str] = mapped_column(ForeignKey("brand_profiles.id", ondelete="CASCADE"), index=True)
+    name_unicode: Mapped[str]
+    name_punycode: Mapped[str]
+    seed: Mapped[str] = mapped_column(default="")
+    generator_class: Mapped[str] = mapped_column(default="")
+    reason: Mapped[str] = mapped_column(default="")
+    state: Mapped[str] = mapped_column(default="unregistered")
+    # Last transition, stored so the diff feed does not recompute it from DNS alone.
+    previous_state: Mapped[str | None] = mapped_column(default=None)
+    severity: Mapped[str | None] = mapped_column(default=None)
+    first_seen: Mapped[datetime | None] = mapped_column(default=None)
+    last_checked: Mapped[datetime | None] = mapped_column(default=None)
+    last_changed: Mapped[datetime | None] = mapped_column(default=None)
+    ns: Mapped[list] = mapped_column(_JSON_DOC, default=list)
+    addresses: Mapped[list] = mapped_column(_JSON_DOC, default=list)
+    mx_present: Mapped[bool] = mapped_column(Boolean, default=False)
+    rdap: Mapped[dict | None] = mapped_column(_JSON_DOC_NULLABLE, default=None)
+    # M1 leaves this null. M2 may store a trimmed evidence summary, never HTML.
+    http: Mapped[dict | None] = mapped_column(_JSON_DOC_NULLABLE, default=None)
+    score: Mapped[int | None] = mapped_column(default=None)
+    reasons: Mapped[list] = mapped_column(_JSON_DOC, default=list)
+    disposition: Mapped[str] = mapped_column(default="open")
+    content_hash: Mapped[str | None] = mapped_column(default=None)
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "profile_id", "name_punycode", name="uq_brand_candidates_name"),
+        Index("ix_brand_candidates_changed", "tenant_id", "last_changed"),
+    )
+
+
+class BrandWatchJob(Base):
+    """One observation batch. Claimed with FOR UPDATE SKIP LOCKED. Not a scan job."""
+
+    __tablename__ = "brand_watch_jobs"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True)
+    profile_id: Mapped[str] = mapped_column(ForeignKey("brand_profiles.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(default="queued")
+    mode: Mapped[str]
+    payload: Mapped[dict] = mapped_column(_JSON_DOC, default=dict)
+    lease_owner: Mapped[str | None] = mapped_column(default=None)
+    lease_until: Mapped[datetime | None] = mapped_column(default=None)
+    result_hash: Mapped[str | None] = mapped_column(default=None)
+    applied_at: Mapped[datetime | None] = mapped_column(default=None)
+    attempts: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime]
+    finished_at: Mapped[datetime | None] = mapped_column(default=None)
+
+    __table_args__ = (Index("ix_brand_watch_jobs_claim", "tenant_id", "status"),)
+
+
+class BrandObservation(Base):
+    """One check of one candidate. ``result`` is a DNS/HTTP summary, not HTML."""
+
+    __tablename__ = "brand_observations"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("brand_candidates.id", ondelete="CASCADE"), index=True
+    )
+    job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("brand_watch_jobs.id", ondelete="SET NULL"), default=None
+    )
+    checked_at: Mapped[datetime]
+    mode: Mapped[str]
+    result: Mapped[dict] = mapped_column(_JSON_DOC, default=dict)

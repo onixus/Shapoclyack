@@ -11,7 +11,7 @@ from sqlalchemy.engine import make_url
 from api.db import migrate, models, tenant_scope
 from tests.conftest import POSTGRES_URL, requires_postgres
 
-HEAD = "0106_saml_session_binding"
+HEAD = "0107_brand_watch"
 MERGE_HEAD = "0104_operator_campaigns_merge"
 PARENTS = {"0103_operator_planner", "0101_remediation_campaigns"}
 
@@ -73,7 +73,13 @@ def test_fresh_and_both_existing_branches_really_upgrade_without_data_loss(monke
         migrate._downgrade("0103_operator_planner")  # noqa: SLF001
         with engine.connect() as db:
             assert set(db.execute(text("SELECT version_num FROM alembic_version")).scalars()) == PARENTS
-        assert set(inspect(engine).get_table_names()) == tables - {"saml_pending_requests"}
+        assert set(inspect(engine).get_table_names()) == tables - {
+            "saml_pending_requests",
+            "brand_observations",
+            "brand_watch_jobs",
+            "brand_candidates",
+            "brand_profiles",
+        }
         migrate.run_upgrade(url)
         with engine.connect() as db:
             assert db.execute(text("SELECT version_num FROM alembic_version")).scalars().all() == [HEAD]

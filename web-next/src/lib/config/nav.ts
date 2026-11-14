@@ -5,6 +5,7 @@ import {
   CircleGauge,
   ClipboardCheck,
   Database,
+  Eye,
   FileText,
   Gauge,
   Home,
@@ -90,6 +91,14 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         labelKey: "nav.compliance",
         icon: ClipboardCheck,
         hintKey: "nav.hint.compliance",
+      },
+      {
+        // Viewer-visible, same gate as Runs: no minRole. Lookalike domains are
+        // not a scan surface — candidates are never launched as jobs.
+        href: "/brand-watch",
+        labelKey: "nav.brandWatch",
+        icon: Eye,
+        hintKey: "nav.hint.brandWatch",
       },
     ],
   },
