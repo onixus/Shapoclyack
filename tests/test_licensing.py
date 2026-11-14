@@ -19,6 +19,8 @@ from api.services import tenants as tenants_service
 from api.services.licensing import (
     LicenseExpired,
     LicenseMissing,
+    LicenseNotYetValid,
+    LicenseStoreUnavailable,
     build_payload,
     brand_watch_overlay,
     install_license,
@@ -108,7 +110,11 @@ def test_sign_install_status_roundtrip(settings: Settings, signing_pair: tuple[b
     assert again.as_dict()["features"]["brand_watch"] is True
 
 
-def test_enforcement_on_without_license_raises_missing(settings: Settings):
+def test_enforcement_on_without_license_raises_missing(
+    settings: Settings, signing_pair: tuple[bytes, str]
+):
+    _, public_b64 = signing_pair
+    settings.license_public_key = public_b64
     settings.license_enforcement_enabled = True
     status = license_status(settings)
     assert status.installed is False
@@ -117,6 +123,26 @@ def test_enforcement_on_without_license_raises_missing(settings: Settings):
 
     with pytest.raises(LicenseMissing):
         licensing.assert_new_scan_allowed(settings)
+
+
+def test_enforcement_requires_public_key_pin(settings: Settings):
+    settings.license_enforcement_enabled = True
+    settings.license_public_key = ""
+    status = license_status(settings)
+    assert status.new_scans_allowed is False
+    assert status.reason == "enforcement requires OCTO_LICENSE_PUBLIC_KEY"
+    with pytest.raises(LicenseMissing, match="OCTO_LICENSE_PUBLIC_KEY"):
+        licensing.assert_new_scan_allowed(settings)
+
+
+def test_enforcement_refuses_install_without_pin(
+    settings: Settings, signing_pair: tuple[bytes, str]
+):
+    seed, _ = signing_pair
+    settings.license_enforcement_enabled = True
+    settings.license_public_key = ""
+    with pytest.raises(licensing.LicenseInvalid, match="OCTO_LICENSE_PUBLIC_KEY"):
+        install_license(_signed(seed, days=30), settings=settings, uploaded_by="admin")
 
 
 def test_expired_license_blocks_start_scan(
@@ -201,3 +227,53 @@ def test_grandfathered_no_license_when_enforcement_off(settings: Settings):
     assert status.product_active is True
     assert status.new_scans_allowed is True
     licensing.assert_new_scan_allowed(settings)
+
+
+def test_expired_license_blocks_even_when_enforcement_off(
+    settings: Settings, signing_pair: tuple[bytes, str]
+):
+    """ADR: uploaded+expired is a hard stop regardless of the enforcement flag."""
+    seed, public_b64 = signing_pair
+    settings.license_public_key = public_b64
+    settings.license_enforcement_enabled = False
+    past = datetime.now(UTC).replace(microsecond=0) - timedelta(days=60)
+    install_license(
+        _signed(seed, days=30, valid_from=past),
+        settings=settings,
+        uploaded_by="admin",
+    )
+    with pytest.raises(LicenseExpired):
+        licensing.assert_new_scan_allowed(settings)
+
+
+def test_not_yet_valid_license_raises_not_yet_valid(
+    settings: Settings, signing_pair: tuple[bytes, str]
+):
+    seed, public_b64 = signing_pair
+    settings.license_public_key = public_b64
+    settings.license_enforcement_enabled = True
+    future = datetime.now(UTC).replace(microsecond=0) + timedelta(days=7)
+    install_license(
+        _signed(seed, days=30, valid_from=future),
+        settings=settings,
+        uploaded_by="admin",
+    )
+    with pytest.raises(LicenseNotYetValid, match="not valid until"):
+        licensing.assert_new_scan_allowed(settings)
+
+
+def test_store_unavailable_fails_closed(settings: Settings, monkeypatch: pytest.MonkeyPatch):
+    """A Postgres blip must not reopen the product after an expired upload."""
+    from api.services.licensing import service as licensing_service
+
+    settings.license_enforcement_enabled = False
+
+    def boom(_settings=None):
+        return licensing_service._LicenseLookup(row=None, unavailable=True)
+
+    monkeypatch.setattr(licensing_service, "_load_active", boom)
+    status = license_status(settings)
+    assert status.new_scans_allowed is False
+    assert status.reason == "license store unavailable"
+    with pytest.raises(LicenseStoreUnavailable):
+        licensing.assert_new_scan_allowed(settings)

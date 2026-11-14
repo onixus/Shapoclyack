@@ -48,6 +48,16 @@ def upgrade() -> None:
     )
     op.create_index("ix_product_licenses_license_id", "product_licenses", ["license_id"])
     op.create_index("ix_product_licenses_active", "product_licenses", ["active"])
+    # At most one commercially active row; concurrent uploads deactivate then
+    # insert, and this stops two active=True rows if they race.
+    op.create_index(
+        "uq_product_licenses_one_active",
+        "product_licenses",
+        ["active"],
+        unique=True,
+        postgresql_where=sa.text("active IS TRUE"),
+        sqlite_where=sa.text("active IS 1"),
+    )
 
     op.bulk_insert(
         sa.table(
@@ -82,6 +92,7 @@ def downgrade() -> None:
             key=_PERMISSION
         )
     )
+    op.drop_index("uq_product_licenses_one_active", table_name="product_licenses")
     op.drop_index("ix_product_licenses_active", table_name="product_licenses")
     op.drop_index("ix_product_licenses_license_id", table_name="product_licenses")
     op.drop_table("product_licenses")

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from api.services import licensing
 from tests.conftest import make_settings
 
@@ -24,3 +26,18 @@ def test_empty_postgres_url_is_grandfathered_without_querying(tmp_path: Path) ->
     assert status.installed is False
     assert status.product_active is True
     licensing.assert_new_scan_allowed(settings)
+
+
+def test_enforcement_on_empty_postgres_without_pin_refuses(tmp_path: Path) -> None:
+    settings = make_settings(
+        tmp_path,
+        state_dir=tmp_path / "state",
+        output_dir=tmp_path / "output",
+        postgres_url="",
+        license_enforcement_enabled=True,
+        license_public_key="",
+        allow_scan_start=True,
+    )
+    licensing.configure(settings)
+    with pytest.raises(licensing.LicenseMissing, match="OCTO_LICENSE_PUBLIC_KEY"):
+        licensing.assert_new_scan_allowed(settings)

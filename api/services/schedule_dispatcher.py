@@ -25,6 +25,7 @@ from datetime import UTC, datetime, timedelta
 from api.schemas import StartScanRequest
 from api.services import job_states
 from api.services import jobs as jobs_service
+from api.services import licensing
 from api.services import maintenance
 from api.services import metrics as metrics_service
 from api.services import quotas
@@ -60,6 +61,7 @@ class ScheduleDispatcher:
             "skipped_not_leader": 0,
             "skipped_quota": 0,
             "skipped_policy": 0,
+            "skipped_license": 0,
             "deferred_maintenance": 0,
             "deferred_queue_full": 0,
             "skipped_queue_full": 0,
@@ -217,6 +219,19 @@ class ScheduleDispatcher:
             # and the schedule moves on to its next occurrence without
             # claiming a run that did not happen.
             self._stats["skipped_quota"] += 1
+            LOG.warning("Schedule %s skipped: %s", sched["schedule_id"], exc)
+            scan_schedules.record_skipped_dispatch(sched["schedule_id"], ran_at=now)
+            return
+        except (
+            licensing.LicenseExpired,
+            licensing.LicenseMissing,
+            licensing.LicenseNotYetValid,
+            licensing.LicenseStoreUnavailable,
+        ) as exc:
+            # Product term ended (or store/enforcement refused the start).
+            # Same shape as quota: expected commercial refusal, not an error
+            # that should page every 30s until someone uploads a new license.
+            self._stats["skipped_license"] += 1
             LOG.warning("Schedule %s skipped: %s", sched["schedule_id"], exc)
             scan_schedules.record_skipped_dispatch(sched["schedule_id"], ran_at=now)
             return

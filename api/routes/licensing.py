@@ -92,7 +92,8 @@ async def _read_license_document(request: Request) -> bytes | dict[str, Any]:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="multipart upload must include a file or license field",
             )
-        raw = await upload.read()  # type: ignore[union-attr]
+        # Bound ingestion like wordlists: refuse before the whole body is buffered.
+        raw = await upload.read(_MAX_LICENSE_BYTES + 1)  # type: ignore[union-attr]
         if len(raw) > _MAX_LICENSE_BYTES:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -105,6 +106,17 @@ async def _read_license_document(request: Request) -> bytes | dict[str, Any]:
             )
         return raw
 
+    # Starlette buffers request.body(); still refuse oversized Content-Length up front.
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > _MAX_LICENSE_BYTES:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"License body exceeds {_MAX_LICENSE_BYTES} bytes",
+                )
+        except ValueError:
+            pass
     raw = await request.body()
     if len(raw) > _MAX_LICENSE_BYTES:
         raise HTTPException(

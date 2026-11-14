@@ -26,20 +26,29 @@ answers "whether, and until when".
 3. **Entitlements in the signed payload:**
    - `features.lariska` — endpoint inventory API and Lariska policies.
    - `features.brand_watch` — Brand Watch / domain-monitor stage.
-   - Product availability is the interval `[valid_from, expires_at]`.
+   - Product availability is the half-open interval
+     `[valid_from, expires_at)` — valid at `valid_from`, refused at
+     `expires_at`.
 4. **On expiry (or missing valid license when enforcement is on):** refuse
    **new** scan starts at `job_submission.start_scan`. Existing jobs, assets,
    and history remain readable. Lariska ingest/management and Brand Watch
-   stages are treated as disabled.
+   stages are treated as disabled. A license-store read failure fails
+   **closed** for new scans (an uploaded expired license must not reopen
+   because Postgres blinked).
 5. **Upload in the product.** Platform admins upload a signed file via
    `POST /api/license`; status via `GET /api/license`. One active license per
-   installation (newest valid upload replaces the previous active row).
+   installation (partial unique index on `active`; newest upload replaces the
+   previous active row). Signature verification runs at upload; runtime gates
+   read the denormalised columns (they do not re-verify the document on every
+   scan).
 6. **Enforcement flag.** `OCTO_LICENSE_ENFORCEMENT_ENABLED` defaults to
    `false` so existing installs and CI keep working without a license file.
-   When `true`, a missing/invalid/expired license blocks new scans and the
-   gated features. When `false`, env feature flags (`OCTO_ENDPOINT_INVENTORY_ENABLED`,
-   etc.) remain authoritative, but an uploaded+expired license still blocks
-   new scans once a license row is active (hard commercial stop after upload).
+   When `true`, a missing/expired/not-yet-valid license blocks new scans and
+   the gated features, and `OCTO_LICENSE_PUBLIC_KEY` is **required** (upload
+   and scan start refuse without a pin). When `false`, env feature flags
+   (`OCTO_ENDPOINT_INVENTORY_ENABLED`, etc.) remain authoritative if no row is
+   installed, but an uploaded+expired license still blocks new scans once a
+   license row is active (hard commercial stop after upload).
 
 ## Format
 
