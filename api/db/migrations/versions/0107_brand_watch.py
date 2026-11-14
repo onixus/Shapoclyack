@@ -53,7 +53,7 @@ _PERMISSIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "brand_watch.disposition",
         "Set a brand-watch candidate disposition",
-        ("operator", "admin", "platform-admin"),
+        ("admin", "platform-admin"),
     ),
 )
 

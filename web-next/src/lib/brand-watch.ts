@@ -14,15 +14,14 @@ export type BrandWatchSeverity = "informational" | "low" | "medium" | "high" | "
 export type BrandWatchDisposition = "open" | "false_positive" | "whitelisted" | "confirmed";
 
 /**
- * Whether this principal may set a disposition. Viewers can read the feed.
- * `fallback` covers an API that sent no permission list: operators still may.
+ * Whether this principal may set a disposition. The API grants
+ * `brand_watch.disposition` to the tenant admin. A missing permission list
+ * hides the control.
  */
 export function canSetBrandWatchDisposition(
   permissions: readonly string[] | null | undefined,
-  fallback = false,
 ): boolean {
-  if (!permissions) return fallback;
-  return permissions.includes("brand_watch.disposition");
+  return Boolean(permissions?.includes("brand_watch.disposition"));
 }
 
 /**

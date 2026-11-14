@@ -34,8 +34,8 @@ describe("brand-watch formatters", () => {
   it("lets an operator dispose and leaves a viewer with the label only", () => {
     expect(canSetBrandWatchDisposition(["brand_watch.read", "brand_watch.disposition"])).toBe(true);
     expect(canSetBrandWatchDisposition(["brand_watch.read"])).toBe(false);
-    expect(canSetBrandWatchDisposition(undefined, true)).toBe(true);
-    expect(canSetBrandWatchDisposition(undefined, false)).toBe(false);
+    expect(canSetBrandWatchDisposition(undefined)).toBe(false);
+    expect(canSetBrandWatchDisposition([])).toBe(false);
   });
 
   it("lets a writer create a profile and leaves a reader without the form", () => {

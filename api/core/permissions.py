@@ -184,7 +184,9 @@ BRAND_WATCH_READ = "brand_watch.read"
 #: what unlocks HTTP observation of names that are not the tenant's.
 BRAND_WATCH_WRITE = "brand_watch.write"
 #: Set a candidate's disposition (false positive, whitelist, confirmed).
-#: Operator and admin. Never auto-applied by the dispatcher.
+#: Admin only. An operator token must stay issuable by a rank-2 role that
+#: holds ``config.read`` and ``scan.cancel``; adding a permission here makes
+#: that role weaker than operator. Never auto-applied by the dispatcher.
 BRAND_WATCH_DISPOSITION = "brand_watch.disposition"
 
 #: Every permission with the sentence the catalogue endpoint and migration 0049
@@ -298,7 +300,6 @@ BUILTIN_ROLES: dict[str, RoleDefinition] = {
         "Runs scans and works the findings",
         CONFIG_READ,
         SCAN_CANCEL,
-        BRAND_WATCH_DISPOSITION,
     ),
     ROLE_ADMIN: _role(
         ROLE_ADMIN,

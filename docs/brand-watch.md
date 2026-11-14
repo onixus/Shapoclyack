@@ -7,9 +7,9 @@
 `brand_watch_candidates` ≤ 5000, `brand_watch_http_per_day` ≤ 200 имён в
 заданиях `http_allowed`). В `tenant_quotas` колонок для этого нет.
 
-Префикс API: `/api/brand-watch`. Чтение — роль viewer и выше. Создание и
-одобрение — право `brand_watch.write`. Решение по кандидату —
-`brand_watch.disposition`.
+Префикс API: `/api/brand-watch`. Чтение — роль viewer и выше, без отдельного
+права. Создание, одобрение и решение по кандидату — права администратора
+`brand_watch.write` и `brand_watch.disposition`.
 
 ## Профиль
 

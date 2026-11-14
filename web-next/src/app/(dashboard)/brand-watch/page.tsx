@@ -299,7 +299,7 @@ function ApproveControl({ profile }: { profile: BrandWatchProfile }) {
 
 export default function BrandWatchPage() {
   const t = useT();
-  const canDispose = useAuthStore((s) => canSetBrandWatchDisposition(s.user?.permissions, s.canOperate));
+  const canDispose = useAuthStore((s) => canSetBrandWatchDisposition(s.user?.permissions));
   const canWrite = useAuthStore((s) => canWriteBrandWatch(s.user?.permissions));
   const [since, setSince] = useState<(typeof SINCE_OPTIONS)[number]>("");
   const [openProfileId, setOpenProfileId] = useState<string | null>(null);
