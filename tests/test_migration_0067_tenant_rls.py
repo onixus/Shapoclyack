@@ -63,6 +63,11 @@ ADDED_LATER = {
     # CPU semantic indexes arrive in 0102 with their own tenant policies.
     "operator_embedding_indexes",
     "operator_evidence_embeddings",
+    # Brand watch arrives in 0107, with its own tenant policies.
+    "brand_profiles",
+    "brand_candidates",
+    "brand_observations",
+    "brand_watch_jobs",
 }
 
 

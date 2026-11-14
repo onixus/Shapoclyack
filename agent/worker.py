@@ -2235,7 +2235,21 @@ def run_loop(args: argparse.Namespace) -> int:
                     # poll_once and never starts a scan of those names.
                     from agent.brand_watch_runner import poll_in_background
 
-                    poll_in_background(client, agent_id, config_path=Path(args.config))
+                    try:
+                        import importlib
+
+                        hooks = importlib.import_module("scanner.brand_watch.sensor_hooks")
+                    except ImportError:
+                        LOG.warning("brand_watch: scanner package is not installed; skipping")
+                    else:
+                        poll_in_background(
+                            client,
+                            agent_id,
+                            config_path=Path(args.config),
+                            observe_dns=hooks.observe_dns,
+                            observe_http=hooks.observe_http_or_refuse,
+                            refuse_reason=hooks.refuse_reason,
+                        )
                     if nats_session is None:
                         time.sleep(args.poll_interval)
                     continue

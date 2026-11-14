@@ -43,7 +43,7 @@ _PERMISSIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "brand_watch.read",
         "Read brand-watch profiles, candidates and diffs",
-        ("viewer", "auditor", "operator", "admin", "platform-admin"),
+        ("admin", "platform-admin"),
     ),
     (
         "brand_watch.write",

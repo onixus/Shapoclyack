@@ -291,7 +291,6 @@ BUILTIN_ROLES: dict[str, RoleDefinition] = {
         ROLE_VIEWER,
         1,
         "Reads the tenant's findings and assets",
-        BRAND_WATCH_READ,
     ),
     ROLE_OPERATOR: _role(
         ROLE_OPERATOR,
@@ -299,7 +298,6 @@ BUILTIN_ROLES: dict[str, RoleDefinition] = {
         "Runs scans and works the findings",
         CONFIG_READ,
         SCAN_CANCEL,
-        BRAND_WATCH_READ,
         BRAND_WATCH_DISPOSITION,
     ),
     ROLE_ADMIN: _role(
@@ -319,7 +317,6 @@ BUILTIN_ROLES: dict[str, RoleDefinition] = {
         SCAN_SCOPE_READ,
         TENANT_QUOTA_READ,
         TENANT_RETENTION_READ,
-        BRAND_WATCH_READ,
     ),
     ROLE_SCAN_OPERATOR: _role(
         ROLE_SCAN_OPERATOR,

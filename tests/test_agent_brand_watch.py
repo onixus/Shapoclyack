@@ -273,7 +273,9 @@ def test_missing_config_yields_no_resolvers(tmp_path: Path):
 def test_poll_loop_calls_brand_watch_when_no_scan_job(monkeypatch):
     source = Path(worker.__file__).read_text(encoding="utf-8")
     claim_at = source.index("job = client.claim(agent_id)")
-    window = source[claim_at:claim_at + 700]
+    window = source[claim_at:claim_at + 1400]
     assert "poll_in_background" in window
     assert window.index("if job is None:") < window.index("poll_in_background")
+    assert 'import_module("scanner.brand_watch.sensor_hooks")' in window
+    assert "except ImportError:" in window
     assert "brand_watch" in worker.CAPABILITIES

@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import tempfile
 import threading
+from types import SimpleNamespace
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -52,24 +53,24 @@ def _unanswered(name: str) -> dict[str, Any]:
 def sensor_resolvers(config_path: Path) -> list[str]:
     """Resolvers this worker already has. Never a baked-in public resolver.
 
-    Missing config, a config that does not parse, or an empty
-    ``dns.resolvers`` all yield ``[]``. The caller passes that list to
-    ``observe_dns``, which then fails soft instead of dialling a platform
-    default from here.
+    Reads ``dns.resolvers`` from the worker YAML directly. The scanner package
+    is not part of the sensor install, so this must not import it. Missing
+    config, a config that does not parse, or an empty list all yield ``[]``.
     """
     try:
-        from scanner.pipeline.config_schema import load_config
-        from scanner.pipeline.utils import load_yaml
+        import yaml
     except ImportError:
-        LOG.warning("brand_watch: scanner config is not importable; observing with no resolvers")
+        LOG.warning("brand_watch: PyYAML is not importable; observing with no resolvers")
         return []
     try:
-        raw = load_yaml(config_path)
-        config = load_config(raw if isinstance(raw, dict) else {})
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001 — a bad config must not kill the poll loop
         LOG.warning("brand_watch: could not read resolvers from %s (%s)", config_path, exc)
         return []
-    resolvers = getattr(getattr(config, "dns", None), "resolvers", None) or []
+    dns = raw.get("dns") if isinstance(raw, dict) else None
+    resolvers = dns.get("resolvers") if isinstance(dns, dict) else None
+    if not isinstance(resolvers, list):
+        return []
     return [str(item) for item in resolvers if str(item).strip()]
 
 
@@ -124,17 +125,14 @@ def _http_rows(
             continue
         name = str(row.get("unicode") or row.get("punycode") or "")
         try:
-            from scanner.brand_watch.http_observe import HttpObservationRequest
-
-            pack = observe_http(
-                HttpObservationRequest(
-                    name=name,
-                    address=address,
-                    brand="",
-                    mx_present=bool(row.get("mx_present")),
-                    registered=True,
-                )
+            request = SimpleNamespace(
+                name=name,
+                address=address,
+                brand="",
+                mx_present=bool(row.get("mx_present")),
+                registered=True,
             )
+            pack = observe_http(request)
         except Exception as exc:  # noqa: BLE001 — a failed observe is unanswered, not a raise
             LOG.warning("brand_watch: HTTP observe failed for %s (%s)", name, type(exc).__name__)
             merged.append({**row, "status": STATUS_UNANSWERED})
@@ -205,12 +203,8 @@ def poll_once(
     keep claiming scan jobs after a brand-watch failure. Never starts a scan.
     """
     if observe_dns is None or observe_http is None or refuse_reason is None:
-        from scanner.brand_watch.http_observe import observe_http_or_refuse, refuse_reason as http_refuse
-        from scanner.brand_watch.observe import observe_dns as dns_observe
-
-        observe_dns = observe_dns or dns_observe
-        observe_http = observe_http or observe_http_or_refuse
-        refuse_reason = refuse_reason or http_refuse
+        LOG.warning("brand_watch: observers are not injected; nothing is claimed")
+        return False
     try:
         job = client.claim_brand_watch(agent_id)
     except Exception:  # noqa: BLE001
@@ -253,6 +247,9 @@ def poll_in_background(
     agent_id: str,
     *,
     config_path: Path,
+    observe_dns: ObserveDns,
+    observe_http: ObserveHttp,
+    refuse_reason: RefuseReason,
 ) -> None:
     """Start one observation without holding the scan poll.
 
@@ -265,7 +262,14 @@ def poll_in_background(
 
     def _run() -> None:
         try:
-            poll_once(client, agent_id, config_path=config_path)
+            poll_once(
+                client,
+                agent_id,
+                config_path=config_path,
+                observe_dns=observe_dns,
+                observe_http=observe_http,
+                refuse_reason=refuse_reason,
+            )
         finally:
             _inflight.release()
 
