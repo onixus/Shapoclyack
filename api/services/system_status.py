@@ -338,6 +338,37 @@ def scan_config_summary(config: dict[str, Any], effective: dict[str, Any] | None
     }
 
 
+def license_info(settings: Settings) -> dict[str, Any]:
+    """Compact product-license snapshot for the System page / Start Scan gate.
+
+    Fail-soft for the panel: a Postgres blip must not take the whole System
+    page down. Commercial posture still errs **closed** — ``new_scans_allowed``
+    is false whenever status cannot be loaded, so an expired uploaded license
+    cannot reopen because the status call failed.
+    """
+    try:
+        from api.services import licensing
+
+        return licensing.license_status(settings).as_dict()
+    except Exception:  # noqa: BLE001 - fail-soft status view
+        LOG.warning("system_status: could not load product license", exc_info=True)
+        return {
+            "installed": False,
+            "active": False,
+            "enforcement_enabled": bool(settings.license_enforcement_enabled),
+            "product_active": False,
+            "new_scans_allowed": False,
+            "features": {"lariska": False, "brand_watch": False},
+            "license_id": None,
+            "customer_name": None,
+            "valid_from": None,
+            "expires_at": None,
+            "issued_at": None,
+            "note": None,
+            "reason": "license status unavailable",
+        }
+
+
 def runtime_info(settings: Settings) -> dict[str, Any]:
     # bool(url) only — the URLs/secrets themselves are never exposed.
     return {
@@ -452,4 +483,5 @@ def build_status(settings: Settings, *, include_fleet_counts: bool = True) -> di
         "endpoint_inventory": endpoint_inventory_status(
             settings, include_fleet_counts=include_fleet_counts
         ),
+        "license": license_info(settings),
     }

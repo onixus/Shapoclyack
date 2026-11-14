@@ -252,6 +252,13 @@ class Settings:
     metrics_tenant_top_n: int = 0
     users: list[dict[str, str]] = field(default_factory=lambda: list(DEFAULT_USERS))
     allow_scan_start: bool = True
+    # Product licensing (ADR 0007). When enforcement is on, a missing/invalid/
+    # expired license blocks new scans and gated features (Lariska, Brand Watch).
+    # Off by default so existing installs and CI keep working without a file.
+    # The public key pins which offline generator signatures are accepted;
+    # empty accepts any well-formed signature (dev only — set in production).
+    license_enforcement_enabled: bool = False
+    license_public_key: str = ""
     # Resolve requested scan domains at admission and refuse the ones whose
     # current addresses land in a denied range (#226). Off leaves the name
     # checked as a string only — see docs/configuration.md.
@@ -2214,6 +2221,11 @@ def load_settings() -> Settings:
         users=users,
         allow_scan_start=os.environ.get("OCTO_ALLOW_SCAN_START", "true").lower()
         in {"1", "true", "yes"},
+        license_enforcement_enabled=os.environ.get(
+            "OCTO_LICENSE_ENFORCEMENT_ENABLED", "false"
+        ).lower()
+        in {"1", "true", "yes"},
+        license_public_key=os.environ.get("OCTO_LICENSE_PUBLIC_KEY", "").strip(),
         scan_scope_resolve_check=os.environ.get("OCTO_SCAN_SCOPE_RESOLVE_CHECK", "true").lower()
         in {"1", "true", "yes"},
         job_execution_mode=mode,

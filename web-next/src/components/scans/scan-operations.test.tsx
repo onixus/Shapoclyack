@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScanOperations } from "@/components/scans/scan-operations";
 import * as apiModule from "@/lib/api";
-import type { AgentFleetSummary, Me, SystemStatus } from "@/lib/api";
+import type { AgentFleetSummary, LicenseStatus, Me, SystemStatus } from "@/lib/api";
 import { useAppearanceStore } from "@/lib/appearance";
 import { useAuthStore } from "@/lib/auth-store";
 import { canOperate as canOperateIn } from "@/lib/authz";
@@ -142,11 +142,62 @@ describe("ScanOperations with no sensor", () => {
     } as AgentFleetSummary;
   }
 
+  function activeLicense(): LicenseStatus {
+    return {
+      installed: true,
+      active: true,
+      enforcement_enabled: true,
+      product_active: true,
+      new_scans_allowed: true,
+      features: { lariska: true, brand_watch: false },
+      license_id: "lic-test",
+      customer_name: "Test",
+      valid_from: "2026-01-01T00:00:00Z",
+      expires_at: "2027-01-01T00:00:00Z",
+      issued_at: "2025-12-01T00:00:00Z",
+      note: null,
+      reason: null,
+    };
+  }
+
   beforeEach(() => {
     vi.restoreAllMocks();
     useAppearanceStore.setState({ locale: "en" });
     useAuthStore.setState({ user: operator, canOperate: canOperateIn(operator) });
     vi.spyOn(apiModule, "fetchSystemStatus").mockResolvedValue(agentMode());
+    vi.spyOn(apiModule, "getLicense").mockResolvedValue(activeLicense());
+  });
+
+  it("disables new scans when the product license refuses them", async () => {
+    vi.spyOn(apiModule, "getLicense").mockResolvedValue({
+      ...activeLicense(),
+      product_active: false,
+      new_scans_allowed: false,
+      reason: "license expired",
+    });
+    vi.spyOn(apiModule, "fetchAgentSummary").mockResolvedValue(fleet(1));
+    // A non-empty list so the launcher stays closed and the control reads
+    // "New scan" (empty queues auto-open it as "Hide launcher").
+    vi.spyOn(apiModule, "fetchJobs").mockResolvedValue({
+      items: [
+        {
+          job_id: "job_1",
+          status: "succeeded",
+          mode: "safe",
+          started_at: "2026-01-01T00:00:00Z",
+        } as apiModule.JobInfo,
+      ],
+      total: 1,
+      offset: 0,
+      limit: 15,
+      has_more: false,
+    });
+    renderPage();
+    expect(
+      await screen.findByText(/New scans are blocked by the product license/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open license" })).toHaveAttribute("href", "/license");
+    expect(screen.getByRole("button", { name: "New scan" })).toBeDisabled();
   });
 
   // Agent mode accepts and queues a scan whether or not anything can run it.

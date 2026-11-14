@@ -11,7 +11,7 @@ from sqlalchemy.engine import make_url
 from api.db import migrate, models, tenant_scope
 from tests.conftest import POSTGRES_URL, requires_postgres
 
-HEAD = "0106_saml_session_binding"
+HEAD = "0107_product_licenses"
 MERGE_HEAD = "0104_operator_campaigns_merge"
 PARENTS = {"0103_operator_planner", "0101_remediation_campaigns"}
 

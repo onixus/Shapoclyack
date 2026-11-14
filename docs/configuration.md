@@ -801,6 +801,8 @@ OCTO_LDAP_USERNAME_ATTRIBUTE
 OCTO_LDAP_USER_DN_TEMPLATE
 OCTO_LDAP_USER_FILTER
 OCTO_LDAP_VERIFY_TLS
+OCTO_LICENSE_ENFORCEMENT_ENABLED
+OCTO_LICENSE_PUBLIC_KEY
 OCTO_LOCAL_LOGIN
 OCTO_LOGIN_RATE_LIMIT_ENABLED
 OCTO_LOGIN_RATE_LIMIT_IP_MAX_FAILURES
@@ -1083,6 +1085,8 @@ Core deployment variables:
 | `OCTO_METRICS_TOKEN` | Bearer token `GET /metrics` demands when set; unset leaves the endpoint open. The series name every route, the queue depth and login outcomes, so an installation whose `/metrics` is reachable from outside the cluster should set it — a `prod` start without it logs a warning rather than refusing, since most scrapers run inside. The scraper sends `Authorization: Bearer <token>`; for the Prometheus Operator that is `bearerTokenSecret` in `k8s/shapoclyack/examples/servicemonitor.example.yaml`. The comparison is constant-time |
 | `OCTO_INSTANCE_ID` | Identity of this API replica in the shared job queue; defaults to the hostname. Only local-mode jobs owned by this identity are failed as orphans on startup |
 | `OCTO_ALLOW_SCAN_START` | Permit job creation from API/UI |
+| `OCTO_LICENSE_ENFORCEMENT_ENABLED` | When `true`, a missing, expired or not-yet-valid product license blocks new scan starts and gated features (Lariska, Brand Watch), and `OCTO_LICENSE_PUBLIC_KEY` is required. Defaults to `false` so existing installs and CI keep working without a license file ([ADR 0007](adr/0007-product-licensing.md)). Signature validity is checked at upload, not on every gate |
+| `OCTO_LICENSE_PUBLIC_KEY` | Base64 Ed25519 public key that pins which offline generator signatures `POST /api/license` accepts. Required when enforcement is on; empty accepts any well-formed signature only with enforcement off (dev) — see `tools/license_gen` |
 | `OCTO_SCAN_SCOPE_RESOLVE_CHECK` | Resolve requested scan domains at admission and refuse the ones whose current addresses fall in a range the tenant's approved scope denies (default `true`, #226). Only runs when the scope has deny ranges; a lookup that does not answer within 3s leaves the name checked as a string and is logged. Turn it off only where the API cannot resolve names at all |
 | `OCTO_ASSET_STALE_DAYS` | Age threshold for stale assets |
 | `OCTO_ASSET_GROUPS_ENABLED` | Run this replica's leader-elected dynamic-group reconciler (default `true`); API remains available when disabled. See [dynamic asset groups](dynamic-asset-groups.md). |
@@ -1298,6 +1302,17 @@ goes to an operations channel and a report goes to a customer.
 | `OCTO_REPORT_SMTP_VERIFY_TLS` | `true` | Verify the relay's certificate and hostname during STARTTLS. `smtplib`'s own default verifies neither, so `false` buys encryption against a passive listener and nothing against a relay that is not the one you meant. Prefer trusting the internal CA system-wide; a `prod` process warns while this is off |
 | `OCTO_REPORT_SMTP_TIMEOUT_SECONDS` | `20` | Per-message budget |
 | `OCTO_REPORT_S3_BUCKETS` | *(empty)* | Buckets a report schedule may deliver to (`s3://bucket/folder`, written under `<tenant>/<folder>/`; [#355](https://github.com/onixus/Shapoclyack/issues/355)); uses the `OCTO_ARTIFACT_S3_*` endpoint and credentials. Empty switches the S3 transport off; the artifact bucket is always refused. Needs `OCTO_ARTIFACT_BACKEND=s3` or explicit `OCTO_ARTIFACT_S3_ACCESS_KEY_ID`/`..._SECRET_ACCESS_KEY` |
+
+Product licensing ([ADR 0007](adr/0007-product-licensing.md)). Installation-wide
+access to Lariska, Brand Watch, and the right to start **new** scans for the
+contracted product term. Quotas answer "how much"; the license answers
+"whether, and until when". Signed files are produced offline with
+`tools/license_gen` and uploaded via `POST /api/license`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_LICENSE_ENFORCEMENT_ENABLED` | `false` | When `true`, a missing, expired or not-yet-valid license blocks new scan starts and gated features, and the public key pin is required. Off keeps existing installs and CI working without a license file; an uploaded license that has already expired still blocks new scans once a row is active. A store read failure also fails closed for new scans |
+| `OCTO_LICENSE_PUBLIC_KEY` | *(empty)* | Base64 Ed25519 public key pinning accepted generator signatures. Required when enforcement is on; empty is allowed only with enforcement off (dev) |
 
 Per-tenant usage quotas (ROADMAP Track E, MSSP operations; see
 [api-and-rbac.md](api-and-rbac.md#usage-metering-and-quotas)). These are the

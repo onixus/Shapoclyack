@@ -55,10 +55,18 @@ from api.services import agents as agents_service
 from api.services import audit as audit_service
 from api.services import endpoint_agent_mgmt
 from api.services import endpoint_inventory as endpoint_inventory_service
+from api.services import licensing
 from api.services import metrics as metrics_service
 from api.services import patch_gap as patch_gap_service
 from api.services import software_cve_match as cve_match_service
 from api.services import software_findings
+from api.services.licensing import (
+    LicenseExpired,
+    LicenseFeatureDenied,
+    LicenseMissing,
+    LicenseNotYetValid,
+    LicenseStoreUnavailable,
+)
 from api.settings import Settings
 
 router = APIRouter(prefix="/endpoint", tags=["endpoint-inventory"])
@@ -66,13 +74,31 @@ router = APIRouter(prefix="/endpoint", tags=["endpoint-inventory"])
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
+def _require_lariska(settings: Settings) -> None:
+    """Refuse Lariska ingest/management when the product license does not grant it."""
+    try:
+        licensing.assert_lariska(settings)
+    except (
+        LicenseExpired,
+        LicenseMissing,
+        LicenseFeatureDenied,
+        LicenseNotYetValid,
+        LicenseStoreUnavailable,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+        ) from exc
+
+
 @router.post("/inventory", response_model=EndpointInventoryResponse)
 def submit_inventory(
     body: EndpointInventorySnapshotRequest,
     request: Request,
     principal: Annotated[AgentPrincipal, Depends(require_agent)],
+    settings: SettingsDep,
     response: Response,
 ) -> EndpointInventoryResponse:
+    _require_lariska(settings)
     if principal.agent_id and principal.agent_id != body.agent_id:
         metrics_service.ENDPOINT_SUBMISSIONS_TOTAL.labels("invalid").inc()
         raise HTTPException(
@@ -124,9 +150,11 @@ def submit_inventory(
 @router.get("/devices", response_model=list[EndpointDeviceInfo])
 def list_devices(
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: SettingsDep,
     asset_id: Annotated[str | None, Query()] = None,
     device_status: Annotated[str | None, Query(pattern="^(active|stale)$")] = None,
 ) -> list[dict]:
+    _require_lariska(settings)
     return endpoint_inventory_service.list_devices(
         principal.tenant_id, asset_id=asset_id, status=device_status
     )
@@ -227,6 +255,7 @@ def refresh_tenant_cve_matches(
     comes back, not at the end of the worker's interval. The matcher has
     already been re-run, so the fold reads the rows rather than re-matching.
     """
+    _require_lariska(settings)
     result = cve_match_service.run_for_tenant(settings, tenant_id=principal.tenant_id)
     stats = software_findings.ingest_tenant(
         settings, tenant_id=principal.tenant_id, run_matcher=False
@@ -267,6 +296,7 @@ def refresh_device_cve_matches(
 ) -> dict:
     """Re-run the matcher for one device, then fold the result into the
     vulnerability lifecycle (see the tenant-wide route for why synchronously)."""
+    _require_lariska(settings)
     result = cve_match_service.run_for_device(
         settings, tenant_id=principal.tenant_id, device_id=device_id
     )
@@ -344,12 +374,14 @@ def set_default_agent_policy(
     principal: Annotated[
         TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
     ],
+    settings: SettingsDep,
     # Naming a build here replaces the binary on every endpoint of the tenant,
     # so it costs a recent second factor like minting a credential (#504).
     _: StepUpDep,
     audit: AuditDep,
 ) -> EndpointAgentPolicyInfo:
     """Set the tenant-wide default every endpoint agent inherits."""
+    _require_lariska(settings)
     return _write_agent_policy(body, principal, audit, agent_id=None)
 
 
@@ -360,10 +392,12 @@ def set_agent_policy(
     principal: Annotated[
         TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
     ],
+    settings: SettingsDep,
     _: StepUpDep,
     audit: AuditDep,
 ) -> EndpointAgentPolicyInfo:
     """Override the default for one agent, field by field."""
+    _require_lariska(settings)
     agent = agents_service.get_agent(agent_id)
     if agent is None or agent.tenant_id != principal.tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown agent")
@@ -408,8 +442,10 @@ def delete_default_agent_policy(
     principal: Annotated[
         TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
     ],
+    settings: SettingsDep,
     _: StepUpDep,
 ) -> Response:
+    _require_lariska(settings)
     endpoint_agent_mgmt.delete_policy(tenant_id=principal.tenant_id, agent_id=None)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -420,8 +456,10 @@ def delete_agent_policy(
     principal: Annotated[
         TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
     ],
+    settings: SettingsDep,
     _: StepUpDep,
 ) -> Response:
+    _require_lariska(settings)
     endpoint_agent_mgmt.delete_policy(tenant_id=principal.tenant_id, agent_id=agent_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
