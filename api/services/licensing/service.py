@@ -88,18 +88,33 @@ class LicenseStatus:
 def active_license(
     settings: Settings | None = None,
 ) -> models.ProductLicense | None:
-    url = (settings or _require_settings()).postgres_url
-    with get_session(url) as session:
-        row = session.scalar(
-            select(models.ProductLicense)
-            .where(models.ProductLicense.active.is_(True))
-            .order_by(models.ProductLicense.uploaded_at.desc())
-            .limit(1)
-        )
-        if row is None:
-            return None
-        session.expunge(row)
-        return row
+    """Return the active license row, or ``None`` when none / no store.
+
+    An empty ``postgres_url`` is treated as "no license installed" rather than
+    raising: unit tests and no-infra CI exercise ``start_scan`` without Postgres,
+    and the gate must not invent a hard dependency there. Enforcement still
+    closes the product when ``license_enforcement_enabled`` is on and this
+    returns ``None``.
+    """
+    cfg = settings if settings is not None else _require_settings()
+    url = (cfg.postgres_url or "").strip()
+    if not url:
+        return None
+    try:
+        with get_session(url) as session:
+            row = session.scalar(
+                select(models.ProductLicense)
+                .where(models.ProductLicense.active.is_(True))
+                .order_by(models.ProductLicense.uploaded_at.desc())
+                .limit(1)
+            )
+            if row is None:
+                return None
+            session.expunge(row)
+            return row
+    except Exception:  # noqa: BLE001 - fail-soft like system_status panels
+        _log.warning("licensing: could not read product_licenses", exc_info=True)
+        return None
 
 
 def _payload_from_row(row: models.ProductLicense) -> LicensePayload:
