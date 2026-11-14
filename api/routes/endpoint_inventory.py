@@ -150,11 +150,11 @@ def submit_inventory(
 @router.get("/devices", response_model=list[EndpointDeviceInfo])
 def list_devices(
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
-    settings: SettingsDep,
     asset_id: Annotated[str | None, Query()] = None,
     device_status: Annotated[str | None, Query(pattern="^(active|stale)$")] = None,
 ) -> list[dict]:
-    _require_lariska(settings)
+    # History stays readable after the term ends (ADR 0007). Ingest and
+    # management are the gates; this list is not one of them.
     return endpoint_inventory_service.list_devices(
         principal.tenant_id, asset_id=asset_id, status=device_status
     )
@@ -360,8 +360,10 @@ def list_agent_policies(
     principal: Annotated[
         TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
     ],
+    settings: SettingsDep,
 ) -> list[EndpointAgentPolicyInfo]:
     """Every policy this tenant has set: the default first, then the overrides."""
+    _require_lariska(settings)
     return [
         EndpointAgentPolicyInfo(**row)
         for row in endpoint_agent_mgmt.list_policies(principal.tenant_id)
@@ -469,6 +471,7 @@ def list_agent_releases(
     principal: Annotated[
         TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
     ],
+    settings: SettingsDep,
 ) -> list[EndpointAgentReleaseInfo]:
     """Builds this installation can hand out.
 
@@ -477,6 +480,7 @@ def list_agent_releases(
     is why writing one is the platform admin's (#510), and why a tenant reads
     the list without ``uploaded_by``.
     """
+    _require_lariska(settings)
     rows = endpoint_agent_mgmt.list_releases(show_uploader=principal.is_platform_admin)
     return [EndpointAgentReleaseInfo(**row) for row in rows]
 
@@ -498,6 +502,7 @@ async def upload_agent_release(
     # What every endpoint told to move to this version will execute (#504).
     _: StepUpDep,
     audit: AuditDep,
+    settings: SettingsDep,
     version: Annotated[str, Form()],
     platform: Annotated[str, Form()],
     binary: Annotated[UploadFile, File()],
@@ -511,6 +516,7 @@ async def upload_agent_release(
     against before executing it, and a digest travelling beside the bytes it
     describes attests to nothing.
     """
+    _require_lariska(settings)
     # Bound multipart ingestion too: refusing a huge object only after read()
     # still allocates the attacker-controlled object in application memory.
     content = await binary.read(endpoint_agent_mgmt.MAX_RELEASE_BYTES + 1)
@@ -557,9 +563,11 @@ def delete_agent_release(
     ],
     __: StepUpDep,
     audit: AuditDep,
+    settings: SettingsDep,
     package_kind: Literal["binary", "deb", "rpm", "msi", "pkg"] | None = None,
 ) -> Response:
     """Remove one build — every tenant's, since there is only one (#510)."""
+    _require_lariska(settings)
     try:
         deleted = endpoint_agent_mgmt.delete_release(
             version=version, platform=platform, package_kind=package_kind
@@ -596,6 +604,7 @@ def download_agent_release(
     platform: str,
     request: Request,
     principal: Annotated[AgentPrincipal, Depends(require_agent)],
+    settings: SettingsDep,
     package_kind: Literal["binary", "deb", "rpm", "msi", "pkg"] | None = None,
 ) -> Response:
     """Hand native bytes only to an active endpoint with signed-update support.
@@ -604,6 +613,7 @@ def download_agent_release(
     can retain a URL/digest from before the unsigned prohibition. The endpoint
     and its supervisor independently verify publisher trust before installation.
     """
+    _require_lariska(settings)
     hit, agent = cached_agent_info(request, principal, principal.agent_id)
     if not hit and principal.agent_id:
         agent = agents_service.get_agent(principal.agent_id)

@@ -4025,16 +4025,18 @@ class BrandObservation(Base):
 class ProductLicense(Base):
     """Installation-wide signed product license (ADR 0007).
 
-    At most one row is ``active`` at a time. The signed document is kept so an
-    auditor can re-verify it offline; entitlement checks read the denormalised
-    columns. Absence of a row is not "unlimited forever" when enforcement is
-    on — see ``api.services.licensing``.
+    At most one row is ``active`` at a time. The signed document is what the
+    gates re-verify; the columns are a cache and are not an entitlement by
+    themselves. The same ``license_id`` may appear on more than one row so a
+    replacement upload does not erase the document it replaced. Absence of a
+    row is not "unlimited forever" when enforcement is on — see
+    ``api.services.licensing``.
     """
 
     __tablename__ = "product_licenses"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    license_id: Mapped[str] = mapped_column(unique=True, index=True)
+    license_id: Mapped[str] = mapped_column(index=True)
     customer_name: Mapped[str]
     issued_at: Mapped[datetime]
     valid_from: Mapped[datetime]

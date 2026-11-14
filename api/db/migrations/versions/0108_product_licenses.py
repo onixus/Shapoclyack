@@ -1,9 +1,10 @@
 """Product license table and platform.license.manage permission (ADR 0007).
 
-Revision ID: 0107_product_licenses
-Revises: 0106_saml_session_binding
+Revision ID: 0108_product_licenses
+Revises: 0107_brand_watch
 
 Stores the installation's signed product license (Lariska, Brand Watch, term).
+``license_id`` is not unique: a replacement upload keeps the previous row.
 Seeds ``platform.license.manage`` for platform-admin only — uploading a license
 is an installation-wide commercial act, not a tenant admin's.
 """
@@ -15,8 +16,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0107_product_licenses"
-down_revision: Union[str, None] = "0106_saml_session_binding"
+revision: str = "0108_product_licenses"
+down_revision: Union[str, None] = "0107_brand_watch"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -44,7 +45,6 @@ def upgrade() -> None:
         sa.Column("uploaded_by", sa.String(), nullable=False, server_default=""),
         sa.Column("active", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("license_id"),
     )
     op.create_index("ix_product_licenses_license_id", "product_licenses", ["license_id"])
     op.create_index("ix_product_licenses_active", "product_licenses", ["active"])

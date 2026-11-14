@@ -194,6 +194,17 @@ CROSS_TENANT_ROUTES: dict[str, str] = {
         _PLATFORM_ADMIN + " (platform.tenant.lifecycle): the deletion journal of every "
         "tenant, tombstones included"
     ),
+    # Product license (ADR 0007): one installation-wide row, no tenant_id.
+    # GET is every authenticated role (require_role); POST is platform admin.
+    # Neither is a tenant guard. The table is not under row security.
+    "api.routes.licensing:get_license_status": (
+        "installation product-license status for every role; product_licenses "
+        "has no tenant_id, so an undeclared viewer request still reads it"
+    ),
+    "api.routes.licensing:upload_license": (
+        _PLATFORM_ADMIN + " (platform.license.manage): writes the installation's "
+        "product_licenses row, which has no tenant"
+    ),
     "api.routes.maintenance:get_tenant_calendar": _PLATFORM_ADMIN + " (the provider's view of one customer's calendar)",
     "api.routes.config:update_config": _PLATFORM_ADMIN + " (installation-wide scanner overrides)",
     # The local operator's endpoint (#622): one config_overrides row (scope

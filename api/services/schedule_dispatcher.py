@@ -62,6 +62,7 @@ class ScheduleDispatcher:
             "skipped_quota": 0,
             "skipped_policy": 0,
             "skipped_license": 0,
+            "deferred_license": 0,
             "deferred_maintenance": 0,
             "deferred_queue_full": 0,
             "skipped_queue_full": 0,
@@ -228,12 +229,13 @@ class ScheduleDispatcher:
             licensing.LicenseNotYetValid,
             licensing.LicenseStoreUnavailable,
         ) as exc:
-            # Product term ended (or store/enforcement refused the start).
-            # Same shape as quota: expected commercial refusal, not an error
-            # that should page every 30s until someone uploads a new license.
-            self._stats["skipped_license"] += 1
-            LOG.warning("Schedule %s skipped: %s", sched["schedule_id"], exc)
-            scan_schedules.record_skipped_dispatch(sched["schedule_id"], ran_at=now)
+            # Expected commercial refusal, not an error that should page every
+            # 30s. Defer one poll instead of skipping the occurrence: a license
+            # uploaded an hour later still gets today's tick.
+            retry_at = now + timedelta(seconds=max(self._poll_interval, 60))
+            self._stats["deferred_license"] += 1
+            LOG.warning("Schedule %s deferred until %s: %s", sched["schedule_id"], retry_at.isoformat(), exc)
+            scan_schedules.defer_dispatch(sched["schedule_id"], ran_at=now, until=retry_at)
             return
         except scan_policy.ScanPolicyViolation as violation:
             # The tenant's scan policy forbids what this schedule asks for

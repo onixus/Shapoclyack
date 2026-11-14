@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from sqlalchemy import delete
+from sqlalchemy import delete, select, update
 
 from api.db import models
 from api.db.engine import get_session
@@ -130,7 +130,7 @@ def test_enforcement_requires_public_key_pin(settings: Settings):
     settings.license_public_key = ""
     status = license_status(settings)
     assert status.new_scans_allowed is False
-    assert status.reason == "enforcement requires OCTO_LICENSE_PUBLIC_KEY"
+    assert status.reason == "OCTO_LICENSE_PUBLIC_KEY is required"
     with pytest.raises(LicenseMissing, match="OCTO_LICENSE_PUBLIC_KEY"):
         licensing.assert_new_scan_allowed(settings)
 
@@ -277,3 +277,58 @@ def test_store_unavailable_fails_closed(settings: Settings, monkeypatch: pytest.
     assert status.reason == "license store unavailable"
     with pytest.raises(LicenseStoreUnavailable):
         licensing.assert_new_scan_allowed(settings)
+
+
+def test_upload_requires_pin_even_when_enforcement_is_off(
+    settings: Settings, signing_pair: tuple[bytes, str]
+):
+    seed, _public = signing_pair
+    settings.license_enforcement_enabled = False
+    settings.license_public_key = ""
+    with pytest.raises(licensing.LicenseInvalid, match="OCTO_LICENSE_PUBLIC_KEY"):
+        install_license(_signed(seed, days=30), settings=settings, uploaded_by="admin")
+
+
+def test_column_tamper_does_not_extend_an_expired_document(
+    settings: Settings, signing_pair: tuple[bytes, str]
+):
+    """Gates trust the signed document, not the denormalised columns."""
+    seed, public_b64 = signing_pair
+    settings.license_public_key = public_b64
+    settings.license_enforcement_enabled = False
+    past = datetime.now(UTC).replace(microsecond=0) - timedelta(days=60)
+    install_license(
+        _signed(seed, days=30, valid_from=past, brand_watch=False),
+        settings=settings,
+        uploaded_by="admin",
+    )
+    future = datetime.now(UTC).replace(microsecond=0) + timedelta(days=30)
+    with get_session(settings.postgres_url) as session:
+        session.execute(
+            update(models.ProductLicense)
+            .values(
+                expires_at=future.replace(tzinfo=None),
+                feature_lariska=True,
+                feature_brand_watch=True,
+            )
+            .where(models.ProductLicense.active.is_(True))
+        )
+    with pytest.raises(LicenseExpired):
+        licensing.assert_new_scan_allowed(settings)
+    assert licensing.brand_watch_entitled(settings) is False
+    assert licensing.lariska_entitled(settings) is False
+
+
+def test_reupload_keeps_the_previous_document(
+    settings: Settings, signing_pair: tuple[bytes, str]
+):
+    seed, public_b64 = signing_pair
+    settings.license_public_key = public_b64
+    document = _signed(seed, days=30, lariska=True)
+    install_license(document, settings=settings, uploaded_by="admin")
+    install_license(document, settings=settings, uploaded_by="admin")
+    with get_session(settings.postgres_url) as session:
+        rows = session.scalars(select(models.ProductLicense)).all()
+    assert len(rows) == 2
+    assert sum(bool(row.active) for row in rows) == 1
+    assert {row.license_id for row in rows} == {document["payload"]["license_id"]}

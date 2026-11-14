@@ -33,7 +33,13 @@ def get_license_status(
     and the feature flags to disable Start Scan / Lariska / Brand Watch without
     needing a platform permission.
     """
-    return licensing.license_status(settings).as_dict()
+    status_view = licensing.license_status(settings)
+    if status_view.reason == "license store unavailable":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=status_view.reason,
+        )
+    return status_view.as_dict()
 
 
 @router.post("", response_model=LicenseStatusResponse)
@@ -62,6 +68,10 @@ async def upload_license(
     except LicenseInvalid as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except licensing.LicenseStoreUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
         ) from exc
 
     audit_service.record_standalone(

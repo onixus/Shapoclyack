@@ -134,9 +134,7 @@ export default function LicensePage() {
   const format = useAbsoluteTime();
   const user = useAuthStore((s) => s.user);
   const { data, isLoading, error, isFetching } = useLicense();
-  const canManage = can(user, {
-    anyOf: [{ permission: "platform.license.manage" }, { globalMinRole: "admin" }],
-  });
+  const canManage = can(user, { permission: "platform.license.manage" });
 
   const productActive = data?.product_active ?? false;
   const expiredBanner =

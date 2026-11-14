@@ -1583,6 +1583,8 @@ export const en = {
   "page.license.dropzone": "Drop a license file here, or click to choose",
   "page.license.dropzoneHint": "Signed shapoclyack-license document",
   "page.license.upload": "Activate license",
+  "page.license.activated": "License activated",
+  "page.license.uploadFailed": "License upload failed",
   "page.license.uploading": "Uploading…",
   "page.license.readOnly": "You can view license status. Uploading needs platform.license.manage.",
   "sidebar.launchExternal": "External scan",
@@ -4086,6 +4088,8 @@ export const ru: Record<MsgKey, string> = {
   "page.license.dropzone": "Перетащите файл лицензии сюда или нажмите, чтобы выбрать",
   "page.license.dropzoneHint": "Подписанный документ shapoclyack-license",
   "page.license.upload": "Активировать лицензию",
+  "page.license.activated": "Лицензия активирована",
+  "page.license.uploadFailed": "Не удалось загрузить лицензию",
   "page.license.uploading": "Загрузка…",
   "page.license.readOnly":
     "Статус лицензии доступен для просмотра. Загрузка требует platform.license.manage.",

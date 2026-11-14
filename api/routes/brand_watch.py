@@ -32,6 +32,7 @@ from api.auth import (
 )
 from api.services import agents as agents_service
 from api.services import brand_watch
+from api.services.licensing.errors import LicenseError, LicenseStoreUnavailable
 from api.settings import Settings
 
 router = APIRouter(prefix="/brand-watch", tags=["brand-watch"])
@@ -69,6 +70,10 @@ def _settings_dep(settings: Annotated[Settings, Depends(get_settings)]) -> Setti
 
 
 def _refuse(exc: Exception) -> HTTPException:
+    if isinstance(exc, LicenseStoreUnavailable):
+        return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    if isinstance(exc, LicenseError):
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     if isinstance(exc, brand_watch.QuotaExceeded):
         return HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc))
     if isinstance(exc, brand_watch.LeaseDenied):
@@ -92,12 +97,14 @@ def list_profiles(
 def preview(
     body: PreviewBody,
     principal: Annotated[TenantPrincipal, Depends(require_permission("brand_watch.write"))],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> dict[str, Any]:
     """Rules for these domains. Nothing is stored and nothing is scanned."""
     del principal
     try:
+        brand_watch.require_entitlement(settings)
         return brand_watch.preview_names(body.official_domains, limit=body.limit)
-    except brand_watch.BrandWatchError as exc:
+    except (brand_watch.BrandWatchError, LicenseError) as exc:
         raise _refuse(exc) from exc
 
 
@@ -119,7 +126,7 @@ def create_profile(
             our_brand=body.our_brand,
             watched_names=body.watched_names,
         )
-    except (brand_watch.BrandWatchError, LookupError) as exc:
+    except (brand_watch.BrandWatchError, LookupError, LicenseError) as exc:
         raise _refuse(exc) from exc
 
 
@@ -138,7 +145,7 @@ def approve_profile(
             approved_by=principal.username,
             our_brand=body.our_brand,
         )
-    except (brand_watch.BrandWatchError, LookupError) as exc:
+    except (brand_watch.BrandWatchError, LookupError, LicenseError) as exc:
         raise _refuse(exc) from exc
 
 
@@ -177,7 +184,7 @@ def disposition(
             candidate_id=candidate_id,
             disposition=body.disposition,
         )
-    except (brand_watch.BrandWatchError, LookupError) as exc:
+    except (brand_watch.BrandWatchError, LookupError, LicenseError) as exc:
         raise _refuse(exc) from exc
 
 
@@ -229,7 +236,7 @@ def release_job(
             job_id=job_id,
             agent_id=principal.agent_id,
         )
-    except (brand_watch.BrandWatchError, LookupError) as exc:
+    except (brand_watch.BrandWatchError, LookupError, LicenseError) as exc:
         raise _refuse(exc) from exc
 
 
@@ -257,5 +264,5 @@ def post_result(
             agent_id=principal.agent_id,
             capabilities=list(agent.capabilities or []),
         )
-    except (brand_watch.BrandWatchError, LookupError) as exc:
+    except (brand_watch.BrandWatchError, LookupError, LicenseError) as exc:
         raise _refuse(exc) from exc

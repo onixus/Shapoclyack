@@ -25,30 +25,31 @@ answers "whether, and until when".
    absolute `valid_from` / `expires_at` UTC timestamps.
 3. **Entitlements in the signed payload:**
    - `features.lariska` — endpoint inventory API and Lariska policies.
-   - `features.brand_watch` — Brand Watch / domain-monitor stage.
+   - `features.brand_watch` — Brand Watch API writes, sensor claim, and the dispatcher.
    - Product availability is the half-open interval
      `[valid_from, expires_at)` — valid at `valid_from`, refused at
      `expires_at`.
 4. **On expiry (or missing valid license when enforcement is on):** refuse
    **new** scan starts at `job_submission.start_scan`. Existing jobs, assets,
-   and history remain readable. Lariska ingest/management and Brand Watch
-   stages are treated as disabled. A license-store read failure fails
-   **closed** for new scans (an uploaded expired license must not reopen
-   because Postgres blinked).
+   and history remain readable. Lariska ingest and management (policies,
+   release upload/download) are refused; device history stays readable.
+   Brand Watch writes, sensor claim/result, and the dispatcher are refused.
+   A license-store read failure fails **closed** for those gates. A schedule
+   tick that is refused is deferred by one poll, not skipped for the day.
 5. **Upload in the product.** Platform admins upload a signed file via
    `POST /api/license`; status via `GET /api/license`. One active license per
-   installation (partial unique index on `active`; newest upload replaces the
-   previous active row). Signature verification runs at upload; runtime gates
-   read the denormalised columns (they do not re-verify the document on every
-   scan).
+   installation (partial unique index on `active`). A replacement is a new
+   row; the previous document stays inactive. `OCTO_LICENSE_PUBLIC_KEY` is
+   required for every upload. Runtime gates re-verify that document against
+   the pin; denormalised columns are not an entitlement.
 6. **Enforcement flag.** `OCTO_LICENSE_ENFORCEMENT_ENABLED` defaults to
    `false` so existing installs and CI keep working without a license file.
    When `true`, a missing/expired/not-yet-valid license blocks new scans and
-   the gated features, and `OCTO_LICENSE_PUBLIC_KEY` is **required** (upload
-   and scan start refuse without a pin). When `false`, env feature flags
-   (`OCTO_ENDPOINT_INVENTORY_ENABLED`, etc.) remain authoritative if no row is
-   installed, but an uploaded+expired license still blocks new scans once a
-   license row is active (hard commercial stop after upload).
+   the gated features, and the public-key pin is required. When `false` and
+   no row is installed, env feature flags remain authoritative and Brand
+   Watch stays available. An uploaded license is the commercial boundary
+   even if enforcement is off: an expired or unsigned-by-the-pin document
+   blocks new scans and the gated features.
 
 ## Format
 
@@ -60,8 +61,8 @@ optional `note`.
 ## Consequences
 
 - Generators and private keys stay outside the product deployment boundary.
-- Brand Watch is introduced as a license entitlement even where the UI surface
-  is still thin; the scanner's `discovery.domain_monitor` stage is the
-  technical gate.
+- Brand Watch is gated on its own API and dispatcher, not on
+  `discovery.domain_monitor`. That scan stage is a separate typosquat check
+  and is forced off only as defense in depth.
 - Scan schedules and the operator still go through `start_scan`, so expiry
   covers every admission path.

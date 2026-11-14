@@ -29,6 +29,7 @@ from api.services.licensing.service import (
     lariska_entitled,
     license_status,
     product_active,
+    reset_for_tests,
 )
 from api.services.licensing.format import (
     FORMAT,
@@ -67,6 +68,7 @@ __all__ = [
     "lariska_entitled",
     "license_status",
     "product_active",
+    "reset_for_tests",
     "sign_license",
     "verify_license",
 ]

@@ -9,10 +9,12 @@ All notable changes to Shapoclyack are documented in this file.
 - Product licensing (ADR 0007): offline Ed25519 license generator with a
   duration calculator (`tools/license_gen`), signed upload via
   `GET|POST /api/license`, and console page `/license`. The license gates
-  Lariska (endpoint inventory), Brand Watch (`discovery.domain_monitor`), and
-  the product term; when the term ends, new scan starts are refused. Enable
-  with `OCTO_LICENSE_ENFORCEMENT_ENABLED` and pin
-  `OCTO_LICENSE_PUBLIC_KEY`.
+  Lariska management/ingest, Brand Watch writes and the sensor claim, and
+  the product term. New scan starts are refused when the term ends; a
+  schedule tick is deferred, not skipped. Upload requires
+  `OCTO_LICENSE_PUBLIC_KEY`; gates re-verify the stored document.
+  `OCTO_LICENSE_ENFORCEMENT_ENABLED` defaults off so an install with no
+  license file keeps working.
 
 ## [0.49-1111-rc1] — 2026-11-11
 
