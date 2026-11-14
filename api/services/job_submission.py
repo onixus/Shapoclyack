@@ -36,10 +36,12 @@ from api.services import metrics as metrics_service
 from api.services import run_ids
 from api.services.artifact_store import keys as artifact_keys
 from api.services.artifact_store import workspace as artifact_workspace
+from api.services import licensing
 from api.services import scan_admission
 from api.services import scan_intents
 from api.services import scan_surface
 from api.services import tenants as tenants_service
+from api.services.licensing import LicenseExpired, LicenseMissing  # noqa: F401 — raised by assert
 from api.settings import Settings
 from scanner.pipeline import config_overlay
 
@@ -264,6 +266,10 @@ def start_scan(
         raise RuntimeError(
             "Scan start disabled by OCTO_ALLOW_SCAN_START"
         )
+    # Product term / missing license when enforcement is on (ADR 0007).
+    # LicenseExpired / LicenseMissing are PermissionError subclasses; the jobs
+    # route maps them to 403 alongside the RuntimeError above.
+    licensing.assert_new_scan_allowed(settings)
     if config_extra:
         # Before anything is admitted or written: a setting a sensor would
         # refuse is refused where the job is created, as the overlay is.
@@ -320,6 +326,9 @@ def start_scan(
     intent_extra = (
         scan_intents.merge_config_extras(resolved.config_extra, config_extra) or {}
     )
+    # Brand Watch is a soft gate: without the entitlement, force the
+    # domain-monitor stage off rather than refusing the whole scan (ADR 0007).
+    intent_extra = licensing.brand_watch_overlay(settings, intent_extra)
     if execution == "agent" and request.wordlist_id:
         # A custom wordlist lives in the API's Postgres and is materialized
         # onto the API pod's filesystem; a remote agent never sees it. Refused

@@ -17,6 +17,15 @@ vi.mock("@/hooks/use-endpoint-inventory", () => ({
 vi.mock("@/hooks/use-system", () => ({
   useSystemStatus: () => ({ data: { endpoint_inventory: { stale_hours: 48 } } }),
 }));
+vi.mock("@/hooks/use-license", () => ({
+  useLicense: () => ({
+    data: {
+      features: { lariska: true, brand_watch: false },
+      new_scans_allowed: true,
+      product_active: true,
+    },
+  }),
+}));
 const device: EndpointDeviceInfo = {
   device_id: "endpoint-proof",
   tenant_id: "default",

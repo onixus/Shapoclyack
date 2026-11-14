@@ -3911,3 +3911,29 @@ class AssetGroupSweep(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id", ondelete="CASCADE"), primary_key=True)
     after_asset_id: Mapped[str | None]
     updated_at: Mapped[datetime]
+
+
+class ProductLicense(Base):
+    """Installation-wide signed product license (ADR 0007).
+
+    At most one row is ``active`` at a time. The signed document is kept so an
+    auditor can re-verify it offline; entitlement checks read the denormalised
+    columns. Absence of a row is not "unlimited forever" when enforcement is
+    on — see ``api.services.licensing``.
+    """
+
+    __tablename__ = "product_licenses"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    license_id: Mapped[str] = mapped_column(unique=True, index=True)
+    customer_name: Mapped[str]
+    issued_at: Mapped[datetime]
+    valid_from: Mapped[datetime]
+    expires_at: Mapped[datetime]
+    feature_lariska: Mapped[bool] = mapped_column(default=False)
+    feature_brand_watch: Mapped[bool] = mapped_column(default=False)
+    note: Mapped[str] = mapped_column(default="", server_default="")
+    document_json: Mapped[str] = mapped_column(Text)
+    uploaded_at: Mapped[datetime]
+    uploaded_by: Mapped[str] = mapped_column(default="", server_default="")
+    active: Mapped[bool] = mapped_column(default=True, index=True)

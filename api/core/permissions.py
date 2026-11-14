@@ -159,6 +159,10 @@ TENANT_RETENTION_MANAGE = "tenant.retention.manage"
 #: their own hold could let evidence age out mid-litigation, and one who could
 #: place it could keep data past what the platform agreed to store.
 PLATFORM_LEGAL_HOLD_MANAGE = "platform.legal_hold.manage"
+#: Upload and activate the installation's signed product license
+#: (``POST /api/license``, ADR 0007). Platform-only: the document gates Lariska,
+#: Brand Watch and new scans for every tenant on this install.
+PLATFORM_LICENSE_MANAGE = "platform.license.manage"
 #: Approve or reject a requested risk acceptance on a finding
 #: (``POST /api/vulnerabilities/{id}/exception/{approve,reject}``, #348).
 #: Holding it is necessary and not sufficient: the service refuses the person
@@ -205,6 +209,7 @@ PERMISSIONS: dict[str, str] = {
     TENANT_RETENTION_READ: "Read the tenant's data retention policy and legal hold",
     TENANT_RETENTION_MANAGE: "Set the tenant's retention windows within the platform bounds",
     PLATFORM_LEGAL_HOLD_MANAGE: "Place and release a legal hold on any tenant",
+    PLATFORM_LICENSE_MANAGE: "Upload and activate the installation's product license",
     ASSET_IMPORT: "Import a CMDB or directory export into the asset registry",
 }
 

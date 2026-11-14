@@ -82,6 +82,21 @@ describe("ScanLauncher", () => {
     vi.restoreAllMocks();
     useAuthStore.setState({ activeTenant: null });
     mockSystemStatus("local");
+    vi.spyOn(apiModule, "getLicense").mockResolvedValue({
+      installed: true,
+      active: true,
+      enforcement_enabled: false,
+      product_active: true,
+      new_scans_allowed: true,
+      features: { lariska: true, brand_watch: false },
+      license_id: "lic-test",
+      customer_name: "Test",
+      valid_from: "2026-01-01T00:00:00Z",
+      expires_at: "2027-01-01T00:00:00Z",
+      issued_at: "2025-12-01T00:00:00Z",
+      note: null,
+      reason: null,
+    });
     vi.spyOn(apiModule, "fetchWordlists").mockResolvedValue([]);
   });
 
