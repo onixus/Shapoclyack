@@ -64,6 +64,8 @@ from api.services.licensing import (
     LicenseExpired,
     LicenseFeatureDenied,
     LicenseMissing,
+    LicenseNotYetValid,
+    LicenseStoreUnavailable,
 )
 from api.settings import Settings
 
@@ -76,7 +78,13 @@ def _require_lariska(settings: Settings) -> None:
     """Refuse Lariska ingest/management when the product license does not grant it."""
     try:
         licensing.assert_lariska(settings)
-    except (LicenseExpired, LicenseMissing, LicenseFeatureDenied) as exc:
+    except (
+        LicenseExpired,
+        LicenseMissing,
+        LicenseFeatureDenied,
+        LicenseNotYetValid,
+        LicenseStoreUnavailable,
+    ) as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
         ) from exc
@@ -247,6 +255,7 @@ def refresh_tenant_cve_matches(
     comes back, not at the end of the worker's interval. The matcher has
     already been re-run, so the fold reads the rows rather than re-matching.
     """
+    _require_lariska(settings)
     result = cve_match_service.run_for_tenant(settings, tenant_id=principal.tenant_id)
     stats = software_findings.ingest_tenant(
         settings, tenant_id=principal.tenant_id, run_matcher=False
@@ -287,6 +296,7 @@ def refresh_device_cve_matches(
 ) -> dict:
     """Re-run the matcher for one device, then fold the result into the
     vulnerability lifecycle (see the tenant-wide route for why synchronously)."""
+    _require_lariska(settings)
     result = cve_match_service.run_for_device(
         settings, tenant_id=principal.tenant_id, device_id=device_id
     )
@@ -432,8 +442,10 @@ def delete_default_agent_policy(
     principal: Annotated[
         TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
     ],
+    settings: SettingsDep,
     _: StepUpDep,
 ) -> Response:
+    _require_lariska(settings)
     endpoint_agent_mgmt.delete_policy(tenant_id=principal.tenant_id, agent_id=None)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -444,8 +456,10 @@ def delete_agent_policy(
     principal: Annotated[
         TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
     ],
+    settings: SettingsDep,
     _: StepUpDep,
 ) -> Response:
+    _require_lariska(settings)
     endpoint_agent_mgmt.delete_policy(tenant_id=principal.tenant_id, agent_id=agent_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

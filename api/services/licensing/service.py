@@ -17,10 +17,10 @@ from api.services.licensing.errors import (
     LicenseFeatureDenied,
     LicenseInvalid,
     LicenseMissing,
+    LicenseNotYetValid,
+    LicenseStoreUnavailable,
 )
 from api.services.licensing.format import (
-    Features,
-    LicensePayload,
     parse_utc,
     to_iso,
     verify_license,
@@ -36,6 +36,11 @@ def configure(settings: Settings) -> None:
     """Pin the Postgres URL for entitlement reads (same pattern as audit/tenants)."""
     global _settings
     _settings = settings
+    if settings.license_enforcement_enabled and not (settings.license_public_key or "").strip():
+        _log.error(
+            "OCTO_LICENSE_ENFORCEMENT_ENABLED is on but OCTO_LICENSE_PUBLIC_KEY is empty; "
+            "new scans and license uploads will be refused until a pin is configured"
+        )
 
 
 def _require_settings() -> Settings:
@@ -45,6 +50,14 @@ def _require_settings() -> Settings:
 
 def _now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
+
+
+def _pin_required(settings: Settings) -> bool:
+    return bool(settings.license_enforcement_enabled)
+
+
+def _has_pin(settings: Settings) -> bool:
+    return bool((settings.license_public_key or "").strip())
 
 
 @dataclass(frozen=True)
@@ -85,21 +98,23 @@ class LicenseStatus:
         }
 
 
-def active_license(
-    settings: Settings | None = None,
-) -> models.ProductLicense | None:
-    """Return the active license row, or ``None`` when none / no store.
+@dataclass(frozen=True)
+class _LicenseLookup:
+    """Result of reading the active row.
 
-    An empty ``postgres_url`` is treated as "no license installed" rather than
-    raising: unit tests and no-infra CI exercise ``start_scan`` without Postgres,
-    and the gate must not invent a hard dependency there. Enforcement still
-    closes the product when ``license_enforcement_enabled`` is on and this
-    returns ``None``.
+    ``unavailable`` is True only when a configured store failed — distinct from
+    "no row" (grandfathered when enforcement is off) and from an empty
+    ``postgres_url`` (no-infra / unit tests).
     """
-    cfg = settings if settings is not None else _require_settings()
-    url = (cfg.postgres_url or "").strip()
+
+    row: models.ProductLicense | None
+    unavailable: bool = False
+
+
+def _load_active(settings: Settings) -> _LicenseLookup:
+    url = (settings.postgres_url or "").strip()
     if not url:
-        return None
+        return _LicenseLookup(row=None, unavailable=False)
     try:
         with get_session(url) as session:
             row = session.scalar(
@@ -109,27 +124,24 @@ def active_license(
                 .limit(1)
             )
             if row is None:
-                return None
+                return _LicenseLookup(row=None, unavailable=False)
             session.expunge(row)
-            return row
-    except Exception:  # noqa: BLE001 - fail-soft like system_status panels
+            return _LicenseLookup(row=row, unavailable=False)
+    except Exception:  # noqa: BLE001 - classify, then fail closed at the gate
         _log.warning("licensing: could not read product_licenses", exc_info=True)
-        return None
+        return _LicenseLookup(row=None, unavailable=True)
 
 
-def _payload_from_row(row: models.ProductLicense) -> LicensePayload:
-    return LicensePayload(
-        license_id=row.license_id,
-        customer_name=row.customer_name,
-        issued_at=parse_utc(row.issued_at),
-        valid_from=parse_utc(row.valid_from),
-        expires_at=parse_utc(row.expires_at),
-        features=Features(
-            lariska=bool(row.feature_lariska),
-            brand_watch=bool(row.feature_brand_watch),
-        ),
-        note=row.note or "",
-    )
+def active_license(
+    settings: Settings | None = None,
+) -> models.ProductLicense | None:
+    """Return the active license row, or ``None`` when none / no store / error.
+
+    Prefer :func:`license_status` / :func:`assert_new_scan_allowed` for gates:
+    a store error must fail closed, which this helper alone cannot express.
+    """
+    cfg = settings if settings is not None else _require_settings()
+    return _load_active(cfg).row
 
 
 def product_active(
@@ -137,32 +149,57 @@ def product_active(
     *,
     now: datetime | None = None,
     row: models.ProductLicense | None = None,
+    unavailable: bool = False,
 ) -> bool:
-    """Whether the contracted product term is currently open."""
+    """Whether the contracted product term is currently open (half-open interval)."""
+    if unavailable:
+        return False
     moment = parse_utc(now or _now())
-    license_row = row if row is not None else active_license(settings)
-    if license_row is None:
+    if row is None:
         # No document: open only when enforcement is off (dev / grandfathered).
         return not settings.license_enforcement_enabled
-    start = parse_utc(license_row.valid_from)
-    end = parse_utc(license_row.expires_at)
+    start = parse_utc(row.valid_from)
+    end = parse_utc(row.expires_at)
     return start <= moment < end
 
 
-def lariska_entitled(settings: Settings, *, now: datetime | None = None) -> bool:
-    if not product_active(settings, now=now):
+def lariska_entitled(
+    settings: Settings,
+    *,
+    now: datetime | None = None,
+    row: models.ProductLicense | None = None,
+    unavailable: bool = False,
+) -> bool:
+    if unavailable:
         return False
-    row = active_license(settings)
+    if row is None and now is None:
+        lookup = _load_active(settings)
+        row, unavailable = lookup.row, lookup.unavailable
+        if unavailable:
+            return False
+    if not product_active(settings, now=now, row=row, unavailable=unavailable):
+        return False
     if row is None:
-        # Grandfathered install: env flag remains authoritative.
         return bool(settings.endpoint_inventory_enabled)
     return bool(row.feature_lariska) and bool(settings.endpoint_inventory_enabled)
 
 
-def brand_watch_entitled(settings: Settings, *, now: datetime | None = None) -> bool:
-    if not product_active(settings, now=now):
+def brand_watch_entitled(
+    settings: Settings,
+    *,
+    now: datetime | None = None,
+    row: models.ProductLicense | None = None,
+    unavailable: bool = False,
+) -> bool:
+    if unavailable:
         return False
-    row = active_license(settings)
+    if row is None and now is None:
+        lookup = _load_active(settings)
+        row, unavailable = lookup.row, lookup.unavailable
+        if unavailable:
+            return False
+    if not product_active(settings, now=now, row=row, unavailable=unavailable):
+        return False
     if row is None:
         return False
     return bool(row.feature_brand_watch)
@@ -172,17 +209,43 @@ def license_status(
     settings: Settings, *, now: datetime | None = None
 ) -> LicenseStatus:
     moment = parse_utc(now or _now())
-    row = active_license(settings)
     enforcement = bool(settings.license_enforcement_enabled)
-    if row is None:
-        active = not enforcement
+    if _pin_required(settings) and not _has_pin(settings):
         return LicenseStatus(
             installed=False,
             active=False,
             enforcement_enabled=enforcement,
-            product_active=active,
-            new_scans_allowed=active and bool(settings.allow_scan_start),
-            lariska=bool(settings.endpoint_inventory_enabled) and active,
+            product_active=False,
+            new_scans_allowed=False,
+            lariska=False,
+            brand_watch=False,
+            reason="enforcement requires OCTO_LICENSE_PUBLIC_KEY",
+        )
+
+    lookup = _load_active(settings)
+    if lookup.unavailable:
+        # Commercial stop must not lift because Postgres blinked.
+        return LicenseStatus(
+            installed=False,
+            active=False,
+            enforcement_enabled=enforcement,
+            product_active=False,
+            new_scans_allowed=False,
+            lariska=False,
+            brand_watch=False,
+            reason="license store unavailable",
+        )
+
+    row = lookup.row
+    if row is None:
+        open_without = not enforcement
+        return LicenseStatus(
+            installed=False,
+            active=False,
+            enforcement_enabled=enforcement,
+            product_active=open_without,
+            new_scans_allowed=open_without and bool(settings.allow_scan_start),
+            lariska=bool(settings.endpoint_inventory_enabled) and open_without,
             brand_watch=False,
             reason=(
                 "no license installed; enforcement requires one"
@@ -190,6 +253,7 @@ def license_status(
                 else "no license installed; enforcement disabled"
             ),
         )
+
     start = parse_utc(row.valid_from)
     end = parse_utc(row.expires_at)
     in_term = start <= moment < end
@@ -200,13 +264,15 @@ def license_status(
         reason = "license expired"
     return LicenseStatus(
         installed=True,
+        # ``active`` means "this is the installation's current license row",
+        # not that the commercial term is open — see ``product_active``.
         active=True,
         enforcement_enabled=enforcement,
         product_active=in_term,
         new_scans_allowed=in_term and bool(settings.allow_scan_start),
-        lariska=in_term and bool(row.feature_lariska) and bool(
-            settings.endpoint_inventory_enabled
-        ),
+        lariska=in_term
+        and bool(row.feature_lariska)
+        and bool(settings.endpoint_inventory_enabled),
         brand_watch=in_term and bool(row.feature_brand_watch),
         license_id=row.license_id,
         customer_name=row.customer_name,
@@ -223,23 +289,50 @@ def assert_new_scan_allowed(settings: Settings, *, now: datetime | None = None) 
     status = license_status(settings, now=now)
     if status.new_scans_allowed:
         return
+    if status.reason == "license store unavailable":
+        raise LicenseStoreUnavailable(
+            "Scan start refused: product license store unavailable"
+        )
+    if status.reason == "enforcement requires OCTO_LICENSE_PUBLIC_KEY":
+        raise LicenseMissing(
+            "Scan start refused: OCTO_LICENSE_PUBLIC_KEY required when enforcement is enabled"
+        )
     if not status.installed and status.enforcement_enabled:
         raise LicenseMissing("Scan start refused: no product license installed")
     if status.installed and not status.product_active:
+        if status.reason == "license not yet valid":
+            raise LicenseNotYetValid(
+                f"Scan start refused: product license not valid until {status.valid_from}"
+            )
         raise LicenseExpired(
             f"Scan start refused: product license expired"
             f"{f' at {status.expires_at}' if status.expires_at else ''}"
         )
     if not settings.allow_scan_start:
-        raise LicenseExpired("Scan start disabled by OCTO_ALLOW_SCAN_START")
+        raise RuntimeError("Scan start disabled by OCTO_ALLOW_SCAN_START")
     raise LicenseMissing("Scan start refused: product license not active")
 
 
 def assert_lariska(settings: Settings, *, now: datetime | None = None) -> None:
-    if lariska_entitled(settings, now=now):
+    lookup = _load_active(settings)
+    if lookup.unavailable:
+        raise LicenseStoreUnavailable(
+            "Lariska refused: product license store unavailable"
+        )
+    if lariska_entitled(
+        settings, now=now, row=lookup.row, unavailable=lookup.unavailable
+    ):
         return
     status = license_status(settings, now=now)
+    if status.reason == "enforcement requires OCTO_LICENSE_PUBLIC_KEY":
+        raise LicenseMissing(
+            "Lariska refused: OCTO_LICENSE_PUBLIC_KEY required when enforcement is enabled"
+        )
     if not status.product_active:
+        if status.reason == "license not yet valid":
+            raise LicenseNotYetValid(
+                f"Lariska refused: product license not valid until {status.valid_from}"
+            )
         if status.installed:
             raise LicenseExpired("Lariska refused: product license expired")
         raise LicenseMissing("Lariska refused: no active product license")
@@ -247,10 +340,21 @@ def assert_lariska(settings: Settings, *, now: datetime | None = None) -> None:
 
 
 def assert_brand_watch(settings: Settings, *, now: datetime | None = None) -> None:
-    if brand_watch_entitled(settings, now=now):
+    lookup = _load_active(settings)
+    if lookup.unavailable:
+        raise LicenseStoreUnavailable(
+            "Brand Watch refused: product license store unavailable"
+        )
+    if brand_watch_entitled(
+        settings, now=now, row=lookup.row, unavailable=lookup.unavailable
+    ):
         return
     status = license_status(settings, now=now)
     if not status.product_active:
+        if status.reason == "license not yet valid":
+            raise LicenseNotYetValid(
+                f"Brand Watch refused: product license not valid until {status.valid_from}"
+            )
         if status.installed:
             raise LicenseExpired("Brand Watch refused: product license expired")
         raise LicenseMissing("Brand Watch refused: no active product license")
@@ -271,7 +375,10 @@ def brand_watch_overlay(
     from api.services.scan_intents import merge_config_extras
 
     base = dict(config_extra or {})
-    if brand_watch_entitled(settings, now=now):
+    lookup = _load_active(settings)
+    if brand_watch_entitled(
+        settings, now=now, row=lookup.row, unavailable=lookup.unavailable
+    ):
         return base
     return (
         merge_config_extras(
@@ -304,6 +411,11 @@ def install_license(
         raise LicenseInvalid("license document must be a JSON object")
 
     pinned = (settings.license_public_key or "").strip() or None
+    if _pin_required(settings) and not pinned:
+        raise LicenseInvalid(
+            "OCTO_LICENSE_PUBLIC_KEY is required when license enforcement is enabled"
+        )
+
     payload = verify_license(
         document,
         expected_public_key=pinned,

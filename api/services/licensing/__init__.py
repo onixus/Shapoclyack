@@ -13,6 +13,8 @@ from api.services.licensing.errors import (
     LicenseFeatureDenied,
     LicenseInvalid,
     LicenseMissing,
+    LicenseNotYetValid,
+    LicenseStoreUnavailable,
 )
 from api.services.licensing.service import (
     LicenseStatus,
@@ -48,8 +50,10 @@ __all__ = [
     "LicenseFeatureDenied",
     "LicenseInvalid",
     "LicenseMissing",
+    "LicenseNotYetValid",
     "LicensePayload",
     "LicenseStatus",
+    "LicenseStoreUnavailable",
     "active_license",
     "assert_brand_watch",
     "assert_lariska",

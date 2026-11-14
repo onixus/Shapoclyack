@@ -143,7 +143,7 @@ def key_id_for_public(public: Ed25519PublicKey) -> str:
 
 @dataclass(frozen=True)
 class Features:
-    lariska: bool = True
+    lariska: bool = False
     brand_watch: bool = False
 
     def as_dict(self) -> dict[str, bool]:
@@ -180,7 +180,7 @@ def build_payload(
     years: int | None = None,
     until: datetime | str | None = None,
     valid_from: datetime | str | None = None,
-    lariska: bool = True,
+    lariska: bool = False,
     brand_watch: bool = False,
     note: str = "",
     license_id: str | None = None,
