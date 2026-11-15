@@ -79,6 +79,7 @@ def test_fresh_and_both_existing_branches_really_upgrade_without_data_loss(monke
             "brand_watch_jobs",
             "brand_candidates",
             "brand_profiles",
+            "product_licenses",
         }
         migrate.run_upgrade(url)
         with engine.connect() as db:

@@ -171,6 +171,9 @@ def reset_for_tests() -> None:
         # Children before parents (FK constraints): identifiers/tags -> assets;
         # jobs/agents/scan_schedules/provisioning_keys -> tenants;
         # endpoint_* -> assets/tenants.
+        # Installation-wide: no tenant foreign key, so a license row left by
+        # another test would refuse later scan starts for want of a pin.
+        session.query(models.ProductLicense).delete()
         session.query(models.RunRiskAssessment).delete()
         session.query(models.Job).delete()
         session.query(models.Agent).delete()
