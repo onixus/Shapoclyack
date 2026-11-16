@@ -258,6 +258,44 @@ def test_windows_build_and_kb_golden(monkeypatch, installed, status, expected):
     assert card["upgrade_command"] is None
 
 
+def test_action_plan_names_recorded_owners_and_does_not_execute(monkeypatch):
+    built = cards(monkeypatch, [row()], language="ru")
+    owners = {"asset_owner_email": "owner@example.test", "business_unit": "payments",
+              "finding_assignee": "fix@example.test", "finding_owner_team": "soc"}
+    plan = service.attach_action_plan(built, owners, "ru")["action_plan"]
+    kinds = [step["kind"] for step in plan["steps"]]
+    assert kinds[:3] == ["confirm_owner", "approve_change_window", "backup"]
+    assert "upgrade" in kinds and kinds[-1] == "verify"
+    upgrade = next(step for step in plan["steps"] if step["kind"] == "upgrade")
+    assert upgrade["owner"] == "fix@example.test" and upgrade["owner_role"] == "finding_assignee"
+    assert upgrade["command"] and upgrade["effect_executed"] is False
+    window = next(step for step in plan["steps"] if step["kind"] == "approve_change_window")
+    assert window["owner"] == "soc" and window["owner_role"] == "finding_owner_team"
+    assert plan["effect_executed"] is False
+    assert all(step["requires_confirmation"] for step in plan["steps"])
+
+
+def test_missing_owner_is_a_step_not_an_invented_name():
+    plan = service.attach_action_plan({"items": [{
+        "kind": "package_upgrade", "package": "curl", "status": "fix_available",
+        "target_version": "2", "upgrade_command": "apt-get upgrade curl",
+    }]}, None, "en")["action_plan"]
+    assert plan["steps"][0]["kind"] == "assign_owner"
+    assert plan["steps"][0]["status"] == "owner_unknown"
+    assert "owner" not in plan["steps"][0]
+    assert plan["owners"] is None
+    assert "apt-get" not in plan["steps"][0]["text"]
+
+
+def test_owner_fields_reject_commands_and_blank_values():
+    assert service._owner_field("  owner@example.test  ", email=True) == "owner@example.test"
+    assert service._owner_field("not-an-email", email=True) is None
+    assert service._owner_field("rm -rf /") is None or "\n" not in (service._owner_field("rm -rf /") or "")
+    assert service._owner_field("line\nbreak") == "line break"
+    assert service._owner_field("bad\x00name") is None
+    assert service._owner_field("   ") is None
+
+
 def test_empty_and_truncated_are_not_safe(monkeypatch):
     assert cards(monkeypatch, [])["state"] == "unknown"
     result = cards(monkeypatch, [row()], truncated=True)

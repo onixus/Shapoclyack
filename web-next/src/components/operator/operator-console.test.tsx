@@ -748,6 +748,7 @@ describe("operator console", () => {
     await userEvent.type(screen.getByLabelText("Endpoint device ID"), "d1");
     await userEvent.click(screen.getByRole("button", { name: "Find fixes" }));
     expect(await screen.findByText(/No confirmed fix cards are available/)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Remediation steps · review only" })).not.toBeInTheDocument();
     expect(screen.getByText(/Missing inventory/)).toBeInTheDocument();
     expect(screen.queryByText("Suggested command for review only")).not.toBeInTheDocument();
     expect(operatorApi.remediation).toHaveBeenCalledWith(
@@ -918,8 +919,63 @@ describe("operator console", () => {
         ),
       ).not.toBeInTheDocument();
       expect(block.queryAllByRole("button")).toHaveLength(0);
+      expect(
+        screen.queryByRole("region", {
+          name: locale === "en" ? "Remediation steps · review only" : "Шаги устранения · только проверка",
+        }),
+      ).not.toBeInTheDocument();
       expect(operatorApi.prepare).not.toHaveBeenCalled();
       expect(operatorApi.confirm).not.toHaveBeenCalled();
     },
   );
+
+  it("shows recorded owners on review-only remediation steps and never submits them", async () => {
+    vi.mocked(operatorApi.remediation).mockResolvedValue({
+      device_id: "d1",
+      state: "complete",
+      quality_status: "deterministic",
+      reason: null,
+      truncated: false,
+      owners: { asset_owner_email: "owner@example.test", business_unit: "payments" },
+      action_plan: {
+        origin: "shapoclyack_operator_runbook",
+        status: "manual_approval_required",
+        effect_executed: false,
+        owners: { asset_owner_email: "owner@example.test", business_unit: "payments" },
+        steps: [
+          {
+            order: 1,
+            kind: "confirm_owner",
+            status: "recorded",
+            text: "Confirm the recorded owner agrees to this remediation.",
+            requires_confirmation: true,
+            effect_executed: false,
+            owner_role: "asset_owner_email",
+            owner: "owner@example.test",
+          },
+          {
+            order: 2,
+            kind: "upgrade",
+            status: "manual_approval_required",
+            text: "Upgrade curl to vendor version 2 from an approved repository only.",
+            requires_confirmation: true,
+            effect_executed: false,
+            owner: "owner@example.test",
+            command: "apt-get upgrade curl",
+          },
+        ],
+      },
+      items: [],
+    });
+    renderConsole();
+    await userEvent.type(await screen.findByLabelText("Endpoint device ID"), "d1");
+    await userEvent.click(screen.getByRole("button", { name: "Find fixes" }));
+    const plan = within(await screen.findByRole("region", { name: "Remediation steps · review only" }));
+    expect(plan.getAllByText(/owner@example.test/).length).toBeGreaterThan(0);
+    expect(plan.getByText(/payments/)).toBeVisible();
+    expect(plan.getByText(/Upgrade curl to vendor version 2/)).toBeVisible();
+    expect(plan.getByText("apt-get upgrade curl")).toBeVisible();
+    expect(plan.queryAllByRole("button")).toHaveLength(0);
+    expect(operatorApi.prepare).not.toHaveBeenCalled();
+  });
 });
