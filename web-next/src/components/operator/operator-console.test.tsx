@@ -965,7 +965,19 @@ describe("operator console", () => {
           },
         ],
       },
-      items: [],
+      // Match production: upgrade steps come from vendor cards, not an empty items list.
+      items: [
+        {
+          kind: "package_upgrade",
+          package: "curl",
+          status: "fix_available",
+          installed_version: "1",
+          target_version: "2",
+          upgrade_command: "apt-get upgrade curl",
+          cve_ids: ["CVE-2024-1"],
+          sources: [],
+        },
+      ],
     });
     renderConsole();
     await userEvent.type(await screen.findByLabelText("Endpoint device ID"), "d1");

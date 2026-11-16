@@ -192,21 +192,23 @@ def test_finding_assignee_outranks_the_asset_owner(env):
         db.add(models.Vulnerability(
             vuln_id="vln-590", tenant_id="default", asset_id="asset-590", finding_key="k-590",
             state="OPEN", state_changed_at=now, severity="medium", title="finding",
-            first_seen_at=now, last_seen_at=now, created_at=now, updated_at=now,
-            assignee="fix@example.test", owner_team="soc"))
+            first_seen_at=now, last_seen_at=now, sla_started_at=now, created_at=now, updated_at=now,
+            assignee="ada", owner_team="soc"))
     response = client.get("/api/operator/remediation/findings/vln-590", headers=headers["viewer"],
                           params={"tenant_id": "default", "language": "en"})
     assert response.status_code == 200, response.text
-    plan = response.json()["action_plan"]
-    assert response.json()["owners"]["finding_assignee"] == "fix@example.test"
-    assert _step(plan, "backup")["owner"] == "fix@example.test"
+    body = response.json()
+    plan = body["action_plan"]
+    assert body["owners"]["finding_assignee"] == "ada"
+    assert body["owners"]["asset_owner_email"] == "owner@example.test"
+    assert _step(plan, "backup")["owner"] == "ada"
     assert _step(plan, "backup")["owner_role"] == "finding_assignee"
     assert _step(plan, "approve_change_window")["owner"] == "soc"
     assert plan["effect_executed"] is False
     foreign = client.get("/api/operator/remediation/findings/vln-590", headers=headers["admin"],
                          params={"tenant_id": "missing-tenant"})
     assert foreign.status_code in {403, 404}
-    assert "fix@example.test" not in foreign.text
+    assert "ada" not in foreign.text
 
 
 def test_numeric_citation_opens_fixed_manual_plan_and_old_runbook_is_rejected(env, monkeypatch, tmp_path):

@@ -33,6 +33,12 @@ TRACE_REVIEW_KEY = "operator_apache24_applicability_v1"
 PACKAGE_RUNBOOK_FILE = Path(__file__).parent / "data/package-upgrade-runbook-v1.json"
 PACKAGE_RUNBOOK_SHA256 = "6ca3debdd3e0f2bfb08f258b5e0fba6e615328add8c6060b31791b3e2b1dc68a"
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+$")
+# Only asset owner emails require mailbox shape. Assignees and teams are free-form
+# actor labels on the platform (e.g. ``ada``), so they use the label sanitizer.
+_EMAIL_OWNER_KEYS = frozenset({"asset_owner_email"})
+_OWNER_KEYS = frozenset({
+    "asset_owner_email", "business_unit", "finding_assignee", "finding_owner_team",
+})
 
 
 def _owner_field(value, *, email=False):
@@ -76,7 +82,7 @@ def resource_owners(db, tenant_id, *, asset_id=None, device_id=None, vuln_id=Non
         if unit:
             owners["business_unit"] = unit
     if finding is not None:
-        assignee = _owner_field(finding.assignee, email=True)
+        assignee = _owner_field(finding.assignee)
         team = _owner_field(finding.owner_team)
         if assignee:
             owners["finding_assignee"] = assignee
@@ -126,12 +132,11 @@ def _recorded_owners(owners):
     """Keep only stored owner fields that survive the same checks as a database read."""
     if not isinstance(owners, dict):
         return None
-    allowed = {"asset_owner_email", "business_unit", "finding_assignee", "finding_owner_team"}
     recorded = {}
     for key, value in owners.items():
-        if key not in allowed:
+        if key not in _OWNER_KEYS:
             continue
-        clean = _owner_field(value, email=key.endswith("email"))
+        clean = _owner_field(value, email=key in _EMAIL_OWNER_KEYS)
         if clean:
             recorded[key] = clean
     return recorded or None

@@ -290,10 +290,43 @@ def test_missing_owner_is_a_step_not_an_invented_name():
 def test_owner_fields_reject_commands_and_blank_values():
     assert service._owner_field("  owner@example.test  ", email=True) == "owner@example.test"
     assert service._owner_field("not-an-email", email=True) is None
+    assert service._owner_field("ada") == "ada"
+    assert service._owner_field("  mallory  ") == "mallory"
     assert service._owner_field("rm -rf /") is None or "\n" not in (service._owner_field("rm -rf /") or "")
     assert service._owner_field("line\nbreak") == "line break"
     assert service._owner_field("bad\x00name") is None
     assert service._owner_field("   ") is None
+
+
+def test_login_assignee_is_change_owner_not_email():
+    plan = service.attach_action_plan({"items": [{
+        "kind": "package_upgrade", "package": "curl", "status": "fix_available",
+        "target_version": "2", "upgrade_command": "apt-get upgrade curl",
+    }]}, {"finding_assignee": "ada", "asset_owner_email": "owner@example.test"}, "en")["action_plan"]
+    assert plan["owners"]["finding_assignee"] == "ada"
+    assert plan["steps"][0]["kind"] == "confirm_owner"
+    assert plan["steps"][0]["owner"] == "ada"
+    upgrade = next(step for step in plan["steps"] if step["kind"] == "upgrade")
+    assert upgrade["owner"] == "ada" and upgrade["owner_role"] == "finding_assignee"
+
+
+def test_recorded_owners_use_per_key_rules_not_email_suffix():
+    recorded = service._recorded_owners({
+        "finding_assignee": "ada",
+        "finding_owner_team": "soc",
+        "business_unit": "payments",
+        "asset_owner_email": "not-an-email",
+        "forged_owner_email": "spoof@example.test",
+        "ignored": "x",
+    })
+    assert recorded == {
+        "finding_assignee": "ada",
+        "finding_owner_team": "soc",
+        "business_unit": "payments",
+    }
+    assert service._recorded_owners({"asset_owner_email": "owner@example.test"}) == {
+        "asset_owner_email": "owner@example.test",
+    }
 
 
 # Forty review cases for #590. They are not part of the frozen domain dataset:
@@ -305,7 +338,7 @@ PLAN_CASES = [
     ("ubuntu-already-fixed", {"status": "fixed", "installed_version": "7.68.0-1ubuntu2.10"}, {"asset_owner_email": "owner@example.test"}, "fixed", "7.68.0-1ubuntu2.10", "remediate", None),
     ("debian-epoch", {"distro": "debian", "distro_release": "bookworm", "installed_version": "1:1.0-2", "fixed_version": "1:1.0-10", "purl": "pkg:deb/debian/curl@1:1.0-2"}, {"business_unit": "payments"}, "fix_available", "1:1.0-10", "upgrade", "payments"),
     ("debian-fixed-older-upstream", {"distro": "debian", "status": "fixed", "installed_version": "1:1.0-10", "fixed_version": "1:1.0-2", "purl": "pkg:deb/debian/curl@1:1.0-10"}, None, "fixed", "1:1.0-2", "remediate", None),
-    ("no-fix-open", {"fixed_version": None}, {"finding_assignee": "fix@example.test"}, "no_fix", None, "remediate", "fix@example.test"),
+    ("no-fix-open", {"fixed_version": None}, {"finding_assignee": "ada"}, "no_fix", None, "remediate", "ada"),
     ("stale-feed", {"feed_date": "2020-01-01"}, {"finding_owner_team": "soc"}, "stale", None, "remediate", "soc"),
     ("stale-inventory", {}, {"asset_owner_email": "owner@example.test"}, "stale", None, "remediate", "owner@example.test"),
     ("wrong-snapshot", {"snapshot_id": "other"}, None, "unknown", None, "remediate", None),
@@ -315,7 +348,7 @@ PLAN_CASES = [
     ("rpm-fixed", {"distro": "rhel", "status": "fixed", "installed_version": "2:1.0-1.el9", "fixed_version": "1:9.0-99.el9", "purl": "pkg:rpm/rhel/curl@2:1.0-1.el9", "evidence": {"architecture": "x86_64", "product_id": "vendor-product"}}, None, "fixed", "1:9.0-99.el9", "remediate", None),
     ("sles-vulnerable", {"distro": "sles", "installed_version": "1.0-1", "fixed_version": "1.0-2", "purl": "pkg:rpm/sles/curl@1.0-1", "evidence": {"architecture": "x86_64", "product_id": "vendor-product"}}, {"business_unit": "platform"}, "fix_available", "1.0-2", "upgrade", "platform"),
     ("amazon-fixed", {"distro": "amazonlinux", "status": "fixed", "installed_version": "1.0-10", "fixed_version": "1.0-2", "purl": "pkg:rpm/amazonlinux/curl@1.0-10", "evidence": {"architecture": "x86_64", "product_id": "vendor-product"}}, None, "fixed", "1.0-2", "remediate", None),
-    ("rpm-wrong-arch", {"distro": "rhel", "purl": "pkg:rpm/rhel/curl@7.68.0-1ubuntu2.1", "evidence": {"architecture": "aarch64", "product_id": "vendor-product"}}, {"finding_assignee": "fix@example.test"}, "unknown", None, "remediate", "fix@example.test"),
+    ("rpm-wrong-arch", {"distro": "rhel", "purl": "pkg:rpm/rhel/curl@7.68.0-1ubuntu2.1", "evidence": {"architecture": "aarch64", "product_id": "vendor-product"}}, {"finding_assignee": "mallory"}, "unknown", None, "remediate", "mallory"),
     ("missing-version", {"installed_version": None}, None, "unknown", None, "remediate", None),
     ("bad-version", {"installed_version": "bad!"}, {"asset_owner_email": "not-an-email"}, "unknown", None, "remediate", None),
     ("unknown-status", {"status": "unknown"}, {"finding_owner_team": "soc"}, "unknown", None, "remediate", "soc"),
@@ -354,8 +387,7 @@ def test_forty_review_cases_keep_vendor_version_and_do_not_execute(
     assert plan["effect_executed"] is False
     assert all(step["effect_executed"] is False and step["requires_confirmation"] for step in plan["steps"])
     assert change in {step["kind"] for step in plan["steps"]}
-    recorded = {key: service._owner_field(value, email=key.endswith("email")) for key, value in (owners or {}).items()}
-    recorded = {key: value for key, value in recorded.items() if value}
+    recorded = service._recorded_owners(owners) or {}
     if recorded:
         assert plan["steps"][0]["kind"] == "confirm_owner"
     else:
