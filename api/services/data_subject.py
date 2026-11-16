@@ -185,6 +185,10 @@ SUBJECT_COLUMNS: dict[tuple[str, str], tuple[str, str]] = {
     ("tenant_quotas", "updated_by"): (PSEUDONYM, "attribution"),
     ("sla_escalation_policies", "updated_by"): (PSEUDONYM, "attribution"),
     ("endpoint_agent_releases", "uploaded_by"): (PSEUDONYM, "attribution"),
+    ("product_licenses", "uploaded_by"): (
+        PSEUDONYM,
+        "who activated the installation license; the username stays as its pseudonym",
+    ),
     ("endpoint_agent_policies", "updated_by"): (PSEUDONYM, "attribution"),
     ("retro_match_state", "refresh_requested_by"): (PSEUDONYM, "attribution"),
     ("tenant_retention_policies", "updated_by"): (PSEUDONYM, "attribution"),

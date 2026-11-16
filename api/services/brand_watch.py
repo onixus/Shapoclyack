@@ -38,8 +38,20 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from api.db import models
+
 from api.db.engine import get_session
 from api.settings import Settings
+
+def require_entitlement(settings: Settings) -> None:
+    """Hard stop for Brand Watch writes, claims and the dispatcher (ADR 0007).
+
+    Reads of profiles and diffs stay open: history remains visible after the
+    term ends. A missing license with enforcement off is still entitled.
+    """
+    from api.services import licensing
+
+    licensing.assert_brand_watch(settings)
+
 
 _log = logging.getLogger(__name__)
 
@@ -485,6 +497,7 @@ def create_profile(
     our_brand: bool = False,
     watched_names: list[str] | None = None,
 ) -> dict[str, Any]:
+    require_entitlement(settings)
     domains = [_norm_name(item) for item in official_domains if (item or "").strip()]
     labels = [item.split(".", 1)[0] for item in domains if "." in item]
     strings = validate_brand_strings(brand_strings or labels)
@@ -569,6 +582,7 @@ def approve_profile(
     """
     if not our_brand:
         raise BrandWatchError("our_brand must be confirmed before approve")
+    require_entitlement(settings)
     now = _now()
     with get_session(settings.postgres_url) as session:
         row = session.get(models.BrandProfile, profile_id)
@@ -609,6 +623,7 @@ def set_disposition(
 ) -> dict[str, Any]:
     if disposition not in DISPOSITIONS:
         raise BrandWatchError(f"disposition must be one of {sorted(DISPOSITIONS)}")
+    require_entitlement(settings)
     now = _now()
     with get_session(settings.postgres_url) as session:
         row = session.get(models.BrandCandidate, candidate_id)
@@ -911,6 +926,10 @@ def claim_job(
     """
     if not sensor_may_claim(capabilities):
         return None
+    from api.services import licensing
+
+    if not licensing.brand_watch_entitled(settings):
+        return None
     now = _now()
     lease_until = now + timedelta(seconds=LEASE_SECONDS)
     with get_session(settings.postgres_url) as session:
@@ -1016,6 +1035,7 @@ def apply_result(
     """
     if not sensor_may_claim(capabilities):
         raise LeaseDenied("brand_watch capability is required")
+    require_entitlement(settings)
     fingerprint = hashlib.sha256(
         json.dumps(observations, sort_keys=True, default=str).encode()
     ).hexdigest()

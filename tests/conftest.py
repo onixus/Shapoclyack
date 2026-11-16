@@ -112,6 +112,7 @@ def reset_service_state(settings: "Settings") -> None:
     from api.services import audit as audit_service
     from api.services import auth_audit
     from api.services import config_override as config_service
+    from api.services import licensing as licensing_service
     from api.services import idempotency as idempotency_service
     from api.services import oidc as oidc_service
     from api.services import rate_limit
@@ -179,6 +180,10 @@ def reset_service_state(settings: "Settings") -> None:
     # between runs, so running one file on its own was enough to fail the next
     # full run.
     config_service.reset_for_tests(settings)
+    # product_licenses has no tenant foreign key. One uploaded row
+    # would otherwise keep gating scans and Brand Watch for the rest
+    # of the session.
+    licensing_service.reset_for_tests(settings)
     # Owed run publications carry a tenant id but no foreign key to it either,
     # and since #425 they are read through the API: a ``dead`` row one test
     # left would sit in the next test's job card and health check.

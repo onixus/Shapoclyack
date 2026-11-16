@@ -6,6 +6,7 @@ import {
   ClipboardCheck,
   Database,
   Eye,
+  FileKey,
   FileText,
   Gauge,
   Home,
@@ -246,6 +247,14 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         labelKey: "nav.system",
         icon: SlidersHorizontal,
         hintKey: "nav.hint.system",
+      },
+      {
+        // Read is open to every signed-in principal (same as /system); upload
+        // on the page is gated with `platform.license.manage` / global admin.
+        href: "/license",
+        labelKey: "nav.license",
+        icon: FileKey,
+        hintKey: "nav.hint.license",
       },
     ],
   },

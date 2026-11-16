@@ -11,7 +11,7 @@ from sqlalchemy.engine import make_url
 from api.db import migrate, models, tenant_scope
 from tests.conftest import POSTGRES_URL, requires_postgres
 
-HEAD = "0107_brand_watch"
+HEAD = "0108_product_licenses"
 MERGE_HEAD = "0104_operator_campaigns_merge"
 PARENTS = {"0103_operator_planner", "0101_remediation_campaigns"}
 
@@ -79,6 +79,7 @@ def test_fresh_and_both_existing_branches_really_upgrade_without_data_loss(monke
             "brand_watch_jobs",
             "brand_candidates",
             "brand_profiles",
+            "product_licenses",
         }
         migrate.run_upgrade(url)
         with engine.connect() as db:

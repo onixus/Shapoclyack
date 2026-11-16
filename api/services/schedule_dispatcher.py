@@ -25,6 +25,7 @@ from datetime import UTC, datetime, timedelta
 from api.schemas import StartScanRequest
 from api.services import job_states
 from api.services import jobs as jobs_service
+from api.services import licensing
 from api.services import maintenance
 from api.services import metrics as metrics_service
 from api.services import quotas
@@ -60,6 +61,8 @@ class ScheduleDispatcher:
             "skipped_not_leader": 0,
             "skipped_quota": 0,
             "skipped_policy": 0,
+            "skipped_license": 0,
+            "deferred_license": 0,
             "deferred_maintenance": 0,
             "deferred_queue_full": 0,
             "skipped_queue_full": 0,
@@ -219,6 +222,20 @@ class ScheduleDispatcher:
             self._stats["skipped_quota"] += 1
             LOG.warning("Schedule %s skipped: %s", sched["schedule_id"], exc)
             scan_schedules.record_skipped_dispatch(sched["schedule_id"], ran_at=now)
+            return
+        except (
+            licensing.LicenseExpired,
+            licensing.LicenseMissing,
+            licensing.LicenseNotYetValid,
+            licensing.LicenseStoreUnavailable,
+        ) as exc:
+            # Expected commercial refusal, not an error that should page every
+            # 30s. Defer one poll instead of skipping the occurrence: a license
+            # uploaded an hour later still gets today's tick.
+            retry_at = now + timedelta(seconds=max(self._poll_interval, 60))
+            self._stats["deferred_license"] += 1
+            LOG.warning("Schedule %s deferred until %s: %s", sched["schedule_id"], retry_at.isoformat(), exc)
+            scan_schedules.defer_dispatch(sched["schedule_id"], ran_at=now, until=retry_at)
             return
         except scan_policy.ScanPolicyViolation as violation:
             # The tenant's scan policy forbids what this schedule asks for

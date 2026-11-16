@@ -37,6 +37,7 @@ class BrandWatchDispatcher:
             "enqueued": 0,
             "rebuilt": 0,
             "skipped_not_leader": 0,
+            "skipped_license": 0,
             "errors": 0,
         }
 
@@ -86,6 +87,11 @@ class BrandWatchDispatcher:
         from api.db.engine import get_session
 
         self._stats["ticks"] += 1
+        from api.services import licensing
+
+        if not licensing.brand_watch_entitled(self._settings):
+            self._stats["skipped_license"] += 1
+            return {"enqueued": 0, "rebuilt": 0}
         moment = now or datetime.now(UTC).replace(tzinfo=None)
         enqueued = 0
         rebuilt = 0

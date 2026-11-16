@@ -27,6 +27,7 @@ import { useAgentSummary } from "@/hooks/use-agents";
 import { useJobs } from "@/hooks/use-jobs";
 import { usePagination } from "@/hooks/use-pagination";
 import { useRuns } from "@/hooks/use-runs";
+import { useLicense } from "@/hooks/use-license";
 import { useSystemStatus } from "@/hooks/use-system";
 import { useAuthStore } from "@/lib/auth-store";
 import { holdsGlobalRole } from "@/lib/authz";
@@ -171,6 +172,7 @@ function ScanOperationsInner({ surface }: { surface: OperationsSurface }) {
   const searchParams = useSearchParams();
   const { canOperate, user, activeTenant } = useAuthStore();
   const { data: system } = useSystemStatus();
+  const { data: license } = useLicense();
   // `null` = not decided by the operator yet: open on an empty tenant, closed otherwise.
   const [launcherOpen, setLauncherOpen] = useState<boolean | null>(null);
   const [launcherMounted, setLauncherMounted] = useState(false);
@@ -204,7 +206,12 @@ function ScanOperationsInner({ surface }: { surface: OperationsSurface }) {
     if (showLauncher) setLauncherMounted(true);
   }, [showLauncher]);
   const agentMode = system?.runtime.job_execution_mode === "agent";
-  const scanStartDisabled = system ? !system.runtime.allow_scan_start : false;
+  // Prefer the dedicated license endpoint: runtime.allow_scan_start still
+  // covers the ops kill-switch, and license.new_scans_allowed covers expiry /
+  // missing document under enforcement (ADR 0007).
+  const licenseBlocksScans = license != null && !license.new_scans_allowed;
+  const scanStartDisabled =
+    (system ? !system.runtime.allow_scan_start : false) || licenseBlocksScans;
   // In agent mode a scan is accepted and queued whether or not anything can
   // run it, which is right for a sensor that is restarting and wrong to keep
   // quiet about when there is none at all: before the executor is enrolled,
@@ -291,6 +298,23 @@ function ScanOperationsInner({ surface }: { surface: OperationsSurface }) {
           </p>
         </div>
       </PageHeader>
+
+      {licenseBlocksScans ? (
+        <div
+          role="status"
+          className="flex items-start gap-2 rounded-lg border border-danger/40 bg-danger-subtle px-3 py-2 text-xs text-danger"
+        >
+          <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <p>
+            {t("page.scans.licenseBlocked", {
+              reason: license?.reason || t("page.scans.licenseBlockedDefault"),
+            })}{" "}
+            <Link href="/license" className="font-semibold underline-offset-2 hover:underline">
+              {t("page.scans.licenseLink")}
+            </Link>
+          </p>
+        </div>
+      ) : null}
 
       {noSensor ? (
         <div

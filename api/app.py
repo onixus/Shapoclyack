@@ -73,6 +73,7 @@ from api.routes import retro_match as retro_match_routes
 from api.routes import notification_channels as notification_channels_routes
 from api.routes import webhooks as webhooks_routes
 from api.routes import wordlists as wordlists_routes
+from api.routes import licensing as licensing_routes
 from api.schemas import HealthResponse, SsoStatus
 from api.settings import Settings
 from api.services import agent_deployer
@@ -104,6 +105,7 @@ from api.services.integrations import webhook_worker
 from api.services.integrations import channels as channels_service
 from api.services.integrations import webhooks as webhooks_service
 from api.services import jobs as jobs_service
+from api.services import licensing
 from api.services import memberships as memberships_service
 from api.services import metrics as metrics_service
 from api.services import metrics_sources
@@ -435,6 +437,7 @@ def create_app() -> FastAPI:
     auth_audit.configure(settings)
     rate_limit.configure(settings)
     audit_service.configure(settings)
+    licensing.configure(settings)
     rbac_service.configure(settings)
     service_tokens_service.configure(settings)
     scim_tokens_service.configure(settings)
@@ -619,6 +622,7 @@ def create_app() -> FastAPI:
     include_api_router(assets_routes.router)
     include_api_router(asset_groups_routes.router)
     include_api_router(system_routes.router)
+    include_api_router(licensing_routes.router)
     include_api_router(config_routes.router)
     include_api_router(schedules_routes.router)
     include_api_router(brand_watch_routes.router)
