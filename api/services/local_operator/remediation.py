@@ -122,12 +122,27 @@ def _change_step(card, owners, language):
     return None
 
 
+def _recorded_owners(owners):
+    """Keep only stored owner fields that survive the same checks as a database read."""
+    if not isinstance(owners, dict):
+        return None
+    allowed = {"asset_owner_email", "business_unit", "finding_assignee", "finding_owner_team"}
+    recorded = {}
+    for key, value in owners.items():
+        if key not in allowed:
+            continue
+        clean = _owner_field(value, email=key.endswith("email"))
+        if clean:
+            recorded[key] = clean
+    return recorded or None
+
+
 def attach_action_plan(result, owners, language):
     """One ordered plan for the whole read. Owners are not part of vendor citation hashes."""
     if language not in {"ru", "en"}:
         raise GatewayError("operator_invalid_query")
     ru = language == "ru"
-    owners = owners or None
+    owners = _recorded_owners(owners)
     recorded = owners or {}
     assignee = recorded.get("finding_assignee")
     asset_owner = recorded.get("asset_owner_email")

@@ -99,6 +99,17 @@ names only the package and vendor target already on the card. Commands stay
 display-only. `effect_executed` is false on the plan and every step. Owners are
 not part of advisory citation hashes. `build_cards` itself does not attach a
 plan, so a caller without a database does not pretend an owner was looked up.
+Blank, non-email and control-character owner values are dropped again when the
+plan is attached, so a caller cannot bypass the database check.
+
+`tests/test_operator_remediation.py` runs 40 review cases (20 situations in
+Russian and English): backport, epoch, RPM, already fixed, no fix, stale feed,
+stale inventory, seed and missing feeds, wrong architecture, bad version, and
+missing or invalid owners. Each case checks the vendor target version, that
+`effect_executed` stays false, and that a missing owner is `assign_owner`
+rather than an invented name. These cases are separate from the frozen
+190-case domain dataset, whose digest is pinned and whose scorer does not
+score owners. They are not a model-quality evaluation.
 
 For a current finding from the exact shipped Pulse `shapo_http_trace` plugin,
 `GET /api/operator/remediation/findings/{vuln_id}` exposes configuration guidance

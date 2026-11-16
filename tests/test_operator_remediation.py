@@ -296,6 +296,87 @@ def test_owner_fields_reject_commands_and_blank_values():
     assert service._owner_field("   ") is None
 
 
+# Forty review cases for #590. They are not part of the frozen domain dataset:
+# that file's digest is pinned, and these also check the owner plan the frozen
+# scorer does not score. Every fixed version below is the fixture's own vendor
+# version, never a version invented by a model.
+PLAN_CASES = [
+    ("ubuntu-backport", {}, {"asset_owner_email": "owner@example.test"}, "fix_available", "7.68.0-1ubuntu2.10", "upgrade", "owner@example.test"),
+    ("ubuntu-already-fixed", {"status": "fixed", "installed_version": "7.68.0-1ubuntu2.10"}, {"asset_owner_email": "owner@example.test"}, "fixed", "7.68.0-1ubuntu2.10", "remediate", None),
+    ("debian-epoch", {"distro": "debian", "distro_release": "bookworm", "installed_version": "1:1.0-2", "fixed_version": "1:1.0-10", "purl": "pkg:deb/debian/curl@1:1.0-2"}, {"business_unit": "payments"}, "fix_available", "1:1.0-10", "upgrade", "payments"),
+    ("debian-fixed-older-upstream", {"distro": "debian", "status": "fixed", "installed_version": "1:1.0-10", "fixed_version": "1:1.0-2", "purl": "pkg:deb/debian/curl@1:1.0-10"}, None, "fixed", "1:1.0-2", "remediate", None),
+    ("no-fix-open", {"fixed_version": None}, {"finding_assignee": "fix@example.test"}, "no_fix", None, "remediate", "fix@example.test"),
+    ("stale-feed", {"feed_date": "2020-01-01"}, {"finding_owner_team": "soc"}, "stale", None, "remediate", "soc"),
+    ("stale-inventory", {}, {"asset_owner_email": "owner@example.test"}, "stale", None, "remediate", "owner@example.test"),
+    ("wrong-snapshot", {"snapshot_id": "other"}, None, "unknown", None, "remediate", None),
+    ("seed-feed", {}, None, "unknown", None, "remediate", None),
+    ("missing-feed", {}, {"asset_owner_email": "owner@example.test"}, "unknown", None, "remediate", "owner@example.test"),
+    ("rpm-epoch", {"distro": "rhel", "installed_version": "1:1.0-9.el9", "fixed_version": "1:1.0-10.el9", "purl": "pkg:rpm/rhel/curl@1:1.0-9.el9", "evidence": {"architecture": "x86_64", "product_id": "vendor-product"}}, {"business_unit": "platform"}, "fix_available", "1:1.0-10.el9", "upgrade", "platform"),
+    ("rpm-fixed", {"distro": "rhel", "status": "fixed", "installed_version": "2:1.0-1.el9", "fixed_version": "1:9.0-99.el9", "purl": "pkg:rpm/rhel/curl@2:1.0-1.el9", "evidence": {"architecture": "x86_64", "product_id": "vendor-product"}}, None, "fixed", "1:9.0-99.el9", "remediate", None),
+    ("sles-vulnerable", {"distro": "sles", "installed_version": "1.0-1", "fixed_version": "1.0-2", "purl": "pkg:rpm/sles/curl@1.0-1", "evidence": {"architecture": "x86_64", "product_id": "vendor-product"}}, {"business_unit": "platform"}, "fix_available", "1.0-2", "upgrade", "platform"),
+    ("amazon-fixed", {"distro": "amazonlinux", "status": "fixed", "installed_version": "1.0-10", "fixed_version": "1.0-2", "purl": "pkg:rpm/amazonlinux/curl@1.0-10", "evidence": {"architecture": "x86_64", "product_id": "vendor-product"}}, None, "fixed", "1.0-2", "remediate", None),
+    ("rpm-wrong-arch", {"distro": "rhel", "purl": "pkg:rpm/rhel/curl@7.68.0-1ubuntu2.1", "evidence": {"architecture": "aarch64", "product_id": "vendor-product"}}, {"finding_assignee": "fix@example.test"}, "unknown", None, "remediate", "fix@example.test"),
+    ("missing-version", {"installed_version": None}, None, "unknown", None, "remediate", None),
+    ("bad-version", {"installed_version": "bad!"}, {"asset_owner_email": "not-an-email"}, "unknown", None, "remediate", None),
+    ("unknown-status", {"status": "unknown"}, {"finding_owner_team": "soc"}, "unknown", None, "remediate", "soc"),
+    ("blank-owner", {}, {"asset_owner_email": "   ", "business_unit": ""}, "fix_available", "7.68.0-1ubuntu2.10", "upgrade", None),
+    ("control-owner", {}, {"business_unit": "pay\x00ments"}, "fix_available", "7.68.0-1ubuntu2.10", "upgrade", None),
+]
+
+
+@pytest.mark.parametrize("language", ["ru", "en"])
+@pytest.mark.parametrize(
+    "name,mutation,owners,status,target,change,change_owner",
+    PLAN_CASES,
+    ids=[case[0] for case in PLAN_CASES],
+)
+def test_forty_review_cases_keep_vendor_version_and_do_not_execute(
+        monkeypatch, language, name, mutation, owners, status, target, change, change_owner):
+    item = row(**mutation)
+    snap = snapshot(collected_at=NOW - timedelta(days=8)) if name == "stale-inventory" else None
+    feed = None
+    if name == "seed-feed":
+        feed = feed_for([item], source="bundled-seed-feed")
+    elif name == "missing-feed":
+        feed = feed_for([item], source="")
+    elif name == "no-fix-open":
+        data, records, digest = feed_for([item])
+        records[0].state = advisories.STATE_OPEN
+        records[0].fixed_version = None
+        feed = (data, records, digest)
+    built = cards(monkeypatch, [item], snap=snap, feed=feed, language=language)
+    card = built["items"][0]
+    assert card["status"] == status
+    assert card["target_version"] == target
+    if status != "fix_available":
+        assert card["upgrade_command"] is None
+    plan = service.attach_action_plan(built, owners, language)["action_plan"]
+    assert plan["effect_executed"] is False
+    assert all(step["effect_executed"] is False and step["requires_confirmation"] for step in plan["steps"])
+    assert change in {step["kind"] for step in plan["steps"]}
+    recorded = {key: service._owner_field(value, email=key.endswith("email")) for key, value in (owners or {}).items()}
+    recorded = {key: value for key, value in recorded.items() if value}
+    if recorded:
+        assert plan["steps"][0]["kind"] == "confirm_owner"
+    else:
+        assert plan["steps"][0]["kind"] == "assign_owner"
+        assert plan["owners"] is None
+    step = next(item for item in plan["steps"] if item["kind"] == change)
+    if change == "upgrade" and card["upgrade_command"]:
+        assert step["command"] == card["upgrade_command"]
+        assert target in step["text"]
+    else:
+        assert step.get("command") in {None, card["upgrade_command"]}
+    if change_owner:
+        assert change_owner in {step.get("owner"), plan["steps"][0].get("owner"),
+                                next(item.get("owner") for item in plan["steps"] if item["kind"] == "approve_change_window")}
+    assert "machine_verified" not in str(plan)
+
+
+def test_review_set_has_forty_cases():
+    assert len(PLAN_CASES) * 2 == 40
+
+
 def test_empty_and_truncated_are_not_safe(monkeypatch):
     assert cards(monkeypatch, [])["state"] == "unknown"
     result = cards(monkeypatch, [row()], truncated=True)
