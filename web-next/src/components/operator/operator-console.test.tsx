@@ -972,7 +972,9 @@ describe("operator console", () => {
     await userEvent.click(screen.getByRole("button", { name: "Find fixes" }));
     const plan = within(await screen.findByRole("region", { name: "Remediation steps · review only" }));
     expect(plan.getAllByText(/owner@example.test/).length).toBeGreaterThan(0);
-    expect(plan.getByText(/payments/)).toBeVisible();
+    expect(plan.getByText(/Asset owner: owner@example.test/)).toBeVisible();
+    expect(plan.getByText(/Business unit: payments/)).toBeVisible();
+    expect(plan.queryByText(/asset_owner_email/)).not.toBeInTheDocument();
     expect(plan.getByText(/Upgrade curl to vendor version 2/)).toBeVisible();
     expect(plan.getByText("apt-get upgrade curl")).toBeVisible();
     expect(plan.queryAllByRole("button")).toHaveLength(0);

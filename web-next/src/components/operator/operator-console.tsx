@@ -175,6 +175,10 @@ const copy = {
     owners: "Recorded owners",
     noOwner: "No resource owner is recorded.",
     stepOwner: "Owner",
+    asset_owner_email: "Asset owner",
+    business_unit: "Business unit",
+    finding_assignee: "Finding assignee",
+    finding_owner_team: "Remediation team",
     installed: "Installed",
     target: "Vendor target",
     unknown: "unknown",
@@ -319,6 +323,10 @@ const copy = {
     owners: "Указанные владельцы",
     noOwner: "Владелец ресурса не указан.",
     stepOwner: "Владелец",
+    asset_owner_email: "Владелец актива",
+    business_unit: "Подразделение",
+    finding_assignee: "Исполнитель находки",
+    finding_owner_team: "Команда устранения",
     installed: "Установлено",
     target: "Версия из бюллетеня безопасности",
     unknown: "неизвестно",
@@ -2030,7 +2038,7 @@ function RemediationPanel({
                   {c.owners}:{" "}
                   {result.data.owners
                     ? Object.entries(result.data.owners)
-                        .map(([role, name]) => `${role}: ${name}`)
+                        .map(([role, name]) => `${c[role as keyof Copy] ?? role}: ${name}`)
                         .join(" · ")
                     : c.noOwner}
                 </p>
@@ -2040,7 +2048,11 @@ function RemediationPanel({
                       <span>{step.text}</span>
                       {step.owner && (
                         <span className="mt-1 block text-xs text-muted-foreground">
-                          {c.stepOwner}: {step.owner_role} · {step.owner}
+                          {c.stepOwner}:{" "}
+                          {step.owner_role
+                            ? `${c[step.owner_role as keyof Copy] ?? step.owner_role} · `
+                            : ""}
+                          {step.owner}
                         </span>
                       )}
                       {step.command && (
