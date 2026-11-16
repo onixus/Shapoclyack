@@ -8,8 +8,11 @@ All notable changes to Shapoclyack are documented in this file.
 
 - The scan `summary.pdf` sets text in DejaVu Sans when the host has it, the
   same lookup as the report factory. Control titles are Russian, and the
-  Helvetica core font was printing each of those letters as `?`. A missing
-  or unreadable face still produces the report and falls back to Latin-1.
+  Helvetica core font was printing each of those letters as `?`. The scanner
+  image (`Dockerfile`) now installs `fonts-dejavu-core` alongside the API
+  and all-in-one images, so compose.full / scanner Jobs get the face too. A
+  missing or unreadable face still produces the report and falls back to
+  Latin-1.
 
 ### Added
 
