@@ -366,6 +366,10 @@ const selectableTools = [
   "verify_finding",
 ];
 
+function qualityStatusIsWarning(status?: string | null) {
+  return !status || status === "quality_unverified" || status === "unknown";
+}
+
 function useActiveMount() {
   const active = useRef(true);
   useEffect(() => {
@@ -552,7 +556,13 @@ export function OperatorConsole({
             <span className="rounded-full border border-control bg-muted px-2.5 py-1 text-xs font-semibold">
               {operatorStatusLabel(language, status.data.runtime_status)}
             </span>
-            <span className="rounded-full border border-warning/40 bg-warning-subtle px-2.5 py-1 text-xs font-semibold text-warning">
+            <span
+              className={
+                qualityStatusIsWarning(status.data.quality_status)
+                  ? "rounded-full border border-warning/40 bg-warning-subtle px-2.5 py-1 text-xs font-semibold text-warning"
+                  : "rounded-full border border-control bg-muted px-2.5 py-1 text-xs font-semibold text-muted-foreground"
+              }
+            >
               {operatorStatusLabel(language, status.data.quality_status)}
             </span>
           </div>
@@ -608,7 +618,15 @@ export function OperatorConsole({
               {c.retry}
             </Button>
           )}
-          <p className="text-warning">{c.quality}</p>
+          <p
+            className={
+              qualityStatusIsWarning(status.data.quality_status)
+                ? "text-warning"
+                : "text-muted-foreground"
+            }
+          >
+            {c.quality}
+          </p>
           <p className="text-muted-foreground">{c.safety}</p>
       </section>
       <Card>
@@ -669,14 +687,21 @@ export function OperatorConsole({
                 key={id}
                 type="button"
                 className="rounded-full border border-control bg-card px-3 py-1.5 text-sm font-semibold text-foreground hover:border-primary hover:text-primary"
-                onClick={() => document.getElementById(id)?.scrollIntoView({ block: "start" })}
+                onClick={() => {
+                  const section = document.getElementById(id);
+                  section?.scrollIntoView({ block: "start" });
+                  const heading = section?.querySelector("h2");
+                  if (heading instanceof HTMLElement) heading.focus();
+                }}
               >
                 {label}
               </button>
             ))}
           </nav>
           <section id="operator-ask" className="scroll-mt-4 space-y-3">
-            <h2 className="text-sm font-semibold text-foreground">{c.stepAsk}</h2>
+            <h2 tabIndex={-1} className="text-sm font-semibold text-foreground outline-none">
+              {c.stepAsk}
+            </h2>
             <p className="text-sm text-muted-foreground">{c.tabAskHint}</p>
           <PlannerPanel
             key={`planner:${session}`}
@@ -698,7 +723,9 @@ export function OperatorConsole({
           />
           </section>
           <section id="operator-review" className="scroll-mt-4 space-y-3">
-            <h2 className="text-sm font-semibold text-foreground">{c.stepReview}</h2>
+            <h2 tabIndex={-1} className="text-sm font-semibold text-foreground outline-none">
+              {c.stepReview}
+            </h2>
             <p className="text-sm text-muted-foreground">{c.tabReviewHint}</p>
           {draft && (
             <p role="status" className="rounded border border-primary/30 bg-primary/5 p-3 text-sm">
@@ -788,40 +815,45 @@ export function OperatorConsole({
           </Card>
           </section>
           <section id="operator-act" className="scroll-mt-4 space-y-4">
-            <h2 className="text-sm font-semibold text-foreground">{c.stepAct}</h2>
+            <h2 tabIndex={-1} className="text-sm font-semibold text-foreground outline-none">
+              {c.stepAct}
+            </h2>
             <p className="text-sm text-muted-foreground">{c.tabActHint}</p>
-          {canOperate && (
-            <ActionPanel
-              key={`actions:${session}`}
-              tenant={tenant}
-              actor={actor}
-              session={session}
-              canOperate={canOperate}
-              c={c}
-              history={detail.data.proposals ?? []}
-              draft={draft}
-            />
-          )}
-            <ComparePanel tenant={tenant} actor={actor} language={language} c={c} draft={draft} />
-            <RemediationPanel
-              tenant={tenant}
-              actor={actor}
-              language={language}
-              c={c}
-              onSource={source}
-              draft={draft}
-            />
+            {canOperate && (
+              <ActionPanel
+                key={`actions:${session}`}
+                tenant={tenant}
+                actor={actor}
+                session={session}
+                canOperate={canOperate}
+                c={c}
+                history={detail.data.proposals ?? []}
+                draft={draft}
+              />
+            )}
           </section>
         </>
       )}
+      {session && !detail.data && (
+        <p role="status" className="text-sm text-muted-foreground">
+          {detail.isError ? c.failed : c.loading}
+        </p>
+      )}
       {!session && (
-        <section className="space-y-4">
+        <section className="space-y-2">
           <p className="text-sm text-muted-foreground">{c.chooseSession}</p>
           <p className="text-sm text-muted-foreground">{c.tabActHint}</p>
-          <ComparePanel tenant={tenant} actor={actor} language={language} c={c} />
-          <RemediationPanel tenant={tenant} actor={actor} language={language} c={c} onSource={source} />
         </section>
       )}
+      <ComparePanel tenant={tenant} actor={actor} language={language} c={c} draft={draft} />
+      <RemediationPanel
+        tenant={tenant}
+        actor={actor}
+        language={language}
+        c={c}
+        onSource={source}
+        draft={draft}
+      />
       {sourceRequest && (
         <Dialog
           open

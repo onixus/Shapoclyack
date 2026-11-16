@@ -194,15 +194,6 @@
     font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
   }
 
-  /* Native checkboxes otherwise inherit a dark colour scheme with no painted
-     border, so an unchecked box disappears on a dark surface. */
-  input[type="checkbox"],
-  input[type="radio"] {
-    accent-color: hsl(var(--apex-accent));
-    border: 1px solid hsl(var(--control));
-    background-color: hsl(var(--background));
-  }
-
   ::selection {
     background: var(--apex-selection-bg);
   }
