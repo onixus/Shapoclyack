@@ -1952,7 +1952,13 @@ function RemediationPanel({
           ? draft.plan.arguments.device_id
           : "",
     );
-    select("");
+    select(
+      finding
+        ? (draft.plan.arguments.vuln_id as string)
+        : typeof draft.plan.arguments.device_id === "string"
+          ? draft.plan.arguments.device_id
+          : "",
+    );
   }, [draft]);
   const result = useQuery({
     queryKey: [...operatorKey(tenant, actor), "remediation", scope, selected, language],
