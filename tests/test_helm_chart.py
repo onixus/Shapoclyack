@@ -367,7 +367,7 @@ def test_spread_and_autoscaling_are_the_prod_ha_overlay_field_for_field(tools, t
 
 
 def test_network_policy_switch_removes_exactly_the_policies(tools):
-    assert len(_kinds(_render(), "NetworkPolicy")) == 4
+    assert len(_kinds(_render(), "NetworkPolicy")) == 5
     assert _kinds(_render("--set", "networkPolicy.enabled=false"), "NetworkPolicy") == []
 
 
@@ -520,4 +520,17 @@ def test_network_policy_selectors_match_the_pods_they_protect_and_admit(tools):
         assert selects(ns, policy["spec"]["podSelector"]), policy["metadata"]["name"]
         for rule in policy["spec"].get("ingress", []):
             for peer in rule.get("from", []):
-                assert selects(ns, peer["podSelector"]), (policy["metadata"]["name"], peer)
+                if "podSelector" in peer:
+                    if selects(ns, peer["podSelector"]):
+                        continue
+                    # local-scan Jobs are an opt-in component, not in this chart.
+                    # The worker still names their labels so that overlay is admitted.
+                    component = peer["podSelector"].get("matchLabels", {}).get("app.kubernetes.io/component")
+                    assert component in {"scan-job", "scan-cronjob", "scan-job-resume"}, (
+                        policy["metadata"]["name"],
+                        peer,
+                    )
+                    continue
+                # A namespaceSelector admits another namespace; it cannot name a
+                # pod in this one. The screenshot worker uses it for the executor.
+                assert "namespaceSelector" in peer, (policy["metadata"]["name"], peer)

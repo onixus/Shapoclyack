@@ -114,4 +114,42 @@ spec:
       app.kubernetes.io/name: shapoclyack
   policyTypes:
   - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/component: screenshot-worker
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-screenshot-worker-ingress
+  namespace: {{ .Release.Namespace }}
+spec:
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Values.namespaces.executor.name }}
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: scan-job
+          app.kubernetes.io/name: shapoclyack
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: scan-cronjob
+          app.kubernetes.io/name: shapoclyack
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: scan-job-resume
+          app.kubernetes.io/name: shapoclyack
+    ports:
+    - port: 8077
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: screenshot-worker
+      app.kubernetes.io/name: shapoclyack
+  policyTypes:
+  - Ingress
 {{- end }}

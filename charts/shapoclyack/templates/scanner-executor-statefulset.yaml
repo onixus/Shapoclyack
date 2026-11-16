@@ -54,6 +54,8 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
+        - name: SCREENSHOT_WORKER_URL
+          value: http://shapoclyack-screenshot-worker.{{ .Release.Namespace }}.svc:8077
         image: {{ include "shapoclyack.image" .Values.images.aio }}
         imagePullPolicy: {{ .Values.images.pullPolicy }}
         name: executor
