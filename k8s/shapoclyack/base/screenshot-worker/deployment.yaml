@@ -51,6 +51,13 @@ spec:
             # or NET_RAW to make the sandbox work.
             - name: SCREENSHOT_WORKER_NO_SANDBOX
               value: "1"
+            # Shared with the executor / local-scan Jobs. Empty refuses
+            # POST /capture; /healthz stays open for probes.
+            - name: OCTO_SCREENSHOT_WORKER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-screenshot-worker
+                  key: token
             # Chromium's profile and crash dumps. The image keeps
             # PLAYWRIGHT_BROWSERS_PATH=/opt/playwright, so this does not hide
             # the browser the image installed.

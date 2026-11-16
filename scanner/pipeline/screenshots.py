@@ -46,6 +46,7 @@ LOG = logging.getLogger("shapoclyack.screenshots")
 
 DEFAULT_WORKER_URL = "http://127.0.0.1:8077"
 _WORKER_URL_ENV = "SCREENSHOT_WORKER_URL"
+_WORKER_TOKEN_ENV = "OCTO_SCREENSHOT_WORKER_TOKEN"
 _CLIENT_GRACE_SECONDS = 5.0
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
@@ -108,6 +109,22 @@ def worker_url() -> str:
     return os.environ.get(_WORKER_URL_ENV, DEFAULT_WORKER_URL).strip()
 
 
+def worker_token() -> str:
+    """Shared secret for ``POST /capture``. Empty when screenshots stay off."""
+    return os.environ.get(_WORKER_TOKEN_ENV, "").strip()
+
+
+def _worker_headers() -> dict[str, str]:
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    token = worker_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def _decode_worker_png(payload: dict[str, Any]) -> tuple[bytes, int]:
     if payload.get("error"):
         raise RuntimeError("capture_failed")
@@ -143,7 +160,7 @@ def _worker_capture(url: str, timeout: float, verify_tls: bool) -> tuple[bytes, 
     request = Request(
         endpoint,
         data=body,
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        headers=_worker_headers(),
         method="POST",
     )
     client_timeout = float(timeout) + _CLIENT_GRACE_SECONDS

@@ -390,11 +390,15 @@ def test_external_secrets_replace_every_generated_secret(tools):
         "shapoclyack-backup",
         "shapoclyack-clickhouse-backup-s3",
         "shapoclyack-scanner-executor",
+        "shapoclyack-screenshot-worker",
     }
     # A placeholder next to an ExternalSecret of the same name would fight it.
     assert _kinds(docs, "Secret") == []
     executor = [d for d in _kinds(docs, "ExternalSecret") if "executor" in d["metadata"]["name"]]
     assert {d["metadata"]["namespace"] for d in executor} == {"network-scan-executor"}
+    # Same token Secret materialised in both namespaces (worker + scanner client).
+    shot = [d for d in _kinds(docs, "ExternalSecret") if d["metadata"]["name"] == "shapoclyack-screenshot-worker"]
+    assert {d["metadata"]["namespace"] for d in shot} == {"network-scan", "network-scan-executor"}
 
 
 def test_ingress_is_off_by_default_and_routes_to_the_api_when_on(tools):

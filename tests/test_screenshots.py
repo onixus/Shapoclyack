@@ -99,6 +99,7 @@ def test_worker_png_is_written(tmp_path: Path, monkeypatch):
     def fake_urlopen(request, timeout):
         assert request.full_url == "http://127.0.0.1:8077/capture"
         assert timeout == 15 + 5
+        assert request.get_header("Authorization") == "Bearer test-screenshot-token"
         payload = json.loads(request.data.decode("utf-8"))
         captured.append(
             (payload["url"], payload["timeout_seconds"], payload["verify_tls"])
@@ -106,6 +107,7 @@ def test_worker_png_is_written(tmp_path: Path, monkeypatch):
         return _Response()
 
     monkeypatch.delenv("SCREENSHOT_WORKER_URL", raising=False)
+    monkeypatch.setenv("OCTO_SCREENSHOT_WORKER_TOKEN", "test-screenshot-token")
     monkeypatch.setattr(
         "scanner.pipeline.screenshots._worker_reachable", lambda timeout: True
     )

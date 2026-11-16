@@ -64,6 +64,12 @@ separate screenshot-worker process. The scanner image stays browser-free.
   cap. The worker may run a small thread pool but must not browse a URL the
   scanner did not send.
 - Reject URLs that are not `http` or `https`, or that carry userinfo.
+- Pin navigation to the requested host:port (scheme may flip http↔https only
+  when the numeric port is unchanged; default 80 vs 443 counts as a change).
+  Abort in-flight document redirects that leave that host:port; if the final
+  URL still differs, return `capture_failed`. This stops SSRF via 302 to
+  metadata or other internal hosts while the worker has egress.
+- Authenticate `POST /capture` with `OCTO_SCREENSHOT_WORKER_TOKEN` (`Authorization: Bearer …` or `X-Screenshot-Token`). `GET /healthz` stays open for probes. An empty token refuses every capture (fail closed). Wire the same Secret (`shapoclyack-screenshot-worker` key `token`) into the worker and the scanner clients; the base ships an empty placeholder so screenshots can stay disabled without minting a value.
 
 ### Scanner stage
 
@@ -75,7 +81,8 @@ When `screenshots.enabled` is false, the stage writes
 `skipped_reason: screenshots.disabled` and does not call the worker.
 
 When enabled, the capture function is an HTTP client of
-`SCREENSHOT_WORKER_URL` (default `http://127.0.0.1:8077`). A missing or
+`SCREENSHOT_WORKER_URL` (default `http://127.0.0.1:8077`) and sends
+`OCTO_SCREENSHOT_WORKER_TOKEN` as a Bearer token on `/capture`. A missing or
 unreachable worker writes `skipped_reason: worker.unavailable` and no pixels.
 A per-URL failure stays `error: capture_failed` on that finding and does not
 fail the scan. Empty PNG is `error: empty_capture`.

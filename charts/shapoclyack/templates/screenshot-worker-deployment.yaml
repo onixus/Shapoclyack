@@ -33,6 +33,11 @@ spec:
           value: "8077"
         - name: SCREENSHOT_WORKER_NO_SANDBOX
           value: "1"
+        - name: OCTO_SCREENSHOT_WORKER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: token
+              name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "screenshotWorker" "default" "shapoclyack-screenshot-worker") }}
         - name: HOME
           value: /tmp
         - name: PLAYWRIGHT_BROWSERS_PATH

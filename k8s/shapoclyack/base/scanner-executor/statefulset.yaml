@@ -135,6 +135,13 @@ spec:
             # unset is "no worker"; this image has no browser of its own.
             - name: SCREENSHOT_WORKER_URL
               value: http://shapoclyack-screenshot-worker.network-scan.svc:8077
+            # Same Secret key as the worker (this namespace's copy). Empty when
+            # screenshots stay disabled; required before enabling the stage.
+            - name: OCTO_SCREENSHOT_WORKER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-screenshot-worker
+                  key: token
           securityContext:
             # Deviations from `restricted`, each needed and each listed in
             # docs/k8s-hardening.md (#338):

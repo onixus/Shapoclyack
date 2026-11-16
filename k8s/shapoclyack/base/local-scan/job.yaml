@@ -35,6 +35,11 @@ spec:
             # screenshot-worker Deployment; this image has no browser.
             - name: SCREENSHOT_WORKER_URL
               value: http://shapoclyack-screenshot-worker.network-scan.svc:8077
+            - name: OCTO_SCREENSHOT_WORKER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-screenshot-worker
+                  key: token
           args:
             - --config
             - /app/scanner/config/k8s.yaml

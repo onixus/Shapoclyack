@@ -158,6 +158,9 @@ existingSecrets:
   clickhouse: ""        # key: password
   clickhouseBackup: ""  # key: password
   nats: ""              # keys: api_password, agent_password
+  # Empty token by default (screenshots off). Create the named Secret in both
+  # the release namespace and namespaces.executor before enabling capture.
+  screenshotWorker: ""  # key: token (OCTO_SCREENSHOT_WORKER_TOKEN)
   # Secrets the base expects you to create yourself; override only the name.
   postgresBackupS3: ""      # base name shapoclyack-backup
   clickhouseBackupS3: ""    # base name shapoclyack-clickhouse-backup-s3

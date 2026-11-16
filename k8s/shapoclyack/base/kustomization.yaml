@@ -85,6 +85,17 @@ secretGenerator:
   - name: shapoclyack-clickhouse-backup
     literals:
       - password=shapoclyack-dev-clickhouse-backup-change-me
+  # Shared bearer for POST /capture on the screenshot-worker. Empty by default:
+  # screenshots.enabled is off, and an empty token makes the worker refuse
+  # capture (fail closed). Set the same value in both namespaces before
+  # enabling the stage (worker + local-scan Jobs here; executor copy below).
+  - name: shapoclyack-screenshot-worker
+    literals:
+      - token=
+  - name: shapoclyack-screenshot-worker
+    namespace: network-scan-executor
+    literals:
+      - token=
 
 generatorOptions:
   disableNameSuffixHash: true

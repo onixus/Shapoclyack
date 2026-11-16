@@ -75,11 +75,11 @@ RUN set -eux; \
     pip install --no-cache-dir --require-hashes --only-binary=:all: -r /app/requirements-pip.lock; \
     pip install --no-cache-dir --require-hashes --only-binary=:all: -r /app/requirements.lock
 
-# Created by the worker agent. Must pin playwright (and its hashes, if the
-# file is a lock). Do not add playwright to requirements.txt.
-COPY requirements-screenshot-worker.txt /app/requirements-screenshot-worker.txt
+# Playwright only in this image. Hashed lock from scripts/lock-python-deps.sh;
+# do not add playwright to requirements.txt / requirements.lock.
+COPY requirements-screenshot-worker.lock /app/requirements-screenshot-worker.lock
 RUN set -eux; \
-    pip install --no-cache-dir -r /app/requirements-screenshot-worker.txt; \
+    pip install --no-cache-dir --require-hashes --only-binary=:all: -r /app/requirements-screenshot-worker.lock; \
     mkdir -p /opt/playwright; \
     python -m playwright install chromium; \
     python -m pip uninstall --yes pip; \

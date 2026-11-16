@@ -11,6 +11,16 @@ listeners. ``SCREENSHOT_WORKER_NO_SANDBOX=1`` adds ``--no-sandbox`` — only
 inside the container's own seccomp/user-namespace story. Do not add
 raw-socket capabilities.
 
+``OCTO_SCREENSHOT_WORKER_TOKEN`` authenticates ``POST /capture`` (Bearer or
+``X-Screenshot-Token``). ``GET /healthz`` stays open for probes. An empty
+token rejects every capture (fail closed).
+
+Navigation stays on the requested host:port: in-flight document redirects to
+another host or port are aborted, and a final URL that drifted fails as
+``capture_failed`` (SSRF via 302 to metadata/internal hosts). Scheme may flip
+http↔https only when the numeric port is unchanged (default 80 vs 443 is a
+port change).
+
 HONESTY: redaction covers obvious form fields only (the shared
 ``REDACT_SCRIPT``). Unredacted pixels are never returned. Errors are the
 fixed token ``capture_failed`` — never exception text, response bodies, or
@@ -23,6 +33,7 @@ import base64
 import json
 import logging
 import os
+import secrets
 import threading
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -38,6 +49,7 @@ DEFAULT_PORT = 8077
 VIEWPORT = {"width": 1280, "height": 720}
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _NO_SANDBOX_ENV = "SCREENSHOT_WORKER_NO_SANDBOX"
+_TOKEN_ENV = "OCTO_SCREENSHOT_WORKER_TOKEN"
 _MAX_BODY = 64 * 1024
 
 CaptureFn = Callable[[str, float, bool], tuple[bytes, int]]
@@ -74,6 +86,11 @@ def no_sandbox() -> bool:
     return os.environ.get(_NO_SANDBOX_ENV, "").strip() == "1"
 
 
+def worker_token() -> str:
+    """Shared secret for ``POST /capture``. Empty means captures are refused."""
+    return os.environ.get(_TOKEN_ENV, "").strip()
+
+
 def chromium_args() -> list[str]:
     """Headless launch args. ``--no-sandbox`` only when the container asks."""
     args = ["--disable-dev-shm-usage"]
@@ -101,6 +118,30 @@ def validate_capture_url(url: str) -> str:
     if not parts.hostname:
         raise WorkerError(400, "invalid_url")
     return url
+
+
+def navigation_host_port(url: str) -> tuple[str, int]:
+    """Host and effective port for redirect pinning (scheme may differ)."""
+    try:
+        parts = urlsplit(url)
+    except ValueError as exc:
+        raise WorkerError(200, "capture_failed") from exc
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise WorkerError(200, "capture_failed")
+    host = parts.hostname.lower()
+    if parts.port is not None:
+        port = parts.port
+    else:
+        port = 443 if parts.scheme == "https" else 80
+    return host, port
+
+
+def same_navigation_target(requested: str, candidate: str) -> bool:
+    """True when ``candidate`` keeps the requested host and port."""
+    try:
+        return navigation_host_port(requested) == navigation_host_port(candidate)
+    except WorkerError:
+        return False
 
 
 def _timeout_seconds(raw: Any) -> float:
@@ -142,10 +183,38 @@ def encode_png(png: bytes, redacted_fields: int) -> dict[str, Any]:
     return {"png_base64": encoded, "redacted_fields": int(redacted_fields)}
 
 
+def _request_token(headers: Any) -> str:
+    """Token from ``Authorization: Bearer`` or ``X-Screenshot-Token``."""
+    auth = headers.get("Authorization") if headers is not None else None
+    if isinstance(auth, str):
+        scheme, _, remainder = auth.strip().partition(" ")
+        if scheme.lower() == "bearer" and remainder.strip():
+            return remainder.strip()
+    header = headers.get("X-Screenshot-Token") if headers is not None else None
+    if isinstance(header, str) and header.strip():
+        return header.strip()
+    return ""
+
+
+def capture_authorized(headers: Any) -> bool:
+    """Fail closed: empty configured token, or mismatch → refuse ``/capture``."""
+    expected = worker_token()
+    if not expected:
+        return False
+    provided = _request_token(headers)
+    if not provided:
+        return False
+    return secrets.compare_digest(provided, expected)
+
+
 def _playwright_capture(
     url: str, timeout: float, verify_tls: bool
 ) -> tuple[bytes, int]:
-    """Navigate, redact, screenshot. Playwright is imported only here."""
+    """Navigate, redact, screenshot. Playwright is imported only here.
+
+    Document navigations (including 302 hops) must stay on the requested
+    host:port; scheme may flip between http and https.
+    """
     from playwright.sync_api import sync_playwright
 
     timeout_ms = int(timeout * 1000)
@@ -156,7 +225,26 @@ def _playwright_capture(
                 ignore_https_errors=not verify_tls,
                 viewport=VIEWPORT,
             )
-            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+
+            def _guard_route(route: Any) -> None:
+                request = route.request
+                is_nav = bool(getattr(request, "is_navigation_request", lambda: False)())
+                if is_nav and not same_navigation_target(url, request.url):
+                    route.abort()
+                    return
+                route.continue_()
+
+            page.route("**/*", _guard_route)
+            try:
+                response = page.goto(
+                    url, wait_until="domcontentloaded", timeout=timeout_ms
+                )
+            except Exception as exc:
+                raise WorkerError(200, "capture_failed") from exc
+            if not same_navigation_target(url, page.url):
+                raise WorkerError(200, "capture_failed")
+            if response is not None and not same_navigation_target(url, response.url):
+                raise WorkerError(200, "capture_failed")
             redacted = int(page.evaluate(REDACT_SCRIPT) or 0)
             png = page.screenshot(full_page=False, type="png")
         finally:
@@ -253,6 +341,9 @@ def make_handler(
             path = self.path.split("?", 1)[0]
             if path != "/capture":
                 self._send_json(404, {"error": "not_found"})
+                return
+            if not capture_authorized(self.headers):
+                self._send_json(401, {"error": "unauthorized"})
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
