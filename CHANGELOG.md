@@ -4,6 +4,13 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- The scan `summary.pdf` sets text in DejaVu Sans when the host has it, the
+  same lookup as the report factory. Control titles are Russian, and the
+  Helvetica core font was printing each of those letters as `?`. A missing
+  or unreadable face still produces the report and falls back to Latin-1.
+
 ### Added
 
 - Product licensing (ADR 0007): offline Ed25519 license generator with a

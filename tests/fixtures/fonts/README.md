@@ -10,6 +10,7 @@ pyftsubset DejaVuSans.ttf \
   --no-hinting --desubroutinize --output-file=tests/fixtures/fonts/DejaVuSans.ttf
 ```
 
-It exists so the PDF renderer's Unicode path (`api/services/reports/render.py`)
+It exists so the Unicode path of both PDF writers
+(`api/services/reports/render.py` and `scanner/pipeline/pdf_report.py`)
 is exercised on every host, not only on the images that install
 `fonts-dejavu-core`. It is not shipped in any image.

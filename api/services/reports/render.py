@@ -8,7 +8,8 @@ MSSP a customer call rather than a bug report.
 
 The PDF uses a Unicode TrueType face when the host has one (DejaVu Sans, which
 the images install — see ``_UNICODE_FONT_DIRS``) and ``fpdf2``'s core fonts
-otherwise, as ``scanner/pipeline/pdf_report`` does. The core fonts are Latin-1
+otherwise. ``scanner/pipeline/pdf_report`` uses the same lookup for the scan
+``summary.pdf``. The core fonts are Latin-1
 only, and the Russian compliance catalogues put Cyrillic measure codes on every
 page of a compliance report — «АУД.2» rendered as «???.2» is a report an
 auditor cannot use — which is why the face is looked for. Without it every

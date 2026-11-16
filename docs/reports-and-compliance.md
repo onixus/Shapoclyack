@@ -260,7 +260,10 @@ all-in-one images install Debian's `fonts-dejavu-core`, and the renderer looks
 in the places that package (and its Fedora and Arch equivalents) puts the
 files. A host with none of them still renders, with a replacement character
 for every glyph the core fonts lack: the same behaviour as before, and the
-reason a missing font is not a failed report. HTML and JSON are unaffected.
+reason a missing font is not a failed report. The scan artifact `summary.pdf`
+(`scanner/pipeline/pdf_report.py`) uses the same face and the same fallback,
+so Russian control titles are not replaced with `?` when DejaVu is installed.
+HTML and JSON are unaffected.
 
 ### Branding
 
