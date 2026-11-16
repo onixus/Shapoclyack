@@ -2049,13 +2049,44 @@ def release_unfinished_verification(
 # --------------------------------------------------------------------------
 
 
-def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[str, Any]:
+def _asset_names(session, asset_ids: list[str]) -> dict[str, dict[str, str | None]]:
+    """``asset_id -> {fqdn, ip}`` for one page of findings.
+
+    One query for the page, the same choice the asset list makes: the first
+    domain and the first address. A finding printed as an address alone does
+    not say which domain the scan was aimed at.
+    """
+    wanted = list(dict.fromkeys(asset_id for asset_id in asset_ids if asset_id))
+    found: dict[str, dict[str, str | None]] = {}
+    if not wanted:
+        return found
+    identifiers = session.execute(
+        select(models.AssetIdentifier).where(models.AssetIdentifier.asset_id.in_(wanted))
+    ).scalars()
+    for identifier in identifiers:
+        slot = found.setdefault(identifier.asset_id, {"fqdn": None, "ip": None})
+        if identifier.identifier_type == "fqdn" and not slot["fqdn"]:
+            slot["fqdn"] = identifier.identifier_value
+        elif identifier.identifier_type == "ip" and not slot["ip"]:
+            slot["ip"] = identifier.identifier_value
+    return found
+
+
+def _to_dict(
+    row: models.Vulnerability,
+    *,
+    now: datetime | None = None,
+    asset: dict[str, str | None] | None = None,
+) -> dict[str, Any]:
     now = now or _now()
     bdu = bdu_fstec.lookup(row.cve)
+    asset = asset or {}
     return {
         "vuln_id": row.vuln_id,
         "tenant_id": row.tenant_id,
         "asset_id": row.asset_id,
+        "primary_fqdn": asset.get("fqdn"),
+        "primary_ip": asset.get("ip"),
         "finding_key": row.finding_key,
         "finding_evidence": row.finding_evidence,
         "source": row.source,
@@ -2207,7 +2238,9 @@ def get_vulnerability(
 ) -> dict[str, Any] | None:
     with get_session(settings.postgres_url) as session:
         row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
-        return _to_dict(row) if row else None
+        if row is None:
+            return None
+        return _to_dict(row, asset=_asset_names(session, [row.asset_id]).get(row.asset_id))
 
 
 def transition(
@@ -4523,7 +4556,8 @@ def list_vulnerabilities(
             .offset(offset)
             .limit(limit)
         ).scalars().all()
-        items = [_to_dict(row, now=now) for row in rows]
+        names = _asset_names(session, [row.asset_id for row in rows])
+        items = [_to_dict(row, now=now, asset=names.get(row.asset_id)) for row in rows]
     return items, total
 
 

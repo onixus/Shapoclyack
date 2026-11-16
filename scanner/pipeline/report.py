@@ -111,6 +111,20 @@ def _lookup_hostname(hostnames_map: dict, host: str) -> str:
     return ""
 
 
+def host_label(item: dict) -> str:
+    """The scanned domain and the address it resolved to.
+
+    A domain scan records the address it reached. Writing only that address
+    makes the reader look up which name they asked to scan. The address stays,
+    because that is what was actually reached.
+    """
+    host = str(item.get("host") or "")
+    name = str(item.get("hostname") or "").strip()
+    if name and name != host:
+        return f"{name} ({host})" if host else name
+    return host
+
+
 def build_reports(
     output_dir: Path,
     total_targets: int,
@@ -203,6 +217,10 @@ def build_reports(
     for item in vulnerabilities:
         item.setdefault("finding_type", "cve" if item.get("cve") else "exposure")
         item.setdefault("detector_source", item.get("source"))
+        # After combine: a merged row keeps one representative, and a finding
+        # that arrived without a name (Pulse, Nuclei) still has only an IP.
+        if hostnames and not item.get("hostname"):
+            item["hostname"] = _lookup_hostname(hostnames, str(item.get("host") or ""))
     from .evidence_artifacts import EvidenceReader
     from .production_evidence import attach_raw
     projection = EvidenceReader(output_dir, "unpublished", "unpublished").build()
@@ -357,6 +375,7 @@ def build_reports(
             fh,
             fieldnames=[
                 "host",
+                "hostname",
                 "port",
                 "severity",
                 "cvss",
@@ -458,14 +477,17 @@ def build_reports(
         md_lines += ["", "## Operating Systems"]
         if best_os_by_host:
             for host, match in sorted(best_os_by_host.items()):
-                md_lines.append(f"- {host}: {match['name']} (accuracy {match['accuracy']}%)")
+                name = _lookup_hostname(hostnames, host)
+                label = f"{name} ({host})" if name and name != host else host
+                md_lines.append(f"- {label}: {match['name']} (accuracy {match['accuracy']}%)")
         else:
             md_lines.append("- none detected")
 
         md_lines += ["", "## Vulnerabilities (highest severity first)"]
         if vulnerabilities:
             for item in vulnerabilities[:50]:
-                location = f"{item['host']}:{item['port']}" if item["port"] else item["host"]
+                label = host_label(item)
+                location = f"{label}:{item['port']}" if item["port"] else label
                 cve = item["cve"] or item["script_id"]
                 if item.get("cvss4") is not None:
                     cvss = f" CVSS4 {item['cvss4']}"

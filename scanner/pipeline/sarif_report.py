@@ -104,10 +104,12 @@ def build_sarif_report(
             rules_map[rule_id] = rule_entry
 
         host = str(item.get("host") or "")
+        hostname = str(item.get("hostname") or "").strip()
         port = item.get("port")
         location_uri = _format_target_uri(host, port)
+        where = f"{hostname} ({host})" if hostname and hostname != host else host
 
-        msg_parts = [f"Found {rule_id} ({severity.upper()}) on {host}"]
+        msg_parts = [f"Found {rule_id} ({severity.upper()}) on {where}"]
         if port:
             msg_parts[0] += f":{port}"
         if cvss is not None:
@@ -132,6 +134,7 @@ def build_sarif_report(
             ],
             "properties": {
                 "host": host,
+                "hostname": hostname,
                 "port": str(port) if port is not None else "",
                 "severity": severity,
                 "source": source,

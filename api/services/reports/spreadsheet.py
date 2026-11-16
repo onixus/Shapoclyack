@@ -129,12 +129,13 @@ def tables(body: dict[str, Any]) -> list[Table]:
             (
                 "Findings",
                 [
-                    "Vuln ID", "Title", "CVE", "Asset", "Port", "Severity", "Risk level",
+                    "Vuln ID", "Title", "CVE", "Asset", "Domain", "IP", "Port", "Severity", "Risk level",
                     "Score", "State", "SLA", "In KEV", "Due at", "Remediation",
                 ],
                 [
                     [
                         f.get("vuln_id"), f.get("title"), f.get("cve"), f.get("asset_id"),
+                        f.get("primary_fqdn"), f.get("primary_ip"),
                         f.get("port"), f.get("severity"), f.get("risk_level"),
                         f.get("contextual_score"), f.get("state"), f.get("sla"),
                         f.get("in_kev"), f.get("due_at"), f.get("remediation"),

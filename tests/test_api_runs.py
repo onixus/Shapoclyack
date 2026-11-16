@@ -182,6 +182,10 @@ def test_list_and_get_run(tmp_path: Path):
     assert payload[0]["cvss4"] == 10.0
     assert payload[0]["city"] == "Paris"
     assert payload[0]["country"] == "France"
+    # A domain scan recorded the name on the host row, not on the finding.
+    # The finding still has to say which name resolved to the address.
+    named = next(item for item in payload if item["host"] == "10.0.0.1")
+    assert named["hostname"] == "alpha.lab"
 
     filtered = client.get("/api/runs/run-a/vulnerabilities?host=10.0.0.1", headers=headers)
     assert filtered.status_code == 200
