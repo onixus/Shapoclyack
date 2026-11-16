@@ -8,7 +8,8 @@ import {
   type UseMutationResult,
 } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { CheckboxOption } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
   answerLabels,
@@ -50,6 +51,13 @@ const copy = {
     parallelBudget: "Parallel inference",
     runtimeVerifiedAt: "Verified at",
     trackJob: "Track scan job",
+    how: "Three steps. The model proposes; a scan starts only after you preview and confirm it.",
+    stepAsk: "1. Ask",
+    stepReview: "2. Review",
+    stepAct: "3. Act",
+    tabAskHint: "Describe what you need. The model only proposes a next step.",
+    tabReviewHint: "Answers stay here until you copy their parameters into a form.",
+    tabActHint: "Compare runs, look up a fix, or preview a scan. Nothing runs until you confirm.",
     planner: "Ask the operator",
     request: "Your request",
     planRequest: "Propose the next step",
@@ -192,6 +200,13 @@ const copy = {
     parallelBudget: "Одновременных запросов к модели",
     runtimeVerifiedAt: "Проверено",
     trackJob: "Открыть задание скана",
+    how: "Три шага. Модель только предлагает; скан начинается после предпросмотра и вашего подтверждения.",
+    stepAsk: "1. Спросить",
+    stepReview: "2. Проверить",
+    stepAct: "3. Действие",
+    tabAskHint: "Опишите, что нужно. Модель только предложит следующий шаг.",
+    tabReviewHint: "Ответы остаются здесь, пока вы сами не перенесёте параметры в форму.",
+    tabActHint: "Сравните сканы, найдите исправление или подготовьте скан. Ничего не запустится без подтверждения.",
     planner: "Запрос оператору",
     request: "Ваш запрос",
     planRequest: "Предложить следующий шаг",
@@ -523,24 +538,32 @@ export function OperatorConsole({
 
   return (
     <div className="space-y-6">
-      <Card>
-        <CardContent className="space-y-2 pt-6 text-sm">
-          <p>
-            <strong>{c.tenant}:</strong> {tenant} · <strong>{c.actor}:</strong> {actor}
-          </p>
-          <p className="font-mono">
-            {operatorProviderLabel(language, status.data.provider)} / {status.data.model}
-          </p>
+      <section className="space-y-2 rounded-lg border bg-card p-4 text-sm">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="font-mono font-semibold">
+              {operatorProviderLabel(language, status.data.provider)} / {status.data.model}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {c.tenant}: {tenant} · {c.actor}: {actor}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <span className="rounded-full border border-control bg-muted px-2.5 py-1 text-xs font-semibold">
+              {operatorStatusLabel(language, status.data.runtime_status)}
+            </span>
+            <span className="rounded-full border border-warning/40 bg-warning-subtle px-2.5 py-1 text-xs font-semibold text-warning">
+              {operatorStatusLabel(language, status.data.quality_status)}
+            </span>
+          </div>
+        </div>
           <p>{status.data.external_inference ? c.hosted : c.local}</p>
           <p>
             {status.data.runtime_status === "ready"
               ? c.runtimeReady
               : status.data.runtime_status === "unavailable"
                 ? c.runtimeUnavailable
-                : c.runtime}{" "}
-            <span className="font-mono">
-              {operatorStatusLabel(language, status.data.runtime_status)}
-            </span>
+                : c.runtime}
           </p>
           {status.data.endpoint_status && (
             <p>
@@ -585,23 +608,18 @@ export function OperatorConsole({
               {c.retry}
             </Button>
           )}
-          <p className="text-warning">
-            {c.quality}{" "}
-            <span className="font-mono">
-              {operatorStatusLabel(language, status.data.quality_status)}
-            </span>
-          </p>
-          <p>{c.safety}</p>
-        </CardContent>
-      </Card>
+          <p className="text-warning">{c.quality}</p>
+          <p className="text-muted-foreground">{c.safety}</p>
+      </section>
       <Card>
-        <CardHeader>
-          <CardTitle>{c.history}</CardTitle>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">{c.history}</CardTitle>
+          <CardDescription>{c.how}</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap items-center gap-3">
           <select
             aria-label={c.history}
-            className="h-10 max-w-full rounded-md border bg-background px-3 text-sm"
+            className="h-10 min-w-56 max-w-full rounded-md border border-control bg-background px-3 text-sm"
             value={session}
             onChange={(event) => {
               setSession(event.target.value);
@@ -641,6 +659,25 @@ export function OperatorConsole({
       </Card>
       {session && detail.data && (
         <>
+          <nav aria-label={c.how} className="flex flex-wrap gap-2">
+            {[
+              ["operator-ask", c.stepAsk],
+              ["operator-review", c.stepReview],
+              ["operator-act", c.stepAct],
+            ].map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                className="rounded-full border border-control bg-card px-3 py-1.5 text-sm font-semibold text-foreground hover:border-primary hover:text-primary"
+                onClick={() => document.getElementById(id)?.scrollIntoView({ block: "start" })}
+              >
+                {label}
+              </button>
+            ))}
+          </nav>
+          <section id="operator-ask" className="scroll-mt-4 space-y-3">
+            <h2 className="text-sm font-semibold text-foreground">{c.stepAsk}</h2>
+            <p className="text-sm text-muted-foreground">{c.tabAskHint}</p>
           <PlannerPanel
             key={`planner:${session}`}
             tenant={tenant}
@@ -659,6 +696,10 @@ export function OperatorConsole({
               void detail.refetch();
             }}
           />
+          </section>
+          <section id="operator-review" className="scroll-mt-4 space-y-3">
+            <h2 className="text-sm font-semibold text-foreground">{c.stepReview}</h2>
+            <p className="text-sm text-muted-foreground">{c.tabReviewHint}</p>
           {draft && (
             <p role="status" className="rounded border border-primary/30 bg-primary/5 p-3 text-sm">
               {c.adopted}
@@ -666,7 +707,7 @@ export function OperatorConsole({
           )}
           <Card>
             <CardHeader>
-              <CardTitle>{c.analysis}</CardTitle>
+              <CardTitle className="text-lg">{c.analysis}</CardTitle>
             </CardHeader>
             <CardContent>
               <form
@@ -689,7 +730,7 @@ export function OperatorConsole({
                 <label className="space-y-2 text-sm">
                   {c.analysis}
                   <select
-                    className="block h-10 rounded-md border bg-background px-3"
+                    className="block h-10 rounded-md border border-control bg-background px-3 text-sm"
                     value={tool}
                     onChange={(event) => setTool(event.target.value)}
                   >
@@ -719,7 +760,7 @@ export function OperatorConsole({
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle>{c.tasks}</CardTitle>
+              <CardTitle className="text-lg">{c.tasks}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4" aria-live="polite">
               {!detail.data.tasks?.length && (
@@ -745,6 +786,10 @@ export function OperatorConsole({
               {cancel.isError && <p role="alert">{c.failed}</p>}
             </CardContent>
           </Card>
+          </section>
+          <section id="operator-act" className="scroll-mt-4 space-y-4">
+            <h2 className="text-sm font-semibold text-foreground">{c.stepAct}</h2>
+            <p className="text-sm text-muted-foreground">{c.tabActHint}</p>
           {canOperate && (
             <ActionPanel
               key={`actions:${session}`}
@@ -757,17 +802,26 @@ export function OperatorConsole({
               draft={draft}
             />
           )}
+            <ComparePanel tenant={tenant} actor={actor} language={language} c={c} draft={draft} />
+            <RemediationPanel
+              tenant={tenant}
+              actor={actor}
+              language={language}
+              c={c}
+              onSource={source}
+              draft={draft}
+            />
+          </section>
         </>
       )}
-      <ComparePanel tenant={tenant} actor={actor} language={language} c={c} draft={draft} />
-      <RemediationPanel
-        tenant={tenant}
-        actor={actor}
-        language={language}
-        c={c}
-        onSource={source}
-        draft={draft}
-      />
+      {!session && (
+        <section className="space-y-4">
+          <p className="text-sm text-muted-foreground">{c.chooseSession}</p>
+          <p className="text-sm text-muted-foreground">{c.tabActHint}</p>
+          <ComparePanel tenant={tenant} actor={actor} language={language} c={c} />
+          <RemediationPanel tenant={tenant} actor={actor} language={language} c={c} onSource={source} />
+        </section>
+      )}
       {sourceRequest && (
         <Dialog
           open
@@ -896,10 +950,10 @@ function PlannerPanel({
   return (
     <Card role="region" aria-label={c.planner}>
       <CardHeader>
-        <CardTitle>{c.planner}</CardTitle>
+        <CardTitle className="text-lg">{c.planner}</CardTitle>
+        <CardDescription>{c.proposalOnly}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        <p className="text-sm text-muted-foreground">{c.proposalOnly}</p>
         <form
           className="space-y-3"
           onSubmit={(event) => {
@@ -910,7 +964,7 @@ function PlannerPanel({
           <label className="block space-y-2 text-sm">
             {c.request}
             <textarea
-              className="block min-h-24 w-full rounded-md border bg-background p-3"
+              className="block min-h-24 w-full rounded-md border border-control bg-background p-3 text-sm"
               required
               maxLength={1000}
               value={request}
@@ -934,20 +988,15 @@ function PlannerPanel({
                 </label>
               ))}
             </div>
-            <label className="mt-4 flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={includeScan}
-                onChange={(event) => setIncludeScan(event.target.checked)}
-              />
-              {c.includeScan}
-            </label>
+            <div className="mt-4">
+              <CheckboxOption label={c.includeScan} checked={includeScan} onCheckedChange={setIncludeScan} />
+            </div>
             {includeScan && (
               <div className="mt-3 grid gap-3 md:grid-cols-2">
                 <label className="space-y-2">
                   {c.ranges}
                   <textarea
-                    className="block min-h-20 w-full rounded-md border bg-background p-3"
+                    className="block min-h-20 w-full rounded-md border border-control bg-background p-3 text-sm"
                     maxLength={8192}
                     value={scan.ranges}
                     onChange={(event) =>
@@ -958,7 +1007,7 @@ function PlannerPanel({
                 <label className="space-y-2">
                   {c.domains}
                   <textarea
-                    className="block min-h-20 w-full rounded-md border bg-background p-3"
+                    className="block min-h-20 w-full rounded-md border border-control bg-background p-3 text-sm"
                     maxLength={8192}
                     value={scan.domains}
                     onChange={(event) =>
@@ -980,7 +1029,7 @@ function PlannerPanel({
                 <label className="space-y-2">
                   {c.mode}
                   <select
-                    className="block h-10 w-full rounded border bg-background px-3"
+                    className="block h-10 w-full rounded-md border border-control bg-background px-3 text-sm"
                     value={scan.mode}
                     onChange={(event) =>
                       setScan((value) => ({
@@ -1087,7 +1136,7 @@ function ComparePanel({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{c.compare}</CardTitle>
+        <CardTitle className="text-lg">{c.compare}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <form
@@ -1291,7 +1340,7 @@ function Task({
   const answer = task.result?.analysis ?? task.result?.answer?.answer;
   const plan = task.result?.plan;
   return (
-    <article className="space-y-3 rounded-lg border p-4">
+    <article className="space-y-3 rounded-lg border border-control bg-background p-4">
       <p className="text-sm font-semibold">
         {task.kind === "plan_request"
           ? c.planner
@@ -1501,7 +1550,8 @@ function ActionPanel({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{c.preparation}</CardTitle>
+        <CardTitle className="text-lg">{c.preparation}</CardTitle>
+        <CardDescription>{c.safety}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {history.length > 0 && (
@@ -1509,7 +1559,7 @@ function ActionPanel({
             {c.preview}
             <select
               aria-label={c.preview}
-              className="block h-10 max-w-full rounded-md border bg-background px-3"
+              className="block h-10 max-w-full rounded-md border border-control bg-background px-3 text-sm"
               value={proposalId}
               onChange={(event) => {
                 setProposalId(event.target.value);
@@ -1538,7 +1588,7 @@ function ActionPanel({
           <label className="space-y-2 text-sm">
             {c.action}
             <select
-              className="block h-10 w-full rounded-md border bg-background px-3"
+              className="block h-10 w-full rounded-md border border-control bg-background px-3 text-sm"
               value={action}
               onChange={(event) => {
                 setAction(event.target.value as ProposalAction);
@@ -1555,7 +1605,7 @@ function ActionPanel({
               <label className="space-y-2 text-sm">
                 {c.ranges}
                 <textarea
-                  className="block min-h-20 w-full rounded-md border bg-background p-3"
+                  className="block min-h-20 w-full rounded-md border border-control bg-background p-3 text-sm"
                   value={ranges}
                   maxLength={16384}
                   onChange={(event) => setRanges(event.target.value)}
@@ -1564,7 +1614,7 @@ function ActionPanel({
               <label className="space-y-2 text-sm">
                 {c.domains}
                 <textarea
-                  className="block min-h-20 w-full rounded-md border bg-background p-3"
+                  className="block min-h-20 w-full rounded-md border border-control bg-background p-3 text-sm"
                   value={domains}
                   maxLength={16384}
                   onChange={(event) => setDomains(event.target.value)}
@@ -1581,7 +1631,7 @@ function ActionPanel({
               <label className="space-y-2 text-sm">
                 {c.mode}
                 <select
-                  className="block h-10 w-full rounded-md border bg-background px-3"
+                  className="block h-10 w-full rounded-md border border-control bg-background px-3 text-sm"
                   value={mode}
                   onChange={(event) => setMode(event.target.value)}
                 >
@@ -1642,7 +1692,7 @@ function ActionPanel({
         )}
         {rejectedAsStale && <p role="alert">{c.staleServer}</p>}
         {data && (
-          <section className="space-y-3 rounded-lg border p-4" aria-label={c.preview}>
+          <section className="space-y-3 rounded-lg border border-control bg-background p-4" aria-label={c.preview}>
             <h3 className="font-semibold">{c.preview}</h3>
             <p className="text-sm">
               {c.tenant}: {data.tenant_id} · {c.actor}: {data.username ?? actor} ·{" "}
@@ -1740,14 +1790,11 @@ function ConfirmGate({
     <>
       {valid ? (
         <>
-          <label className="flex items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={acknowledged === data.arguments_sha256}
-              onChange={(event) => onAcknowledge(event.target.checked ? data.arguments_sha256 : "")}
-            />
-            {c.acknowledge}
-          </label>
+          <CheckboxOption
+            label={c.acknowledge}
+            checked={acknowledged === data.arguments_sha256}
+            onCheckedChange={(checked) => onAcknowledge(checked ? data.arguments_sha256 : "")}
+          />
           <Button
             disabled={!canOperate || acknowledged !== data.arguments_sha256 || sent}
             onClick={() => confirm.mutate(data)}
@@ -1955,7 +2002,7 @@ function RemediationPanel({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{c.remediation}</CardTitle>
+        <CardTitle className="text-lg">{c.remediation}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <form
@@ -1969,7 +2016,7 @@ function RemediationPanel({
           <label className="space-y-2 text-sm">
             {c.remediationScope}
             <select
-              className="block rounded border bg-background p-2"
+              className="block h-10 rounded-md border border-control bg-background px-3 text-sm"
               value={scope}
               onChange={(event) => {
                 setScope(event.target.value as "device" | "finding");

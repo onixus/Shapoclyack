@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import { CheckboxOption } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { useT } from "@/lib/i18n";
 import {
@@ -114,7 +115,7 @@ export function OperatorSettings({ actor }: { actor: string }) {
           <label>
             {text("Provider", "Провайдер")}
             <select
-              className="block h-10 w-full rounded-md border bg-background px-3"
+              className="block h-10 w-full rounded-md border border-control bg-background px-3 text-sm"
               value={draft.provider}
               onChange={(e) => {
                 setDraft({
@@ -183,29 +184,23 @@ export function OperatorSettings({ actor }: { actor: string }) {
               onChange={(e) => setKey(e.target.value)}
             />
           </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={clearKey}
-              onChange={(e) => {
-                setClearKey(e.target.checked);
-                setKey("");
-              }}
-            />{" "}
-            {text("Clear API key", "Удалить ключ API")}
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              disabled={!snapshot.data?.external_permitted || draft.provider === "local"}
-              checked={draft.allow_external}
-              onChange={(e) => setDraft({ ...draft, allow_external: e.target.checked })}
-            />{" "}
-            {text(
+          <CheckboxOption
+            label={text("Clear API key", "Удалить ключ API")}
+            checked={clearKey}
+            onCheckedChange={(checked) => {
+              setClearKey(checked);
+              setKey("");
+            }}
+          />
+          <CheckboxOption
+            label={text(
               "Allow sending task data to this cloud provider",
               "Разрешить отправку данных задач этому облачному провайдеру",
             )}
-          </label>
+            disabled={!snapshot.data?.external_permitted || draft.provider === "local"}
+            checked={draft.allow_external}
+            onCheckedChange={(checked) => setDraft({ ...draft, allow_external: checked })}
+          />
           <label>
             {text("Timeout (seconds)", "Тайм-аут (секунды)")}
             <Input
@@ -229,17 +224,16 @@ export function OperatorSettings({ actor }: { actor: string }) {
               onChange={(e) => setDraft({ ...draft, max_output_tokens: Number(e.target.value) })}
             />
           </label>
-          <label className="sm:col-span-2">
-            <input
-              type="checkbox"
+          <div className="sm:col-span-2">
+            <CheckboxOption
+              label={text(
+                "Include a small completion in the test (cloud providers may charge)",
+                "Добавить короткую генерацию в проверку (облако может списать оплату)",
+              )}
               checked={completion}
-              onChange={(e) => setCompletion(e.target.checked)}
-            />{" "}
-            {text(
-              "Include a small completion in the test (cloud providers may charge)",
-              "Добавить короткую генерацию в проверку (облако может списать оплату)",
-            )}
-          </label>
+              onCheckedChange={setCompletion}
+            />
+          </div>
           <div className="flex flex-wrap gap-2 sm:col-span-2">
             <Button type="submit">{text("Save connection", "Сохранить подключение")}</Button>
             <Button type="button" variant="outline" onClick={() => void run("discover")}>
