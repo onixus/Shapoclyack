@@ -145,7 +145,7 @@ function ScreenshotCard({ runId, item }: { runId: string; item: ScreenshotItem }
           </p>
           <div className="flex flex-wrap items-center gap-1.5">
             {item.redacted_fields > 0 ? (
-              <Badge variant="secondary" className="bg-warning-subtle text-warning border-warning/30 text-[10px]">
+              <Badge variant="secondary" className="bg-warning-subtle text-warning border-warning/30 text-xs">
                 {t(
                   item.redacted_fields === 1
                     ? "screenshots.badge.redactedOne"
@@ -154,12 +154,12 @@ function ScreenshotCard({ runId, item }: { runId: string; item: ScreenshotItem }
                 )}
               </Badge>
             ) : (
-              <Badge variant="secondary" className="bg-muted text-foreground border-border text-[10px]">
+              <Badge variant="secondary" className="bg-muted text-foreground border-border text-xs">
                 {t("screenshots.badge.noneCovered")}
               </Badge>
             )}
             {!item.available ? (
-              <Badge variant="secondary" className="bg-danger-subtle text-danger border-danger/30 text-[10px]">
+              <Badge variant="secondary" className="bg-danger-subtle text-danger border-danger/30 text-xs">
                 {t("screenshots.badge.deleted")}
               </Badge>
             ) : null}
