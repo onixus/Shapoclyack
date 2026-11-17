@@ -248,6 +248,8 @@ def build(
                 "bdu_source": row.get("bdu_source"),
                 "bdu_updated": row.get("bdu_updated"),
                 "asset_id": row.get("asset_id"),
+                "primary_fqdn": row.get("primary_fqdn"),
+                "primary_ip": row.get("primary_ip"),
                 "port": row.get("port"),
                 "severity": row.get("severity"),
                 "risk_level": row.get("risk_level"),

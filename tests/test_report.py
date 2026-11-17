@@ -117,6 +117,49 @@ def test_build_reports_writes_vuln_and_os_artifacts(tmp_path: Path):
     assert alive[0]["os_accuracy"] == 95
 
 
+def test_domain_scan_records_the_name_beside_the_address(tmp_path: Path):
+    """A scan aimed at a domain must not report the finding as an address alone.
+
+    The address is what was reached; the name is what the operator asked to
+    scan. Both belong in the finding, the CSV and the written summary.
+    """
+    nmap_dir = _setup(tmp_path)
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    build_reports(
+        output_dir=output_dir,
+        total_targets=1,
+        alive_hosts=["10.0.0.5"],
+        open_ports=["10.0.0.5:22"],
+        nmap_dir=nmap_dir,
+        markdown_summary=True,
+        html_summary=False,
+        csv_export=True,
+        json_export=False,
+        sarif_export=True,
+        hostnames_map={"10.0.0.5": {"names": ["app.example.com"], "primary": "app.example.com"}},
+    )
+
+    vulns = json.loads((output_dir / "vulnerabilities.json").read_text(encoding="utf-8"))
+    assert vulns
+    assert {v["hostname"] for v in vulns} == {"app.example.com"}
+    assert {v["host"] for v in vulns} == {"10.0.0.5"}
+
+    csv_text = (output_dir / "vulnerabilities.csv").read_text(encoding="utf-8")
+    assert csv_text.splitlines()[0].startswith("host,hostname,")
+    assert "app.example.com" in csv_text
+
+    summary = (output_dir / "summary.md").read_text(encoding="utf-8")
+    assert "app.example.com (10.0.0.5)" in summary
+
+    sarif = json.loads((output_dir / "sarif.json").read_text(encoding="utf-8"))
+    results = sarif["runs"][0]["results"]
+    assert results
+    assert all(r["properties"]["hostname"] == "app.example.com" for r in results)
+    assert "app.example.com (10.0.0.5)" in results[0]["message"]["text"]
+
+
 def test_build_reports_merges_extra_vulnerabilities(tmp_path: Path):
     """External-tool findings (e.g. nuclei_scan.py) merge into vulnerabilities.json
     and participate in the same severity-ranked sort/counts as NSE findings."""
