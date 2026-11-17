@@ -164,7 +164,9 @@ function VulnerabilityDetailInner() {
   const assetQuery = useAssetDetail(vuln?.asset_id ?? null, tenantId);
   const asset = assetQuery.data;
   const ip =
-    asset?.identifiers.find((item) => item.identifier_type === "ip")?.identifier_value ?? null;
+    vuln?.primary_ip ||
+    asset?.identifiers.find((item) => item.identifier_type === "ip")?.identifier_value ||
+    null;
   const runVulnsQuery = useRunVulns(vuln?.last_seen_run_id ?? "", {
     host: ip,
     port: vuln?.port,
@@ -209,10 +211,11 @@ function VulnerabilityDetailInner() {
     );
   }
 
-  const assetName =
-    asset?.identifiers.find((item) => item.identifier_type === "ip")?.identifier_value ||
-    asset?.identifiers[0]?.identifier_value ||
-    vuln.asset_id;
+  const fqdn =
+    vuln.primary_fqdn ||
+    asset?.identifiers.find((item) => item.identifier_type === "fqdn")?.identifier_value ||
+    null;
+  const assetName = fqdn && ip && fqdn !== ip ? `${fqdn} (${ip})` : fqdn || ip || vuln.asset_id;
 
   return (
     <div className="space-y-6">
