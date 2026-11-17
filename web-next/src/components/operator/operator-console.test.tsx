@@ -976,6 +976,8 @@ describe("operator console", () => {
           upgrade_command: "apt-get upgrade curl",
           cve_ids: ["CVE-2024-1"],
           sources: [],
+          limitations: [],
+          verification: { method: "endpoint_inventory", requires_confirmation: true },
         },
       ],
     });
