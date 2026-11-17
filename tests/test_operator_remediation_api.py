@@ -193,7 +193,7 @@ def test_finding_assignee_outranks_the_asset_owner(env):
             vuln_id="vln-590", tenant_id="default", asset_id="asset-590", finding_key="k-590",
             state="OPEN", state_changed_at=now, severity="medium", title="finding",
             first_seen_at=now, last_seen_at=now, created_at=now, updated_at=now,
-            assignee="fix@example.test", owner_team="soc"))
+            assignee="fix@example.test", owner_team="soc", sla_started_at=now))
     response = client.get("/api/operator/remediation/findings/vln-590", headers=headers["viewer"],
                           params={"tenant_id": "default", "language": "en"})
     assert response.status_code == 200, response.text
