@@ -14,7 +14,7 @@ from typing import Any
 
 from fpdf import FPDF
 
-from .report import SEVERITY_ORDER
+from .report import SEVERITY_ORDER, host_label
 
 _SEVERITY_LABELS = ("critical", "high", "medium", "low", "unknown")
 
@@ -235,6 +235,8 @@ def write_business_pdf(
         for item in shown:
             host = str(item.get("host") or "")
             port = str(item.get("port") or "")
+            # The address only: this column is 22 characters, and a domain plus
+            # an address does not fit. The domain is printed in full below.
             location = f"{host}:{port}" if port else host
             cve = str(item.get("cve") or "-")
             cvss = item.get("cvss")
@@ -250,6 +252,19 @@ def write_business_pdf(
             for w, cell in zip(widths, cells, strict=True):
                 pdf.cell(w, 6, _safe(cell), border=1)
             pdf.ln()
+        named = list(dict.fromkeys(
+            (str(item.get("host") or ""), str(item.get("hostname") or "").strip())
+            for item in shown
+            if str(item.get("hostname") or "").strip()
+            and str(item.get("hostname") or "").strip() != str(item.get("host") or "")
+        ))
+        if named:
+            pdf.ln(1)
+            _reset(pdf)
+            pdf.set_font("Helvetica", "", 8)
+            pdf.set_text_color(71, 85, 105)
+            for host, name in named:
+                pdf.multi_cell(width, 4, _safe(f"{host} — {name}"))
         if len(priority) > len(shown):
             pdf.ln(1)
             _reset(pdf)
@@ -296,9 +311,8 @@ def write_business_pdf(
             pdf.cell(0, 6, "Newly observed issues:", new_x="LMARGIN", new_y="NEXT")
             pdf.set_font("Helvetica", "", 9)
             for item in added:
-                host = item.get("host")
                 port = item.get("port")
-                location = f"{host}:{port}" if port else host
+                location = f"{host_label(item)}:{port}" if port else host_label(item)
                 label = item.get("cve") or item.get("script_id") or "finding"
                 sev_name = str(item.get("severity") or "unknown").upper()
                 _reset(pdf)
