@@ -259,7 +259,7 @@ RUN set -eux; \
     # iproute2: Pulse's ARP discovery (discovery.l2) reads neighbours through
     # `ip -4 neigh`. Without `ip` it reports 0 live hosts, prints nothing and
     # exits 0 (docs/pulse-backend.md#l2-discovery).
-    PKGS="ca-certificates curl fping git iproute2 jq"; \
+    PKGS="ca-certificates curl fping git iproute2 jq fonts-dejavu-core"; \
     apt-get install -y --no-install-recommends ${PKGS}; \
     # Security updates the pinned base digest does not carry yet: Debian has
     # published them, python:3.12-slim has not been rebuilt on top. Upgrade
