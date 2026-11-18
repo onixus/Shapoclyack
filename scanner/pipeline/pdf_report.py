@@ -2,6 +2,12 @@
 
 Reads artifacts already written by ``build_reports`` / report diff and produces
 ``summary.pdf``.
+
+Text is set in DejaVu Sans when the host has it (the API and all-in-one images
+install ``fonts-dejavu-core``) and in fpdf2's Latin-1 core fonts otherwise.
+The lookup matches ``api.services.reports.render``: a missing or unreadable
+face must not fail the report. Control titles in ``controls.py`` are Russian,
+and a core-font ``summary.pdf`` used to print each of those letters as ``?``.
 """
 
 from __future__ import annotations
@@ -16,7 +22,47 @@ from fpdf import FPDF
 
 from .report import SEVERITY_ORDER, host_label
 
+logger = logging.getLogger(__name__)
+
 _SEVERITY_LABELS = ("critical", "high", "medium", "low", "unknown")
+
+#: Same directories as ``api.services.reports.render``. Module-level so a test
+#: can point the lookup at the Cyrillic subset fixture or empty it. An
+#: installation with none of them keeps the core fonts; that is a degraded
+#: report, not a failed scan.
+_UNICODE_FONT_DIRS: tuple[str, ...] = (
+    "/usr/share/fonts/truetype/dejavu",
+    "/usr/share/fonts/dejavu-sans-fonts",
+    "/usr/share/fonts/dejavu",
+    "/usr/share/fonts/TTF",
+    "/usr/local/share/fonts",
+)
+_UNICODE_FONT_FAMILY = "DejaVu"
+_UNICODE_FONT_FILES = {
+    "": "DejaVuSans.ttf",
+    "B": "DejaVuSans-Bold.ttf",
+    "I": "DejaVuSans-Oblique.ttf",
+}
+
+
+def find_unicode_font() -> dict[str, Path] | None:
+    """DejaVu Sans faces by fpdf style, or ``None``.
+
+    Bold and oblique fall back to the regular file when only it is present
+    (``fonts-dejavu-core`` ships no oblique): a heading set in regular weight
+    is a cosmetic loss, a heading set in a font that raises is not a report.
+    """
+
+    for directory in _UNICODE_FONT_DIRS:
+        regular = Path(directory) / _UNICODE_FONT_FILES[""]
+        if not regular.is_file():
+            continue
+        faces = {"": regular}
+        for style in ("B", "I"):
+            candidate = Path(directory) / _UNICODE_FONT_FILES[style]
+            faces[style] = candidate if candidate.is_file() else regular
+        return faces
+    return None
 
 
 def _load_json(path: Path, default: Any) -> Any:
@@ -38,17 +84,49 @@ class _BusinessReportPDF(FPDF):
     def __init__(self, org_name: str = "") -> None:
         super().__init__(orientation="P", unit="mm", format="A4")
         self.org_name = org_name
+        # A zero-byte or truncated face is still ``is_file()``. Only parsing
+        # can tell, and a bad file must not fail the scan report.
+        faces = find_unicode_font()
+        self.font_family = "Helvetica"
+        self.unicode_text = False
+        if faces is None:
+            logger.warning(
+                "no Unicode TrueType face found in %s; summary.pdf text outside "
+                "Latin-1 is rendered as replacement characters",
+                ", ".join(_UNICODE_FONT_DIRS),
+            )
+        else:
+            try:
+                for style, path in faces.items():
+                    self.add_font(_UNICODE_FONT_FAMILY, style=style, fname=str(path))
+            except Exception as exc:  # noqa: BLE001 - a bad font must not fail the report
+                logger.warning(
+                    "Unicode TrueType face at %s could not be loaded (%s); "
+                    "summary.pdf text outside Latin-1 is rendered as replacement characters",
+                    faces[""].parent,
+                    exc,
+                )
+            else:
+                self.font_family = _UNICODE_FONT_FAMILY
+                self.unicode_text = True
         self.set_auto_page_break(auto=True, margin=18)
         self.set_margins(left=15, top=16, right=15)
 
+    def txt(self, value: object) -> str:
+        """A string the current face can set: as-is with DejaVu, Latin-1 otherwise."""
+
+        if self.unicode_text:
+            return str(value if value is not None else "")
+        return _safe(value)
+
     def header(self) -> None:
         self.set_x(self.l_margin)
-        self.set_font("Helvetica", "B", 9)
+        self.set_font(self.font_family, "B", 9)
         self.set_text_color(30, 58, 138)
         label = "Shapoclyack"
         if self.org_name:
             label = f"{self.org_name}  |  {label}"
-        self.cell(0, 6, _safe(label), align="L")
+        self.cell(0, 6, self.txt(label), align="L")
         self.ln(7)
         y = self.get_y()
         self.set_draw_color(59, 130, 246)
@@ -59,12 +137,12 @@ class _BusinessReportPDF(FPDF):
     def footer(self) -> None:
         self.set_y(-14)
         self.set_x(self.l_margin)
-        self.set_font("Helvetica", "", 8)
+        self.set_font(self.font_family, "", 8)
         self.set_text_color(100, 116, 139)
         self.cell(
             0,
             8,
-            _safe(f"Confidential  |  Page {self.page_no()}  |  Authorized use only"),
+            self.txt(f"Confidential  |  Page {self.page_no()}  |  Authorized use only"),
             align="C",
         )
 
@@ -77,12 +155,16 @@ def _reset(pdf: FPDF) -> None:
     pdf.set_x(pdf.l_margin)
 
 
-def _section_title(pdf: FPDF, title: str) -> None:
+def _font(pdf: _BusinessReportPDF, style: str, size: float) -> None:
+    pdf.set_font(pdf.font_family, style, size)
+
+
+def _section_title(pdf: _BusinessReportPDF, title: str) -> None:
     _reset(pdf)
     pdf.ln(3)
-    pdf.set_font("Helvetica", "B", 13)
+    _font(pdf, "B", 13)
     pdf.set_text_color(15, 23, 42)
-    pdf.cell(0, 8, _safe(title), new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, pdf.txt(title), new_x="LMARGIN", new_y="NEXT")
     y = pdf.get_y()
     pdf.set_draw_color(226, 232, 240)
     pdf.line(pdf.l_margin, y, pdf.w - pdf.r_margin, y)
@@ -90,18 +172,18 @@ def _section_title(pdf: FPDF, title: str) -> None:
     _reset(pdf)
 
 
-def _kv_row(pdf: FPDF, key: str, value: object) -> None:
+def _kv_row(pdf: _BusinessReportPDF, key: str, value: object) -> None:
     _reset(pdf)
     key_w = 58.0
     val_w = _content_width(pdf) - key_w
     y = pdf.get_y()
-    pdf.set_font("Helvetica", "B", 10)
+    _font(pdf, "B", 10)
     pdf.set_text_color(51, 65, 85)
-    pdf.cell(key_w, 6, _safe(key))
+    pdf.cell(key_w, 6, pdf.txt(key))
     pdf.set_xy(pdf.l_margin + key_w, y)
-    pdf.set_font("Helvetica", "", 10)
+    _font(pdf, "", 10)
     pdf.set_text_color(15, 23, 42)
-    pdf.multi_cell(val_w, 6, _safe(value))
+    pdf.multi_cell(val_w, 6, pdf.txt(value))
     _reset(pdf)
 
 
@@ -136,16 +218,16 @@ def write_business_pdf(
     width = _content_width(pdf)
 
     _reset(pdf)
-    pdf.set_font("Helvetica", "B", 18)
+    _font(pdf, "B", 18)
     pdf.set_text_color(30, 58, 138)
-    pdf.multi_cell(width, 9, _safe(title))
+    pdf.multi_cell(width, 9, pdf.txt(title))
     _reset(pdf)
-    pdf.set_font("Helvetica", "", 11)
+    _font(pdf, "", 11)
     pdf.set_text_color(71, 85, 105)
     pdf.multi_cell(
         width,
         6,
-        _safe(
+        pdf.txt(
             "Executive summary of network reconnaissance results. "
             "Figures below reflect the latest Shapoclyack pipeline run."
         ),
@@ -175,33 +257,33 @@ def write_business_pdf(
     _section_title(pdf, "2. Severity Breakdown")
     col_w = width / 2
     _reset(pdf)
-    pdf.set_font("Helvetica", "B", 10)
+    _font(pdf, "B", 10)
     pdf.set_fill_color(241, 245, 249)
     pdf.set_text_color(15, 23, 42)
     pdf.cell(col_w, 7, "Severity", border=1, fill=True)
     pdf.cell(col_w, 7, "Count", border=1, fill=True, new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("Helvetica", "", 10)
+    _font(pdf, "", 10)
     for name in _SEVERITY_LABELS:
         _reset(pdf)
-        pdf.cell(col_w, 7, _safe(name.capitalize()), border=1)
+        pdf.cell(col_w, 7, pdf.txt(name.capitalize()), border=1)
         pdf.cell(col_w, 7, str(int(sev.get(name, 0))), border=1, new_x="LMARGIN", new_y="NEXT")
 
     top_services = summary.get("top_services") or []
     _section_title(pdf, "3. Top Services")
     if top_services:
         _reset(pdf)
-        pdf.set_font("Helvetica", "B", 10)
+        _font(pdf, "B", 10)
         pdf.set_fill_color(241, 245, 249)
         pdf.cell(col_w, 7, "Service", border=1, fill=True)
         pdf.cell(col_w, 7, "Open instances", border=1, fill=True, new_x="LMARGIN", new_y="NEXT")
-        pdf.set_font("Helvetica", "", 10)
+        _font(pdf, "", 10)
         for service, count in top_services[:12]:
             _reset(pdf)
-            pdf.cell(col_w, 7, _safe(service or "unknown")[:40], border=1)
+            pdf.cell(col_w, 7, pdf.txt(service or "unknown")[:40], border=1)
             pdf.cell(col_w, 7, str(count), border=1, new_x="LMARGIN", new_y="NEXT")
     else:
         _reset(pdf)
-        pdf.set_font("Helvetica", "", 10)
+        _font(pdf, "", 10)
         pdf.set_text_color(100, 116, 139)
         pdf.cell(0, 6, "No service fingerprints available.", new_x="LMARGIN", new_y="NEXT")
 
@@ -225,13 +307,13 @@ def write_business_pdf(
         widths = [28.0, 38.0, 28.0, 16.0, width - 28.0 - 38.0 - 28.0 - 16.0]
         headers = ["Severity", "Location", "CVE", "CVSS", "Source"]
         _reset(pdf)
-        pdf.set_font("Helvetica", "B", 9)
+        _font(pdf, "B", 9)
         pdf.set_fill_color(241, 245, 249)
         pdf.set_text_color(15, 23, 42)
         for w, header in zip(widths, headers, strict=True):
             pdf.cell(w, 7, header, border=1, fill=True)
         pdf.ln()
-        pdf.set_font("Helvetica", "", 8)
+        _font(pdf, "", 8)
         for item in shown:
             host = str(item.get("host") or "")
             port = str(item.get("port") or "")
@@ -250,7 +332,7 @@ def write_business_pdf(
             ]
             _reset(pdf)
             for w, cell in zip(widths, cells, strict=True):
-                pdf.cell(w, 6, _safe(cell), border=1)
+                pdf.cell(w, 6, pdf.txt(cell), border=1)
             pdf.ln()
         named = list(dict.fromkeys(
             (str(item.get("host") or ""), str(item.get("hostname") or "").strip())
@@ -268,19 +350,19 @@ def write_business_pdf(
         if len(priority) > len(shown):
             pdf.ln(1)
             _reset(pdf)
-            pdf.set_font("Helvetica", "I", 9)
+            _font(pdf, "I", 9)
             pdf.set_text_color(100, 116, 139)
             pdf.multi_cell(
                 width,
                 5,
-                _safe(
+                pdf.txt(
                     f"Showing {len(shown)} of {len(priority)} medium+ findings "
                     f"({len(vulnerabilities)} total). See vulnerabilities.json for the full list."
                 ),
             )
     else:
         _reset(pdf)
-        pdf.set_font("Helvetica", "", 10)
+        _font(pdf, "", 10)
         pdf.set_text_color(100, 116, 139)
         pdf.cell(0, 6, "No vulnerabilities recorded for this run.", new_x="LMARGIN", new_y="NEXT")
 
@@ -306,17 +388,17 @@ def write_business_pdf(
         if added:
             pdf.ln(1)
             _reset(pdf)
-            pdf.set_font("Helvetica", "B", 10)
+            _font(pdf, "B", 10)
             pdf.set_text_color(15, 23, 42)
             pdf.cell(0, 6, "Newly observed issues:", new_x="LMARGIN", new_y="NEXT")
-            pdf.set_font("Helvetica", "", 9)
+            _font(pdf, "", 9)
             for item in added:
                 port = item.get("port")
                 location = f"{host_label(item)}:{port}" if port else host_label(item)
                 label = item.get("cve") or item.get("script_id") or "finding"
                 sev_name = str(item.get("severity") or "unknown").upper()
                 _reset(pdf)
-                pdf.multi_cell(width, 5, _safe(f"- [{sev_name}] {location} {label}"))
+                pdf.multi_cell(width, 5, pdf.txt(f"- [{sev_name}] {location} {label}"))
 
     controls_data = _load_json(output_dir / "controls.json", None)
     if isinstance(controls_data, dict) and controls_data.get("controls"):
@@ -327,13 +409,13 @@ def write_business_pdf(
         c_widths = [45.0, 28.0, 28.0, width - 45.0 - 28.0 - 28.0]
         c_headers = ["Control", "Status", "Risk Level", "Assessment"]
         _reset(pdf)
-        pdf.set_font("Helvetica", "B", 9)
+        _font(pdf, "B", 9)
         pdf.set_fill_color(241, 245, 249)
         pdf.set_text_color(15, 23, 42)
         for w, header in zip(c_widths, c_headers, strict=True):
             pdf.cell(w, 7, header, border=1, fill=True)
         pdf.ln()
-        pdf.set_font("Helvetica", "", 8)
+        _font(pdf, "", 8)
         for c in controls_data.get("controls") or []:
             c_cells = [
                 str(c.get("title") or c.get("control") or "")[:26],
@@ -343,17 +425,17 @@ def write_business_pdf(
             ]
             _reset(pdf)
             for w, cell in zip(c_widths, c_cells, strict=True):
-                pdf.cell(w, 6, _safe(cell), border=1)
+                pdf.cell(w, 6, pdf.txt(cell), border=1)
             pdf.ln()
 
     _section_title(pdf, "Notes")
     _reset(pdf)
-    pdf.set_font("Helvetica", "", 9)
+    _font(pdf, "", 9)
     pdf.set_text_color(71, 85, 105)
     pdf.multi_cell(
         width,
         5,
-        _safe(
+        pdf.txt(
             "This report is generated automatically from Shapoclyack pipeline artifacts. "
             "CVE matches come from Pulse, Nuclei templates and (runs recorded before the Nmap stage was removed) NSE scripts, and may include "
             "version-based associations that require analyst validation. Use only on "
@@ -363,5 +445,5 @@ def write_business_pdf(
 
     out_path = output_dir / "summary.pdf"
     pdf.output(str(out_path))
-    logging.info("Wrote business PDF report: %s", out_path)
+    logger.info("Wrote business PDF report: %s", out_path)
     return out_path
