@@ -306,6 +306,18 @@ def test_the_dast_stage_cannot_reach_outside_its_stand():
     assert "OCTO_WEB_DIST=/opt/shapoclyack-dast-no-console" in body, (
         "the stand must not mount the console the API image carries"
     )
+    # The hook logs in once. Both scan budgets run after that, and the access
+    # token is capped by the session end. Idle must be strictly longer or the
+    # API refuses to boot.
+    assert "ACCESS_MINUTES=$(( DAST_MINUTES * 2 + 5 ))" in body
+    assert "IDLE_MINUTES=$(( ACCESS_MINUTES + 5 ))" in body
+    assert "SESSION_MINUTES=$(( ACCESS_MINUTES + 5 ))" in body
+    assert "OCTO_ACCESS_TOKEN_EXPIRE_MINUTES=${ACCESS_MINUTES}" in body
+    assert "OCTO_SESSION_IDLE_MINUTES=${IDLE_MINUTES}" in body
+    assert "OCTO_JWT_EXPIRE_MINUTES=${SESSION_MINUTES}" in body
+    assert body.index('chmod a+rwx "${REPORT_DIR}"') < body.index("--entrypoint zap-api-scan.py"), (
+        "the report directory must be writable by the scanner uid before ZAP starts"
+    )
     runs = [line for line in body.splitlines() if line.strip().startswith("docker run")]
     assert runs, "the stand starts nothing"
     assert all("-p " not in line and "--publish" not in line for line in runs), (
@@ -314,6 +326,12 @@ def test_the_dast_stage_cannot_reach_outside_its_stand():
     assert "-I" not in body.split("zap-api-scan.py", 1)[-1], "-I would let warnings pass the gate"
     for text in (JENKINSFILE, CI_WORKFLOW):
         assert "scripts/ci-dast.sh" in text
+    # The image job has already selected the docker-container Buildx driver.
+    # A plain docker build leaves the API image out of the daemon the script
+    # inspects. The tag passed to the script is the tag that was loaded.
+    step = CI_WORKFLOW.split("name: DAST (ZAP)", 1)[1].split("name: Upload ZAP report", 1)[0]
+    assert "docker buildx build --load -f Dockerfile.api -t network-scan-cli:ci-api ." in step
+    assert 'scripts/ci-dast.sh network-scan-cli:ci-api "gha-${{ github.run_id }}"' in step
 
 
 def test_the_dast_scan_refuses_an_image_it_would_have_to_pull(tmp_path: Path):

@@ -47,7 +47,10 @@
 #   DAST_MINUTES    Budget for the active scan, and for ZAP startup plus the
 #                   passive scan. Default: 15. The active scan of the full
 #                   OpenAPI document is the long part; the cap stops a hung
-#                   rule from holding the build.
+#                   rule from holding the build. The stand's access token
+#                   outlives both budgets plus the OpenAPI import. The hook
+#                   logs in once, and a token that dies mid-scan is a 401 the
+#                   gate does not fail.
 #   DAST_REPORT_DIR Directory for zap-report.html and zap-report.json. The
 #                   daemon resolves the mount, so this must be a host path.
 #                   Default: the repository root.
@@ -69,6 +72,23 @@ fi
 ZAP_IMAGE="${ZAP_IMAGE:-ghcr.io/zaproxy/zaproxy:stable@sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af}"
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea}"
 DAST_MINUTES="${DAST_MINUTES:-15}"
+case "${DAST_MINUTES}" in
+  ''|*[!0-9]*)
+    echo "[dast] DAST_MINUTES must be a positive number of minutes" >&2
+    exit 1
+    ;;
+esac
+if [ "${DAST_MINUTES}" -lt 1 ]; then
+  echo "[dast] DAST_MINUTES must be a positive number of minutes" >&2
+  exit 1
+fi
+# zap_started logs in once, then -T and the active-scan cap can each run for
+# DAST_MINUTES. Five minutes covers the OpenAPI import between them. The
+# access token is capped by the session's absolute end, and an idle timeout
+# that is not strictly longer refuses startup in dev as well as prod.
+ACCESS_MINUTES=$(( DAST_MINUTES * 2 + 5 ))
+IDLE_MINUTES=$(( ACCESS_MINUTES + 5 ))
+SESSION_MINUTES=$(( ACCESS_MINUTES + 5 ))
 REPORT_DIR="${DAST_REPORT_DIR:-${ROOT_DIR}}"
 
 NET="shapoclyack-dast-${NAME}"
@@ -127,6 +147,9 @@ OCTO_ALLOW_SCAN_START=false
 OCTO_API_DOCS=enabled
 OCTO_API_CORS=*
 OCTO_PUBLIC_BASE_URL=http://api:8080
+OCTO_ACCESS_TOKEN_EXPIRE_MINUTES=${ACCESS_MINUTES}
+OCTO_SESSION_IDLE_MINUTES=${IDLE_MINUTES}
+OCTO_JWT_EXPIRE_MINUTES=${SESSION_MINUTES}
 # The API image also carries the console. That shell is HTML with the inline
 # scripts a static Next export needs, and this scan judges API content types.
 # Point the dist at a path that is not a directory so the shell is not mounted.
@@ -221,6 +244,12 @@ def zap_started(zap, target):
         replacement="Bearer " + token,
     )
 PY
+
+# The scanner image runs as uid 1000. On a Linux runner the workspace is
+# owned by a different uid and is not world-writable, so the report is never
+# created and the missing file is reported as "the scan did not run".
+# The directory only: the hook and the checkout stay as the runner wrote them.
+chmod a+rwx "${REPORT_DIR}"
 
 echo "[dast] scanning http://api:8080 through its OpenAPI document"
 set +e

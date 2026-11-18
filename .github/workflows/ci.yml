@@ -262,7 +262,10 @@ jobs:
         # surface. scripts/ci-dast.sh puts the stand on an internal network and
         # disables scan starts, so the scan stays inside the stand.
         run: |
-          docker build -f Dockerfile.api -t network-scan-cli:ci-api .
+          # setup-buildx-action left the current builder on the
+          # docker-container driver. Without --load that build stays in
+          # BuildKit, and ci-dast.sh refuses an image the daemon does not have.
+          docker buildx build --load -f Dockerfile.api -t network-scan-cli:ci-api .
           ./scripts/ci-dast.sh network-scan-cli:ci-api "gha-${{ github.run_id }}"
       - name: Upload ZAP report
         if: always()

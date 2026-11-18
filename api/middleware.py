@@ -278,11 +278,12 @@ class SecurityHeadersMiddleware:
         self.csp = content_security_policy or (
             "default-src 'self'; "
             # The static console inlines its theme bootstrap and the Next.js
-            # flight payload, so scripts cannot drop 'unsafe-inline' without
-            # a per-build hash. Stylesheets are external files; an inline
-            # style is not required.
+            # flight payload. Radix scroll-lock (react-remove-scroll) also
+            # injects a <style> element when a dialog or select opens; a
+            # file-only style-src drops that element and the page behind the
+            # dialog keeps scrolling.
             "script-src 'self' 'unsafe-inline'; "
-            "style-src 'self'; "
+            "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob:; "
             "font-src 'self' data:; "
             "connect-src 'self'; "

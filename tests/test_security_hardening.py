@@ -29,11 +29,10 @@ def test_security_headers_middleware():
     assert headers.get("cross-origin-opener-policy") == "same-origin"
     csp = headers.get("content-security-policy") or ""
     assert "default-src 'self'" in csp
-    # Styles load from files. 'unsafe-inline' on style-src was a finding and
-    # is not required. script-src still allows it: the static console inlines
-    # its theme bootstrap and the Next.js flight payload.
-    assert "style-src 'self';" in csp
-    assert "style-src 'self' 'unsafe-inline'" not in csp
+    # script-src: the static console inlines its theme bootstrap and the
+    # Next.js flight payload. style-src: Radix scroll-lock injects a <style>
+    # element at runtime, which a file-only style-src would drop.
+    assert "style-src 'self' 'unsafe-inline'" in csp
     assert "script-src 'self' 'unsafe-inline'" in csp
     for path in ("/api/auth/saml/metadata", "/api/auth/saml/login"):
         missed = client.get(path)
