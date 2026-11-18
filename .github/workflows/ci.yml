@@ -255,6 +255,24 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
+      - name: DAST (ZAP)
+        # Same script as the Jenkins stage, so the two cannot drift the way the
+        # Semgrep stage did. The API image is built here rather than taken from
+        # the scanner image above: the control plane is what has the HTTP
+        # surface. scripts/ci-dast.sh puts the stand on an internal network and
+        # disables scan starts, so the scan stays inside the stand.
+        run: |
+          docker build -f Dockerfile.api -t network-scan-cli:ci-api .
+          ./scripts/ci-dast.sh network-scan-cli:ci-api "gha-${{ github.run_id }}"
+      - name: Upload ZAP report
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: zap
+          path: |
+            zap-report.html
+            zap-report.json
+          if-no-files-found: warn
       - name: Generate SBOM (SPDX JSON)
         uses: anchore/sbom-action@v0.24.0
         with:
