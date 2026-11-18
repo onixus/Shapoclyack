@@ -91,6 +91,16 @@ patches:
         name: scanner-config
         namespace: network-scan-executor
       $patch: delete
+  # Same dual-namespace pattern as scanner-config: base generates the shared
+  # capture token in network-scan and again in network-scan-executor. This
+  # overlay collapses both into shapoclyack-restore, so leave only one Secret.
+  - patch: |-
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: shapoclyack-screenshot-worker
+        namespace: network-scan-executor
+      $patch: delete
   - patch: |-
       apiVersion: v1
       kind: ServiceAccount

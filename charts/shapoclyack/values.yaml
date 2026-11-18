@@ -48,6 +48,13 @@ images:
     repository: amazon/aws-cli
     tag: 2.17.40
     digest: sha256:db8d39443ef512d4724becfac59ec9b7c4f8621e7b3c6200be56cd4fc2dc9570
+  # Placeholder tag, no digest: the image is not published yet
+  # (Dockerfile.screenshot-worker). Leave digest empty until that publish path
+  # exists; do not invent a sha256.
+  screenshotWorker:
+    repository: ghcr.io/onixus/shapoclyack-screenshot-worker
+    tag: shapoclyack-0.49-screenshot-worker
+    digest: ""
 
 # Only the API and the executor scale out. The datastores are single-replica:
 # NATS/ClickHouse/Postgres clustering needs different configuration, not a
@@ -55,6 +62,7 @@ images:
 replicas:
   api: 1
   scannerExecutor: 1
+  screenshotWorker: 1
 
 storage:
   # ReadWriteMany is required for api.replicas > 1 (docs/high-availability.md).
@@ -102,6 +110,9 @@ resources:
   clickhouseBackup:
     limits: {cpu: 250m, memory: 256Mi}
     requests: {cpu: 20m, memory: 64Mi}
+  screenshotWorker:
+    limits: {cpu: "1", memory: 1Gi}
+    requests: {cpu: 100m, memory: 512Mi}
 
 api:
   # Both empty in the base: the API then runs without the JetStream queue and
@@ -147,6 +158,9 @@ existingSecrets:
   clickhouse: ""        # key: password
   clickhouseBackup: ""  # key: password
   nats: ""              # keys: api_password, agent_password
+  # Empty token by default (screenshots off). Create the named Secret in both
+  # the release namespace and namespaces.executor before enabling capture.
+  screenshotWorker: ""  # key: token (OCTO_SCREENSHOT_WORKER_TOKEN)
   # Secrets the base expects you to create yourself; override only the name.
   postgresBackupS3: ""      # base name shapoclyack-backup
   clickhouseBackupS3: ""    # base name shapoclyack-clickhouse-backup-s3

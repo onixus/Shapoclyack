@@ -1,0 +1,51 @@
+# Ingress only, from the pods that actually scan, on the worker's port.
+#
+# A podSelector cannot cross namespaces, so the executor rule is a namespace
+# selector for network-scan-executor (base/scanner-executor/namespace.yaml) —
+# that namespace holds the sensor and nothing else. The local-scan overlay
+# runs scanner.main in network-scan and sets the same SCREENSHOT_WORKER_URL,
+# so those three component labels are admitted too. The selector is an AND
+# with the policy namespace, and the labels are the scan Jobs' own — not a
+# label any pod in network-scan can wear by copying the executor.
+#
+# Egress is deliberately NOT restricted, same as
+# base/scanner-executor/networkpolicy.yaml. The worker's job is to open the
+# URLs the scanner already found, and those are arbitrary addresses. A
+# policyTypes: [Egress] with no rule would drop that traffic and make every
+# capture fail. An installation that knows its target ranges can add an
+# egress policy (DNS, those ranges, and not the datastore ports) the way
+# docs/k8s-hardening.md describes for the executor.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shapoclyack-screenshot-worker-ingress
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: screenshot-worker
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: shapoclyack
+      app.kubernetes.io/component: screenshot-worker
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: network-scan-executor
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: shapoclyack
+              app.kubernetes.io/component: scan-job
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: shapoclyack
+              app.kubernetes.io/component: scan-cronjob
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: shapoclyack
+              app.kubernetes.io/component: scan-job-resume
+      ports:
+        - protocol: TCP
+          port: 8077

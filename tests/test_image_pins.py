@@ -38,6 +38,12 @@ PINNED = re.compile(r"^[a-z0-9][a-z0-9._/:-]*:[A-Za-z0-9_][A-Za-z0-9._-]{0,127}@
 LOCAL_IMAGES = {
     "network-scan-cli:": "the CI image built earlier in the same job",
     "ghcr.io/onixus/shapoclyack-aio:kind-dev": "built by scripts/dev-up.sh and loaded into kind",
+    # Not in Jenkinsfile.publish, so there is no registry digest to pin. The
+    # tag is a placeholder (Dockerfile.screenshot-worker). Airgap rewrites the
+    # same unpublished name; both prefixes stay exempt until that publish path
+    # exists and the manifests pin name:tag@sha256.
+    "ghcr.io/onixus/shapoclyack-screenshot-worker:": "unpublished placeholder; not pulled by CI",
+    "registry.internal.example/shapoclyack/shapoclyack-screenshot-worker:": "airgap rewrite of the unpublished placeholder",
 }
 
 

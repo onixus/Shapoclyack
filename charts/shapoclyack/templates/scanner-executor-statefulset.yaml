@@ -54,6 +54,13 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
+        - name: SCREENSHOT_WORKER_URL
+          value: http://shapoclyack-screenshot-worker.{{ .Release.Namespace }}.svc:8077
+        - name: OCTO_SCREENSHOT_WORKER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: token
+              name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "screenshotWorker" "default" "shapoclyack-screenshot-worker") }}
         image: {{ include "shapoclyack.image" .Values.images.aio }}
         imagePullPolicy: {{ .Values.images.pullPolicy }}
         name: executor
