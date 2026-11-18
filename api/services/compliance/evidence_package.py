@@ -47,6 +47,10 @@ class SigningUnavailable(RuntimeError):
     """The installation has no usable evidence signing identity."""
 
 
+class SigningNotConfigured(SigningUnavailable):
+    """No signing key is set. The feature is off, not an outage."""
+
+
 class PackageTooLarge(ValueError):
     """The tenant's evidence does not fit one verifiable package."""
 
@@ -89,7 +93,7 @@ def _private_key(environ: dict[str, str] | None = None) -> Ed25519PrivateKey:
     env = os.environ if environ is None else environ
     raw = (env.get(SIGNING_KEY_ENV) or "").strip()
     if not raw:
-        raise SigningUnavailable(
+        raise SigningNotConfigured(
             f"{SIGNING_KEY_ENV} is not configured; signed evidence packages are unavailable"
         )
     return Ed25519PrivateKey.from_private_bytes(_decode_private_key(raw))

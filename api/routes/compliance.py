@@ -113,6 +113,13 @@ def create_evidence_package(
             actor=principal.username,
             audit=audit,
         )
+    except evidence_package.SigningNotConfigured as exc:
+        # No key at all is a feature that is off. A key that is set and
+        # unusable is still an outage: the installation meant to sign.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
     except evidence_package.SigningUnavailable as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

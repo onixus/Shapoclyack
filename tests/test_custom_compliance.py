@@ -151,7 +151,7 @@ def test_evidence_package_requires_a_dedicated_signing_key(setup, monkeypatch):
         "/api/compliance/custom-acme-v1/evidence-package",
         headers=auth_headers(client, "operator"),
     )
-    assert response.status_code == 503
+    assert response.status_code == 404
 
 
 def test_tenant_isolation_quota_and_batched_purge(setup, monkeypatch):

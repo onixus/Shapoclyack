@@ -194,6 +194,13 @@ def list_recent_changes(
     event_type: Annotated[str | None, Query()] = None,
 ) -> list[dict]:
     """Cross-device recent software-change feed (installed/removed/updated)."""
+    # A NUL survives query parsing and Postgres rejects it as a data error,
+    # which the client sees as 500. The value is a filter, not a document.
+    if event_type is not None and any(ord(ch) < 32 or ord(ch) == 127 for ch in event_type):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="event_type contains a control character",
+        )
     return endpoint_inventory_service.list_recent_changes(
         principal.tenant_id, limit=limit, event_type=event_type
     )

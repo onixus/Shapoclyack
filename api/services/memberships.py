@@ -365,7 +365,18 @@ def resolve_tenant(
     requested = (requested or "").strip() or None
 
     if is_platform_admin:
-        return TenantResolution(requested or tenants_service.DEFAULT_TENANT_ID, "admin")
+        # An admin may name any tenant, but only one that exists. A query
+        # value such as a quote or a NUL used to fall through into the
+        # handlers, which answered 500, and a scanner then read that as an
+        # injection. No request still means the default tenant, looked up by
+        # the handler as before.
+        if requested is None:
+            return TenantResolution(tenants_service.DEFAULT_TENANT_ID, "admin")
+        if len(requested) > 256 or any(ord(ch) < 32 or ord(ch) == 127 for ch in requested):
+            raise ValueError("tenant_id is not a usable identifier")
+        if tenants_service.get_tenant(requested) is None:
+            raise LookupError(f"tenant not found: {requested}")
+        return TenantResolution(requested, "admin")
 
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:

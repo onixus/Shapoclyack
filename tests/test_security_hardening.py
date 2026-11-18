@@ -12,6 +12,21 @@ from api.settings import Settings
 from tests.conftest import configured_client, requires_postgres
 
 
+def test_a_platform_admin_bad_tenant_id_is_not_an_outage(monkeypatch):
+    """A quote or a NUL in ``tenant_id`` must not reach a handler as 500."""
+    from api.services import memberships, tenants as tenants_service
+
+    monkeypatch.setattr(tenants_service, "get_tenant", lambda tenant_id: None)
+    with pytest.raises(LookupError):
+        memberships.resolve_tenant("admin", "'(", global_role="admin")
+    with pytest.raises(ValueError):
+        memberships.resolve_tenant("admin", "bad\x00id", global_role="admin")
+    assert (
+        memberships.resolve_tenant("admin", None, global_role="admin").tenant_id
+        == tenants_service.DEFAULT_TENANT_ID
+    )
+
+
 def test_security_headers_middleware():
     """Verify that all defensive security headers are injected."""
     app = create_app()
