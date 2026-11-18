@@ -222,6 +222,24 @@ describe("natural request planner", () => {
       quality_status: "deterministic",
       reason: null,
       truncated: false,
+      owners: { finding_assignee: "fix@example.test" },
+      action_plan: {
+        origin: "shapoclyack_operator_runbook",
+        status: "manual_approval_required",
+        effect_executed: false,
+        owners: { finding_assignee: "fix@example.test" },
+        steps: [
+          {
+            order: 1,
+            kind: "confirm_owner",
+            status: "recorded",
+            text: "Confirm the recorded owner agrees to this remediation.",
+            requires_confirmation: true,
+            effect_executed: false,
+            owner: "fix@example.test",
+          },
+        ],
+      },
       items: [
         {
           kind: "configuration_hardening",
@@ -247,9 +265,9 @@ describe("natural request planner", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Use these parameters" }));
     expect(screen.getByLabelText("Remediation context")).toHaveValue("finding");
     expect(screen.getByLabelText("Network finding ID")).toHaveValue("finding-1");
-    expect(lookup).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole("button", { name: "Find fixes" }));
     await screen.findByText("TraceEnable off");
+    expect(await screen.findByText(/Confirm the recorded owner agrees/)).toBeVisible();
+    expect(screen.getAllByText(/fix@example.test/).length).toBeGreaterThan(0);
     expect(lookup).toHaveBeenCalledWith("tenant-a", "finding-1", "en", expect.any(AbortSignal));
     expect(screen.queryByText(/Installed:/)).not.toBeInTheDocument();
     expect(operatorApi.prepare).not.toHaveBeenCalled();

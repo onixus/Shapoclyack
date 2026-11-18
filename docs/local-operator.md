@@ -37,7 +37,7 @@ features do not by themselves close those gates.
 | Authorized retrieval and fixed-source citation resolution | #587 | Hybrid exact/full-text/semantic indexes implemented with source revalidation, tenant isolation, retention and deletion; measured recall gate required |
 | Evidence-aware analysis | #588 | Bounded RU/EN labels and published comparison implemented; real-model domain quality unaccepted |
 | Scan proposal, preview, confirmation and execution | #589 | Durable actor/session/hash-bound proposals, current native admission and no-redispatch recovery implemented; deployment drill pending |
-| Remediation proposals and workflow integration | #590 | [Deterministic vendor/inventory cards](local-operator-remediation.md) implemented; sourced operational plans and full evaluation pending |
+| Remediation proposals and workflow integration | #590 | [Deterministic vendor/inventory cards](local-operator-remediation.md) and a fixed owner-aware review plan implemented; the plan does not install or close anything; full evaluation pending |
 | Operator console | #591 | `/operator`: sessions, analysis, comparison, citations, actions and remediation; deployment flows remain subject to acceptance |
 | Security and misuse acceptance | #592 | [Negative gate](local-operator-security.md) implemented; measured runtime network isolation and physical drills pending |
 | Frozen quality and deployment acceptance | #593 | Frozen RU/EN evaluation and recovery/cold-start harnesses implemented; exact build/model/Mac report required |

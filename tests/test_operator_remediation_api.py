@@ -148,6 +148,69 @@ def test_service_tokens_are_refused(env):
     assert response.status_code == 403, response.text
 
 
+def _step(plan, kind):
+    return next(step for step in plan["steps"] if step["kind"] == kind)
+
+
+def test_device_plan_uses_recorded_asset_owner_and_names_a_missing_one(env):
+    client, settings, headers = env
+    missing = read(env).json()
+    assert missing["owners"] is None
+    assert missing["action_plan"]["effect_executed"] is False
+    assert missing["action_plan"]["steps"][0]["kind"] == "assign_owner"
+    assert missing["action_plan"]["steps"][0]["status"] == "owner_unknown"
+    assert "owner" not in missing["action_plan"]["steps"][0]
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with tenant_scope.system("remediation owner"), get_session(settings.postgres_url) as db:
+        db.add(models.Asset(asset_id="asset-590", tenant_id="default", status="active",
+                            first_seen=now, last_seen=now, owner_email="owner@example.test",
+                            business_unit="payments"))
+        device = db.get(models.EndpointDevice, "device-590")
+        device.asset_id = "asset-590"
+    owned = read(env).json()["action_plan"]
+    assert _step(owned, "backup")["owner"] == "owner@example.test"
+    assert _step(owned, "backup")["owner_role"] == "asset_owner_email"
+    assert _step(owned, "approve_change_window")["owner"] == "payments"
+    assert _step(owned, "upgrade")["effect_executed"] is False
+    foreign = client.get(BASE, headers=headers["admin"], params={"tenant_id": "other"})
+    if foreign.status_code != 404:
+        assert client.post("/api/tenants", headers=headers["admin"], json={
+            "tenant_id": "other", "name": "Other"}).status_code == 201
+        foreign = client.get(BASE, headers=headers["admin"], params={"tenant_id": "other"})
+    assert foreign.status_code == 404, foreign.text
+    assert "owner@example.test" not in foreign.text
+
+
+def test_finding_assignee_outranks_the_asset_owner(env):
+    client, settings, headers = env
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with tenant_scope.system("remediation finding owner"), get_session(settings.postgres_url) as db:
+        if db.get(models.Asset, "asset-590") is None:
+            db.add(models.Asset(asset_id="asset-590", tenant_id="default", status="active",
+                                first_seen=now, last_seen=now, owner_email="owner@example.test",
+                                business_unit="payments"))
+        db.add(models.Vulnerability(
+            vuln_id="vln-590", tenant_id="default", asset_id="asset-590", finding_key="k-590",
+            state="OPEN", state_changed_at=now, severity="medium", title="finding",
+            first_seen_at=now, last_seen_at=now, sla_started_at=now, created_at=now, updated_at=now,
+            assignee="ada", owner_team="soc"))
+    response = client.get("/api/operator/remediation/findings/vln-590", headers=headers["viewer"],
+                          params={"tenant_id": "default", "language": "en"})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    plan = body["action_plan"]
+    assert body["owners"]["finding_assignee"] == "ada"
+    assert body["owners"]["asset_owner_email"] == "owner@example.test"
+    assert _step(plan, "backup")["owner"] == "ada"
+    assert _step(plan, "backup")["owner_role"] == "finding_assignee"
+    assert _step(plan, "approve_change_window")["owner"] == "soc"
+    assert plan["effect_executed"] is False
+    foreign = client.get("/api/operator/remediation/findings/vln-590", headers=headers["admin"],
+                         params={"tenant_id": "missing-tenant"})
+    assert foreign.status_code in {403, 404}
+    assert "ada" not in foreign.text
+
+
 def test_numeric_citation_opens_fixed_manual_plan_and_old_runbook_is_rejected(env, monkeypatch, tmp_path):
     client, _, headers = env
     card = read(env).json()["items"][0]
