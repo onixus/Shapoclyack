@@ -272,6 +272,38 @@ describe("operator console", () => {
       expect.any(AbortSignal),
     );
   });
+  it("keeps compare and remediation visible while a selected session detail is pending", async () => {
+    savedSession();
+    let release!: (value: OperatorSession) => void;
+    vi.mocked(operatorApi.session).mockReturnValue(
+      new Promise<OperatorSession>((resolve) => {
+        release = resolve;
+      }),
+    );
+    renderConsole();
+    expect(await screen.findByText("Find a vendor-backed fix")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Compare published runs" })).toBeInTheDocument();
+    expect(screen.getByText("Loading operator…")).toBeInTheDocument();
+    expect(screen.queryByText("No tasks in this session.")).not.toBeInTheDocument();
+    await act(async () => {
+      release(sessionRow);
+    });
+    expect(await screen.findByText("No tasks in this session.")).toBeInTheDocument();
+    expect(screen.getByText("Find a vendor-backed fix")).toBeInTheDocument();
+  });
+  it("keeps compare and remediation visible when session detail fails to load", async () => {
+    savedSession();
+    vi.mocked(operatorApi.session).mockRejectedValue(new Error("session detail failed"));
+    renderConsole();
+    expect(await screen.findByText("Find a vendor-backed fix")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Compare published runs" })).toBeInTheDocument();
+    expect(
+      await screen.findAllByText(
+        "The request could not be completed. Recheck your session, permissions and service status.",
+      ),
+    ).not.toHaveLength(0);
+    expect(screen.queryByText("No tasks in this session.")).not.toBeInTheDocument();
+  });
   it("leaves other workflows alone when the optional operator returns 404", async () => {
     vi.mocked(operatorApi.status).mockRejectedValue({ response: { status: 404 } });
     renderConsole();
