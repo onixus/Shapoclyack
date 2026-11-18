@@ -76,6 +76,7 @@ namespace ([Kubernetes hardening](k8s-hardening.md), enrolling the executor).
 | `externalSecrets.*` | disabled | See above |
 | `ingress.*` | disabled | Host, class, annotations, TLS. TLS is not optional (#309): no `hosts`, no `tls`, or a host missing from every `tls[].hosts`, is refused. A wildcard TLS host covers one label (`*.example.com` covers `a.example.com`, not `a.b.example.com` or `example.com`); a `tls` entry without `hosts` covers nothing here, list the host |
 | `images.<api\|aio\|clickhouse\|nats\|postgres\|awscli>` | digest-pinned, as in the base | Set `digest: ""` to deploy by tag |
+| `images.screenshotWorker` | placeholder tag, digest empty | The worker image is not published yet. Pin `digest` once `Dockerfile.screenshot-worker` has a publish path; do not invent one |
 | `resources.*` | the base's requests and limits | One entry per workload |
 | `networkPolicy.enabled` | `true` | The datastore and executor-namespace ingress rules |
 | `podDisruptionBudget.enabled`, `backup.<postgres\|clickhouse>.enabled/schedule` | on | |

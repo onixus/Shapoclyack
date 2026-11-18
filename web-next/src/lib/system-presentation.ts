@@ -42,6 +42,7 @@ const copy: Record<string, string> = {
   "Pulse scanner": "Сканер Pulse",
   "Removed — choose Pulse": "Удалён — выберите Pulse",
   fingerprint: "Определение технологий",
+  screenshots: "Скриншоты веб-сервисов",
   tls_posture: "Защита TLS",
   nuclei: "Проверки Nuclei",
   pdf_summary: "Отчёт PDF",

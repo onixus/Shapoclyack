@@ -85,6 +85,35 @@ opens inside the numeric citation response, with runbook and plan SHA bindings.
 No endpoint installs packages, executes the plan, closes vulnerabilities or
 marks `machine_verified`; effectful verification remains separately confirmed.
 
+`for_device` and `for_finding` add `owners` and `action_plan` after the vendor
+cards are built. Owners come only from stored tenant fields: the asset's
+`owner_email` and `business_unit`, and, for a finding, its `assignee` and
+`owner_team`. Asset `owner_email` must look like an email; assignee, team and
+business unit are free-form labels (platform logins such as `ada` are kept).
+Blank or control-character values are omitted for every field. When none are
+recorded, `owners` is null and the first step is `assign_owner` with status
+`owner_unknown`; a name is never invented. The finding assignee, when present,
+is the change owner; otherwise the asset owner is. The finding team, when
+present, owns the change window; otherwise the asset business unit does.
+Steps are a fixed server list (confirm owner, change window, backup, one
+upgrade or configuration step per card, restart unknown, verify). Upgrade text
+names only the package and vendor target already on the card. Commands stay
+display-only. `effect_executed` is false on the plan and every step. Owners are
+not part of advisory citation hashes. `build_cards` itself does not attach a
+plan, so a caller without a database does not pretend an owner was looked up.
+When the plan is attached, the same per-key rules run again
+(`asset_owner_email` as email; assignee/team/unit as labels), so a caller
+cannot bypass the database check with a forged owners dict.
+
+`tests/test_operator_remediation.py` runs 40 review cases (20 situations in
+Russian and English): backport, epoch, RPM, already fixed, no fix, stale feed,
+stale inventory, seed and missing feeds, wrong architecture, bad version, and
+missing or invalid owners. Each case checks the vendor target version, that
+`effect_executed` stays false, and that a missing owner is `assign_owner`
+rather than an invented name. These cases are separate from the frozen
+190-case domain dataset, whose digest is pinned and whose scorer does not
+score owners. They are not a model-quality evaluation.
+
 For a current finding from the exact shipped Pulse `shapo_http_trace` plugin,
 `GET /api/operator/remediation/findings/{vuln_id}` exposes configuration guidance
 only after a current administrator records hash-bound independent Apache 2.4

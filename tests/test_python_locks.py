@@ -292,6 +292,7 @@ _INSTALLERS = [
     "Dockerfile",
     "Dockerfile.api",
     "Dockerfile.allinone",
+    "Dockerfile.screenshot-worker",
     "Jenkinsfile",
     "Jenkinsfile.publish",
     ".github/workflows/ci.yml",

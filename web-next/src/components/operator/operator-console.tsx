@@ -177,6 +177,16 @@ const copy = {
     noWorkaround: "Unsupported: no reviewed vendor workaround source.",
     lookup: "Find fixes",
     noFixes: "No confirmed fix cards are available; this is not evidence of safety.",
+    actionPlan: "Remediation steps · review only",
+    actionPlanHelp:
+      "The server wrote these steps. Nothing is installed or closed from this list.",
+    owners: "Recorded owners",
+    noOwner: "No resource owner is recorded.",
+    stepOwner: "Owner",
+    asset_owner_email: "Asset owner",
+    business_unit: "Business unit",
+    finding_assignee: "Finding assignee",
+    finding_owner_team: "Remediation team",
     installed: "Installed",
     target: "Vendor target",
     unknown: "unknown",
@@ -323,6 +333,15 @@ const copy = {
     noWorkaround: "Не поддерживается: нет проверенного источника обходного решения поставщика.",
     lookup: "Найти исправления",
     noFixes: "Подтверждённых карточек исправления нет; это не доказательство безопасности.",
+    actionPlan: "Шаги устранения · только проверка",
+    actionPlanHelp: "Шаги собрал сервер. Из этого списка ничего не устанавливается и не закрывается.",
+    owners: "Указанные владельцы",
+    noOwner: "Владелец ресурса не указан.",
+    stepOwner: "Владелец",
+    asset_owner_email: "Владелец актива",
+    business_unit: "Подразделение",
+    finding_assignee: "Исполнитель находки",
+    finding_owner_team: "Команда устранения",
     installed: "Установлено",
     target: "Версия из бюллетеня безопасности",
     unknown: "неизвестно",
@@ -2011,16 +2030,16 @@ function RemediationPanel({
   const [selected, select] = useState("");
   useEffect(() => {
     if (draft?.plan.tool !== "find_remediation") return;
-    const finding = typeof draft.plan.arguments.vuln_id === "string";
+    const findingId =
+      typeof draft.plan.arguments.vuln_id === "string" ? draft.plan.arguments.vuln_id : "";
+    const deviceId =
+      typeof draft.plan.arguments.device_id === "string" ? draft.plan.arguments.device_id : "";
+    const finding = findingId !== "";
     setScope(finding ? "finding" : "device");
-    setDevice(
-      finding
-        ? (draft.plan.arguments.vuln_id as string)
-        : typeof draft.plan.arguments.device_id === "string"
-          ? draft.plan.arguments.device_id
-          : "",
-    );
-    select("");
+    setDevice(finding ? findingId : deviceId);
+    // Finding guidance loads as soon as the plan is adopted. A device id only
+    // fills the field; the lookup stays on the explicit button.
+    select(finding ? findingId : "");
   }, [draft]);
   const result = useQuery({
     queryKey: [...operatorKey(tenant, actor), "remediation", scope, selected, language],
@@ -2083,6 +2102,41 @@ function RemediationPanel({
             {result.data.truncated && <p>{c.limited}</p>}
             {!result.data.items.length && (
               <p className="text-sm text-muted-foreground">{c.noFixes}</p>
+            )}
+            {result.data.action_plan && (
+              <section aria-label={c.actionPlan} className="space-y-2 rounded border p-3 text-sm">
+                <h3 className="font-semibold">{c.actionPlan}</h3>
+                <p className="text-muted-foreground">{c.actionPlanHelp}</p>
+                <p>
+                  {c.owners}:{" "}
+                  {result.data.owners
+                    ? Object.entries(result.data.owners)
+                        .map(([role, name]) => `${c[role as keyof Copy] ?? role}: ${name}`)
+                        .join(" · ")
+                    : c.noOwner}
+                </p>
+                <ol className="list-decimal space-y-2 pl-5">
+                  {result.data.action_plan.steps.map((step) => (
+                    <li key={step.order}>
+                      <span>{step.text}</span>
+                      {step.owner && (
+                        <span className="mt-1 block text-xs text-muted-foreground">
+                          {c.stepOwner}:{" "}
+                          {step.owner_role
+                            ? `${c[step.owner_role as keyof Copy] ?? step.owner_role} · `
+                            : ""}
+                          {step.owner}
+                        </span>
+                      )}
+                      {step.command && (
+                        <pre className="mt-1 whitespace-pre-wrap break-all rounded bg-muted p-2">
+                          {step.command}
+                        </pre>
+                      )}
+                    </li>
+                  ))}
+                </ol>
+              </section>
             )}
             {result.data.items.map((item, index) => (
               <article

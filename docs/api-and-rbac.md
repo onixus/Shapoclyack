@@ -3085,8 +3085,9 @@ process's filesystem or object storage. Two consequences for a client:
 Two artifact classes are not covered by the viewer's blanket artifact access,
 because they carry data about people rather than about open ports.
 
-**Historical screenshot PNGs** under `screenshots/`. Capture is withdrawn from
-the supported product (#367); these access rules remain for existing artifacts.
+**Screenshot PNGs** under `screenshots/`. Capture is opt-in and runs in the
+isolated screenshot-worker, not in the scanner image. These access rules apply
+to new and existing artifacts.
 They can still hold personal data after DOM redaction, so:
 
 - `GET /api/runs/{id}` omits those paths from `artifacts`;

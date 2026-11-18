@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -31,6 +32,171 @@ TRACE_PLUGIN_FILE = Path(__file__).resolve().parents[3] / "scanner/pipeline/puls
 TRACE_REVIEW_KEY = "operator_apache24_applicability_v1"
 PACKAGE_RUNBOOK_FILE = Path(__file__).parent / "data/package-upgrade-runbook-v1.json"
 PACKAGE_RUNBOOK_SHA256 = "6ca3debdd3e0f2bfb08f258b5e0fba6e615328add8c6060b31791b3e2b1dc68a"
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+$")
+# Only asset owner emails require mailbox shape. Assignees and teams are free-form
+# actor labels on the platform (e.g. ``ada``), so they use the label sanitizer.
+_EMAIL_OWNER_KEYS = frozenset({"asset_owner_email"})
+_OWNER_KEYS = frozenset({
+    "asset_owner_email", "business_unit", "finding_assignee", "finding_owner_team",
+})
+
+
+def _owner_field(value, *, email=False):
+    """A stored owner label, or nothing. Never inferred and never a command."""
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split())
+    if not text or len(text) > 254 or any(ord(char) < 32 for char in text):
+        return None
+    if email and not _EMAIL.fullmatch(text):
+        return None
+    return text
+
+
+def resource_owners(db, tenant_id, *, asset_id=None, device_id=None, vuln_id=None):
+    """Owners already stored for this tenant. Missing fields stay absent."""
+    asset = None
+    finding = None
+    device = None
+    if vuln_id:
+        finding = db.scalar(select(models.Vulnerability).where(
+            models.Vulnerability.vuln_id == vuln_id, models.Vulnerability.tenant_id == tenant_id))
+        if finding is not None:
+            asset_id = asset_id or finding.asset_id
+            device_id = device_id or finding.device_id
+    if device_id and asset_id is None:
+        device = db.scalar(select(models.EndpointDevice).where(
+            models.EndpointDevice.device_id == device_id, models.EndpointDevice.tenant_id == tenant_id))
+        if device is not None:
+            asset_id = device.asset_id
+    if asset_id:
+        asset = db.get(models.Asset, asset_id)
+        if asset is None or asset.tenant_id != tenant_id:
+            asset = None
+    owners = {}
+    if asset is not None:
+        email = _owner_field(asset.owner_email, email=True)
+        unit = _owner_field(asset.business_unit)
+        if email:
+            owners["asset_owner_email"] = email
+        if unit:
+            owners["business_unit"] = unit
+    if finding is not None:
+        assignee = _owner_field(finding.assignee)
+        team = _owner_field(finding.owner_team)
+        if assignee:
+            owners["finding_assignee"] = assignee
+        if team:
+            owners["finding_owner_team"] = team
+    return owners or None
+
+
+def _step(order, kind, status, text, *, owner_role=None, owner=None, command=None):
+    step = {"order": order, "kind": kind, "status": status, "text": text,
+            "requires_confirmation": True, "effect_executed": False}
+    if owner_role and owner:
+        step["owner_role"] = owner_role
+        step["owner"] = owner
+    if command:
+        step["command"] = command
+    return step
+
+
+def _change_step(card, owners, language):
+    """The one card-specific step. Shared owner, backup and verify steps are added once."""
+    ru = language == "ru"
+    assignee = owners.get("finding_assignee")
+    asset_owner = owners.get("asset_owner_email")
+    role = "finding_assignee" if assignee else "asset_owner_email" if asset_owner else None
+    owner = assignee or asset_owner
+    package = card.get("package")
+    target = card.get("target_version")
+    if card.get("kind") == "configuration_hardening" and card.get("status") == "configuration_guidance":
+        text = ("Вручную примените указанную директиву. Оператор её не применяет." if ru else
+                "Apply the cited directive manually. This operator does not apply it.")
+        return _step(0, "apply_configuration", "manual_approval_required", text, owner_role=role, owner=owner)
+    if card.get("status") == "fix_available" and target and package:
+        text = (f"Обновите пакет {package} до версии {target} только из одобренного репозитория. Команда только для проверки."
+                if ru else
+                f"Upgrade {package} to vendor version {target} from an approved repository only. The command is for review, not execution.")
+        return _step(0, "upgrade", "manual_approval_required", text, owner_role=role, owner=owner,
+                     command=card.get("upgrade_command"))
+    if package:
+        text = (f"Для {package} подтверждённого исправления нет. Шаг изменения не предлагается." if ru else
+                f"No confirmed fix is available for {package}. No change step is proposed.")
+        return _step(0, "remediate", "unsupported", text)
+    return None
+
+
+def _recorded_owners(owners):
+    """Keep only stored owner fields that survive the same checks as a database read."""
+    if not isinstance(owners, dict):
+        return None
+    recorded = {}
+    for key, value in owners.items():
+        if key not in _OWNER_KEYS:
+            continue
+        clean = _owner_field(value, email=key in _EMAIL_OWNER_KEYS)
+        if clean:
+            recorded[key] = clean
+    return recorded or None
+
+
+def attach_action_plan(result, owners, language):
+    """One ordered plan for the whole read. Owners are not part of vendor citation hashes."""
+    if language not in {"ru", "en"}:
+        raise GatewayError("operator_invalid_query")
+    ru = language == "ru"
+    owners = _recorded_owners(owners)
+    recorded = owners or {}
+    assignee = recorded.get("finding_assignee")
+    asset_owner = recorded.get("asset_owner_email")
+    team = recorded.get("finding_owner_team")
+    unit = recorded.get("business_unit")
+    change_role = "finding_assignee" if assignee else "asset_owner_email" if asset_owner else None
+    change_owner = assignee or asset_owner
+    window_role = "finding_owner_team" if team else "business_unit" if unit else None
+    window_owner = team or unit
+    steps = []
+    if not recorded:
+        steps.append(_step(1, "assign_owner", "owner_unknown",
+            "Владелец ресурса не указан. Назначьте владельца актива или исполнителя находки до изменений."
+            if ru else "No resource owner is recorded. Assign an asset owner or a finding assignee before any change."))
+    else:
+        steps.append(_step(1, "confirm_owner", "recorded",
+            "Подтвердите, что устранение согласовано с указанным владельцем."
+            if ru else "Confirm the recorded owner agrees to this remediation.",
+            owner_role=change_role or window_role, owner=change_owner or window_owner))
+        steps.append(_step(2, "approve_change_window", "manual_approval_required",
+            "Согласуйте окно изменений с командой устранения или подразделением владельца."
+            if ru else "Agree a change window with the remediation team or the owner's business unit.",
+            owner_role=window_role, owner=window_owner))
+        steps.append(_step(3, "backup", "manual_approval_required",
+            "Владелец ресурса подтверждает восстановимую копию до изменения. Объём копии оператору неизвестен."
+            if ru else "The resource owner confirms a restorable backup before the change. Backup scope is unknown to this operator.",
+            owner_role=change_role, owner=change_owner))
+    for card in result.get("items") or []:
+        change = _change_step(card, recorded, language)
+        if change:
+            steps.append(change)
+    steps.append(_step(0, "restart", "unknown",
+        "Нужен ли перезапуск службы или ОС, оператор не устанавливает. Это решает владелец по инструкции поставщика."
+        if ru else "Whether a service or host restart is required is not established. The owner decides from the vendor notes.",
+        owner_role=change_role, owner=change_owner))
+    steps.append(_step(0, "verify", "manual_approval_required",
+        "После согласованного изменения перепроверьте находку отдельным подтверждённым действием. Этот план находку не закрывает."
+        if ru else "After the approved change, re-check the finding with a separately confirmed action. This plan does not close it.",
+        owner_role=change_role, owner=change_owner))
+    ordered = [{**step, "order": index} for index, step in enumerate(steps, start=1)]
+    result["owners"] = owners
+    result["action_plan"] = {
+        "origin": "shapoclyack_operator_runbook",
+        "status": "manual_approval_required",
+        "effect_executed": False,
+        "owners": owners,
+        "steps": ordered,
+    }
+    return result
 
 
 def package_runbook():
@@ -228,6 +394,7 @@ def for_finding(settings, principal, *, vuln_id, language="ru", now=None):
             event, parsed = reviewed
             sources.append({"source_id": "review:" + str(event.id), "source_hash": _digest(event.detail),
                 "snapshot_id": finding_hash, "kind": "administrator_reviewed_applicability"})
+        owners = resource_owners(db, principal.tenant_id, asset_id=row.asset_id, device_id=row.device_id, vuln_id=vuln_id)
         card = {"kind": "configuration_hardening", "product": "apache_httpd" if reviewed else None,
             "applicability": "administrator_reviewed" if reviewed else "unknown",
             "status": "configuration_guidance" if reviewed else "unknown",
@@ -239,10 +406,12 @@ def for_finding(settings, principal, *, vuln_id, language="ru", now=None):
             "sources": sources, "preconditions": guide["operator_preconditions"] if reviewed else [],
             "preconditions_origin": guide["preconditions_origin"],
             "limitations": ["not_an_apache_vulnerability_claim", "no_package_or_fixed_version_claim", "no_automatic_application"]}
-        return {"vuln_id": vuln_id, "state": "complete" if reviewed else "unknown", "language": language,
+        return attach_action_plan({
+            "vuln_id": vuln_id, "state": "complete" if reviewed else "unknown", "language": language,
             "quality_status": "deterministic", "reason": reason, "items": [card], "truncated": False,
             "finding_sha256": finding_hash, "guidance_sha256": TRACE_GUIDE_SHA256,
-            "limitations": ["manual_applicability_review_required", "remote_banner_is_not_product_inventory"]}
+            "limitations": ["manual_applicability_review_required", "remote_banner_is_not_product_inventory"]},
+            owners, language)
 
 
 def get_finding_source(settings, principal, *, vuln_id, source_id, snapshot_id, source_hash, language="ru"):
@@ -438,8 +607,10 @@ def for_device(settings, principal, *, device_id, language="ru", limit=50, now=N
             models.SoftwareCveMatch.device_id == device_id).order_by(
                 models.SoftwareCveMatch.id).limit(limit + 1)).all()
         architecture = device.os_arch
-    return build_cards(rows[:limit], snapshot, device_id=device_id, snapshot_id=snapshot_id,
-                       architecture=architecture, language=language, now=now, truncated=len(rows) > limit)
+        owners = resource_owners(db, principal.tenant_id, asset_id=device.asset_id, device_id=device_id)
+    return attach_action_plan(build_cards(
+        rows[:limit], snapshot, device_id=device_id, snapshot_id=snapshot_id,
+        architecture=architecture, language=language, now=now, truncated=len(rows) > limit), owners, language)
 
 
 def build_cards(rows, snapshot, *, device_id, snapshot_id, architecture, language, now, truncated=False):

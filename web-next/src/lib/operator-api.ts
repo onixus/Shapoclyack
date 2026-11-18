@@ -156,6 +156,23 @@ export type RemediationItem = {
   verification: { method: string; requires_confirmation: boolean };
   limitations: string[];
 };
+export type RemediationOwners = {
+  asset_owner_email?: string;
+  business_unit?: string;
+  finding_assignee?: string;
+  finding_owner_team?: string;
+};
+export type RemediationStep = {
+  order: number;
+  kind: string;
+  status: string;
+  text: string;
+  requires_confirmation: boolean;
+  effect_executed: false;
+  owner_role?: string;
+  owner?: string;
+  command?: string | null;
+};
 export type RemediationResult = {
   device_id?: string;
   vuln_id?: string;
@@ -165,6 +182,14 @@ export type RemediationResult = {
   reason: string | null;
   items: RemediationItem[];
   truncated: boolean;
+  owners?: RemediationOwners | null;
+  action_plan?: {
+    origin: "shapoclyack_operator_runbook";
+    status: string;
+    effect_executed: false;
+    owners: RemediationOwners | null;
+    steps: RemediationStep[];
+  };
 };
 
 export type OperatorComparison = {

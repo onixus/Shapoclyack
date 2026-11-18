@@ -858,17 +858,20 @@ With a Country-edition database every marker is country-level, which the page
 states rather than hides. See
 [configuration.md](configuration.md#enrichment-sources).
 
-## Historical screenshot artifacts
+## Screenshots
 
-Screenshot capture and its run-view tab are withdrawn (#367): the published
-images have no supported browser runtime. The System page and configuration
-editor do not offer the unsupported stage. An old `tab=screenshots` link opens
-Findings instead.
+The run view has a **Screenshots** tab for an operator or admin. Viewers do
+not see the tab; a saved `tab=screenshots` link opens Findings for them, and
+a PNG request still returns `404`. The tab lists the operator-only manifest
+(`GET /api/runs/{id}/screenshots`): host, port, scheme, how many form fields
+were covered, and whether the PNG is still available. Retention deletes
+pixels and leaves the row with `available: false`. `screenshots.json` remains
+a text artifact in the Artifacts list.
 
-For existing artifacts, operator-only PNG downloads and retention continue to
-apply. Viewers do not get PNG paths in the Artifacts list and receive `404` if
-they request the file. `screenshots.json` remains a text artifact. See
-[API access rules](api-and-rbac.md#restricted-artifacts).
+The System page and configuration editor expose `screenshots.enabled`. Turning
+it on does nothing until the isolated screenshot-worker Deployment is running
+and the scanner has `SCREENSHOT_WORKER_URL`. The scanner image itself has no
+browser. See [API access rules](api-and-rbac.md#restricted-artifacts).
 
 ## SARIF viewer
 
