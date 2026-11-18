@@ -602,33 +602,33 @@ pipeline {
         stage('Trivy') {
           steps {
             sh 'rm -f trivy.json'
-            // Кэш — на джобу, а не общий том `trivy-db` на всех. Trivy берёт
-            // на своём кэше блокировку, поэтому две сборки разных веток
-            // одновременно роняли друг друга с "Failed to acquire cache or
-            // database lock" — тот же класс, что общий тег образа: ресурс один,
-            // а джоб теперь много. Воркспейс уже свой у каждой джобы, так что
-            // кэш переиспользуется между сборками одной ветки и ни с кем не
-            // делится. Цена — первая сборка новой ветки скачивает базу заново.
+            // Кэш — docker volume на джобу, не каталог воркспейса. bbolt в
+            // Trivy mmap-ит кэш; на virtiofs воркспейса контроллера это
+            // SIGBUS (unexpected fault address). Том живёт в диске Docker и
+            // не делится между ветками, так что блокировка кэша по-прежнему
+            // не сталкивает параллельные сборки. Первая сборка ветки качает
+            // базу заново.
             sh """
               set -eu
-              mkdir -p "\$WORKSPACE/.trivy-cache"
+              cache=\$(printf '%s' "trivy-\${JOB_NAME}" | tr -c 'A-Za-z0-9_.-' '-' | cut -c1-200)
+              docker volume create "\$cache" >/dev/null
 
               # Отчёт — не блокирующий
               docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-                -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy ${TRIVY_IMAGE} image \
+                -v "\$cache":/root/.cache/trivy ${TRIVY_IMAGE} image \
                 --format table --severity CRITICAL,HIGH,MEDIUM --exit-code 0 ${IMAGE_TAG}
 
               # Archive the unfiltered report as structured evidence, including
               # findings for which the distribution has not published a fix.
               docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-                -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy \
+                -v "\$cache":/root/.cache/trivy \
                 -v "\$WORKSPACE":/reports ${TRIVY_IMAGE} image \
                 --format json --output /reports/trivy.json \
                 --severity CRITICAL,HIGH,MEDIUM --exit-code 0 ${IMAGE_TAG}
 
               # Гейт — падаем на исправимых HIGH и CRITICAL
               docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-                -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy \
+                -v "\$cache":/root/.cache/trivy \
                 -v "\$WORKSPACE/.trivyignore.yaml":/.trivyignore.yaml \
                 ${TRIVY_IMAGE} image \
                 --format table --severity HIGH,CRITICAL --ignore-unfixed \
@@ -672,17 +672,18 @@ pipeline {
                   """
                   sh """
                     set -eu
-                    mkdir -p "\$WORKSPACE/.trivy-cache"
+                    cache=\$(printf '%s' "trivy-\${JOB_NAME}" | tr -c 'A-Za-z0-9_.-' '-' | cut -c1-200)
+                    docker volume create "\$cache" >/dev/null
 
                     # Отчёт — не блокирующий
                     docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-                      -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy ${TRIVY_IMAGE} image \
+                      -v "\$cache":/root/.cache/trivy ${TRIVY_IMAGE} image \
                       --format table --severity CRITICAL,HIGH,MEDIUM --exit-code 0 ${tag}
 
                     # Archive the unfiltered report as structured evidence, including
                     # findings for which the distribution has not published a fix.
                     docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-                      -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy \
+                      -v "\$cache":/root/.cache/trivy \
                       -v "\$WORKSPACE":/reports ${TRIVY_IMAGE} image \
                       --format json --output /reports/trivy-${kind}.json \
                       --severity CRITICAL,HIGH,MEDIUM --exit-code 0 ${tag}
@@ -696,7 +697,7 @@ pipeline {
 
                     # Гейт — падаем на исправимых HIGH и CRITICAL
                     docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-                      -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy \
+                      -v "\$cache":/root/.cache/trivy \
                       -v "\$WORKSPACE/.trivyignore.yaml":/.trivyignore.yaml \
                       ${TRIVY_IMAGE} image \
                       --format table --severity HIGH,CRITICAL --ignore-unfixed \
