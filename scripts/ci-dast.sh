@@ -21,7 +21,9 @@
 #              /openapi.json from the stand and runs the packaged API scan.
 #
 # The scan is authenticated. A hook logs in as the seeded admin once, before
-# the import, and ZAP replays that bearer on every request. The OpenAPI import
+# the import, and ZAP replays that bearer on every request except the routes
+# that end the caller's session. Sending it to those revokes the only token
+# during the import, and the rest of the scan is anonymous. The OpenAPI import
 # does not follow links, so the hook cannot widen the target, and a request
 # that did leave the stand would fail rather than land somewhere: the network
 # has no default route.
@@ -48,12 +50,14 @@
 #                   passive scan. Default: 15. The active scan of the full
 #                   OpenAPI document is the long part; the cap stops a hung
 #                   rule from holding the build. The stand's access token
-#                   outlives both budgets plus the OpenAPI import. The hook
-#                   logs in once, and a token that dies mid-scan is a 401 the
-#                   gate does not fail.
-#   DAST_REPORT_DIR Directory for zap-report.html and zap-report.json. The
-#                   daemon resolves the mount, so this must be a host path.
-#                   Default: the repository root.
+#                   outlives both budgets plus the OpenAPI import. Before ZAP
+#                   exits, the hook calls /api/auth/me; a refusal fails the run.
+#   DAST_REPORT_DIR Directory the archive step reads zap-report.html and
+#                   zap-report.json from. The daemon resolves the mount, so
+#                   this must be a host path. Default: the repository root.
+#                   ZAP itself is mounted on a subdirectory of it, not on this
+#                   directory: a world-writable checkout would let the scanner
+#                   uid read the job's git metadata.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -90,6 +94,10 @@ ACCESS_MINUTES=$(( DAST_MINUTES * 2 + 5 ))
 IDLE_MINUTES=$(( ACCESS_MINUTES + 5 ))
 SESSION_MINUTES=$(( ACCESS_MINUTES + 5 ))
 REPORT_DIR="${DAST_REPORT_DIR:-${ROOT_DIR}}"
+# Not the checkout. The scanner runs as uid 1000 and the mount has to be
+# writable by that uid; making the repository root writable would also make
+# .git readable from inside the scanner.
+ZAP_WRK="${REPORT_DIR}/.dast-zap-wrk"
 
 NET="shapoclyack-dast-${NAME}"
 PG="shapoclyack-dast-pg-${NAME}"
@@ -106,6 +114,7 @@ cleanup() {
   local status=$?
   docker rm -f "${SCANNER}" "${API}" "${PG}" >/dev/null 2>&1 || true
   docker network rm "${NET}" >/dev/null 2>&1 || true
+  rm -rf "${ZAP_WRK}"
   rm -f "${REPORT_DIR}/.dast-env"
   if [ "${status}" -ne 0 ]; then
     echo "[dast] failed (exit ${status}); reports, if any, are in ${REPORT_DIR}" >&2
@@ -199,21 +208,40 @@ if [ "${healthy}" -ne 1 ]; then
   exit 1
 fi
 
-mkdir -p "${REPORT_DIR}"
+rm -rf "${ZAP_WRK}"
+mkdir -p "${ZAP_WRK}"
 rm -f "${REPORT_DIR}/zap-report.html" "${REPORT_DIR}/zap-report.json" \
-  "${REPORT_DIR}/zap-auth-hook.py" "${REPORT_DIR}/.dast-env"
-cat > "${REPORT_DIR}/zap-auth-hook.py" <<'PY'
+  "${REPORT_DIR}/.dast-env"
+cat > "${ZAP_WRK}/zap-auth-hook.py" <<'PY'
 """Log in once, before the import, and replay that bearer on every request.
 
 The packaged API scan imports the spec and then attacks what the spec names.
 zap_started runs first, so the replacer rule already exists when the import
 starts, and the import does not follow links — which is what keeps the
 authentication step from widening the target.
+
+The rule does not match the routes that end the caller's own session. The
+import sends each operation, auth routes first, and one of those calls
+denylists this token. A later 401 is not a ZAP failure, so the build would
+stay green on an anonymous scan. zap_pre_shutdown asks /api/auth/me with the
+same bearer and fails the run if it was revoked anyway.
 """
 
 import json
 import os
+import urllib.error
 import urllib.request
+
+# Full match (java.util.regex Matcher.matches). Session-ending paths, including
+# the /api/v1 copies and a per-user revoke-all, are the negative lookahead.
+_BEARER_URL = (
+    r"http://api:8080/(?!api(?:/v1)?/"
+    r"(?:auth/(?:logout|sessions/revoke-all|saml/logout)"
+    r"|users/[^/?#]+/sessions/revoke-all)"
+    r"/?(?:[?#]|$)).*"
+)
+
+TOKEN = ""
 
 
 def _token():
@@ -234,27 +262,47 @@ def _token():
 
 
 def zap_started(zap, target):
-    token = _token()
+    global TOKEN
+    TOKEN = _token()
     zap.replacer.add_rule(
         description="CI session",
         enabled="true",
         matchtype="REQ_HEADER",
         matchregex="false",
         matchstring="Authorization",
-        replacement="Bearer " + token,
+        replacement="Bearer " + TOKEN,
+        url=_BEARER_URL,
     )
+
+
+def zap_pre_shutdown(zap):
+    request = urllib.request.Request(
+        "http://api:8080/api/auth/me",
+        headers={"Authorization": "Bearer " + TOKEN},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+    if status != 200:
+        print(
+            "[dast] /api/auth/me returned %s after the scan; "
+            "the bearer did not survive" % status
+        )
+        raise RuntimeError("bearer did not survive the scan")
 PY
 
-# The scanner image runs as uid 1000. On a Linux runner the workspace is
-# owned by a different uid and is not world-writable, so the report is never
-# created and the missing file is reported as "the scan did not run".
-# The directory only: the hook and the checkout stay as the runner wrote them.
-chmod a+rwx "${REPORT_DIR}"
+# The scanner image runs as uid 1000. On a Linux runner this directory is
+# owned by a different uid, so the report is never created unless the
+# directory itself is writable. Only this directory: the checkout is not the
+# mount, and cleanup removes it after the reports have been copied out.
+chmod a+rwx "${ZAP_WRK}"
 
 echo "[dast] scanning http://api:8080 through its OpenAPI document"
 set +e
 docker run --name "${SCANNER}" --network "${NET}" \
-  -v "${REPORT_DIR}":/zap/wrk:rw \
+  -v "${ZAP_WRK}":/zap/wrk:rw \
   -e "DAST_USER=${ADMIN_USER}" -e "DAST_PASSWORD=${ADMIN_PASSWORD}" \
   --entrypoint zap-api-scan.py "${ZAP_IMAGE}" \
   -t http://api:8080/openapi.json -f openapi \
@@ -267,6 +315,13 @@ zap_status=$?
 set -e
 
 echo "[dast] zap-api-scan.py exited ${zap_status}"
+# The archive step reads the workspace root, not the scanner's work directory.
+if [ -f "${ZAP_WRK}/zap-report.json" ]; then
+  cp -f "${ZAP_WRK}/zap-report.json" "${REPORT_DIR}/zap-report.json"
+fi
+if [ -f "${ZAP_WRK}/zap-report.html" ]; then
+  cp -f "${ZAP_WRK}/zap-report.html" "${REPORT_DIR}/zap-report.html"
+fi
 if [ ! -s "${REPORT_DIR}/zap-report.json" ]; then
   echo "[dast] no JSON report was written; the scan did not run" >&2
   exit 1

@@ -374,9 +374,10 @@ LAN, the controller or the internet, and the API is started with
 `OCTO_ALLOW_SCAN_START=false`: the product scans other networks, and a scan of
 the product must not become one of those. The scan authenticates once as the
 seeded dev admin — the same published account the test suite uses — and replays
-that bearer; it does not follow links out of the spec. ZAP's own exit code is
-the gate, warnings included, and `zap-report.html` / `zap-report.json` are
-archived either way. It runs on `main` and on branches: unlike the load test it
+that bearer on every request except the routes that end the session. It does
+not follow links out of the spec. ZAP's own exit code is the gate, warnings
+included, and a bearer that `/api/auth/me` refuses after the scan fails the
+run as well. `zap-report.html` / `zap-report.json` are archived either way. It runs on `main` and on branches: unlike the load test it
 is a regression check, not a measurement. The scanner image is
 `ghcr.io/zaproxy/zaproxy:stable`, pinned by digest in the script and in the
 Jenkinsfile. The active scan is capped at 15 minutes (`DAST_MINUTES`); a rule

@@ -69,11 +69,12 @@ pipeline {
     // commit before it, which is the record of what main actually passed.
     disableConcurrentBuilds(abortPrevious: ABORT_SUPERSEDED_BUILDS)
     buildDiscarder(logRotator(numToKeepStr: '20'))
-    // 210: Checks on Linux на Fedor занимают до 160 минут. Pytest одной
-    // версии Python около 105–120 минут (feat/operator-local-xai #8 и
-    // security-audit-c77a1 #6, оборванный на зелёных 97% лимитом в 140).
-    // Стадии образа на маке около 31 минуты (main #75).
-    timeout(time: 210, unit: 'MINUTES')
+    // 245: прежние 210 — Checks на Linux до 160 минут (pytest одной версии
+    // около 105–120, feat/operator-local-xai #8 и security-audit-c77a1 #6)
+    // и стадии образа на маке около 31 (main #75). DAST добавляет два бюджета
+    // DAST_MINUTES (по умолчанию 15) и импорт OpenAPI (5). Без этой добавки
+    // Checks у своего потолка обрывают скан таймаутом пайплайна.
+    timeout(time: 245, unit: 'MINUTES')
   }
 
   stages {
@@ -130,7 +131,7 @@ pipeline {
       // сборка не висит в очереди до общего таймаута. 160 минут: pytest на
       // Fedor (6 vCPU) занимает около 105–120 минут на версию Python.
       // 140 минут оборвали security-audit-c77a1 #6 на зелёных 97%.
-      // Вместе с образом на маке это остаётся в общих 210.
+      // Вместе с образом на маке и DAST это остаётся в общих 245.
       options {
         skipDefaultCheckout()
         timeout(time: 160, unit: 'MINUTES')

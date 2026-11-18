@@ -315,9 +315,19 @@ def test_the_dast_stage_cannot_reach_outside_its_stand():
     assert "OCTO_ACCESS_TOKEN_EXPIRE_MINUTES=${ACCESS_MINUTES}" in body
     assert "OCTO_SESSION_IDLE_MINUTES=${IDLE_MINUTES}" in body
     assert "OCTO_JWT_EXPIRE_MINUTES=${SESSION_MINUTES}" in body
-    assert body.index('chmod a+rwx "${REPORT_DIR}"') < body.index("--entrypoint zap-api-scan.py"), (
-        "the report directory must be writable by the scanner uid before ZAP starts"
+    assert 'chmod a+rwx "${ZAP_WRK}"' in body
+    assert body.index('chmod a+rwx "${ZAP_WRK}"') < body.index("--entrypoint zap-api-scan.py"), (
+        "the scanner work directory must be writable by uid 1000 before ZAP starts"
     )
+    assert '-v "${ZAP_WRK}":/zap/wrk:rw' in body
+    assert '-v "${REPORT_DIR}":/zap/wrk:rw' not in body, (
+        "the checkout must not be the scanner mount"
+    )
+    assert "zap_pre_shutdown" in body
+    assert "/api/auth/me" in body
+    for skipped in ("auth/(?:logout", "sessions/revoke-all", "saml/logout"):
+        assert skipped in body, skipped
+    assert "timeout(time: 245, unit: 'MINUTES')" in JENKINSFILE
     runs = [line for line in body.splitlines() if line.strip().startswith("docker run")]
     assert runs, "the stand starts nothing"
     assert all("-p " not in line and "--publish" not in line for line in runs), (
