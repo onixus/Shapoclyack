@@ -28,6 +28,10 @@ def run_gate(tmp_path, source, severity, fixed, stage_name="Trivy", finding_id="
         'from pathlib import Path\n'
         'args = sys.argv[1:]\n'
         'def value(key): return args[args.index(key) + 1]\n'
+        # Jenkins may call `docker volume create` before scans; only image
+        # scans carry --severity / --exit-code and exercise the gate.
+        'if "--severity" not in args:\n'
+        '    sys.exit(0)\n'
         'if "--output" in args:\n'
         '    report = [{"Vulnerabilities": [{"VulnerabilityID": os.environ["FINDING_ID"]}]}]\n'
         '    (Path(os.environ["WORKSPACE"]) / Path(value("--output")).name).write_text(json.dumps(report))\n'
