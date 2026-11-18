@@ -27,6 +27,9 @@ def run_gate(tmp_path, source, severity, fixed, stage_name="Trivy", finding_id="
         'import json, os, sys\n'
         'from pathlib import Path\n'
         'args = sys.argv[1:]\n'
+        # docker volume create only prepares the bbolt cache. It is not a scan.
+        'if not args or args[0] != "run":\n'
+        '    sys.exit(0)\n'
         'def value(key): return args[args.index(key) + 1]\n'
         'if "--output" in args:\n'
         '    report = [{"Vulnerabilities": [{"VulnerabilityID": os.environ["FINDING_ID"]}]}]\n'
@@ -39,6 +42,7 @@ def run_gate(tmp_path, source, severity, fixed, stage_name="Trivy", finding_id="
     result = subprocess.run(
         ['bash', '-c', trivy_shell(source, stage_name)], capture_output=True, text=True,
         env=dict(os.environ, PATH=f'{tmp_path}:{os.environ["PATH"]}', WORKSPACE=str(tmp_path),
+                 JOB_NAME='shapoclyack-test',
                  TRIVY_IMAGE='trivy:test', IMAGE_TAG='scanner:test', tag='api:test', kind='api',
                  FINDING_SEVERITY=severity, FINDING_FIXED='1' if fixed else '0', FINDING_ID=finding_id),
         check=False,
