@@ -113,7 +113,9 @@ export function FindingsList({
                         ) : null}
                       </p>
                       <p className="font-mono text-xs text-muted-foreground mt-0.5">
-                        {item.host || runText(t.locale, "unknown host")}
+                        {item.hostname && item.hostname !== item.host
+                          ? `${item.hostname} (${item.host})`
+                          : item.host || runText(t.locale, "unknown host")}
                         {formatLocation(item) ? ` · ${formatLocation(item)}` : ""}
                       </p>
                       {item.finding_type && item.finding_type !== "cve" ? (

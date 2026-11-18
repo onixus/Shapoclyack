@@ -112,7 +112,7 @@ export const en = {
   "riskOverview.copy17": "Latest scan",
 
   "nav.operator": "AI operator",
-  "nav.hint.operator": "Evidence, analysis and confirmed scan actions",
+  "nav.hint.operator": "Ask, review the answer, then confirm a scan",
   "assetConnector.title": "ServiceNow CMDB connector",
   "assetConnector.ldap":
     "LDAP/AD computer sync is unavailable until directory integration #317 is implemented. The AD file source label does not enable synchronization.",
@@ -2655,7 +2655,7 @@ export const ru: Record<MsgKey, string> = {
   "riskOverview.copy17": "Последний скан",
 
   "nav.operator": "ИИ-оператор",
-  "nav.hint.operator": "Доказательства, анализ и подтверждённые действия со сканами",
+  "nav.hint.operator": "Спросите, проверьте ответ и подтвердите скан",
   "assetConnector.title": "Коннектор ServiceNow CMDB",
   "assetConnector.ldap":
     "Синхронизация компьютеров LDAP/AD недоступна до реализации интеграции каталогов #317. Метка источника AD в файле не включает синхронизацию.",

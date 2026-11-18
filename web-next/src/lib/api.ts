@@ -618,6 +618,8 @@ export type Vulnerability = {
 
   finding_evidence?: FindingEvidence | null;
   host: string | null;
+  /** The domain the scan was aimed at. `host` stays the address reached. */
+  hostname?: string | null;
   port: string | null;
   cve: string | null;
   cvss: number | null;
@@ -3007,6 +3009,9 @@ export type TrackedVulnerability = {
   vuln_id: string;
   tenant_id: string;
   asset_id: string;
+  /** The domain the scan resolved, and the address it reached. */
+  primary_fqdn?: string | null;
+  primary_ip?: string | null;
   finding_key: string;
   source: VulnerabilitySource;
   /** The endpoint it was observed on. Null for every scan finding. */

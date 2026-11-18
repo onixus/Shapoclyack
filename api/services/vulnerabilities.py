@@ -1003,7 +1003,7 @@ def escalate(
             detail=changed,
         )
         session.flush()
-        result = _to_dict(row, now=now)
+        result = _to_dict_with_asset(session, row, now=now)
     if "severity_to" in changed:
         metrics.SLA_ESCALATIONS_TOTAL.labels(action="severity_bumped").inc()
     if "assignee_to" in changed or "owner_team_to" in changed:
@@ -2049,13 +2049,44 @@ def release_unfinished_verification(
 # --------------------------------------------------------------------------
 
 
-def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[str, Any]:
+def _asset_names(session, asset_ids: list[str]) -> dict[str, dict[str, str | None]]:
+    """``asset_id -> {fqdn, ip}`` for one page of findings.
+
+    One query for the page, the same choice the asset list makes: the first
+    domain and the first address. A finding printed as an address alone does
+    not say which domain the scan was aimed at.
+    """
+    wanted = list(dict.fromkeys(asset_id for asset_id in asset_ids if asset_id))
+    found: dict[str, dict[str, str | None]] = {}
+    if not wanted:
+        return found
+    identifiers = session.execute(
+        select(models.AssetIdentifier).where(models.AssetIdentifier.asset_id.in_(wanted))
+    ).scalars()
+    for identifier in identifiers:
+        slot = found.setdefault(identifier.asset_id, {"fqdn": None, "ip": None})
+        if identifier.identifier_type == "fqdn" and not slot["fqdn"]:
+            slot["fqdn"] = identifier.identifier_value
+        elif identifier.identifier_type == "ip" and not slot["ip"]:
+            slot["ip"] = identifier.identifier_value
+    return found
+
+
+def _to_dict(
+    row: models.Vulnerability,
+    *,
+    now: datetime | None = None,
+    asset: dict[str, str | None] | None = None,
+) -> dict[str, Any]:
     now = now or _now()
     bdu = bdu_fstec.lookup(row.cve)
+    asset = asset or {}
     return {
         "vuln_id": row.vuln_id,
         "tenant_id": row.tenant_id,
         "asset_id": row.asset_id,
+        "primary_fqdn": asset.get("fqdn"),
+        "primary_ip": asset.get("ip"),
         "finding_key": row.finding_key,
         "finding_evidence": row.finding_evidence,
         "source": row.source,
@@ -2141,6 +2172,26 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
     }
 
 
+def _to_dict_with_asset(
+    session: Any,
+    row: models.Vulnerability,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """``_to_dict`` with ``primary_fqdn`` / ``primary_ip`` filled from the asset.
+
+    Every mutation response that returns a finding must go through here while the
+    session is still open. List/get already batch the same lookup; write paths
+    that skipped it used to hand the console ``null`` domain/IP and wipe the
+    detail cache on ``setQueryData``.
+    """
+    return _to_dict(
+        row,
+        now=now,
+        asset=_asset_names(session, [row.asset_id]).get(row.asset_id),
+    )
+
+
 #: What a workflow event (#349) carries about a finding. A deliberate subset of
 #: :func:`_to_dict`: a webhook payload crosses the trust boundary and is stored
 #: in ``webhook_deliveries``, so it names the finding, says how bad it is and
@@ -2207,7 +2258,9 @@ def get_vulnerability(
 ) -> dict[str, Any] | None:
     with get_session(settings.postgres_url) as session:
         row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
-        return _to_dict(row) if row else None
+        if row is None:
+            return None
+        return _to_dict_with_asset(session, row)
 
 
 def transition(
@@ -2280,7 +2333,7 @@ def transition(
             detail=detail,
         )
         session.flush()
-        result = _to_dict(row, now=now)
+        result = _to_dict_with_asset(session, row, now=now)
         ticket = (row.ticket_system, row.ticket_key)
 
     # Outbound reflection runs *after* the transaction closes: the tracker is a
@@ -2984,9 +3037,7 @@ def _trigger_verification_claimed(
             },
         )
         session.flush()
-        return _to_dict(row, now=now)
-
-
+        return _to_dict_with_asset(session, row, now=now)
 def sync_ticket_status(
     settings: Settings,
     *,
@@ -3092,7 +3143,7 @@ def apply_ticket_status(
             # here rather than recording is what keeps ``clear_ticket``'s reset
             # of the sync bookkeeping from being undone by a read that was
             # already in flight.
-            return _to_dict(row, now=now)
+            return _to_dict_with_asset(session, row, now=now)
         ticket_system = row.ticket_system
         ticket_key = row.ticket_key
         previous = row.state
@@ -3195,9 +3246,7 @@ def apply_ticket_status(
                 },
             )
         session.flush()
-        return _to_dict(row, now=now)
-
-
+        return _to_dict_with_asset(session, row, now=now)
 def assign(
     settings: Settings,
     *,
@@ -3239,8 +3288,7 @@ def assign(
             detail=detail,
         )
         session.flush()
-        result = _to_dict(row, now=now)
-
+        result = _to_dict_with_asset(session, row, now=now)
     workflow_events.emit(
         settings,
         "vuln_assigned",
@@ -3417,7 +3465,7 @@ def request_exception(
             note=reason,
             detail={"requested_until": _iso(until)},
         )
-        result = _to_dict(row, now=now)
+        result = _to_dict_with_asset(session, row, now=now)
         audit_service.record(
             session,
             audit,
@@ -3502,7 +3550,7 @@ def approve_exception(
                 "requested_by": row.exception_requested_by,
             },
         )
-        result = _to_dict(row, now=now)
+        result = _to_dict_with_asset(session, row, now=now)
         audit_service.record(
             session,
             audit,
@@ -3566,7 +3614,7 @@ def reject_exception(
                 "requested_by": row.exception_requested_by,
             },
         )
-        result = _to_dict(row, now=now)
+        result = _to_dict_with_asset(session, row, now=now)
         audit_service.record(
             session,
             audit,
@@ -3649,7 +3697,7 @@ def withdraw_exception_request(
                 "exception_state": row.exception_state,
             },
         )
-        result = _to_dict(row, now=now)
+        result = _to_dict_with_asset(session, row, now=now)
         audit_service.record(
             session,
             audit,
@@ -3783,7 +3831,7 @@ def clear_exception(
                 "due_at": _iso(row.due_at),
             },
         )
-        result = _to_dict(row, now=now)
+        result = _to_dict_with_asset(session, row, now=now)
         audit_service.record(
             session,
             audit,
@@ -4103,9 +4151,7 @@ def mark_false_positive(
             detail=detail,
         )
         session.flush()
-        return _to_dict(row, now=now)
-
-
+        return _to_dict_with_asset(session, row, now=now)
 def clear_false_positive(
     settings: Settings,
     *,
@@ -4183,9 +4229,7 @@ def clear_false_positive(
             },
         )
         session.flush()
-        return _to_dict(row, now=now)
-
-
+        return _to_dict_with_asset(session, row, now=now)
 def add_comment(
     settings: Settings,
     *,
@@ -4214,9 +4258,7 @@ def add_comment(
             note=text,
         )
         session.flush()
-        return _to_dict(row, now=now)
-
-
+        return _to_dict_with_asset(session, row, now=now)
 def _validate_ticket_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -4293,9 +4335,7 @@ def set_ticket(
             detail={"from": previous, "to": {"system": system, "key": key, "url": url}},
         )
         session.flush()
-        return _to_dict(row, now=now)
-
-
+        return _to_dict_with_asset(session, row, now=now)
 def clear_ticket(
     settings: Settings,
     *,
@@ -4309,7 +4349,7 @@ def clear_ticket(
         if row is None:
             return None
         if row.ticket_system is None and row.ticket_key is None and row.ticket_url is None:
-            return _to_dict(row, now=now)
+            return _to_dict_with_asset(session, row, now=now)
         previous = {
             "system": row.ticket_system,
             "key": row.ticket_key,
@@ -4335,9 +4375,7 @@ def clear_ticket(
             detail=previous,
         )
         session.flush()
-        return _to_dict(row, now=now)
-
-
+        return _to_dict_with_asset(session, row, now=now)
 # --------------------------------------------------------------------------
 # Queries
 # --------------------------------------------------------------------------
@@ -4523,7 +4561,8 @@ def list_vulnerabilities(
             .offset(offset)
             .limit(limit)
         ).scalars().all()
-        items = [_to_dict(row, now=now) for row in rows]
+        names = _asset_names(session, [row.asset_id for row in rows])
+        items = [_to_dict(row, now=now, asset=names.get(row.asset_id)) for row in rows]
     return items, total
 
 
