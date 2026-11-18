@@ -264,14 +264,22 @@ function VulnerabilitiesInner() {
         id: "asset_id",
         accessorKey: "asset_id",
         header: t("col.asset"),
-        cell: ({ row }) => (
-          <Link
-            href={assetDetailHref(row.original.asset_id, row.original.tenant_id)}
-            className="font-mono text-xs text-foreground hover:text-primary dark:text-primary hover:underline"
-          >
-            {row.original.asset_id}
-          </Link>
-        ),
+        cell: ({ row }) => {
+          const finding = row.original;
+          // The name the scan was aimed at, with the address under it. An
+          // address alone does not say which domain resolved to it.
+          const heading = finding.primary_fqdn || finding.primary_ip || finding.asset_id;
+          const address = finding.primary_fqdn && finding.primary_ip ? finding.primary_ip : null;
+          return (
+            <Link
+              href={assetDetailHref(finding.asset_id, finding.tenant_id)}
+              className="inline-block space-y-0.5 font-mono text-xs text-foreground hover:text-primary dark:text-primary hover:underline"
+            >
+              <span className="block">{heading}</span>
+              {address ? <span className="block text-muted-foreground">{address}</span> : null}
+            </Link>
+          );
+        },
       },
       {
         accessorKey: "last_seen_at",

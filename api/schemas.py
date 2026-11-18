@@ -138,6 +138,9 @@ class RunDetail(BaseModel):
 class VulnerabilityItem(BaseModel):
     finding_evidence: dict[str, Any] | None = None
     host: str | None = None
+    # The name the scan was aimed at, when the target was a domain. ``host``
+    # stays the address that was reached; a reader of a domain scan needs both.
+    hostname: str | None = None
     port: str | None = None
     finding_type: str | None = None
     detector_source: str | None = None
@@ -2509,6 +2512,11 @@ class VulnerabilityInfo(BaseModel):
     tenant_id: str
     asset_id: str
     finding_key: str
+    # The domain the scan resolved, and the address it reached. Null when the
+    # asset has no identifier of that kind. Both, because a domain scan's
+    # finding is unreadable as an address alone.
+    primary_fqdn: str | None = None
+    primary_ip: str | None = None
     # Which observer produced it: "scan", "endpoint_software" or
     # "retro_match". The console branches on this — a software finding has a
     # package where a scan finding has a port, and neither a software nor a

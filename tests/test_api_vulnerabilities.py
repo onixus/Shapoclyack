@@ -226,13 +226,21 @@ def test_comment_and_ticket_link(tmp_path, monkeypatch):
         ).status_code
         == 403
     )
+    listed = client.get("/api/vulnerabilities", headers=viewer).json()["items"][0]
+    assert listed["primary_fqdn"] == "app.example.com"
+    assert listed["primary_ip"] == "8.8.8.8"
+
     commented = client.post(
         f"/api/vulnerabilities/{vuln_id}/comment",
         json={"note": "looking at this"},
         headers=operator,
     )
     assert commented.status_code == 200
-    assert commented.json()["state"] == vuln_states.OPEN
+    body = commented.json()
+    assert body["state"] == vuln_states.OPEN
+    # Write responses must keep domain/IP so console setQueryData does not wipe them.
+    assert body["primary_fqdn"] == "app.example.com"
+    assert body["primary_ip"] == "8.8.8.8"
 
     empty = client.post(
         f"/api/vulnerabilities/{vuln_id}/comment",
