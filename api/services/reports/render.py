@@ -122,6 +122,20 @@ def _hex_to_rgb(value: str | None, fallback: tuple[int, int, int]) -> tuple[int,
         return fallback
 
 
+def _asset_label(item: dict[str, Any]) -> str:
+    """The scanned domain and its address, not the opaque asset id.
+
+    A domain scan's finding is about a name that resolved to an address.
+    Printing only one of them, or only the asset id, makes the reader look the
+    other up. The id is the last resort, for an asset with neither.
+    """
+    name = str(item.get("primary_fqdn") or "").strip()
+    address = str(item.get("primary_ip") or "").strip()
+    if name and address and name != address:
+        return f"{name} ({address})"
+    return name or address or str(item.get("asset_id") or "")
+
+
 def _fmt_number(value: object) -> str:
     """A number, or ``-`` when there is none.
 
@@ -409,7 +423,7 @@ def render_pdf(body: dict[str, Any]) -> bytes:
                 [
                     [
                         str(item.get("cve") or item.get("title") or ""),
-                        str(item.get("asset_id") or ""),
+                        _asset_label(item),
                         str(item.get("severity") or ""),
                         _fmt_number(item.get("contextual_score")),
                         str(item.get("state") or ""),
@@ -591,7 +605,7 @@ def render_html(body: dict[str, Any]) -> str:
             "<tr><td>{title}</td><td>{asset}</td><td>{sev}</td><td>{score}</td>"
             "<td>{state}</td></tr>".format(
                 title=html.escape(str(item.get("cve") or item.get("title") or "")),
-                asset=html.escape(str(item.get("asset_id") or "")),
+                asset=html.escape(_asset_label(item)),
                 sev=html.escape(str(item.get("severity") or "")),
                 score=html.escape(_fmt_number(item.get("contextual_score"))),
                 state=html.escape(str(item.get("state") or "")),

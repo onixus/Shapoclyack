@@ -100,6 +100,25 @@ def _coordinate(value: Any, *, limit: float) -> float | None:
     return number
 
 
+def _hostname_map(run_dir: Path) -> dict[str, str]:
+    """IP to the name the scan was aimed at.
+
+    Findings written before they carried a hostname still have the name on the
+    alive-host row. A domain scan is unreadable as an address alone.
+    """
+    out: dict[str, str] = {}
+    alive = _load_json(run_dir / "alive_hosts.json")
+    if not isinstance(alive, list):
+        return out
+    for row in alive:
+        if not isinstance(row, dict) or not row.get("host"):
+            continue
+        name = str(row.get("hostname") or "").strip()
+        if name:
+            out[str(row["host"])] = name
+    return out
+
+
 def _geo_map(run_dir: Path) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     geo = _load_json(run_dir / "geoip.json")
@@ -571,6 +590,7 @@ def get_vulnerabilities(
     host_filter = host.strip().lower() if host else None
     port_filter = port.strip() if port else None
     geo = _geo_map(run_dir)
+    names = _hostname_map(run_dir)
     from api.services import risk_context
 
     raw = [entry for entry in raw if isinstance(entry, dict)]
@@ -614,6 +634,7 @@ def get_vulnerabilities(
                 finding_evidence=scoped(
                     entry.get("finding_evidence"), tenant_id=owner, run_id=run_id) if owner else None,
                 host=entry_host,
+                hostname=entry.get("hostname") or names.get(host_key) or None,
                 port=entry_port,
                 cve=entry.get("cve"),
                 finding_type=entry.get("finding_type") or ("cve" if entry.get("cve") else "exposure"),
