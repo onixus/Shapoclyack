@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: screenshot-worker
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-screenshot-worker
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.replicas.screenshotWorker }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: screenshot-worker
+      app.kubernetes.io/name: shapoclyack
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: screenshot-worker
+        app.kubernetes.io/name: shapoclyack
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - command:
+        - python
+        - -m
+        - scanner.screenshot_worker
+        env:
+        - name: SCREENSHOT_WORKER_BIND
+          value: 0.0.0.0
+        - name: SCREENSHOT_WORKER_PORT
+          value: "8077"
+        - name: SCREENSHOT_WORKER_NO_SANDBOX
+          value: "1"
+        - name: OCTO_SCREENSHOT_WORKER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: token
+              name: {{ include "shapoclyack.secretName" (dict "root" $ "key" "screenshotWorker" "default" "shapoclyack-screenshot-worker") }}
+        - name: HOME
+          value: /tmp
+        - name: PLAYWRIGHT_BROWSERS_PATH
+          value: /opt/playwright
+        image: {{ include "shapoclyack.image" .Values.images.screenshotWorker }}
+        imagePullPolicy: {{ .Values.images.pullPolicy }}
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          periodSeconds: 30
+        name: screenshot-worker
+        ports:
+        - containerPort: 8077
+          name: http
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          periodSeconds: 15
+        resources:
+{{- toYaml .Values.resources.screenshotWorker | nindent 10 }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - mountPath: /tmp
+          name: tmp
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: scanner
+      volumes:
+      - emptyDir:
+          sizeLimit: 1Gi
+        name: tmp

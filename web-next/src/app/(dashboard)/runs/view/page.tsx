@@ -14,9 +14,12 @@ import { EntityList } from "@/components/run/entity-list";
 import { FindingsList } from "@/components/run/findings-list";
 import { RunDiffPanel } from "@/components/run/run-diff-panel";
 import { RunMetrics } from "@/components/run/run-metrics";
+import { ScreenshotsPanel } from "@/components/run/screenshots-panel";
 import { ControlsMatrix } from "@/components/run/controls-matrix";
 import { RelatedDomainsPanel } from "@/components/run/related-domains";
 import { SeverityFilter } from "@/components/run/severity-filter";
+import { useAuthStore } from "@/lib/auth-store";
+import { canOperate } from "@/lib/authz";
 import { useRunReport } from "@/hooks/use-run-report";
 import { scanModeLabel } from "@/lib/scan-labels";
 import { ScanTechnicalDetails } from "@/components/scans/scan-technical-details";
@@ -58,14 +61,13 @@ function BackToRuns() {
 
 function RunDetailInner() {
   const t = useT();
+  const operator = useAuthStore((state) => canOperate(state.user));
   const searchParams = useSearchParams();
   const runId = (searchParams.get("runId") || "").trim();
   const requestedTab = searchParams.get("tab") || "vulns";
-  const initialTab = ["vulns", "hosts", "ports", "controls", "org-profile", "reports"].includes(
-    requestedTab,
-  )
-    ? requestedTab
-    : "vulns";
+  const allowedTabs = ["vulns", "hosts", "ports", "controls", "org-profile", "reports"];
+  if (operator) allowedTabs.push("screenshots");
+  const initialTab = allowedTabs.includes(requestedTab) ? requestedTab : "vulns";
   const report = useRunReport(runId);
   const { filters } = report;
   const profile =
@@ -208,6 +210,14 @@ function RunDetailInner() {
           >
             {runText(t.locale, "Artifacts")} ({report.detail.artifacts.length})
           </TabsTrigger>
+          {operator ? (
+            <TabsTrigger
+              value="screenshots"
+              className="text-xs font-semibold data-[state=active]:bg-accent-subtle data-[state=active]:text-primary dark:text-primary"
+            >
+              {t("ui.screenshots")}
+            </TabsTrigger>
+          ) : null}
         </TabsList>
 
         <TabsContent value="vulns" className="space-y-4">
@@ -274,6 +284,12 @@ function RunDetailInner() {
         <TabsContent value="reports">
           <ArtifactsPanel runId={report.detail.run_id} artifacts={report.detail.artifacts} />
         </TabsContent>
+
+        {operator ? (
+          <TabsContent value="screenshots">
+            <ScreenshotsPanel runId={report.detail.run_id} enabled={operator} />
+          </TabsContent>
+        ) : null}
       </Tabs>
     </div>
   );

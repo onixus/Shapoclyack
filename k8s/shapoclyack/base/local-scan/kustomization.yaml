@@ -54,5 +54,6 @@ patches:
   - path: delete-executor-pdb.yaml
   - path: delete-executor-networkpolicy.yaml
   - path: delete-executor-configmap.yaml
+  - path: delete-executor-screenshot-secret.yaml
   - path: delete-executor-serviceaccount.yaml
   - path: delete-executor-namespace.yaml

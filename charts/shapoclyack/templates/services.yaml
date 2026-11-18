@@ -155,3 +155,23 @@ spec:
     app.kubernetes.io/component: postgres
     app.kubernetes.io/name: shapoclyack
   type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: screenshot-worker
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+  name: shapoclyack-screenshot-worker
+  namespace: {{ .Release.Namespace }}
+spec:
+  ports:
+  - name: http
+    port: 8077
+    targetPort: http
+  selector:
+    app.kubernetes.io/component: screenshot-worker
+    app.kubernetes.io/name: shapoclyack
+  type: ClusterIP

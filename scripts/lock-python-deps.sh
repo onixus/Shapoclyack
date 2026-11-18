@@ -13,11 +13,12 @@
 #
 # One lock per install set, named for the input it is compiled from:
 #
-#   requirements-pip.lock   <- requirements-pip.txt    pip itself, upgraded first in every image
-#   requirements.lock       <- requirements.txt        scanner image (Dockerfile)
-#   requirements-api.lock   <- requirements-api.txt    api and all-in-one images
-#   requirements-dev.lock   <- requirements-dev.txt    CI (PR gate, full CI, Jenkins)
-#   requirements-agent.lock <- requirements-agent.txt  native sensor hosts (scripts/install-agent.sh)
+#   requirements-pip.lock                 <- requirements-pip.txt                 pip itself, upgraded first in every image
+#   requirements.lock                     <- requirements.txt                     scanner image (Dockerfile)
+#   requirements-api.lock                 <- requirements-api.txt                 api and all-in-one images
+#   requirements-dev.lock                 <- requirements-dev.txt                 CI (PR gate, full CI, Jenkins)
+#   requirements-agent.lock               <- requirements-agent.txt               native sensor hosts (scripts/install-agent.sh)
+#   requirements-screenshot-worker.lock   <- requirements-screenshot-worker.txt   screenshot-worker image only (Playwright)
 #
 # scripts/install-agent.sh carries requirements-agent.lock inline, since
 # `curl … | bash` brings no other file to the host (#476); the script
@@ -63,6 +64,7 @@ LOCKS=(
   "requirements-api.lock:requirements-api.txt"
   "requirements-dev.lock:requirements-dev.txt"
   "requirements-agent.lock:requirements-agent.txt"
+  "requirements-screenshot-worker.lock:requirements-screenshot-worker.txt"
 )
 
 # The copy of requirements-agent.lock in the installer: everything between
