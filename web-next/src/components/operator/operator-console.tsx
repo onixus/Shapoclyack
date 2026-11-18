@@ -1951,22 +1951,16 @@ function RemediationPanel({
   const [selected, select] = useState("");
   useEffect(() => {
     if (draft?.plan.tool !== "find_remediation") return;
-    const finding = typeof draft.plan.arguments.vuln_id === "string";
+    const findingId =
+      typeof draft.plan.arguments.vuln_id === "string" ? draft.plan.arguments.vuln_id : "";
+    const deviceId =
+      typeof draft.plan.arguments.device_id === "string" ? draft.plan.arguments.device_id : "";
+    const finding = findingId !== "";
     setScope(finding ? "finding" : "device");
-    setDevice(
-      finding
-        ? (draft.plan.arguments.vuln_id as string)
-        : typeof draft.plan.arguments.device_id === "string"
-          ? draft.plan.arguments.device_id
-          : "",
-    );
-    select(
-      finding
-        ? (draft.plan.arguments.vuln_id as string)
-        : typeof draft.plan.arguments.device_id === "string"
-          ? draft.plan.arguments.device_id
-          : "",
-    );
+    setDevice(finding ? findingId : deviceId);
+    // Finding guidance loads as soon as the plan is adopted. A device id only
+    // fills the field; the lookup stays on the explicit button.
+    select(finding ? findingId : "");
   }, [draft]);
   const result = useQuery({
     queryKey: [...operatorKey(tenant, actor), "remediation", scope, selected, language],
