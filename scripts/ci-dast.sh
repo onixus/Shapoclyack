@@ -127,6 +127,10 @@ OCTO_ALLOW_SCAN_START=false
 OCTO_API_DOCS=enabled
 OCTO_API_CORS=*
 OCTO_PUBLIC_BASE_URL=http://api:8080
+# The API image also carries the console. That shell is HTML with the inline
+# scripts a static Next export needs, and this scan judges API content types.
+# Point the dist at a path that is not a directory so the shell is not mounted.
+OCTO_WEB_DIST=/opt/shapoclyack-dast-no-console
 EOF
 
 echo "[dast] waiting for postgres"

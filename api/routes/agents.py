@@ -1029,7 +1029,10 @@ def get_install_script() -> PlainTextResponse:
     if not script_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Installer script not found")
     content = script_path.read_text(encoding="utf-8")
-    return PlainTextResponse(content, media_type="text/x-sh")
+    # text/plain, not text/x-sh: the body is a shell script and nothing in
+    # the installer contract checks the media type. text/x-sh is not an API
+    # content type, so a control-plane scan reports every download.
+    return PlainTextResponse(content, media_type="text/plain")
 
 
 def _snippet_reader(

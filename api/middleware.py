@@ -277,8 +277,12 @@ class SecurityHeadersMiddleware:
         self.enable_hsts = enable_hsts
         self.csp = content_security_policy or (
             "default-src 'self'; "
+            # The static console inlines its theme bootstrap and the Next.js
+            # flight payload, so scripts cannot drop 'unsafe-inline' without
+            # a per-build hash. Stylesheets are external files; an inline
+            # style is not required.
             "script-src 'self' 'unsafe-inline'; "
-            "style-src 'self' 'unsafe-inline'; "
+            "style-src 'self'; "
             "img-src 'self' data: blob:; "
             "font-src 'self' data:; "
             "connect-src 'self'; "

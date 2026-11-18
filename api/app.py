@@ -703,12 +703,18 @@ def create_app() -> FastAPI:
                 return None
             return resolved if resolved.is_file() else None
 
-        @app.get("/{full_path:path}")
+        @app.get("/{full_path:path}", include_in_schema=False)
         def spa_fallback(full_path: str) -> FileResponse:
             # The shell is not an API response. This catch-all is registered
             # after the API routes, so only a path nothing else claimed lands
             # here; returning index.html made a missing endpoint look like 200.
-            if full_path == "api" or full_path.startswith("api/"):
+            # Kept out of the schema for the same reason: a published
+            # ``/{full_path}`` operation is an API that returns HTML.
+            # ``scim`` and ``openapi.json`` are APIs too. A trailing slash or
+            # an unknown child does not match their routes and used to fall
+            # through to this shell.
+            head = full_path.split("/", 1)[0]
+            if head in {"api", "scim", "openapi.json"}:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
             # Next `output: "export"` emits `runs.html` / `runs/view.html` (and optionally
             # directory `index.html`). Prefer explicit files before the SPA shell.

@@ -359,6 +359,7 @@ def test_agent_installer_and_deployment_snippets(tmp_path: Path, monkeypatch):
     # 1. Download install.sh
     sh_resp = client.get("/api/agent/install.sh")
     assert sh_resp.status_code == 200
+    assert sh_resp.headers["content-type"].startswith("text/plain")
     assert "#!/usr/bin/env bash" in sh_resp.text
     assert "Shapoclyack Remote Sensor Universal Installer" in sh_resp.text
     # What the host actually downloads carries the pinned default; the details

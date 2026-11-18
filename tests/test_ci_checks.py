@@ -303,6 +303,9 @@ def test_the_dast_stage_cannot_reach_outside_its_stand():
     body = (SCRIPTS / "ci-dast.sh").read_text(encoding="utf-8")
     assert "network create --internal" in body, "the stand must have no default route"
     assert "OCTO_ALLOW_SCAN_START=false" in body, "the stand must not be able to start a scan"
+    assert "OCTO_WEB_DIST=/opt/shapoclyack-dast-no-console" in body, (
+        "the stand must not mount the console the API image carries"
+    )
     runs = [line for line in body.splitlines() if line.strip().startswith("docker run")]
     assert runs, "the stand starts nothing"
     assert all("-p " not in line and "--publish" not in line for line in runs), (
