@@ -158,11 +158,13 @@ def test_membership_administration_is_admin_only(client):
 def test_grant_rejects_unknown_tenant_and_bad_role(client):
     admin = _headers(client, "admin")
     _make_tenant(client, "ten_a")
+    # The tenant is resolved before grant(). A missing one is 404; the role
+    # check below still runs only after the tenant exists.
     assert (
         client.put(
             "/api/tenants/ten_missing/members/viewer", headers=admin, json={"role": "viewer"}
         ).status_code
-        == 422
+        == 404
     )
     assert (
         client.put(

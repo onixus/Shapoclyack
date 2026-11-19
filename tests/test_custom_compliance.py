@@ -257,7 +257,8 @@ def test_evidence_package_is_bounded_and_checks_the_key_first(setup, monkeypatch
     monkeypatch.setattr(
         service, "snapshot", lambda *a, **k: pytest.fail("evidence read without a signing key")
     )
-    assert client.post(url, headers=operator).status_code == 503
+    # No key is the feature switched off (404). A key that will not sign is 503.
+    assert client.post(url, headers=operator).status_code == 404
 
     monkeypatch.setattr(service, "snapshot", snapshot)
     monkeypatch.setenv(
