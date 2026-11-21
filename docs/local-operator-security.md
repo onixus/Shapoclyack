@@ -28,11 +28,16 @@ The gate includes 80 adversarial cases:
 - Ten authenticated HTTP attacks covering effect injection, finding closure,
   caller privilege escalation, foreign actor/viewer confirmation and chat text
   presented as scan confirmation. All leave the job count unchanged.
-- One authenticated evidence read that presents a default-tenant citation under
-  a different `tenant_id`. The route refuses it, and a canary `api_token` in
-  the published artifact does not appear in the search or refusal body.
-- One audit-redaction case: a refusal reason is kept, while `api_token` and
-  `client_secret` are replaced before the trail. The canary value is absent.
+- One authenticated evidence read that presents a default-tenant citation to a
+  principal of another tenant. Tenant resolution refuses a caller with no
+  membership before the evidence route runs; that 403 is not the evidence
+  check. The evidence check is a second principal whose tenant is the other
+  one. A canary `api_token` in the published artifact does not appear in the
+  owner's search body or in the foreign principal's refusal.
+- One audit-redaction case: `record()` keeps a refusal reason and replaces
+  `api_token` and `client_secret` in the row it would append. A secret that
+  appears only as prose, not as a credential field name, is not claimed to be
+  removed. The canary field value is absent from the stored documents.
 
 Adjacent suites supply the other required boundaries:
 `test_operator_actions.py` checks immutable confirmation hashes, expiry,

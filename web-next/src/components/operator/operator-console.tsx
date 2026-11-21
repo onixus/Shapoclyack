@@ -158,7 +158,7 @@ const copy = {
     staleServer:
       "The server rejected this plan: it expired or is no longer awaiting confirmation. Nothing was executed. Prepare a new preview.",
     policyDeviation:
-      "Policy deviation: the tenant policy is stricter than the requested profile. Confirmation still goes through the server; a hidden control is not the protection.",
+      "The tenant policy allows only the safe profile. The server refuses any other mode; confirmation does not override that.",
     offlineUnverified: "Offline operation has not been verified on this installation.",
     remediation: "Find a vendor-backed fix",
     device: "Endpoint device ID",
@@ -317,7 +317,7 @@ const copy = {
     staleServer:
       "Сервер отклонил этот план: он истёк или уже не ожидает подтверждения. Ничего не выполнено. Подготовьте новый предпросмотр.",
     policyDeviation:
-      "Отклонение политики: политика тенанта строже запрошенного профиля. Подтверждение всё равно проверяет сервер; скрытая кнопка защитой не считается.",
+      "Политика тенанта разрешает только безопасный профиль. Сервер отклонит любой другой режим; подтверждение это не отменяет.",
     offlineUnverified: "Автономная работа без сети на этой установке не проверена.",
     remediation: "Найти исправление из бюллетеня безопасности",
     device: "ID устройства",
@@ -1970,18 +1970,11 @@ function PlanImpact({ proposal, c }: { proposal: OperatorProposal; c: Copy }) {
     rows.push([c.findingState, operatorStatusLabel(language, String(impact.finding_state))]);
   if ("approved" in scope) rows.push([c.scopeApproval, scope.approved]);
   const requested = proposal.arguments.mode;
-  const enforced = policy.profile;
+  // Mode (safe/balanced/fast) and policy.profile (standard/fragile) are different
+  // axes. The server does not rewrite one into the other; it refuses only when
+  // safe_only is set and the requested mode is not safe.
   const deviations: string[] = [];
-  if (
-    typeof requested === "string" &&
-    requested &&
-    typeof enforced === "string" &&
-    enforced &&
-    requested !== enforced
-  )
-    deviations.push(`${c.mode}: ${requested} → ${enforced}`);
-  if (policy.safe_only === true && requested !== "safe")
-    deviations.push(c.safeOnly);
+  if (policy.safe_only === true && requested !== "safe") deviations.push(c.safeOnly);
   if (impact.policy === null) rows.push([c.policy, null]);
   const policyLabels: Record<string, string> = {
     profile: c.policy,

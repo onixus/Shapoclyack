@@ -10,10 +10,11 @@ record. A green contract suite does not replace the physical gates in
 
 ## What this continuation does claim
 
-- The operator console names a policy deviation when the enforced scan-policy
-  profile differs from the requested mode, and it says so while the confirm
-  control stays a server check. Offline operation stays unverified unless a
-  deployment sets `offline_verified`.
+- The operator console names a policy refusal when `safe_only` is set and the
+  requested mode is not `safe`. It does not treat a different policy profile
+  as a rewritten mode: the server does not substitute one for the other, and
+  the confirm control stays a server check. Offline operation stays unverified
+  unless a deployment sets `offline_verified`.
 - The security contract gate covers a foreign-tenant evidence read and audit
   redaction of credential field names, in addition to the cases already listed
   in [the security contract](local-operator-security.md).

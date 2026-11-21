@@ -730,7 +730,7 @@ describe("operator console", () => {
     expect(screen.queryByText(/could not be completed/)).not.toBeInTheDocument();
   });
 
-  it("names a policy deviation when the enforced profile differs from the request", async () => {
+  it("names a policy refusal only when safe_only rejects the requested mode", async () => {
     savedSession();
     sessionStorage.setItem(
       `operator-proposal:${JSON.stringify(["tenant-a", "alice", "s1"])}`,
@@ -741,13 +741,26 @@ describe("operator console", () => {
       arguments: { ...plan.arguments, mode: "fast" },
       impact: {
         targets: ["192.0.2.1"],
+        policy: { profile: "standard", safe_only: false },
+      },
+    });
+    const { unmount } = renderConsole();
+    expect(await screen.findByRole("button", { name: "Confirm this plan" })).toBeInTheDocument();
+    expect(screen.queryByText(/allows only the safe profile/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/fast → standard/)).not.toBeInTheDocument();
+    unmount();
+    vi.mocked(operatorApi.proposal).mockResolvedValue({
+      ...plan,
+      arguments: { ...plan.arguments, mode: "fast" },
+      impact: {
+        targets: ["192.0.2.1"],
         policy: { profile: "fragile", safe_only: true },
       },
     });
     renderConsole();
-    const notice = await screen.findByText(/Policy deviation/);
-    expect(notice).toHaveTextContent(/fast → fragile/);
+    const notice = await screen.findByText(/allows only the safe profile/);
     expect(notice).toHaveTextContent(/Safe profile only/);
+    expect(notice).not.toHaveTextContent(/fast → fragile/);
     expect(screen.getByRole("button", { name: "Confirm this plan" })).toBeInTheDocument();
   });
 
