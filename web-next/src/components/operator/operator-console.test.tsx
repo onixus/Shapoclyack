@@ -417,10 +417,22 @@ describe("operator console", () => {
             : /192.0.2.8:22 · SSH host key observed/,
       });
       expect(screen.queryByText(/long-private-source-id/)).not.toBeInTheDocument();
+      expect(screen.getByText("Review")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          locale === "ru"
+            ? "Это предварительный разбор для вашей проверки. Он не меняет находки, риск и состояние скана."
+            : "This is a draft for you to review. It does not change findings, risk, or the scan.",
+        ),
+      ).toBeInTheDocument();
       if (locale === "ru") {
         expect(screen.getByText(/Анализ скана · run1/)).toBeInTheDocument();
-        expect(screen.getByText("Неполные данные · Качество не подтверждено")).toBeInTheDocument();
+        expect(screen.getByText("Ответ готов к проверке")).toBeInTheDocument();
         expect(screen.queryByText("succeeded")).not.toBeInTheDocument();
+        const statusPair = screen.getByText("Неполные данные · Качество не подтверждено");
+        expect(statusPair.closest("details")).not.toHaveAttribute("open");
+        await userEvent.click(screen.getByText("Технические подробности"));
+        expect(statusPair.closest("details")).toHaveAttribute("open");
       }
       expect(operatorApi.evidence).toHaveBeenCalledTimes(1);
       await userEvent.click(row);

@@ -72,7 +72,40 @@ const copy = {
       "This selects a proposed operation and executes nothing. Scan actions still require a separate preview and confirmation.",
     adopt: "Use these parameters",
     adopted:
-      "Parameters copied into the form below. Review them and explicitly request the next step.",
+      "Parameters are in the form below. Check them and take the next step yourself.",
+    adoptedAnalysis:
+      "The run and the analysis type are in the form below. Choose “Queue analysis”. Nothing starts before that.",
+    adoptedAction:
+      "Parameters are in the action form below. Review them and confirm separately. A scan does not start until you confirm.",
+    planReady: "Proposal is ready",
+    answerReady: "Answer is ready for review",
+    planUnsupportedTitle: "The operator could not choose an action",
+    planAnalyzeTitle: "The operator suggests reviewing this scan’s findings",
+    planSummaryTitle: "The operator suggests a count summary of this scan",
+    planCompareTitle: "The operator suggests comparing two scans",
+    planFixTitle: "The operator suggests looking up a fix",
+    planScanTitle: "The operator suggests preparing a scan",
+    planStopTitle: "The operator suggests stopping a job",
+    planVerifyTitle: "The operator suggests checking a finding",
+    planGenericTitle: "The operator suggests a next step",
+    planAnalyzeBody:
+      "Nothing has run yet. Choose “Use these parameters”, then “Queue analysis” in the form below. Findings and risk do not change by themselves.",
+    planSummaryBody:
+      "No summary has been built yet. Choose “Use these parameters”, then “Queue analysis” in the form below.",
+    planCompareBody:
+      "No comparison has been built yet. Choose “Use these parameters”, then run the comparison in the form below.",
+    planFixBody:
+      "No fix has been looked up yet. Choose “Use these parameters”, then run the lookup in the form below.",
+    planScanBody:
+      "No scan has started. Choose “Use these parameters”, review the targets, and confirm the start separately.",
+    planStopBody:
+      "The job has not been stopped. Choose “Use these parameters” and confirm the stop separately.",
+    planVerifyBody:
+      "The check has not started. Choose “Use these parameters” and confirm it separately.",
+    planGenericBody: "Nothing has run. Choose “Use these parameters” and continue yourself.",
+    answerCaveat:
+      "This is a draft for you to review. It does not change findings, risk, or the scan.",
+    sourceFailed: "The source card did not load. The operator answer above still stands.",
     noEffect: "No action has been executed.",
     effectUnexpected:
       "Unexpected execution state. Refresh and review the server result before proceeding.",
@@ -229,8 +262,41 @@ const copy = {
     includeScan: "Добавить явные цели скана",
     proposalOnly:
       "Оператор только предлагает операцию. Для действий со сканами остаются отдельные предпросмотр и подтверждение.",
-    adopt: "Использовать параметры",
-    adopted: "Параметры скопированы в форму ниже. Проверьте их и явно запросите следующий шаг.",
+    adopt: "Подставить в форму",
+    adopted: "Параметры подставлены в форму ниже. Проверьте их и выполните следующий шаг сами.",
+    adoptedAnalysis:
+      "Скан и тип разбора подставлены в форму ниже. Нажмите «Поставить анализ в очередь». До этого нажатия разбор не начинается.",
+    adoptedAction:
+      "Параметры подставлены в форму действия ниже. Проверьте их и подтвердите отдельно. Пока вы не подтвердили, скан не запускается.",
+    planReady: "Предложение готово",
+    answerReady: "Ответ готов к проверке",
+    planUnsupportedTitle: "Оператор не выбрал действие",
+    planAnalyzeTitle: "Оператор предлагает разобрать находки этого скана",
+    planSummaryTitle: "Оператор предлагает сводку по счётчикам этого скана",
+    planCompareTitle: "Оператор предлагает сравнить два скана",
+    planFixTitle: "Оператор предлагает найти исправление",
+    planScanTitle: "Оператор предлагает подготовить скан",
+    planStopTitle: "Оператор предлагает остановить задание",
+    planVerifyTitle: "Оператор предлагает проверить находку",
+    planGenericTitle: "Оператор предлагает следующий шаг",
+    planAnalyzeBody:
+      "Разбор ещё не запускался. Нажмите «Подставить в форму», затем в форме ниже «Поставить анализ в очередь». Находки и риск сами не изменятся.",
+    planSummaryBody:
+      "Сводка ещё не строилась. Нажмите «Подставить в форму», затем в форме ниже «Поставить анализ в очередь».",
+    planCompareBody:
+      "Сравнение ещё не построено. Нажмите «Подставить в форму» и запустите сравнение в форме ниже.",
+    planFixBody:
+      "Исправление ещё не искали. Нажмите «Подставить в форму» и запустите поиск в форме ниже.",
+    planScanBody:
+      "Скан не запущен. Нажмите «Подставить в форму», проверьте цели и отдельно подтвердите запуск.",
+    planStopBody:
+      "Задание не остановлено. Нажмите «Подставить в форму» и подтвердите остановку отдельно.",
+    planVerifyBody:
+      "Проверка не запущена. Нажмите «Подставить в форму» и подтвердите её отдельно.",
+    planGenericBody: "Ничего не выполнено. Нажмите «Подставить в форму» и продолжите сами.",
+    answerCaveat:
+      "Это предварительный разбор для вашей проверки. Он не меняет находки, риск и состояние скана.",
+    sourceFailed: "Карточка источника не загрузилась. Ответ оператора выше от этого не отменяется.",
     noEffect: "Действия ещё не выполнялись.",
     effectUnexpected:
       "Неожиданное состояние исполнения. Обновите и проверьте результат сервера перед продолжением.",
@@ -436,6 +502,7 @@ export function OperatorConsole({
       setRun(typeof plan.arguments.run_id === "string" ? plan.arguments.run_id : "");
       setTool(plan.tool);
     }
+    document.getElementById("operator-review")?.scrollIntoView?.({ block: "start" });
   };
   const [sourceRequest, setSourceRequest] = useState<{
     citation: Citation;
@@ -748,7 +815,13 @@ export function OperatorConsole({
             <p className="text-sm text-muted-foreground">{c.tabReviewHint}</p>
           {draft && (
             <p role="status" className="rounded border border-primary/30 bg-primary/5 p-3 text-sm">
-              {c.adopted}
+              {draft.plan.tool === "analyze_run" || draft.plan.tool === "summarize_run"
+                ? c.adoptedAnalysis
+                : draft.plan.tool === "prepare_scan" ||
+                    draft.plan.tool === "cancel_scan" ||
+                    draft.plan.tool === "verify_finding"
+                  ? c.adoptedAction
+                  : c.adopted}
             </p>
           )}
           <Card>
@@ -892,7 +965,7 @@ export function OperatorConsole({
               <DialogDescription>{c.sourceHelp}</DialogDescription>
             </DialogHeader>
             {evidence.isFetching && <p role="status">{c.loading}</p>}
-            {evidence.isError && <p role="alert">{c.failed}</p>}
+            {evidence.isError && <p role="alert">{c.sourceFailed}</p>}
             {evidence.data && !evidence.isFetching && !evidence.isError && (
               <SourceEvidenceCard data={evidence.data} language={language} />
             )}
@@ -917,6 +990,49 @@ function toolLabel(tool: string, c: Copy): string {
     abstain: c.unsupportedPlan,
   };
   return labels[tool] ?? c.unsupportedPlan;
+}
+
+function planStory(plan: OperatorPlan, c: Copy): { title: string; body: string } {
+  if (plan.tool === "abstain" || plan.status === "unsupported") {
+    return { title: c.planUnsupportedTitle, body: c.unsupportedPlan };
+  }
+  if (plan.effect_executed !== false) {
+    return { title: c.effectUnexpected, body: "" };
+  }
+  const stories: Record<string, { title: string; body: string }> = {
+    analyze_run: { title: c.planAnalyzeTitle, body: c.planAnalyzeBody },
+    summarize_run: { title: c.planSummaryTitle, body: c.planSummaryBody },
+    compare_runs: { title: c.planCompareTitle, body: c.planCompareBody },
+    find_remediation: { title: c.planFixTitle, body: c.planFixBody },
+    prepare_scan: { title: c.planScanTitle, body: c.planScanBody },
+    cancel_scan: { title: c.planStopTitle, body: c.planStopBody },
+    verify_finding: { title: c.planVerifyTitle, body: c.planVerifyBody },
+  };
+  const story = stories[plan.tool] ?? { title: c.planGenericTitle, body: c.planGenericBody };
+  const runId = typeof plan.arguments.run_id === "string" ? plan.arguments.run_id.trim() : "";
+  if ((plan.tool === "analyze_run" || plan.tool === "summarize_run") && runId) {
+    return { ...story, title: `${story.title}: ${runId}` };
+  }
+  return story;
+}
+
+const STEP_TEXT: Record<"ru" | "en", Record<string, string>> = {
+  en: {
+    verify_evidence: "Verify the selected observation against its source.",
+    review_configuration: "Review the relevant configuration with an authorized operator.",
+    confirm_exposure: "Confirm the observed exposure within the authorized scope.",
+    request_fresh_scan: "Request fresh evidence within the authorized scope.",
+  },
+  ru: {
+    verify_evidence: "Проверьте выбранное наблюдение по его источнику.",
+    review_configuration: "Проверьте соответствующую конфигурацию с уполномоченным оператором.",
+    confirm_exposure: "Подтвердите наблюдаемую доступность в разрешённой области проверки.",
+    request_fresh_scan: "Запросите свежие данные в разрешённой области проверки.",
+  },
+};
+
+function stepText(step: string, locale: "ru" | "en"): string {
+  return STEP_TEXT[locale][step] ?? step;
 }
 
 function PlannerPanel({
@@ -1278,6 +1394,8 @@ function ReasonText({ value, c }: { value?: string | null; c: Copy }) {
     operator_source_unavailable: "Источник недоступен или ещё не опубликован.",
     operator_source_changed: "Источник изменился; проверьте свежие данные.",
     operator_incomplete_response: "Модель вернула незавершённый ответ.",
+    human_review_required:
+      "Оператор выбрал шаг, но сам его не выполняет. Продолжите кнопкой под ответом.",
     operator_invalid_model_output: "Ответ модели не прошёл проверку формата.",
     operator_upstream_rejected: "Провайдер модели отклонил запрос.",
     missing_inventory: "Нет данных инвентаризации устройства.",
@@ -1338,7 +1456,8 @@ function RecommendationSource({
     context.port <= 65535
       ? String(context.port)
       : "";
-  const labels = answerLabels(useT().locale, item.category, item.proposed_priority, finding);
+  const locale = useT().locale;
+  const labels = answerLabels(locale, item.category, item.proposed_priority, finding);
   const title = labels.title;
   const heading = [host, port ? `:${port}` : ""].join("");
   return (
@@ -1356,11 +1475,11 @@ function RecommendationSource({
       </span>
       {item.next_steps.map((step, index) => (
         <span className="block" key={index}>
-          • {step}
+          • {stepText(step, locale)}
         </span>
       ))}
       <span className="block text-xs text-primary">
-        {preview.isFetching ? c.loading : preview.isError ? c.failed : c.openSource}
+        {preview.isFetching ? c.loading : preview.isError ? c.sourceFailed : c.openSource}
       </span>
     </button>
   );
@@ -1390,13 +1509,24 @@ function Task({
   const locale = useT().locale;
   const answer = task.result?.analysis ?? task.result?.answer?.answer;
   const plan = task.result?.plan;
+  const proposalReady =
+    task.kind === "plan_request" &&
+    task.status === "succeeded" &&
+    plan?.status === "proposal" &&
+    plan.effect_executed === false;
+  const story = plan ? planStory(plan, c) : null;
+  const headlineStatus = proposalReady
+    ? c.planReady
+    : answer && task.status === "succeeded"
+      ? c.answerReady
+      : operatorStatusLabel(locale, task.status);
   return (
     <article className="space-y-3 rounded-lg border border-control bg-background p-4">
       <p className="text-sm font-semibold">
         {task.kind === "plan_request"
           ? c.planner
           : `${operatorStatusLabel(locale, task.kind)} · ${task.run_id}`}{" "}
-        · <span role="status">{operatorStatusLabel(locale, task.status)}</span>
+        · <span role="status">{headlineStatus}</span>
       </p>
       {task.cancel_requested && <p className="text-sm">{c.cancelling}</p>}
       {task.error && (
@@ -1404,18 +1534,18 @@ function Task({
           <ReasonText value={task.error} c={c} />
         </div>
       )}
-      {plan && (
+      {plan && story && (
         <div className="space-y-3 rounded border bg-muted/30 p-3 text-sm">
-          <p className="font-semibold">
-            {toolLabel(plan.tool, c)} · {operatorStatusLabel(locale, plan.status)} ·{" "}
-            {operatorStatusLabel(locale, plan.quality_status)}
-          </p>
-          <p>{plan.effect_executed === false ? c.noEffect : c.effectUnexpected}</p>
-          {plan.tool === "abstain" ? (
-            <p>{c.unsupportedPlan}</p>
-          ) : (
-            <ArgumentRows arguments={plan.arguments} c={c} />
-          )}
+          <p className="font-semibold">{story.title}</p>
+          {story.body && <p>{story.body}</p>}
+          {plan.tool !== "abstain" && <ArgumentRows arguments={plan.arguments} c={c} />}
+          <details className="text-xs text-muted-foreground">
+            <summary className="cursor-pointer">{c.details}</summary>
+            <p>
+              {toolLabel(plan.tool, c)} · {operatorStatusLabel(locale, plan.status)} ·{" "}
+              {operatorStatusLabel(locale, plan.quality_status)}
+            </p>
+          </details>
           {canOperate &&
             plan.status === "proposal" &&
             plan.effect_executed === false &&
@@ -1428,12 +1558,16 @@ function Task({
       )}
       {answer && (
         <>
-          <p className="text-sm font-medium">
-            {operatorStatusLabel(locale, answer.status)} ·{" "}
-            {operatorStatusLabel(locale, task.result?.quality_status)}
-          </p>
-          <p className="whitespace-pre-wrap text-sm">{answer.summary}</p>
-          <ReasonText value={answer.reason} c={c} />
+          <p className="whitespace-pre-wrap text-sm font-medium">{answer.summary}</p>
+          <p className="text-sm text-muted-foreground">{c.answerCaveat}</p>
+          <details className="text-xs text-muted-foreground">
+            <summary className="cursor-pointer">{c.details}</summary>
+            <p>
+              {operatorStatusLabel(locale, answer.status)} ·{" "}
+              {operatorStatusLabel(locale, task.result?.quality_status)}
+            </p>
+            <ReasonText value={answer.reason} c={c} />
+          </details>
           {answer.recommendations?.map((item, index) => (
             <RecommendationSource
               key={`${index}:${item.source_id}`}

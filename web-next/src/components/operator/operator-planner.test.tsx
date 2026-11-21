@@ -343,6 +343,11 @@ describe("natural request planner", () => {
       tasks: [decision("summarize_run", { run_id: "bound-run" })],
     });
     view();
+    expect(
+      await screen.findByText("The operator suggests a count summary of this scan: bound-run"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/No summary has been built yet/)).toBeInTheDocument();
+    expect(screen.queryByText("No action has been executed.")).not.toBeInTheDocument();
     await userEvent.click(await screen.findByRole("button", { name: "Use these parameters" }));
     expect(screen.getByLabelText("Run ID")).toHaveValue("bound-run");
     expect(operatorApi.submit).not.toHaveBeenCalled();
@@ -390,6 +395,11 @@ describe("natural request planner", () => {
     view();
     await screen.findByRole("region", { name: "Ask the operator" });
     expect(screen.queryByRole("button", { name: "Use these parameters" })).not.toBeInTheDocument();
+    if (task.result?.plan?.tool === "abstain") {
+      expect(screen.getByText("The operator could not choose an action")).toBeInTheDocument();
+    } else {
+      expect(screen.getByText(/Unexpected execution state/)).toBeInTheDocument();
+    }
     expect(operatorApi.prepare).not.toHaveBeenCalled();
     expect(operatorApi.confirm).not.toHaveBeenCalled();
   });
