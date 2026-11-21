@@ -498,14 +498,12 @@ _FSTEC_117 = Framework(
         ),
         Control(
             control_id="ИАФ.3",
-            citation="ИАФ.3",
             title="Аутентификация пользователей",
             signals=(sig.WEAK_CREDENTIALS,),
             rationale="Services accepting default, anonymous or absent authentication.",
         ),
         Control(
             control_id="МСЭ.3",
-            citation="МСЭ.3",
             title="Контроль сетевого доступа и фильтрация трафика",
             combinations=(_ADMIN_FROM_UNTRUSTED, _CLEARTEXT_FROM_UNTRUSTED),
             rationale=(
@@ -515,7 +513,6 @@ _FSTEC_117 = Framework(
         ),
         Control(
             control_id="МСЭ.4",
-            citation="МСЭ.4",
             title="Маскирование системы",
             signals=(sig.INFORMATION_DISCLOSURE,),
             rationale=(
@@ -525,14 +522,12 @@ _FSTEC_117 = Framework(
         ),
         Control(
             control_id="ЗКС.1",
-            citation="ЗКС.1",
             title="Защита данных при передаче по каналам связи",
             signals=(sig.WEAK_CRYPTOGRAPHY, sig.INSECURE_PROTOCOL),
             rationale="Deprecated TLS, weak ciphers, invalid certificates and cleartext services.",
         ),
         Control(
             control_id="ЗКУ.2",
-            citation="ЗКУ.2",
             title="Обеспечение целостности программного обеспечения конечных устройств",
             signals=(sig.UNASSESSABLE_SOFTWARE,),
             requires=(SOURCE_ENDPOINT_INVENTORY,),
@@ -818,8 +813,8 @@ _FZ_187 = Framework(
         ),
         Control(
             control_id="КИИ.КОНФ",
-            citation="№ 239 УКФ",
-            title="Контроль параметров настройки и безопасной конфигурации ПО и СЗИ (п. 235, УКФ № 239)",
+            citation="№ 235 п. 27, № 239 УКФ.4",
+            title="Контроль параметров настройки и безопасной конфигурации ПО и СЗИ (№ 235 п. 27, № 239 УКФ.4)",
             signals=(sig.MISCONFIGURATION, sig.INFORMATION_DISCLOSURE),
             rationale=(
                 "Misconfiguration and unnecessary software/banner disclosures provide actionable "

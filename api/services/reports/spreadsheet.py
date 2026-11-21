@@ -23,6 +23,7 @@ requirements lock) for the sake of formatting this does not use.
 from __future__ import annotations
 
 import csv
+import re
 import io
 import math
 import re
@@ -42,14 +43,23 @@ Table = tuple[str, list[str], list[list[Any]]]
 
 
 def control_ref(control: dict[str, Any]) -> str:
-    """Normative point, or the catalogue id when that id is already the point.
+    """Normative point, never a catalogue label standing in for one.
 
     Order 117's shorthand and every ``КИИ.*`` label are catalogue keys. A
-    leadership spreadsheet that prints them as the requirement is a false cite.
+    citation that merely repeats ``control_id`` is the same false cite: the
+    parenthetical in the title is the point the catalogue was mapped to.
     """
 
+    control_id = str(control.get("control_id") or "").strip()
     citation = str(control.get("citation") or "").strip()
-    return citation or str(control.get("control_id") or "")
+    if citation and citation != control_id:
+        return citation
+    title = str(control.get("title") or "")
+    points = [part.strip() for part in re.findall(r"\(([^)]*)\)", title)]
+    point = points[-1] if points else ""
+    if point and point != control_id:
+        return point
+    return citation or control_id
 
 _SEVERITIES = ("critical", "high", "medium", "low", "unknown")
 _SLA_LABELS = {

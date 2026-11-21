@@ -48,7 +48,9 @@ def _body(title: str = "Exec") -> dict:
         "compliance": [
             {"name": "Реестр", "version": "1", "controls": [
                 {"control_id": "АУД.2", "title": "=cmd|' /C calc'!A0", "status": "failed",
-                 "failing_count": 3}]}
+                 "failing_count": 3},
+                {"control_id": "КУ-сроки", "citation": "п. 3.3 № 117",
+                 "title": "Сроки (п. 3.3)", "status": "not_assessed", "failing_count": 0}]}
         ],
     }
 
@@ -64,6 +66,12 @@ def test_cell_defuses_every_formula_prefix(value):
 def test_control_ref_prints_the_normative_point_not_the_catalogue_label():
     assert spreadsheet.control_ref({"control_id": "КИИ.УЯЗ", "citation": "№ 239 АУД.2"}) == "№ 239 АУД.2"
     assert spreadsheet.control_ref({"control_id": "АНЗ.1"}) == "АНЗ.1"
+    assert spreadsheet.control_ref({
+        "control_id": "ИАФ.3", "citation": "ИАФ.3", "title": "Аутентификация (п. 3.6 № 117)",
+    }) == "п. 3.6 № 117"
+    assert spreadsheet.control_ref({
+        "control_id": "КУ-сроки", "citation": "п. 3.3 № 117", "title": "Сроки (п. 3.3)",
+    }) == "п. 3.3 № 117"
     assert spreadsheet.STATUS_LABELS["not_assessed"] == "No source data"
 
 
@@ -85,6 +93,8 @@ def test_csv_has_no_executable_cell():
     # The hostile text is still there, as text.
     assert "'=HYPERLINK(\"http://evil\",\"x\")" in cells
     assert "АУД.2" in cells
+    assert "п. 3.3 № 117" in cells
+    assert "No source data" in cells
 
 
 def test_xlsx_is_a_workbook_with_no_formula_elements():
