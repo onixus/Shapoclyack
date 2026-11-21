@@ -111,6 +111,7 @@ const copy: Record<string, string> = {
   "{count} hosts": "Хостов: {count}",
   "host {host}": "хост {host}",
   "port {port}": "порт {port}",
+  "CVE {cve}": "CVE {cve}",
   " · updating…": " · обновление…",
   "{count}% confidence": "Уверенность: {count}%",
   "{notes} notes · {rules} rules": "Примечаний: {notes} · правил: {rules}",

@@ -406,7 +406,13 @@ describe("operator console", () => {
       });
       vi.mocked(operatorApi.evidence).mockResolvedValue({
         context: { host: "192.0.2.8", port: 22 },
-        console_target: { kind: "run_finding", run_id: "run1", host: "192.0.2.8", port: 22 },
+        console_target: {
+          kind: "run_finding",
+          run_id: "run1",
+          host: "192.0.2.8",
+          port: 22,
+          cve: "CVE-2025-0001",
+        },
         source_display: {
           run_id: "run1",
           match_count: 1,
@@ -429,7 +435,9 @@ describe("operator console", () => {
       expect(operatorApi.evidence).toHaveBeenCalledTimes(1);
       await userEvent.click(row);
       await waitFor(() =>
-        expect(push).toHaveBeenCalledWith("/runs/view?runId=run1&tab=vulns&host=192.0.2.8&port=22"),
+        expect(push).toHaveBeenCalledWith(
+          "/runs/view?runId=run1&tab=vulns&tenantId=tenant-a&host=192.0.2.8&port=22&cve=CVE-2025-0001",
+        ),
       );
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
       expect(operatorApi.evidence).toHaveBeenCalledTimes(2);

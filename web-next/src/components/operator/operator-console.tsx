@@ -1384,6 +1384,7 @@ function ReasonText({ value, c }: { value?: string | null; c: Copy }) {
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const VULN_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/;
 const HOST = /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,190}[A-Za-z0-9])?$/;
+const CVE_ID = /^CVE-[0-9]{4}-[0-9]{4,19}$/;
 
 function reviewedVendorUrl(data: Record<string, unknown>): string {
   if (data.kind !== "reviewed_vendor_guidance" || typeof data.url !== "string") return "";
@@ -1415,7 +1416,11 @@ export function authorizedSourceHref(data: Record<string, unknown>, tenant: stri
     typeof target.run_id === "string" &&
     RUN_ID.test(target.run_id)
   ) {
+    // A run id is unique per tenant, not per installation. The page selects
+    // this tenant before it fetches, so a fleet-wide admin cannot open the
+    // first subtree that happens to hold the same id.
     const params = new URLSearchParams({ runId: target.run_id, tab: "vulns" });
+    if (tenant) params.set("tenantId", tenant);
     if (
       target.kind === "run_finding" &&
       typeof target.host === "string" &&
@@ -1429,6 +1434,8 @@ export function authorizedSourceHref(data: Record<string, unknown>, tenant: stri
         target.port <= 65535
       )
         params.set("port", String(target.port));
+      if (typeof target.cve === "string" && CVE_ID.test(target.cve))
+        params.set("cve", target.cve);
     }
     return `/runs/view?${params}`;
   }

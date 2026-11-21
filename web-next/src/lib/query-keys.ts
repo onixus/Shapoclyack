@@ -20,12 +20,25 @@ export const queryKeys = {
   runs: ["runs"] as const,
   runsPage: (page?: PageParams, filters?: ScanListFilters) =>
     ["runs", pageKey(page), { surface: filters?.surface ?? null }] as const,
-  run: (runId: string) => ["run", runId] as const,
-  runHosts: (runId: string) => ["run", runId, "hosts"] as const,
-  runPorts: (runId: string) => ["run", runId, "ports"] as const,
-  runVulns: (runId: string, filters?: { host?: string | null; port?: string | null }) =>
-    ["run", runId, "vulns", { host: filters?.host ?? null, port: filters?.port ?? null }] as const,
-  runScreenshots: (runId: string) => ["run", runId, "screenshots"] as const,
+  run: (runId: string, tenantId?: string | null) => ["run", tenantId ?? null, runId] as const,
+  runHosts: (runId: string, tenantId?: string | null) =>
+    ["run", tenantId ?? null, runId, "hosts"] as const,
+  runPorts: (runId: string, tenantId?: string | null) =>
+    ["run", tenantId ?? null, runId, "ports"] as const,
+  runVulns: (
+    runId: string,
+    filters?: { host?: string | null; port?: string | null },
+    tenantId?: string | null,
+  ) =>
+    [
+      "run",
+      tenantId ?? null,
+      runId,
+      "vulns",
+      { host: filters?.host ?? null, port: filters?.port ?? null },
+    ] as const,
+  runScreenshots: (runId: string, tenantId?: string | null) =>
+    ["run", tenantId ?? null, runId, "screenshots"] as const,
   jobs: ["jobs"] as const,
   jobsPage: (page?: PageParams, filters?: ScanListFilters) =>
     ["jobs", pageKey(page), { surface: filters?.surface ?? null }] as const,
