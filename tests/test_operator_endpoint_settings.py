@@ -269,6 +269,14 @@ def test_api_put_never_echoes_key_and_test_uses_candidate(settings, monkeypatch)
         assert refused.status_code == 422 and refused.json()["detail"] == "hosted_operator_requires_public_host"
 
 
+def test_model_discovery_while_the_operator_is_off_is_not_an_outage(settings):
+    settings.operator_enabled = False
+    with _client(settings) as client:
+        response = client.get("/api/operator/settings/models")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "operator_disabled"
+
+
 def test_api_model_discovery_maps_upstream_failure(settings, monkeypatch):
     async def denied(self):
         raise OperatorProviderError("operator_upstream_unauthorized")

@@ -277,6 +277,11 @@ class SecurityHeadersMiddleware:
         self.enable_hsts = enable_hsts
         self.csp = content_security_policy or (
             "default-src 'self'; "
+            # The static console inlines its theme bootstrap and the Next.js
+            # flight payload. Radix scroll-lock (react-remove-scroll) also
+            # injects a <style> element when a dialog or select opens; a
+            # file-only style-src drops that element and the page behind the
+            # dialog keeps scrolling.
             "script-src 'self' 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob:; "

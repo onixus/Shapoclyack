@@ -329,6 +329,7 @@ What still differs, on purpose:
 | Image build | native `linux/arm64`, daemon cache | `docker/build-push-action`, `type=gha` cache |
 | Load test | `tests/load/run.sh` from the Jenkinsfile | `.github/actions/synthetic-load-test` |
 | `SSH deploy (live sshd)` | present | **absent** — no ported equivalent |
+| DAST (ZAP) | `scripts/ci-dast.sh` against the API image built in the same job, on an internal network | the same script, in the image job |
 | web-next build directory | copied off the VirtioFS workspace | built in place |
 | Where checks run | checkout to web gate on `gaming-amd64` (Fedora VM), image stages on the Mac | GitHub runners |
 
@@ -365,6 +366,25 @@ does not help: it is per job.
 **`${IMAGE_TAG}` inside `sh '''…'''` is not interpolated by Groovy.** Single
 quotes leave it to the shell, which has no such variable, and the tag silently
 becomes empty. Either use `sh """…"""` or pass the value through `withEnv`.
+
+**DAST.** `scripts/ci-dast.sh` stands the API image of the same build up next
+to Postgres and points OWASP ZAP's packaged API scan at its OpenAPI document.
+The network is created `--internal`, so the stand has no route to the agent's
+LAN, the controller or the internet, and the API is started with
+`OCTO_ALLOW_SCAN_START=false`: the product scans other networks, and a scan of
+the product must not become one of those. The scan authenticates once as the
+seeded dev admin — the same published account the test suite uses — and replays
+that bearer on every request except the routes that end the session. It does
+not follow links out of the spec. The stand sets `OCTO_RATE_LIMIT_ENABLED=false`:
+the scan is one principal, and a 429 in the middle of a boolean check is a
+different body, which ZAP scores as SQL injection. ZAP's own exit code is the gate, warnings
+included, and a bearer that `/api/auth/me` refuses after the scan fails the
+run as well. `zap-report.html` / `zap-report.json` are archived either way. It runs on `main` and on branches: unlike the load test it
+is a regression check, not a measurement. The scanner image is
+`ghcr.io/zaproxy/zaproxy:stable`, pinned by digest in the script and in the
+Jenkinsfile. The active scan is capped at 15 minutes (`DAST_MINUTES`); a rule
+that has not finished by then is stopped and the findings so far are still
+gated.
 
 **Image vulnerability gate.** Jenkins and GitHub CI fail on fixable HIGH or
 CRITICAL vulnerabilities. Jenkins scans scanner, API and all-in-one images;

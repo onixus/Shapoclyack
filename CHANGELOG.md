@@ -16,6 +16,14 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- DAST in CI: `scripts/ci-dast.sh` stands the API image of the same build up
+  next to Postgres on an internal Docker network and runs the packaged OWASP
+  ZAP API scan against its OpenAPI document, authenticated as the seeded dev
+  admin. Scan starts are disabled on the stand, and the missing default route
+  keeps the scan inside it. A warning or a failure fails the build; the HTML
+  and JSON reports are archived either way. Jenkins and the reference
+  workflow both call the script.
+
 - Product licensing (ADR 0007): offline Ed25519 license generator with a
   duration calculator (`tools/license_gen`), signed upload via
   `GET|POST /api/license`, and console page `/license`. The license gates

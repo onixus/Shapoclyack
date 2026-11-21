@@ -40,7 +40,10 @@ def test_production_probe_smoke_has_bounded_nonroot_writable_temporary_storage()
 # --- shared CI scripts -----------------------------------------------------
 
 
-@pytest.mark.parametrize("name", ["ci-lint.sh", "ci-pytest.sh", "ci-web.sh", "ci-semgrep.sh", "ci-jenkins-tests.sh"])
+@pytest.mark.parametrize(
+    "name",
+    ["ci-lint.sh", "ci-pytest.sh", "ci-web.sh", "ci-semgrep.sh", "ci-dast.sh", "ci-jenkins-tests.sh"],
+)
 def test_the_shared_scripts_are_executable(name: str):
     # Both pipelines invoke them as `scripts/<name>` rather than `bash …`, so
     # a lost mode bit is a broken stage, not a style detail.
@@ -250,7 +253,7 @@ def test_the_docs_send_developers_to_the_same_lint(doc: str):
     assert "ruff check" not in text, f"{doc} spells out a ruff invocation of its own"
 
 
-@pytest.mark.parametrize("script", ["ci-lint.sh", "ci-pytest.sh", "ci-web.sh", "ci-semgrep.sh"])
+@pytest.mark.parametrize("script", ["ci-lint.sh", "ci-pytest.sh", "ci-web.sh", "ci-semgrep.sh", "ci-dast.sh"])
 def test_both_pipelines_call_the_same_scripts(script: str):
     assert f"scripts/{script}" in JENKINSFILE + (SCRIPTS / "ci-jenkins-tests.sh").read_text(), f"Jenkinsfile does not call {script}"
     assert f"scripts/{script}" in CI_WORKFLOW, f"ci.yml does not call {script}"
@@ -287,6 +290,91 @@ def test_the_pytest_script_declares_the_integration_infrastructure():
     body = (SCRIPTS / "ci-pytest.sh").read_text(encoding="utf-8")
     assert "OCTO_REQUIRE_INTEGRATION" in body
     assert "--cov-fail-under" in body
+
+
+def test_the_dast_stage_cannot_reach_outside_its_stand():
+    """The product scans other networks; a scan of the product must not.
+
+    The containment is the network, not a promise in the scan config: an
+    internal network has no default route, and the API is told not to start a
+    scan of its own. Either half missing turns the stage into a scanner aimed
+    at whatever the agent can route to.
+    """
+    body = (SCRIPTS / "ci-dast.sh").read_text(encoding="utf-8")
+    assert "network create --internal" in body, "the stand must have no default route"
+    assert "OCTO_ALLOW_SCAN_START=false" in body, "the stand must not be able to start a scan"
+    assert "OCTO_RATE_LIMIT_ENABLED=false" in body, (
+        "a 429 mid-scan is a different body, which ZAP scores as SQL injection"
+    )
+    assert "OCTO_WEB_DIST=/opt/shapoclyack-dast-no-console" in body, (
+        "the stand must not mount the console the API image carries"
+    )
+    # The hook logs in once. Both scan budgets run after that, and the access
+    # token is capped by the session end. Idle must be strictly longer or the
+    # API refuses to boot.
+    assert "ACCESS_MINUTES=$(( DAST_MINUTES * 2 + 5 ))" in body
+    assert "IDLE_MINUTES=$(( ACCESS_MINUTES + 5 ))" in body
+    assert "SESSION_MINUTES=$(( ACCESS_MINUTES + 5 ))" in body
+    assert "OCTO_ACCESS_TOKEN_EXPIRE_MINUTES=${ACCESS_MINUTES}" in body
+    assert "OCTO_SESSION_IDLE_MINUTES=${IDLE_MINUTES}" in body
+    assert "OCTO_JWT_EXPIRE_MINUTES=${SESSION_MINUTES}" in body
+    assert 'chmod a+rwx "${ZAP_WRK}"' in body
+    assert body.index('chmod a+rwx "${ZAP_WRK}"') < body.index("--entrypoint zap-api-scan.py"), (
+        "the scanner work directory must be writable by uid 1000 before ZAP starts"
+    )
+    assert '-v "${ZAP_WRK}":/zap/wrk:rw' in body
+    assert '-v "${REPORT_DIR}":/zap/wrk:rw' not in body, (
+        "the checkout must not be the scanner mount"
+    )
+    assert "zap_pre_shutdown" in body
+    assert "/api/auth/me" in body
+    for skipped in ("auth/(?:logout", "sessions/revoke-all", "saml/logout"):
+        assert skipped in body, skipped
+    assert "timeout(time: 245, unit: 'MINUTES')" in JENKINSFILE
+    runs = [line for line in body.splitlines() if line.strip().startswith("docker run")]
+    assert runs, "the stand starts nothing"
+    assert all("-p " not in line and "--publish" not in line for line in runs), (
+        "the API listener must not be published"
+    )
+    assert "-I" not in body.split("zap-api-scan.py", 1)[-1], "-I would let warnings pass the gate"
+    for text in (JENKINSFILE, CI_WORKFLOW):
+        assert "scripts/ci-dast.sh" in text
+    # The image job has already selected the docker-container Buildx driver.
+    # A plain docker build leaves the API image out of the daemon the script
+    # inspects. The tag passed to the script is the tag that was loaded.
+    step = CI_WORKFLOW.split("name: DAST (ZAP)", 1)[1].split("name: Upload ZAP report", 1)[0]
+    assert "docker buildx build --load -f Dockerfile.api -t network-scan-cli:ci-api ." in step
+    assert 'scripts/ci-dast.sh network-scan-cli:ci-api "gha-${{ github.run_id }}"' in step
+
+
+def test_the_dast_scan_refuses_an_image_it_would_have_to_pull(tmp_path: Path):
+    """A scan of an image pulled by tag tests whatever the registry serves now."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "docker.log"
+    stub = bindir / "docker"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf "%s\\n" "$*" >> "{log}"\n'
+        'if [[ "$1" == "image" && "$2" == "inspect" ]]; then exit 1; fi\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
+    result = subprocess.run(
+        [str(SCRIPTS / "ci-dast.sh"), "network-scan-cli:not-built-here", "probe"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "not a local image" in result.stderr
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert calls[0] == "image inspect network-scan-cli:not-built-here"
+    assert not any(call.startswith("run ") for call in calls), calls
 
 
 @pytest.mark.parametrize("junit_enabled", [False, True])

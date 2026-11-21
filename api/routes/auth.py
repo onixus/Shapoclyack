@@ -462,7 +462,9 @@ def me(
     where the API would have served it and shown where the API refuses. Like
     everywhere else a ``tenant_id`` is accepted, it can only select among the
     tenants the caller is entitled to — naming another is a `403`, not an
-    answer about the default one.
+    answer about the default one. A platform admin may name any existing
+    tenant; one that does not exist is a 404, and a value that is not an
+    identifier is a 400. Either used to leave this handler as a 500.
     """
     is_platform_admin = user.role == Role.admin
     tenants = memberships_service.tenants_for_user(
@@ -474,12 +476,19 @@ def me(
     # Resolved through the same service every tenant-scoped route resolves
     # through, so "what may I do here" and "what does a request here get"
     # cannot drift apart — including the refusal for a tenant with no claim.
+    # The same three outcomes as ``resolve_tenant_principal``: this route
+    # calls the service itself, and an uncaught LookupError was the 500 a
+    # scanner read on a URL-shaped tenant id.
     try:
         resolution = memberships_service.resolve_tenant(
             user.username, tenant_id, global_role=user.role.value
         )
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     scoped_tenant = resolution.tenant_id
     # The same resolution ``resolve_tenant_principal`` makes, a tenant-defined
     # role (#318) included: its rank goes out with it, because the console's

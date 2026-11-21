@@ -149,11 +149,17 @@ async def test_operator_connection(body: ConnectionTest, _: PlatformAdmin, setti
 
 @router.get("/models")
 async def discover_operator_models(_: PlatformAdmin, settings: OperatorSettings):
-    """Models the effective endpoint lists; unreachable/unsupported is a 502 with a code."""
+    """Models the effective endpoint lists.
+
+    The operator being off is a 404: nothing is deployed to ask. An endpoint
+    that is enabled and then refuses the call is a 502.
+    """
     from fastapi.concurrency import run_in_threadpool
 
     from api.services.local_operator.providers import InferenceProvider, OperatorProviderError
 
+    if not settings.operator_enabled:
+        raise HTTPException(status_code=404, detail="operator_disabled")
     try:
         config = await run_in_threadpool(_candidate_config, settings, {})
     except ValueError as exc:

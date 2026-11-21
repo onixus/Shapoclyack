@@ -279,14 +279,22 @@ def request_data(
 def _auth(settings: Settings, data: dict[str, Any]) -> OneLogin_Saml2_Auth:
     try:
         return OneLogin_Saml2_Auth(data, old_settings=sp_settings(settings))
+    except SamlDisabledError:
+        # ``SamlDisabledError`` is a ``SamlError``. Swallowing it here made
+        # "SAML is not configured" look like an outage (HTTP 503).
+        raise
     except Exception as exc:  # noqa: BLE001
         raise SamlError("SAML provider configuration is invalid") from exc
 
 
 def metadata_xml(settings: Settings) -> str:
+    if not is_enabled(settings):
+        raise SamlDisabledError("SAML single sign-on is not configured")
     try:
         document = OneLogin_Saml2_Settings(sp_settings(settings)).get_sp_metadata()
         return document.decode("utf-8") if isinstance(document, bytes) else document
+    except SamlDisabledError:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise SamlError("SAML SP metadata could not be generated") from exc
 
@@ -370,6 +378,11 @@ def _peek_request(settings: Settings, relay_state: str, *, kind: str) -> _Pendin
 
 
 def begin_login(settings: Settings, *, next_url: str = "") -> SamlLogin:
+    if not is_enabled(settings):
+        # Before ``request_data``: a deployment with no public URL would
+        # otherwise raise "ACS URL is not configured" and the route would
+        # answer 503 for a feature that is simply off.
+        raise SamlDisabledError("SAML single sign-on is not configured")
     relay_state = secrets.token_urlsafe(32)
     auth = _auth(settings, request_data(settings))
     try:

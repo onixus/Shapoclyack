@@ -94,6 +94,21 @@ def test_metadata_import_and_security_policy(tmp_path):
     assert KEY not in document
 
 
+def test_disabled_saml_is_not_reported_as_an_outage():
+    """A deployment with SAML unset is a missing feature, not a 503.
+
+    ``metadata_xml`` and ``begin_login`` used to catch ``SamlDisabledError``
+    (it subclasses ``SamlError``) and re-raise a generic configuration error.
+    The routes map that to 503, which is what a scanner reports as a server
+    failure on ``/api/auth/saml/metadata`` and ``/api/auth/saml/login``.
+    """
+    settings = Settings()
+    with pytest.raises(saml.SamlDisabledError):
+        saml.metadata_xml(settings)
+    with pytest.raises(saml.SamlDisabledError):
+        saml.begin_login(settings)
+
+
 def test_saml_is_off_without_one_metadata_source_or_decryption_key(tmp_path):
     assert not saml.is_enabled(Settings())
     settings = make_settings(tmp_path, saml_sp_private_key="")

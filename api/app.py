@@ -703,12 +703,18 @@ def create_app() -> FastAPI:
                 return None
             return resolved if resolved.is_file() else None
 
-        @app.get("/{full_path:path}")
+        @app.get("/{full_path:path}", include_in_schema=False)
         def spa_fallback(full_path: str) -> FileResponse:
             # The shell is not an API response. This catch-all is registered
             # after the API routes, so only a path nothing else claimed lands
             # here; returning index.html made a missing endpoint look like 200.
-            if full_path == "api" or full_path.startswith("api/"):
+            # Kept out of the schema for the same reason: a published
+            # ``/{full_path}`` operation is an API that returns HTML.
+            # ``scim`` and ``openapi.json`` are APIs too. A trailing slash or
+            # an unknown child does not match their routes and used to fall
+            # through to this shell.
+            head = full_path.split("/", 1)[0]
+            if head in {"api", "scim", "openapi.json"}:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
             # Next `output: "export"` emits `runs.html` / `runs/view.html` (and optionally
             # directory `index.html`). Prefer explicit files before the SPA shell.
@@ -727,6 +733,25 @@ def create_app() -> FastAPI:
             # other unknown route: the client-side router owns 404 rendering.
             return FileResponse(web_dist / "index.html")
 
+    # Not middleware: an exception handler, and it has to be registered before
+    # the stack below is built. ``install_request_id_middleware`` freezes the
+    # handlers into ExceptionMiddleware. A NUL in a query value or a JSON
+    # string reaches psycopg, which refuses it before the statement runs, and
+    # the uncaught DataError was the 500 a scanner graded as a server error.
+    # Any other data error still propagates and stays a 500.
+    from sqlalchemy.exc import DataError
+
+    @app.exception_handler(DataError)
+    async def postgres_text_nul_is_a_bad_request(
+        _request: Request, exc: DataError
+    ) -> JSONResponse:
+        if not _caused_by_a_nul_byte(exc):
+            raise exc
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": "a field contains a NUL byte"},
+        )
+
     # Last, and deliberately not `add_middleware`: the correlation id has to be
     # bound before anything else can log — the body-size rejections that never
     # reach a route, the CORS preflight answers, and the 500 that Starlette's
@@ -734,6 +759,18 @@ def create_app() -> FastAPI:
     # (#330). Nothing may add middleware after this point.
     install_request_id_middleware(app)
     return app
+
+
+def _caused_by_a_nul_byte(exc: BaseException) -> bool:
+    """True when ``exc`` or its cause is Postgres refusing a NUL in text."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if "cannot contain NUL" in str(current):
+            return True
+        current = current.__cause__
+    return False
 
 
 _app: FastAPI | None = None

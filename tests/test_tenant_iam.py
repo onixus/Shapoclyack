@@ -158,11 +158,13 @@ def test_membership_administration_is_admin_only(client):
 def test_grant_rejects_unknown_tenant_and_bad_role(client):
     admin = _headers(client, "admin")
     _make_tenant(client, "ten_a")
+    # The tenant is resolved before grant(). A missing one is 404; the role
+    # check below still runs only after the tenant exists.
     assert (
         client.put(
             "/api/tenants/ten_missing/members/viewer", headers=admin, json={"role": "viewer"}
         ).status_code
-        == 422
+        == 404
     )
     assert (
         client.put(
@@ -188,6 +190,22 @@ def test_me_reports_tenant_context(client):
     admin_me = client.get("/api/auth/me", headers=_headers(client, "admin")).json()
     assert admin_me["is_platform_admin"] is True
     assert set(admin_me["tenants"]) >= {"default", "ten_a", "ten_b"}
+
+
+def test_me_names_a_missing_tenant_without_an_outage(client):
+    admin = _headers(client, "admin")
+    for tenant_id in ("http://www.google.com/search?q=ZAP", "www.google.com/"):
+        missing = client.get("/api/auth/me", headers=admin, params={"tenant_id": tenant_id})
+        assert missing.status_code == 404, tenant_id
+    control = client.get("/api/auth/me", headers=admin, params={"tenant_id": "acme\x00"})
+    assert control.status_code == 400
+    # A member naming a tenant they do not hold is still a refusal.
+    refused = client.get(
+        "/api/auth/me",
+        headers=_headers(client, "viewer"),
+        params={"tenant_id": "www.google.com/"},
+    )
+    assert refused.status_code == 403
 
 
 def test_user_without_memberships_keeps_default_tenant(client):

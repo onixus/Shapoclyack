@@ -151,7 +151,7 @@ def test_evidence_package_requires_a_dedicated_signing_key(setup, monkeypatch):
         "/api/compliance/custom-acme-v1/evidence-package",
         headers=auth_headers(client, "operator"),
     )
-    assert response.status_code == 503
+    assert response.status_code == 404
 
 
 def test_tenant_isolation_quota_and_batched_purge(setup, monkeypatch):
@@ -257,7 +257,8 @@ def test_evidence_package_is_bounded_and_checks_the_key_first(setup, monkeypatch
     monkeypatch.setattr(
         service, "snapshot", lambda *a, **k: pytest.fail("evidence read without a signing key")
     )
-    assert client.post(url, headers=operator).status_code == 503
+    # No key is the feature switched off (404). A key that will not sign is 503.
+    assert client.post(url, headers=operator).status_code == 404
 
     monkeypatch.setattr(service, "snapshot", snapshot)
     monkeypatch.setenv(

@@ -9,7 +9,49 @@ from fastapi.testclient import TestClient
 from api.app import create_app
 from api.core import security
 from api.settings import Settings
-from tests.conftest import configured_client, requires_postgres
+from tests.conftest import auth_headers, configured_client, requires_postgres
+
+
+def test_a_platform_admin_bad_tenant_id_is_not_an_outage(monkeypatch):
+    """A quote or a NUL in ``tenant_id`` must not reach a handler as 500."""
+    from api.services import memberships, tenants as tenants_service
+
+    monkeypatch.setattr(tenants_service, "get_tenant", lambda tenant_id: None)
+    with pytest.raises(LookupError):
+        memberships.resolve_tenant("admin", "'(", global_role="admin")
+    with pytest.raises(ValueError):
+        memberships.resolve_tenant("admin", "bad\x00id", global_role="admin")
+    assert (
+        memberships.resolve_tenant("admin", None, global_role="admin").tenant_id
+        == tenants_service.DEFAULT_TENANT_ID
+    )
+
+
+@requires_postgres
+def test_a_nul_byte_in_a_field_is_not_an_outage(tmp_path: Path, monkeypatch):
+    """Postgres refuses a NUL in text. The client sent it, so the answer is 400.
+
+    Covers a query parameter and a JSON string: the scan put ``\\x00`` in both,
+    and each used to leave the handler as a 500.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+    headers = auth_headers(client, "admin")
+    listing = client.get("/api/agents", headers=headers, params={"q": "\x00"})
+    assert listing.status_code == 400
+    assert listing.json()["detail"] == "a field contains a NUL byte"
+    frozen = client.put(
+        "/api/change-freeze",
+        headers=headers,
+        json={"change_freeze": False, "note": "a\x00b"},
+    )
+    assert frozen.status_code == 400
+    policy = client.put(
+        "/api/endpoint/agent/policy",
+        headers=headers,
+        json={"desired_version": "a\x00b"},
+    )
+    assert policy.status_code == 400
+    assert client.get("/api/agents", headers=headers, params={"q": "zap"}).status_code == 200
 
 
 def test_security_headers_middleware():
@@ -27,7 +69,16 @@ def test_security_headers_middleware():
     assert headers.get("referrer-policy") == "strict-origin-when-cross-origin"
     assert "camera=()" in (headers.get("permissions-policy") or "")
     assert headers.get("cross-origin-opener-policy") == "same-origin"
-    assert "default-src 'self'" in (headers.get("content-security-policy") or "")
+    csp = headers.get("content-security-policy") or ""
+    assert "default-src 'self'" in csp
+    # script-src: the static console inlines its theme bootstrap and the
+    # Next.js flight payload. style-src: Radix scroll-lock injects a <style>
+    # element at runtime, which a file-only style-src would drop.
+    assert "style-src 'self' 'unsafe-inline'" in csp
+    assert "script-src 'self' 'unsafe-inline'" in csp
+    for path in ("/api/auth/saml/metadata", "/api/auth/saml/login"):
+        missed = client.get(path)
+        assert missed.status_code == 404, path
 
 
 @requires_postgres

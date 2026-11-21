@@ -18,6 +18,10 @@ coverage-*.xml
 junit-*.xml
 # scripts/ci-semgrep.sh writes its full report here for CI to archive
 semgrep.json
+# scripts/ci-dast.sh copies the ZAP reports here; the scanner work dir is removed
+zap-report.html
+zap-report.json
+.dast-zap-wrk/
 .operator-models/
 .operator-local/
 sbom.spdx.json

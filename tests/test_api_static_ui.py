@@ -51,6 +51,38 @@ def test_serves_next_directory_index_routes(tmp_path: Path, monkeypatch) -> None
     assert client.get("/login").text == "<html>login-dir</html>"
 
 
+def test_console_shell_is_not_an_api_operation(tmp_path: Path, monkeypatch) -> None:
+    web = tmp_path / "web-dist"
+    web.mkdir()
+    (web / "index.html").write_text("<html>home</html>", encoding="utf-8")
+    client = _client(web, monkeypatch)
+    paths = client.get("/openapi.json").json()["paths"]
+    assert not any("full_path" in path for path in paths)
+
+
+def test_non_console_prefixes_miss_as_json(tmp_path: Path, monkeypatch) -> None:
+    """A slash or an unknown child under an API prefix is not the console.
+
+    The packaged API scan requests those variants. Answering them with
+    index.html made a missing route look like a successful HTML document.
+    """
+    web = tmp_path / "web-dist"
+    web.mkdir()
+    (web / "index.html").write_text("<html>home</html>", encoding="utf-8")
+    client = _client(web, monkeypatch)
+    for path in (
+        "/scim",
+        "/scim/v2/Users/user_id/",
+        "/openapi.json/",
+        "/api/does-not-exist",
+    ):
+        response = client.get(path)
+        assert response.status_code == 404, path
+        assert response.headers["content-type"].startswith("application/json"), path
+        assert "home" not in response.text
+    assert client.get("/no-such-page").text == "<html>home</html>"
+
+
 def test_unknown_api_path_is_json_not_the_shell(tmp_path: Path, monkeypatch) -> None:
     web = tmp_path / "web-dist"
     web.mkdir()

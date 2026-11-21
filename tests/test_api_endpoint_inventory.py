@@ -281,6 +281,16 @@ def test_recent_changes_feed_returns_hostname_and_is_tenant_scoped(tmp_path, mon
     )
     assert other_tenant.status_code == 403
 
+    # A platform admin may name any tenant, but a value that is not one, or a
+    # filter Postgres cannot store, is a client error. Either used to be a 500.
+    admin = {"Authorization": f"Bearer {login(client, 'admin')}"}
+    missing = client.get(
+        "/api/endpoint/changes", headers=admin, params={"tenant_id": "'("}
+    )
+    assert missing.status_code == 404, missing.text
+    nul = client.get("/api/endpoint/changes?event_type=%00", headers=admin)
+    assert nul.status_code == 400, nul.text
+
 def test_shared_v2_fixture_roundtrips_installations_and_source_diagnostics(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     body = _load_fixture("endpoint_inventory_v2_valid.json")
