@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from api.app import create_app
 from api.core import security
 from api.settings import Settings
-from tests.conftest import configured_client, requires_postgres
+from tests.conftest import auth_headers, configured_client, requires_postgres
 
 
 def test_a_platform_admin_bad_tenant_id_is_not_an_outage(monkeypatch):
@@ -25,6 +25,33 @@ def test_a_platform_admin_bad_tenant_id_is_not_an_outage(monkeypatch):
         memberships.resolve_tenant("admin", None, global_role="admin").tenant_id
         == tenants_service.DEFAULT_TENANT_ID
     )
+
+
+@requires_postgres
+def test_a_nul_byte_in_a_field_is_not_an_outage(tmp_path: Path, monkeypatch):
+    """Postgres refuses a NUL in text. The client sent it, so the answer is 400.
+
+    Covers a query parameter and a JSON string: the scan put ``\\x00`` in both,
+    and each used to leave the handler as a 500.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+    headers = auth_headers(client, "admin")
+    listing = client.get("/api/agents", headers=headers, params={"q": "\x00"})
+    assert listing.status_code == 400
+    assert listing.json()["detail"] == "a field contains a NUL byte"
+    frozen = client.put(
+        "/api/change-freeze",
+        headers=headers,
+        json={"change_freeze": False, "note": "a\x00b"},
+    )
+    assert frozen.status_code == 400
+    policy = client.put(
+        "/api/endpoint/agent/policy",
+        headers=headers,
+        json={"desired_version": "a\x00b"},
+    )
+    assert policy.status_code == 400
+    assert client.get("/api/agents", headers=headers, params={"q": "zap"}).status_code == 200
 
 
 def test_security_headers_middleware():
