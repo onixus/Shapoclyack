@@ -493,6 +493,7 @@ def list_runs(
                 surface=run_surface_of(settings, ref),
                 has_diff=(run_dir / "diff.json").exists(),
                 has_summary=(run_dir / "summary.json").exists(),
+                has_pdf=(run_dir / "summary.pdf").exists(),
                 path=str(run_dir),
             )
         )

@@ -6,6 +6,19 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- The scan `summary.pdf` was still the English template, and the findings
+  column printed the address (clipped to 22 characters) with the scanned name
+  only in a footnote. The column is now the site — `name:port`, address in
+  parentheses — and the template, severity and known finding titles are Russian.
+
+- A scan with a hostname legend and Russian control titles aborted
+  `summary.pdf` (`FPDFUnicodeEncodingException`, font `helvetica`) and the
+  console still offered the download, which then 404ed. `set_font` writes the
+  selected family back onto `font_family`, so the Helvetica legend replaced
+  the face later sections asked for. The chosen face is now kept aside, and
+  the reports list offers PDF only when `summary.pdf` itself is present
+  (`has_pdf`).
+
 - The scan `summary.pdf` sets text in DejaVu Sans when the host has it, the
   same lookup as the report factory. Control titles are Russian, and the
   Helvetica core font was printing each of those letters as `?`. The scanner

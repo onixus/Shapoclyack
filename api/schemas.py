@@ -123,6 +123,9 @@ class RunSummary(BaseModel):
     surface: str | None = None
     has_diff: bool = False
     has_summary: bool = False
+    # ``summary.pdf`` itself, not the JSON the scanner always writes. A PDF
+    # that failed to render (and was skipped) must not advertise a download.
+    has_pdf: bool = False
     path: str
 
 
