@@ -106,7 +106,7 @@ export default function ReportsPage() {
         enableSorting: false,
         cell: ({ row }) => (
           <div className="flex justify-end gap-2">
-            {row.original.has_summary ? (
+            {row.original.has_pdf ? (
               <Button
                 variant="outline"
                 size="sm"
