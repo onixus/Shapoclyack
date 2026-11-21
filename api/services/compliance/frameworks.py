@@ -813,8 +813,8 @@ _FZ_187 = Framework(
         ),
         Control(
             control_id="КИИ.КОНФ",
-            citation="№ 235 п. 27, № 239 УКФ.4",
-            title="Контроль параметров настройки и безопасной конфигурации ПО и СЗИ (№ 235 п. 27, № 239 УКФ.4)",
+            citation="п. 235, УКФ № 239",
+            title="Контроль параметров настройки и безопасной конфигурации ПО и СЗИ (п. 235, УКФ № 239)",
             signals=(sig.MISCONFIGURATION, sig.INFORMATION_DISCLOSURE),
             rationale=(
                 "Misconfiguration and unnecessary software/banner disclosures provide actionable "
