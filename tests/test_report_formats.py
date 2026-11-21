@@ -61,6 +61,12 @@ def test_cell_defuses_every_formula_prefix(value):
     assert spreadsheet.cell(value) == "'" + value
 
 
+def test_control_ref_prints_the_normative_point_not_the_catalogue_label():
+    assert spreadsheet.control_ref({"control_id": "КИИ.УЯЗ", "citation": "№ 239 АУД.2"}) == "№ 239 АУД.2"
+    assert spreadsheet.control_ref({"control_id": "АНЗ.1"}) == "АНЗ.1"
+    assert spreadsheet.STATUS_LABELS["not_assessed"] == "No source data"
+
+
 def test_cell_leaves_text_and_numbers_alone():
     assert spreadsheet.cell("plain") == "plain"
     assert spreadsheet.cell(-5) == -5

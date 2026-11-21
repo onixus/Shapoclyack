@@ -65,6 +65,9 @@ Three statuses:
   no endpoint inventory, no findings *at all*). Excluded from the score, so an
   empty estate scores nothing rather than 100%. A tenant whose findings have all
   been closed is assessed and passing, not unassessed: it was looked at.
+  Reports label this **No source data**. It is a missing table, not a regulator
+  verdict, and the reason names the table (`no vulnerability records`, `no
+  assets in this tenant's registry`, `no endpoint software inventory`).
 
 Only **open** findings count. A closed finding is evidence that the control
 worked. **Accepted risk** (a live `exception_until`) is reported per control as
@@ -98,7 +101,12 @@ Russian — an auditor looks for «АНЗ.1», not for a translation of it — w
 exceptions said out loud: the long ГОСТ measure texts are shortened to a title,
 «КУ-сроки» is this platform's split of order 117's «КУ» into the open
 vulnerabilities and the missed windows, not a code in the document, and
-`КИИ.*` on the 187-ФЗ catalogue are the same kind of platform label. Every
+`КИИ.*` on the 187-ФЗ catalogue are the same kind of platform label. Order
+117's `КК`, `КУ`, `КО`, `ОД` and `ПК` are the same kind of label for paragraphs
+of the order, not measure codes from the methodological document's appendix.
+Reports print `citation` (the paragraph or measure) in the normative-ref
+column and keep the catalogue label in its own column, so a leadership pack
+cannot present `КИИ.ИНВ` or `КУ-сроки` as a regulator requirement. Every
 scope note says what the catalogue leaves out, which is most of each document:
 protection classes and levels, threat modelling, ГосСОПКА, documentation and
 every organisational measure.

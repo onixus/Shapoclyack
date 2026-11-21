@@ -20,10 +20,10 @@ const STATUS_STYLE: Record<ComplianceControlStatus["status"], string> = {
   not_assessed: "border-border-strong bg-muted text-muted-foreground",
 };
 
-const STATUS_LABEL: Record<ComplianceControlStatus["status"], string> = {
-  passed: "Pass",
-  failed: "Fail",
-  not_assessed: "Not assessed",
+const STATUS_KEY: Record<ComplianceControlStatus["status"], "ui.pass" | "ui.fail" | "ui.notAssessed"> = {
+  passed: "ui.pass",
+  failed: "ui.fail",
+  not_assessed: "ui.notAssessed",
 };
 
 function StatusIcon({ status }: { status: ComplianceControlStatus["status"] }) {
@@ -33,7 +33,10 @@ function StatusIcon({ status }: { status: ComplianceControlStatus["status"] }) {
 }
 
 function ControlRow({ control }: { control: ComplianceControlStatus }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
+  const ref = control.citation || control.control_id;
+  const catalogueLabel = control.citation && control.citation !== control.control_id;
   return (
     <li className="border-b border-border/60 last:border-0">
       <button
@@ -44,9 +47,12 @@ function ControlRow({ control }: { control: ComplianceControlStatus }) {
         <StatusIcon status={control.status} />
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-center gap-2">
-            <span className="font-mono text-xs font-bold text-foreground">
-              {control.control_id}
-            </span>
+            <span className="font-mono text-xs font-bold text-foreground">{ref}</span>
+            {catalogueLabel ? (
+              <span className="font-mono text-[10px] text-muted-foreground">
+                {t("ui.catalogueId")}: {control.control_id}
+              </span>
+            ) : null}
             <span className="text-sm text-foreground">{control.title}</span>
           </span>
           <span className="mt-1 block text-xs text-muted-foreground">{control.rationale}</span>
@@ -63,7 +69,7 @@ function ControlRow({ control }: { control: ComplianceControlStatus }) {
             </Badge>
           ) : null}
           <Badge variant="outline" className={STATUS_STYLE[control.status]}>
-            {STATUS_LABEL[control.status]}
+            {t(STATUS_KEY[control.status])}
           </Badge>
         </span>
       </button>
@@ -71,8 +77,9 @@ function ControlRow({ control }: { control: ComplianceControlStatus }) {
         <div className="border-t border-border/60 bg-muted/20 px-4 py-3 text-xs">
           {control.status === "not_assessed" ? (
             <p className="text-muted-foreground">
-              Not assessed: {control.not_assessed_reason}. A control with no evidence is reported
-              as unknown rather than as a pass.
+              {t("prose.notAssessedBecause", {
+                reason: control.not_assessed_reason ?? t("ui.notAssessed"),
+              })}
             </p>
           ) : control.evidence.length === 0 ? (
             <p className="text-muted-foreground">

@@ -3892,6 +3892,8 @@ export type ComplianceEvidenceItem = {
 
 export type ComplianceControlStatus = {
   control_id: string;
+  /** Paragraph or measure, when control_id is a catalogue label rather than a regulator code. */
+  citation?: string;
   title: string;
   status: "passed" | "failed" | "not_assessed";
   rationale: string;

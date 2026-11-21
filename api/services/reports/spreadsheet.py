@@ -35,9 +35,21 @@ from xml.sax.saxutils import escape as _xml_escape  # nosemgrep: python.lang.sec
 # See the module docstring: the tab and carriage return are here because Excel
 # strips them before deciding whether a cell is a formula.
 FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+STATUS_LABELS = {"passed": "Pass", "failed": "Fail", "not_assessed": "No source data"}
 
 #: A table is ``(name, header, rows)``.
 Table = tuple[str, list[str], list[list[Any]]]
+
+
+def control_ref(control: dict[str, Any]) -> str:
+    """Normative point, or the catalogue id when that id is already the point.
+
+    Order 117's shorthand and every ``КИИ.*`` label are catalogue keys. A
+    leadership spreadsheet that prints them as the requirement is a false cite.
+    """
+
+    citation = str(control.get("citation") or "").strip()
+    return citation or str(control.get("control_id") or "")
 
 _SEVERITIES = ("critical", "high", "medium", "low", "unknown")
 _SLA_LABELS = {
@@ -166,18 +178,27 @@ def tables(body: dict[str, Any]) -> list[Table]:
     for framework in body.get("compliance") or []:
         controls = framework.get("controls") or []
         if controls:
-            header = ["Control", "Title", "Status", "Failing findings"]
+            header = ["Normative ref", "Catalogue id", "Title", "Status", "Failing findings"]
             rows: list[list[Any]] = [
-                [c.get("control_id"), c.get("title"), c.get("status"), c.get("failing_count")]
+                [
+                    control_ref(c),
+                    c.get("control_id"),
+                    c.get("title"),
+                    STATUS_LABELS.get(str(c.get("status")), c.get("status")),
+                    c.get("failing_count"),
+                ]
                 for c in controls
             ]
         else:
-            header = ["Control", "Title", "Coverage score", "Not assessed"]
+            header = ["Normative ref", "Title", "Coverage score", "No source data"]
             rows = [
                 [
                     "(summary)",
-                    f"{framework.get('controls_passed', 0)}/"
-                    f"{framework.get('controls_assessed', 0)} assessed controls passing",
+                    (
+                        f"{framework.get('controls_passed', 0)}/"
+                        f"{framework.get('controls_assessed', 0)} assessed controls passing. "
+                        "No source data is not a regulator verdict and is not a pass."
+                    ),
                     framework.get("coverage_score"),
                     framework.get("controls_not_assessed", 0),
                 ]
