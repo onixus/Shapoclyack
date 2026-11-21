@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { vulnDetailHref } from "@/lib/vuln-lifecycle";
 import descriptions from "./description-catalog.json";
 
 const copy = {
@@ -14,6 +15,7 @@ const copy = {
     missing: "Не указано",
     unknown: "Не определена",
     openRun: "Открыть исходный скан",
+    openFinding: "Открыть карточку находки",
     noRun: "Исходный скан для этого источника не указан.",
     partial: "Данные частичные — наблюдение требует проверки",
     matches: "Источник соответствует нескольким наблюдениям. Показаны совпадающие записи.",
@@ -37,6 +39,7 @@ const copy = {
     missing: "Not specified",
     unknown: "Unknown",
     openRun: "Open original scan",
+    openFinding: "Open finding",
     noRun: "No original scan is specified for this source.",
     partial: "Partial evidence — this observation requires review",
     matches: "This source matches multiple observations. Matching records are shown.",
@@ -95,10 +98,34 @@ export function SourceEvidenceCard({
   const origin = record(data.source_display);
   const citation = record(data.citation);
   const findings = Array.isArray(origin.findings) ? origin.findings.slice(0, 20).map(record) : [];
+  const target = record(data.console_target);
   const run =
     text(origin.run_id, 128) ||
+    text(target.run_id, 128) ||
     (citation.source_type === "run" ? text(citation.source_id, 128) : "");
   const runId = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(run) ? run : "";
+  const sourceHost = /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,190}[A-Za-z0-9])?$/.test(
+    text(target.host, 192),
+  )
+    ? text(target.host, 192)
+    : "";
+  const sourcePort =
+    typeof target.port === "number" &&
+    Number.isInteger(target.port) &&
+    target.port >= 0 &&
+    target.port <= 65535
+      ? String(target.port)
+      : "";
+  const runHref = runId
+    ? `/runs/view?${new URLSearchParams({
+        runId,
+        ...(sourceHost ? { host: sourceHost, tab: "vulns" } : {}),
+        ...(sourcePort ? { port: sourcePort, tab: "vulns" } : {}),
+      })}`
+    : "";
+  const findingId = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(text(target.vuln_id, 256))
+    ? text(target.vuln_id, 256)
+    : "";
   const port =
     typeof context.port === "number" &&
     Number.isInteger(context.port) &&
@@ -178,11 +205,19 @@ export function SourceEvidenceCard({
         </article>
       ))}
       {origin.truncated === true && <p>{c.truncated}</p>}
+      {findingId ? (
+        <Link
+          className="inline-flex rounded bg-primary px-4 py-2 font-medium text-primary-foreground"
+          href={vulnDetailHref(findingId)}
+        >
+          {c.openFinding}
+        </Link>
+      ) : null}
       {runId ? (
         <div className="space-y-1">
           <Link
             className="inline-flex rounded bg-primary px-4 py-2 font-medium text-primary-foreground"
-            href={`/runs/view?runId=${encodeURIComponent(runId)}`}
+            href={runHref}
           >
             {c.openRun}
           </Link>

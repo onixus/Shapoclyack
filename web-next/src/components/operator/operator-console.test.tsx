@@ -1,4 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+const push = vi.hoisted(() => vi.fn());
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -67,6 +69,7 @@ function renderConsole(tenant = "tenant-a", canOperate = true) {
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  push.mockReset();
   sessionStorage.clear();
   useAppearanceStore.setState({ locale: "en" });
   vi.spyOn(operatorApi, "status").mockResolvedValue({
@@ -403,6 +406,7 @@ describe("operator console", () => {
       });
       vi.mocked(operatorApi.evidence).mockResolvedValue({
         context: { host: "192.0.2.8", port: 22 },
+        console_target: { kind: "run_finding", run_id: "run1", host: "192.0.2.8", port: 22 },
         source_display: {
           run_id: "run1",
           match_count: 1,
@@ -424,10 +428,10 @@ describe("operator console", () => {
       }
       expect(operatorApi.evidence).toHaveBeenCalledTimes(1);
       await userEvent.click(row);
-      const dialog = await screen.findByRole("dialog", {
-        name: locale === "ru" ? "Доказательства источника" : "Source evidence",
-      });
-      expect(await within(dialog).findByText("SSH host key observed")).toBeInTheDocument();
+      await waitFor(() =>
+        expect(push).toHaveBeenCalledWith("/runs/view?runId=run1&tab=vulns&host=192.0.2.8&port=22"),
+      );
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
       expect(operatorApi.evidence).toHaveBeenCalledTimes(2);
     },
   );
@@ -499,6 +503,10 @@ describe("operator console", () => {
     expect(view.container.querySelector("img")).toBeNull();
     expect(view.container.querySelector("a[href]")).toBeNull();
     expect(operatorApi.evidence).not.toHaveBeenCalled();
+    vi.mocked(operatorApi.evidence).mockResolvedValue({
+      console_target: { kind: "run", run_id: "https://evil.test" },
+      url: "https://evil.test/beacon",
+    });
     await userEvent.click(screen.getByRole("button", { name: /Open authorized source: source1/ }));
     await waitFor(() =>
       expect(operatorApi.evidence).toHaveBeenCalledWith(
@@ -507,6 +515,9 @@ describe("operator console", () => {
         expect.any(AbortSignal),
       ),
     );
+    expect(push).not.toHaveBeenCalled();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/could not be opened/);
+    expect(view.container.querySelector("a[href]")).toBeNull();
   });
 
   it("opens source in a visible dialog and restores keyboard focus on Escape", async () => {
@@ -533,14 +544,16 @@ describe("operator console", () => {
         },
       ],
     });
-    vi.mocked(operatorApi.evidence).mockResolvedValue({ context: { host: "192.0.2.8" } });
+    vi.mocked(operatorApi.evidence).mockResolvedValue({
+      console_target: { kind: "finding", vuln_id: "finding-1" },
+    });
     renderConsole();
     const button = await screen.findByRole("button", { name: /Open authorized source: source1/ });
     await userEvent.click(button);
-    const dialog = await screen.findByRole("dialog", { name: "Source evidence" });
-    expect(await within(dialog).findByText(/192.0.2.8/)).toBeVisible();
-    await userEvent.keyboard("{Escape}");
-    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(push).toHaveBeenCalledWith("/vulnerabilities/view?vulnId=finding-1&tenantId=tenant-a"),
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(button).toHaveFocus();
   });
 
@@ -568,18 +581,17 @@ describe("operator console", () => {
         },
       ],
     });
-    vi.mocked(operatorApi.evidence).mockResolvedValueOnce({ context: { host: "192.0.2.8" } });
+    vi.mocked(operatorApi.evidence).mockResolvedValueOnce({
+      console_target: { kind: "finding", vuln_id: "finding-1" },
+    });
     renderConsole();
     const button = await screen.findByRole("button", { name: /Open authorized source: source1/ });
     await userEvent.click(button);
-    expect(await within(await screen.findByRole("dialog")).findByText(/192.0.2.8/)).toBeVisible();
-    await userEvent.keyboard("{Escape}");
-    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(push).toHaveBeenCalledTimes(1));
     vi.mocked(operatorApi.evidence).mockRejectedValue(new Error("Forbidden"));
     await userEvent.click(button);
-    const dialog = await screen.findByRole("dialog");
-    expect(await within(dialog).findByRole("alert")).toBeVisible();
-    expect(within(dialog).queryByText(/192.0.2.8/)).not.toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/could not be opened/);
+    expect(push).toHaveBeenCalledTimes(1);
     expect(operatorApi.evidence).toHaveBeenCalledTimes(2);
   });
 
@@ -780,7 +792,9 @@ describe("operator console", () => {
     await userEvent.type(screen.getByLabelText("Endpoint device ID"), "d1");
     await userEvent.click(screen.getByRole("button", { name: "Find fixes" }));
     expect(await screen.findByText(/No confirmed fix cards are available/)).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Remediation steps · review only" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: "Remediation steps · review only" }),
+    ).not.toBeInTheDocument();
     expect(screen.getByText(/Missing inventory/)).toBeInTheDocument();
     expect(screen.queryByText("Suggested command for review only")).not.toBeInTheDocument();
     expect(operatorApi.remediation).toHaveBeenCalledWith(
@@ -953,7 +967,10 @@ describe("operator console", () => {
       expect(block.queryAllByRole("button")).toHaveLength(0);
       expect(
         screen.queryByRole("region", {
-          name: locale === "en" ? "Remediation steps · review only" : "Шаги устранения · только проверка",
+          name:
+            locale === "en"
+              ? "Remediation steps · review only"
+              : "Шаги устранения · только проверка",
         }),
       ).not.toBeInTheDocument();
       expect(operatorApi.prepare).not.toHaveBeenCalled();
@@ -1016,7 +1033,9 @@ describe("operator console", () => {
     renderConsole();
     await userEvent.type(await screen.findByLabelText("Endpoint device ID"), "d1");
     await userEvent.click(screen.getByRole("button", { name: "Find fixes" }));
-    const plan = within(await screen.findByRole("region", { name: "Remediation steps · review only" }));
+    const plan = within(
+      await screen.findByRole("region", { name: "Remediation steps · review only" }),
+    );
     expect(plan.getAllByText(/owner@example.test/).length).toBeGreaterThan(0);
     expect(plan.getByText(/Asset owner: owner@example.test/)).toBeVisible();
     expect(plan.getByText(/Business unit: payments/)).toBeVisible();

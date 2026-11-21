@@ -24,10 +24,13 @@ export type RunReportTruncation = {
  * the API (server-side filtering); severity filtering and counting stay
  * client-side since the API has no severity parameter.
  */
-export function useRunReport(runId: string) {
+export function useRunReport(
+  runId: string,
+  initial?: { host?: string | null; port?: string | null },
+) {
   const [severity, setSeverity] = useState<Severity | "all">("all");
-  const [host, setHost] = useState<string | null>(null);
-  const [port, setPort] = useState<string | null>(null);
+  const [host, setHost] = useState<string | null>(initial?.host || null);
+  const [port, setPort] = useState<string | null>(initial?.port || null);
 
   const detailQuery = useRunDetail(runId);
   const hostsQuery = useRunHosts(runId);

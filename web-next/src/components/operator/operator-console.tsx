@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   useMutation,
   useQuery,
@@ -33,6 +34,8 @@ import {
   operatorKey,
   operatorUnavailable,
   type Citation,
+  type ConsoleTarget,
+  type RemediationSource,
   type OperatorProposal,
   type OperatorTask,
   type ProposalAction,
@@ -129,6 +132,8 @@ const copy = {
     cancel: "Request cancellation",
     cancelling: "Cancellation requested; waiting for worker confirmation.",
     openSource: "Open authorized source",
+    sourceUnavailable:
+      "The authorized source could not be opened. Recheck permissions and freshness.",
     source: "Source evidence",
     sourceHelp:
       "Current permissions and source freshness are checked before evidence is displayed.",
@@ -178,8 +183,7 @@ const copy = {
     lookup: "Find fixes",
     noFixes: "No confirmed fix cards are available; this is not evidence of safety.",
     actionPlan: "Remediation steps · review only",
-    actionPlanHelp:
-      "The server wrote these steps. Nothing is installed or closed from this list.",
+    actionPlanHelp: "The server wrote these steps. Nothing is installed or closed from this list.",
     owners: "Recorded owners",
     noOwner: "No resource owner is recorded.",
     stepOwner: "Owner",
@@ -216,7 +220,8 @@ const copy = {
     stepAct: "3. Действие",
     tabAskHint: "Опишите, что нужно. Модель только предложит следующий шаг.",
     tabReviewHint: "Ответы остаются здесь, пока вы сами не перенесёте параметры в форму.",
-    tabActHint: "Сравните сканы, найдите исправление или подготовьте скан. Ничего не запустится без подтверждения.",
+    tabActHint:
+      "Сравните сканы, найдите исправление или подготовьте скан. Ничего не запустится без подтверждения.",
     planner: "Запрос оператору",
     request: "Ваш запрос",
     planRequest: "Предложить следующий шаг",
@@ -286,6 +291,8 @@ const copy = {
     cancel: "Запросить отмену",
     cancelling: "Отмена запрошена; ожидается подтверждение обработчика задач.",
     openSource: "Открыть разрешённый источник",
+    sourceUnavailable:
+      "Разрешённый источник не удалось открыть. Проверьте права и актуальность данных.",
     source: "Доказательства источника",
     sourceHelp: "Перед показом источника проверяются актуальные права доступа и свежесть данных.",
     preparation: "Подготовить действие",
@@ -334,7 +341,8 @@ const copy = {
     lookup: "Найти исправления",
     noFixes: "Подтверждённых карточек исправления нет; это не доказательство безопасности.",
     actionPlan: "Шаги устранения · только проверка",
-    actionPlanHelp: "Шаги собрал сервер. Из этого списка ничего не устанавливается и не закрывается.",
+    actionPlanHelp:
+      "Шаги собрал сервер. Из этого списка ничего не устанавливается и не закрывается.",
     owners: "Указанные владельцы",
     noOwner: "Владелец ресурса не указан.",
     stepOwner: "Владелец",
@@ -412,6 +420,7 @@ export function OperatorConsole({
   canOperate: boolean;
 }) {
   const t = useT();
+  const router = useRouter();
   const c = copy[t.locale];
   const language = t.locale;
   const client = useQueryClient();
@@ -437,10 +446,13 @@ export function OperatorConsole({
       setTool(plan.tool);
     }
   };
+  const [sourceNotice, setSourceNotice] = useState<string | null>(null);
+  const [openAttempt, setOpenAttempt] = useState(0);
   const [sourceRequest, setSourceRequest] = useState<{
     citation: Citation;
     device?: string;
     finding?: string;
+    openRecord?: boolean;
   } | null>(null);
   const requestKey = useRef<{ body: string; key: string } | null>(null);
   useEffect(
@@ -530,18 +542,73 @@ export function OperatorConsole({
               signal,
             )
           : operatorApi.evidence(tenant, sourceRequest!.citation, signal),
-    enabled: Boolean(sourceRequest),
+    enabled: Boolean(sourceRequest && !sourceRequest.openRecord),
     retry: false,
     staleTime: 0,
   });
   const sourceReturnFocus = useRef<HTMLElement | null>(null);
-  const source = (citation: Citation, device?: string, finding?: string) => {
+  const source = (citation: Citation, device?: string, finding?: string, openRecord?: boolean) => {
     sourceReturnFocus.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setSourceRequest({ citation, device, finding });
+    setSourceNotice(null);
+    setSourceRequest({ citation, device, finding, openRecord });
+    if (openRecord) setOpenAttempt((attempt) => attempt + 1);
     // Clicking the same citation must recheck current authorization/freshness.
-    if (sourceRequest?.citation === citation) void evidence.refetch();
+    else if (
+      sourceRequest?.citation === citation &&
+      sourceRequest.device === device &&
+      sourceRequest.finding === finding
+    )
+      void evidence.refetch();
   };
+  const openRequest = sourceRequest?.openRecord ? sourceRequest : null;
+  const record = useQuery({
+    queryKey: [...prefix, "open-source", openAttempt, openRequest],
+    queryFn: ({ signal }) =>
+      openRequest!.finding
+        ? operatorApi.findingRemediationSource(
+            tenant,
+            openRequest!.finding,
+            openRequest!.citation,
+            signal,
+          )
+        : openRequest!.device
+          ? operatorApi.remediationSource(
+              tenant,
+              openRequest!.device,
+              openRequest!.citation,
+              signal,
+            )
+          : operatorApi.evidence(tenant, openRequest!.citation, signal),
+    enabled: Boolean(openRequest),
+    retry: false,
+    staleTime: 0,
+  });
+  useEffect(() => {
+    if (!openRequest || record.isFetching) return;
+    if (record.isError || !record.data) {
+      setSourceNotice(c.sourceUnavailable);
+      setSourceRequest(null);
+      return;
+    }
+    const destination = authorizedSourceHref(record.data, tenant);
+    setSourceRequest(null);
+    if (!destination) {
+      setSourceNotice(c.sourceUnavailable);
+      return;
+    }
+    router.push(destination);
+  }, [
+    c.sourceUnavailable,
+    openRequest,
+    record.data,
+    record.dataUpdatedAt,
+    record.errorUpdatedAt,
+    record.isError,
+    record.isFetching,
+    router,
+    tenant,
+  ]);
 
   if (status.isPending) return <p role="status">{c.loading}</p>;
   if (status.isError)
@@ -600,53 +667,53 @@ export function OperatorConsole({
               {status.data.endpoint_status} {status.data.endpoint_error}
             </p>
           )}
-          {status.data.runtime_status === "ready" && (
-            <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
-              {typeof status.data.model_sha256 === "string" &&
-                /^[a-f0-9]{64}$/.test(status.data.model_sha256) && (
-                  <span title={status.data.model_sha256}>
-                    {c.modelDigest}: {status.data.model_sha256.slice(0, 16)}…
-                  </span>
-                )}
-              {status.data.context_tokens != null && (
-                <span>
-                  {c.contextBudget}: {status.data.context_tokens}
+        {status.data.runtime_status === "ready" && (
+          <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
+            {typeof status.data.model_sha256 === "string" &&
+              /^[a-f0-9]{64}$/.test(status.data.model_sha256) && (
+                <span title={status.data.model_sha256}>
+                  {c.modelDigest}: {status.data.model_sha256.slice(0, 16)}…
                 </span>
               )}
-              {status.data.parallel != null && (
-                <span>
-                  {c.parallelBudget}: {status.data.parallel}
-                </span>
-              )}
-              {status.data.verified_at && (
-                <span>
-                  {c.runtimeVerifiedAt}: {status.data.verified_at}
-                </span>
-              )}
-              {status.data.profile && <span>{status.data.profile}</span>}
-            </div>
-          )}
-          {status.data.runtime_status === "unavailable" && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                void status.refetch();
-              }}
-            >
-              {c.retry}
-            </Button>
-          )}
-          <p
-            className={
-              qualityStatusIsWarning(status.data.quality_status)
-                ? "text-warning"
-                : "text-muted-foreground"
-            }
+            {status.data.context_tokens != null && (
+              <span>
+                {c.contextBudget}: {status.data.context_tokens}
+              </span>
+            )}
+            {status.data.parallel != null && (
+              <span>
+                {c.parallelBudget}: {status.data.parallel}
+              </span>
+            )}
+            {status.data.verified_at && (
+              <span>
+                {c.runtimeVerifiedAt}: {status.data.verified_at}
+              </span>
+            )}
+            {status.data.profile && <span>{status.data.profile}</span>}
+          </div>
+        )}
+        {status.data.runtime_status === "unavailable" && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              void status.refetch();
+            }}
           >
-            {c.quality}
-          </p>
-          <p className="text-muted-foreground">{c.safety}</p>
+            {c.retry}
+          </Button>
+        )}
+        <p
+          className={
+            qualityStatusIsWarning(status.data.quality_status)
+              ? "text-warning"
+              : "text-muted-foreground"
+          }
+        >
+          {c.quality}
+        </p>
+        <p className="text-muted-foreground">{c.safety}</p>
       </section>
       <Card>
         <CardHeader className="pb-3">
@@ -722,116 +789,119 @@ export function OperatorConsole({
               {c.stepAsk}
             </h2>
             <p className="text-sm text-muted-foreground">{c.tabAskHint}</p>
-          <PlannerPanel
-            key={`planner:${session}`}
-            tenant={tenant}
-            actor={actor}
-            session={session}
-            runId={run}
-            language={language}
-            c={c}
-            canOperate={
-              canOperate &&
-              status.data.task_submission_enabled &&
-              status.data.runtime_status !== "unavailable" &&
-              status.data.analysis_available !== false
-            }
-            onQueued={() => {
-              void detail.refetch();
-            }}
-          />
+            <PlannerPanel
+              key={`planner:${session}`}
+              tenant={tenant}
+              actor={actor}
+              session={session}
+              runId={run}
+              language={language}
+              c={c}
+              canOperate={
+                canOperate &&
+                status.data.task_submission_enabled &&
+                status.data.runtime_status !== "unavailable" &&
+                status.data.analysis_available !== false
+              }
+              onQueued={() => {
+                void detail.refetch();
+              }}
+            />
           </section>
           <section id="operator-review" className="scroll-mt-4 space-y-3">
             <h2 tabIndex={-1} className="text-sm font-semibold text-foreground outline-none">
               {c.stepReview}
             </h2>
             <p className="text-sm text-muted-foreground">{c.tabReviewHint}</p>
-          {draft && (
-            <p role="status" className="rounded border border-primary/30 bg-primary/5 p-3 text-sm">
-              {c.adopted}
-            </p>
-          )}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">{c.analysis}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <form
-                className="flex flex-wrap items-end gap-3"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  submit.mutate();
-                }}
+            {draft && (
+              <p
+                role="status"
+                className="rounded border border-primary/30 bg-primary/5 p-3 text-sm"
               >
-                <label className="space-y-2 text-sm">
-                  {c.run}
-                  <Input
-                    required
-                    maxLength={128}
-                    pattern="[A-Za-z0-9][A-Za-z0-9_-]*"
-                    value={run}
-                    onChange={(event) => setRun(event.target.value)}
-                  />
-                </label>
-                <label className="space-y-2 text-sm">
-                  {c.analysis}
-                  <select
-                    className="block h-10 rounded-md border border-control bg-background px-3 text-sm"
-                    value={tool}
-                    onChange={(event) => setTool(event.target.value)}
-                  >
-                    <option value="summarize_run">{c.summary}</option>
-                    <option value="analyze_run">{c.categorize}</option>
-                  </select>
-                </label>
-                <Button
-                  disabled={
-                    !canOperate ||
-                    !status.data.task_submission_enabled ||
-                    status.data.runtime_status === "unavailable" ||
-                    status.data.analysis_available === false ||
-                    submit.isPending ||
-                    !run.trim()
-                  }
+                {c.adopted}
+              </p>
+            )}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">{c.analysis}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <form
+                  className="flex flex-wrap items-end gap-3"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    submit.mutate();
+                  }}
                 >
-                  {c.submit}
-                </Button>
-              </form>
-              {!status.data.task_submission_enabled && (
-                <p className="mt-3 text-sm text-muted-foreground">{c.noWorker}</p>
-              )}
-              {submit.isPending && <p role="status">{c.pending}</p>}
-              {submit.isError && <p role="alert">{c.failed}</p>}
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">{c.tasks}</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4" aria-live="polite">
-              {!detail.data.tasks?.length && (
-                <p className="text-sm text-muted-foreground">{c.noTasks}</p>
-              )}
-              {detail.data.tasks?.some(activeTask) && (
-                <p className="text-sm text-muted-foreground">{c.busy}</p>
-              )}
-              {detail.data.tasks?.map((task) => (
-                <Task
-                  key={task.task_id}
-                  task={task}
-                  tenant={tenant}
-                  actor={actor}
-                  c={c}
-                  canOperate={canOperate}
-                  cancelling={cancel.isPending}
-                  onCancel={() => cancel.mutate(task.task_id)}
-                  onSource={source}
-                  onAdopt={adopt}
-                />
-              ))}
-              {cancel.isError && <p role="alert">{c.failed}</p>}
-            </CardContent>
-          </Card>
+                  <label className="space-y-2 text-sm">
+                    {c.run}
+                    <Input
+                      required
+                      maxLength={128}
+                      pattern="[A-Za-z0-9][A-Za-z0-9_-]*"
+                      value={run}
+                      onChange={(event) => setRun(event.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-2 text-sm">
+                    {c.analysis}
+                    <select
+                      className="block h-10 rounded-md border border-control bg-background px-3 text-sm"
+                      value={tool}
+                      onChange={(event) => setTool(event.target.value)}
+                    >
+                      <option value="summarize_run">{c.summary}</option>
+                      <option value="analyze_run">{c.categorize}</option>
+                    </select>
+                  </label>
+                  <Button
+                    disabled={
+                      !canOperate ||
+                      !status.data.task_submission_enabled ||
+                      status.data.runtime_status === "unavailable" ||
+                      status.data.analysis_available === false ||
+                      submit.isPending ||
+                      !run.trim()
+                    }
+                  >
+                    {c.submit}
+                  </Button>
+                </form>
+                {!status.data.task_submission_enabled && (
+                  <p className="mt-3 text-sm text-muted-foreground">{c.noWorker}</p>
+                )}
+                {submit.isPending && <p role="status">{c.pending}</p>}
+                {submit.isError && <p role="alert">{c.failed}</p>}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">{c.tasks}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4" aria-live="polite">
+                {!detail.data.tasks?.length && (
+                  <p className="text-sm text-muted-foreground">{c.noTasks}</p>
+                )}
+                {detail.data.tasks?.some(activeTask) && (
+                  <p className="text-sm text-muted-foreground">{c.busy}</p>
+                )}
+                {detail.data.tasks?.map((task) => (
+                  <Task
+                    key={task.task_id}
+                    task={task}
+                    tenant={tenant}
+                    actor={actor}
+                    c={c}
+                    canOperate={canOperate}
+                    cancelling={cancel.isPending}
+                    onCancel={() => cancel.mutate(task.task_id)}
+                    onSource={source}
+                    onAdopt={adopt}
+                  />
+                ))}
+                {cancel.isError && <p role="alert">{c.failed}</p>}
+              </CardContent>
+            </Card>
           </section>
           <section id="operator-act" className="scroll-mt-4 space-y-4">
             <h2 tabIndex={-1} className="text-sm font-semibold text-foreground outline-none">
@@ -864,6 +934,12 @@ export function OperatorConsole({
           <p className="text-sm text-muted-foreground">{c.tabActHint}</p>
         </section>
       )}
+      {openRequest && record.isFetching && <p role="status">{c.loading}</p>}
+      {sourceNotice && (
+        <p role="alert" className="text-sm">
+          {sourceNotice}
+        </p>
+      )}
       <ComparePanel tenant={tenant} actor={actor} language={language} c={c} draft={draft} />
       <RemediationPanel
         tenant={tenant}
@@ -873,7 +949,7 @@ export function OperatorConsole({
         onSource={source}
         draft={draft}
       />
-      {sourceRequest && (
+      {sourceRequest && !sourceRequest.openRecord && (
         <Dialog
           open
           onOpenChange={(open) => {
@@ -1040,7 +1116,11 @@ function PlannerPanel({
               ))}
             </div>
             <div className="mt-4">
-              <CheckboxOption label={c.includeScan} checked={includeScan} onCheckedChange={setIncludeScan} />
+              <CheckboxOption
+                label={c.includeScan}
+                checked={includeScan}
+                onCheckedChange={setIncludeScan}
+              />
             </div>
             {includeScan && (
               <div className="mt-3 grid gap-3 md:grid-cols-2">
@@ -1301,6 +1381,67 @@ function ReasonText({ value, c }: { value?: string | null; c: Copy }) {
   );
 }
 
+const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const VULN_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/;
+const HOST = /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,190}[A-Za-z0-9])?$/;
+
+function reviewedVendorUrl(data: Record<string, unknown>): string {
+  if (data.kind !== "reviewed_vendor_guidance" || typeof data.url !== "string") return "";
+  try {
+    const url = new URL(data.url);
+    if (url.protocol !== "https:" || url.username || url.password) return "";
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+/** Destination chosen by an authorized server response, never by model prose. */
+export function authorizedSourceHref(data: Record<string, unknown>, tenant: string): string | null {
+  const raw = data.console_target;
+  const target = (
+    raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}
+  ) as ConsoleTarget;
+  const tenantQuery =
+    tenant && tenant !== "default" ? `&tenantId=${encodeURIComponent(tenant)}` : "";
+  if (
+    target.kind === "finding" &&
+    typeof target.vuln_id === "string" &&
+    VULN_ID.test(target.vuln_id)
+  )
+    return `/vulnerabilities/view?vulnId=${encodeURIComponent(target.vuln_id)}${tenantQuery}`;
+  if (
+    (target.kind === "run" || target.kind === "run_finding") &&
+    typeof target.run_id === "string" &&
+    RUN_ID.test(target.run_id)
+  ) {
+    const params = new URLSearchParams({ runId: target.run_id, tab: "vulns" });
+    if (
+      target.kind === "run_finding" &&
+      typeof target.host === "string" &&
+      HOST.test(target.host)
+    ) {
+      params.set("host", target.host);
+      if (
+        typeof target.port === "number" &&
+        Number.isInteger(target.port) &&
+        target.port >= 0 &&
+        target.port <= 65535
+      )
+        params.set("port", String(target.port));
+    }
+    return `/runs/view?${params}`;
+  }
+  const card = data.card;
+  const finding =
+    card && typeof card === "object" && !Array.isArray(card)
+      ? (card as { vuln_id?: unknown }).vuln_id
+      : data.vuln_id;
+  if (typeof finding === "string" && VULN_ID.test(finding))
+    return `/vulnerabilities/view?vulnId=${encodeURIComponent(finding)}${tenantQuery}`;
+  return reviewedVendorUrl(data) || null;
+}
+
 function RecommendationSource({
   tenant,
   actor,
@@ -1314,7 +1455,7 @@ function RecommendationSource({
   item: { source_id: string; category: string; proposed_priority: string; next_steps: string[] };
   citation?: Citation;
   c: Copy;
-  onSource: (citation: Citation) => void;
+  onSource: (citation: Citation, device?: string, finding?: string, openRecord?: boolean) => void;
 }) {
   // Display names come from the same authorized, hash-bound source as the dialog,
   // never from model-generated prose. Opening still performs a fresh access check.
@@ -1345,7 +1486,7 @@ function RecommendationSource({
     <button
       type="button"
       disabled={!citation}
-      onClick={() => citation && onSource(citation)}
+      onClick={() => citation && onSource(citation, undefined, undefined, true)}
       className="block w-full space-y-2 rounded border bg-muted p-3 text-left text-sm hover:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
     >
       <span className="block break-words font-semibold">
@@ -1384,7 +1525,7 @@ function Task({
   canOperate: boolean;
   cancelling: boolean;
   onCancel: () => void;
-  onSource: (citation: Citation) => void;
+  onSource: (citation: Citation, device?: string, finding?: string, openRecord?: boolean) => void;
   onAdopt: (plan: OperatorPlan) => void;
 }) {
   const locale = useT().locale;
@@ -1455,7 +1596,7 @@ function Task({
                 key={`${index}:${citation.source_id}`}
                 size="sm"
                 variant="outline"
-                onClick={() => onSource(citation)}
+                onClick={() => onSource(citation, undefined, undefined, true)}
               >
                 {c.openSource}: {citation.source_id} ·{" "}
                 {operatorStatusLabel(locale, citation.status)}
@@ -1743,7 +1884,10 @@ function ActionPanel({
         )}
         {rejectedAsStale && <p role="alert">{c.staleServer}</p>}
         {data && (
-          <section className="space-y-3 rounded-lg border border-control bg-background p-4" aria-label={c.preview}>
+          <section
+            className="space-y-3 rounded-lg border border-control bg-background p-4"
+            aria-label={c.preview}
+          >
             <h3 className="font-semibold">{c.preview}</h3>
             <p className="text-sm">
               {c.tenant}: {data.tenant_id} · {c.actor}: {data.username ?? actor} ·{" "}
@@ -1960,6 +2104,7 @@ function PlanImpact({ proposal, c }: { proposal: OperatorProposal; c: Copy }) {
   if ("finding_state" in impact)
     rows.push([c.findingState, operatorStatusLabel(language, String(impact.finding_state))]);
   if ("approved" in scope) rows.push([c.scopeApproval, scope.approved]);
+
   if (impact.policy === null) rows.push([c.policy, null]);
   const policyLabels: Record<string, string> = {
     profile: c.policy,
@@ -1986,6 +2131,7 @@ function PlanImpact({ proposal, c }: { proposal: OperatorProposal; c: Copy }) {
   return (
     <div className="space-y-2">
       <h4 className="text-sm font-semibold">{c.impact}</h4>
+
       <PlanRows rows={rows} c={c} />
       {entries.length > 0 && (
         <div className="rounded border p-3 text-sm">
@@ -2022,7 +2168,7 @@ function RemediationPanel({
   actor: string;
   language: "ru" | "en";
   c: Copy;
-  onSource: (citation: Citation, device?: string, finding?: string) => void;
+  onSource: (citation: Citation, device?: string, finding?: string, openRecord?: boolean) => void;
   draft?: AdoptedPlan;
 }) {
   const [device, setDevice] = useState("");
@@ -2249,7 +2395,7 @@ function RemediationPanel({
                     <li key={index}>{limit}</li>
                   ))}
                 </ul>
-                {item.sources.map((citation, citationIndex) => (
+                {item.sources.map((citation: RemediationSource, citationIndex) => (
                   <div key={`${citationIndex}:${citation.source_id}`} className="space-y-1">
                     <p className="text-xs text-muted-foreground">
                       {[citation.provider, citation.feed_date, citation.observed_at]

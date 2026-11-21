@@ -64,11 +64,18 @@ function RunDetailInner() {
   const operator = useAuthStore((state) => canOperate(state.user));
   const searchParams = useSearchParams();
   const runId = (searchParams.get("runId") || "").trim();
+  const requestedHost = (searchParams.get("host") || "").trim();
+  const requestedPort = (searchParams.get("port") || "").trim();
   const requestedTab = searchParams.get("tab") || "vulns";
   const allowedTabs = ["vulns", "hosts", "ports", "controls", "org-profile", "reports"];
   if (operator) allowedTabs.push("screenshots");
   const initialTab = allowedTabs.includes(requestedTab) ? requestedTab : "vulns";
-  const report = useRunReport(runId);
+  const report = useRunReport(runId, {
+    host: /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,190}[A-Za-z0-9])?$/.test(requestedHost)
+      ? requestedHost
+      : null,
+    port: /^\d{1,5}$/.test(requestedPort) && Number(requestedPort) <= 65535 ? requestedPort : null,
+  });
   const { filters } = report;
   const profile =
     report.detail?.meta?.profile ?? report.detail?.meta?.mode ?? report.summary?.profile;
@@ -78,10 +85,7 @@ function RunDetailInner() {
       <div className="space-y-4">
         <BackToRuns />
         <RunViews runId="" current="result" />
-        <Alert
-          variant="destructive"
-          className="border-danger/40 bg-danger-subtle text-danger"
-        >
+        <Alert variant="destructive" className="border-danger/40 bg-danger-subtle text-danger">
           <AlertDescription>{t("ui.missingRunidQueryParameter")}</AlertDescription>
         </Alert>
       </div>
@@ -92,10 +96,7 @@ function RunDetailInner() {
     return (
       <div className="space-y-4">
         <BackToRuns />
-        <Alert
-          variant="destructive"
-          className="border-danger/40 bg-danger-subtle text-danger"
-        >
+        <Alert variant="destructive" className="border-danger/40 bg-danger-subtle text-danger">
           <AlertDescription>
             {report.error instanceof Error
               ? report.error.message
@@ -122,8 +123,7 @@ function RunDetailInner() {
       <div className="space-y-2 border-b border-border pb-4">
         <BackToRuns />
         <h1 className="text-2xl font-extrabold tracking-tight text-foreground font-mono">
-          {runText(t.locale, "Run")}{" "}
-          <span className="text-primary">{report.detail.run_id}</span>
+          {runText(t.locale, "Run")} <span className="text-primary">{report.detail.run_id}</span>
         </h1>
         <RunViews runId={report.detail.run_id} current="result" />
         <p className="text-xs text-muted-foreground">
