@@ -85,7 +85,14 @@ def run_corpus(settings, principal, run_id):
             models.OperatorEvidenceSnapshot.run_id == run_id))
         if snapshot is None:
             raise _error("operator_embeddings_not_ready")
-        retrieval._current(settings, principal, snapshot)
+        held = retrieval._snapshot_view(snapshot)
+    retrieval._current(settings, principal, held)
+    with tenant_scope.tenant(principal.tenant_id), get_session(settings.postgres_url) as db:
+        snapshot = db.scalar(select(models.OperatorEvidenceSnapshot).where(
+            models.OperatorEvidenceSnapshot.tenant_id == principal.tenant_id,
+            models.OperatorEvidenceSnapshot.run_id == run_id))
+        if snapshot is None or snapshot.snapshot_id != held.snapshot_id:
+            raise _error("operator_source_changed")
         docs = db.scalars(select(models.OperatorEvidenceDocument).where(
             models.OperatorEvidenceDocument.tenant_id == principal.tenant_id,
             models.OperatorEvidenceDocument.snapshot_id == snapshot.snapshot_id)
