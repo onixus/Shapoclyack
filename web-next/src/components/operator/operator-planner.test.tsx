@@ -332,6 +332,12 @@ describe("natural request planner", () => {
       await userEvent.click(await screen.findByRole("button", { name: "Use these parameters" }));
       expect(screen.getByLabelText(label)).toHaveValue("bound-resource");
       expect(screen.getByLabelText("Action")).toHaveValue(action);
+      if (tool === "cancel_scan") {
+        expect(screen.getByText(/job is not stopped until you confirm/)).toBeInTheDocument();
+      } else {
+        expect(screen.getByText(/check does not start until you confirm/)).toBeInTheDocument();
+      }
+      expect(screen.queryByText(/scan does not start/)).not.toBeInTheDocument();
       expect(operatorApi.prepare).not.toHaveBeenCalled();
       expect(operatorApi.confirm).not.toHaveBeenCalled();
     },
@@ -381,6 +387,10 @@ describe("natural request planner", () => {
       tasks: [decision("find_remediation", { device_id: "bound-device" })],
     });
     view();
+    expect(screen.queryByText(/No fix has been looked up yet/)).not.toBeInTheDocument();
+    expect(
+      await screen.findByText(/a device id only fills the field/i),
+    ).toBeInTheDocument();
     await userEvent.click(await screen.findByRole("button", { name: "Use these parameters" }));
     expect(screen.getByLabelText("Endpoint device ID")).toHaveValue("bound-device");
     expect(operatorApi.remediation).not.toHaveBeenCalled();

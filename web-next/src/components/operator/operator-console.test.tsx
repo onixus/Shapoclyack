@@ -481,6 +481,10 @@ describe("operator console", () => {
     await waitFor(() => expect(operatorApi.evidence).toHaveBeenCalledTimes(1));
     expect(screen.queryByText(/hidden-source-id/)).not.toBeInTheDocument();
     expect(screen.queryByText(/SSH host key/)).not.toBeInTheDocument();
+    expect(await screen.findByText(/source card did not load/i)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/request could not be completed/i),
+    ).not.toBeInTheDocument();
   });
 
   it("renders malicious source text as text and fetches citations only after a click", async () => {

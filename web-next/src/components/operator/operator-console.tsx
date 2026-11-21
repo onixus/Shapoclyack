@@ -75,8 +75,12 @@ const copy = {
       "Parameters are in the form below. Check them and take the next step yourself.",
     adoptedAnalysis:
       "The run and the analysis type are in the form below. Choose “Queue analysis”. Nothing starts before that.",
-    adoptedAction:
+    adoptedScan:
       "Parameters are in the action form below. Review them and confirm separately. A scan does not start until you confirm.",
+    adoptedStop:
+      "The job id is in the action form below. Review it and confirm separately. The job is not stopped until you confirm.",
+    adoptedVerify:
+      "The finding is in the action form below. Review it and confirm separately. The check does not start until you confirm.",
     planReady: "Proposal is ready",
     answerReady: "Answer is ready for review",
     planUnsupportedTitle: "The operator could not choose an action",
@@ -95,7 +99,7 @@ const copy = {
     planCompareBody:
       "No comparison has been built yet. Choose “Use these parameters”, then run the comparison in the form below.",
     planFixBody:
-      "No fix has been looked up yet. Choose “Use these parameters”, then run the lookup in the form below.",
+      "Choose “Use these parameters”. A finding id loads vendor guidance immediately; a device id only fills the field, and that lookup waits for the button.",
     planScanBody:
       "No scan has started. Choose “Use these parameters”, review the targets, and confirm the start separately.",
     planStopBody:
@@ -266,8 +270,12 @@ const copy = {
     adopted: "Параметры подставлены в форму ниже. Проверьте их и выполните следующий шаг сами.",
     adoptedAnalysis:
       "Скан и тип разбора подставлены в форму ниже. Нажмите «Поставить анализ в очередь». До этого нажатия разбор не начинается.",
-    adoptedAction:
+    adoptedScan:
       "Параметры подставлены в форму действия ниже. Проверьте их и подтвердите отдельно. Пока вы не подтвердили, скан не запускается.",
+    adoptedStop:
+      "ID задания подставлен в форму действия ниже. Проверьте его и подтвердите отдельно. Пока вы не подтвердили, задание не останавливается.",
+    adoptedVerify:
+      "Находка подставлена в форму действия ниже. Проверьте её и подтвердите отдельно. Пока вы не подтвердили, проверка не запускается.",
     planReady: "Предложение готово",
     answerReady: "Ответ готов к проверке",
     planUnsupportedTitle: "Оператор не выбрал действие",
@@ -286,7 +294,7 @@ const copy = {
     planCompareBody:
       "Сравнение ещё не построено. Нажмите «Подставить в форму» и запустите сравнение в форме ниже.",
     planFixBody:
-      "Исправление ещё не искали. Нажмите «Подставить в форму» и запустите поиск в форме ниже.",
+      "Нажмите «Подставить в форму». Для ID находки поиск исправления начнётся сразу; ID устройства только заполнит поле, поиск по нему ждёт кнопки.",
     planScanBody:
       "Скан не запущен. Нажмите «Подставить в форму», проверьте цели и отдельно подтвердите запуск.",
     planStopBody:
@@ -817,11 +825,13 @@ export function OperatorConsole({
             <p role="status" className="rounded border border-primary/30 bg-primary/5 p-3 text-sm">
               {draft.plan.tool === "analyze_run" || draft.plan.tool === "summarize_run"
                 ? c.adoptedAnalysis
-                : draft.plan.tool === "prepare_scan" ||
-                    draft.plan.tool === "cancel_scan" ||
-                    draft.plan.tool === "verify_finding"
-                  ? c.adoptedAction
-                  : c.adopted}
+                : draft.plan.tool === "prepare_scan"
+                  ? c.adoptedScan
+                  : draft.plan.tool === "cancel_scan"
+                    ? c.adoptedStop
+                    : draft.plan.tool === "verify_finding"
+                      ? c.adoptedVerify
+                      : c.adopted}
             </p>
           )}
           <Card>
