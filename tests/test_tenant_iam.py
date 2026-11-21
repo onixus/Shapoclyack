@@ -192,6 +192,22 @@ def test_me_reports_tenant_context(client):
     assert set(admin_me["tenants"]) >= {"default", "ten_a", "ten_b"}
 
 
+def test_me_names_a_missing_tenant_without_an_outage(client):
+    admin = _headers(client, "admin")
+    for tenant_id in ("http://www.google.com/search?q=ZAP", "www.google.com/"):
+        missing = client.get("/api/auth/me", headers=admin, params={"tenant_id": tenant_id})
+        assert missing.status_code == 404, tenant_id
+    control = client.get("/api/auth/me", headers=admin, params={"tenant_id": "acme\x00"})
+    assert control.status_code == 400
+    # A member naming a tenant they do not hold is still a refusal.
+    refused = client.get(
+        "/api/auth/me",
+        headers=_headers(client, "viewer"),
+        params={"tenant_id": "www.google.com/"},
+    )
+    assert refused.status_code == 403
+
+
 def test_user_without_memberships_keeps_default_tenant(client):
     """Pre-P0 single-tenant installations must keep working untouched."""
     _make_tenant(client, "ten_a")

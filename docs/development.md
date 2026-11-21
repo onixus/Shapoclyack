@@ -375,7 +375,9 @@ LAN, the controller or the internet, and the API is started with
 the product must not become one of those. The scan authenticates once as the
 seeded dev admin — the same published account the test suite uses — and replays
 that bearer on every request except the routes that end the session. It does
-not follow links out of the spec. ZAP's own exit code is the gate, warnings
+not follow links out of the spec. The stand sets `OCTO_RATE_LIMIT_ENABLED=false`:
+the scan is one principal, and a 429 in the middle of a boolean check is a
+different body, which ZAP scores as SQL injection. ZAP's own exit code is the gate, warnings
 included, and a bearer that `/api/auth/me` refuses after the scan fails the
 run as well. `zap-report.html` / `zap-report.json` are archived either way. It runs on `main` and on branches: unlike the load test it
 is a regression check, not a measurement. The scanner image is

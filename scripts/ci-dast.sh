@@ -163,6 +163,10 @@ OCTO_JWT_EXPIRE_MINUTES=${SESSION_MINUTES}
 # scripts a static Next export needs, and this scan judges API content types.
 # Point the dist at a path that is not a directory so the shell is not mounted.
 OCTO_WEB_DIST=/opt/shapoclyack-dast-no-console
+# One principal drives the whole active scan, past the console burst of 300.
+# The limiter then answers 429, a different body from the 404 a bad tenant id
+# gets, and ZAP's boolean check reads that difference as SQL injection.
+OCTO_RATE_LIMIT_ENABLED=false
 EOF
 
 echo "[dast] waiting for postgres"

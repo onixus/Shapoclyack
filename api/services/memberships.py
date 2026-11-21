@@ -359,7 +359,9 @@ def resolve_tenant(
     """Resolve the tenant, the role inside it and that tenant's status.
 
     Raises ``PermissionError`` when the caller asked for a tenant they hold no
-    membership in — the route turns that into a 403.
+    membership in — the route turns that into a 403. A platform admin naming a
+    tenant that does not exist raises ``LookupError`` (404); a value that is
+    not an identifier raises ``ValueError`` (400).
     """
     is_platform_admin = global_role == "admin"
     requested = (requested or "").strip() or None
