@@ -1,5 +1,9 @@
 # Mac acceptance evidence — 2026-10-26
 
+Software continuation on 2026-11-21 is recorded in
+[the LO-10 software acceptance record](local-operator-lo10-software-acceptance.md).
+It does not convert any failed or missing measurement below into a pass.
+
 The implementation and acceptance harnesses are delivered in PR #607. **The
 Mac runtime and the complete epic are not accepted.** This record distinguishes
 working components from failed or incomplete deployment measurements. Physical

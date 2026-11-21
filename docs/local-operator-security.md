@@ -7,7 +7,7 @@ for [#592](https://github.com/onixus/Shapoclyack/issues/592). It exercises actua
 analysis/action/MCP/config validators, a mocked provider transport and real
 authenticated PostgreSQL-backed HTTP routes.
 
-The gate includes 78 adversarial cases:
+The gate includes 80 adversarial cases:
 
 - 24 RU/EN retrieved-instruction attacks across descriptions, banners, owner,
   hostname, titles, advisory text, forged tool results, service, severity,
@@ -28,6 +28,11 @@ The gate includes 78 adversarial cases:
 - Ten authenticated HTTP attacks covering effect injection, finding closure,
   caller privilege escalation, foreign actor/viewer confirmation and chat text
   presented as scan confirmation. All leave the job count unchanged.
+- One authenticated evidence read that presents a default-tenant citation under
+  a different `tenant_id`. The route refuses it, and a canary `api_token` in
+  the published artifact does not appear in the search or refusal body.
+- One audit-redaction case: a refusal reason is kept, while `api_token` and
+  `client_secret` are replaced before the trail. The canary value is absent.
 
 Adjacent suites supply the other required boundaries:
 `test_operator_actions.py` checks immutable confirmation hashes, expiry,

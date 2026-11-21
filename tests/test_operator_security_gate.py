@@ -162,6 +162,64 @@ def test_viewer_and_foreign_actor_cannot_confirm_plan(env):
 
 
 @requires_postgres
+def test_foreign_tenant_cannot_read_cached_evidence(env):
+    """A citation minted for one tenant must not open under another tenant id."""
+    client, settings, headers, session_id = env
+    from datetime import UTC, datetime
+
+    from api.db import models, tenant_scope
+    from api.db.engine import get_session
+    from api.services import artifact_store
+    from api.services.artifact_store import keys
+
+    with tenant_scope.system("security gate foreign tenant"):
+        with get_session(settings.postgres_url) as db:
+            moment = datetime.now(UTC).replace(tzinfo=None)
+            db.add(models.Job(job_id="gate-job", tenant_id="default", run_id="gate-run",
+                              status="succeeded", queued_at=moment, finished_at=moment))
+    store = artifact_store.get_store(settings)
+    ref = keys.run_ref("gate-run", "default")
+    store.put_bytes(keys.run_artifact(ref, "tenant.json"), json.dumps({
+        "tenant_id": "default", "job_id": "gate-job", "publication_id": "gate-pub",
+        "api_token": "canary-secret-token",
+    }).encode())
+    store.put_bytes(keys.run_artifact(ref, "summary.json"), json.dumps({
+        "alive_hosts": 1, "api_token": "canary-secret-token",
+    }).encode())
+    refreshed = client.post("/api/operator/evidence/runs/gate-run/refresh?tenant_id=default",
+                            headers=headers["operator"], json={})
+    assert refreshed.status_code == 200, refreshed.text
+    found = client.get("/api/operator/evidence/search", headers=headers["viewer"], params={
+        "tenant_id": "default", "run_id": "gate-run",
+    })
+    assert found.status_code == 200, found.text
+    assert "canary-secret-token" not in found.text
+    item = found.json()["items"][0]
+    foreign = client.get("/api/operator/evidence/" + item["source_id"], headers=headers["viewer"],
+                          params={"tenant_id": "other", "snapshot_id": item["snapshot_id"],
+                                  "source_hash": item["source_hash"]})
+    assert foreign.status_code in {403, 404, 422}, foreign.text
+    assert "canary-secret-token" not in foreign.text
+    assert jobs.list_jobs(settings)[1] == 0
+    assert session_id
+
+
+def test_operator_audit_redacts_canary_secrets():
+    """A refusal reason is kept; credential field names are replaced."""
+    from api.services.audit import redact
+
+    secret = "canary-operator-token"
+    cleaned = redact({
+        "reason": "access_revoked", "api_token": secret,
+        "nested": {"client_secret": secret, "source_id": "run-1"},
+    })
+    assert cleaned["reason"] == "access_revoked"
+    assert cleaned["api_token"] == "[redacted]"
+    assert cleaned["nested"]["client_secret"] == "[redacted]"
+    assert secret not in str(cleaned)
+
+
+@requires_postgres
 def test_plain_chat_text_is_never_confirmation(env):
     client, settings, headers, session_id = env
     response = client.post(f"/api/operator/sessions/{session_id}/tasks?tenant_id=default",

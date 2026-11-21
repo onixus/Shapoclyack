@@ -730,6 +730,27 @@ describe("operator console", () => {
     expect(screen.queryByText(/could not be completed/)).not.toBeInTheDocument();
   });
 
+  it("names a policy deviation when the enforced profile differs from the request", async () => {
+    savedSession();
+    sessionStorage.setItem(
+      `operator-proposal:${JSON.stringify(["tenant-a", "alice", "s1"])}`,
+      "plan1",
+    );
+    vi.mocked(operatorApi.proposal).mockResolvedValue({
+      ...plan,
+      arguments: { ...plan.arguments, mode: "fast" },
+      impact: {
+        targets: ["192.0.2.1"],
+        policy: { profile: "fragile", safe_only: true },
+      },
+    });
+    renderConsole();
+    const notice = await screen.findByText(/Policy deviation/);
+    expect(notice).toHaveTextContent(/fast → fragile/);
+    expect(notice).toHaveTextContent(/Safe profile only/);
+    expect(screen.getByRole("button", { name: "Confirm this plan" })).toBeInTheDocument();
+  });
+
   it("does not crash on null scope entries in a plan impact", async () => {
     savedSession();
     sessionStorage.setItem(
