@@ -187,6 +187,18 @@ def _current(settings, principal, row):
         raise _error("operator_source_changed")
 
 
+def _held_snapshot(settings, principal, snapshot_id):
+    """The snapshot row after the caller's session has been released.
+
+    File hashes can match a copy taken before the gap and still belong to a
+    snapshot that was deleted and rebuilt. Identity is the snapshot id.
+    """
+    with tenant_scope.tenant(principal.tenant_id), get_session(settings.postgres_url) as db:
+        return db.scalar(select(models.OperatorEvidenceSnapshot).where(
+            models.OperatorEvidenceSnapshot.snapshot_id == snapshot_id,
+            models.OperatorEvidenceSnapshot.tenant_id == principal.tenant_id))
+
+
 def _item(doc, snapshot):
     citation = {"source_id": doc.source_id, "source_hash": doc.source_hash,
                 "snapshot_id": snapshot.snapshot_id, "source_type": "finding" if doc.artifact == "vulnerabilities.json" else "document",
@@ -292,6 +304,8 @@ def get_citation(settings, principal, source_id, snapshot_id, source_hash):
         held_doc = _document_view(doc)
         held_snapshot = _snapshot_view(snapshot)
     _current(settings, principal, held_snapshot)
+    if _held_snapshot(settings, principal, held_snapshot.snapshot_id) is None:
+        raise _error("operator_source_changed")
     return _item(held_doc, held_snapshot)
 
 
@@ -319,6 +333,8 @@ def verify_items(settings, principal, items):
         held = [_snapshot_view(snapshot) for snapshot in snapshots]
     for snapshot in held:
         _current(settings, principal, snapshot)
+        if _held_snapshot(settings, principal, snapshot.snapshot_id) is None:
+            return False
     return all(current.get(item["source_id"]) == (item["source_hash"], item["document_hash"]) for item in items)
 
 

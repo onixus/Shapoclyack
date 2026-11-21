@@ -158,7 +158,30 @@ def test_source_reread_does_not_keep_the_callers_connection(env, monkeypatch):
     assert retrieval.get_citation(
         settings, principal, item["source_id"], item["snapshot_id"], item["source_hash"]) == item
     retrieval.search(settings, principal, task["run_id"], cve="CVE-2025-0001")
-    assert seen == [0, 0]
+    from api.services.local_operator import semantic
+    semantic.run_corpus(settings, principal, task["run_id"])
+    assert retrieval.verify_items(settings, principal, [item]) is True
+    assert seen == [0, 0, 0, 0]
+
+
+@requires_postgres
+def test_citation_and_verify_refuse_a_snapshot_replaced_during_the_reread(env, monkeypatch):
+    """A rebuilt snapshot must not be confirmed from the copy taken before the gap."""
+    settings, task, _, _, principal, _ = _index(env)
+    item = retrieval.search(settings, principal, task["run_id"])["items"][0]
+    real = retrieval._current
+
+    def replace_during_reread(settings_arg, principal_arg, row):
+        real(settings_arg, principal_arg, row)
+        with tenant_scope.tenant(principal_arg.tenant_id), get_session(settings_arg.postgres_url) as db:
+            db.execute(delete(models.OperatorEvidenceSnapshot).where(
+                models.OperatorEvidenceSnapshot.snapshot_id == row.snapshot_id))
+
+    monkeypatch.setattr(retrieval, "_current", replace_during_reread)
+    with pytest.raises(gateway.GatewayError, match="operator_source_changed"):
+        retrieval.get_citation(
+            settings, principal, item["source_id"], item["snapshot_id"], item["source_hash"])
+    assert retrieval.verify_items(settings, principal, [item]) is False
 
 
 @requires_postgres
