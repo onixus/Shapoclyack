@@ -141,6 +141,27 @@ def test_legal_hold_preserves_expired_index_but_read_remains_denied(env):
 
 
 @requires_postgres
+def test_source_reread_does_not_keep_the_callers_connection(env, monkeypatch):
+    """Parallel source cards used to hold one connection while asking for another."""
+    settings, task, _, _, principal, _ = _index(env)
+    item = retrieval.search(settings, principal, task["run_id"])["items"][0]
+    seen = []
+    real = retrieval._current
+
+    def spy(settings_arg, principal_arg, row):
+        from api.db.engine import pool_status
+        status = pool_status()
+        seen.append(None if status is None else status.checked_out)
+        return real(settings_arg, principal_arg, row)
+
+    monkeypatch.setattr(retrieval, "_current", spy)
+    assert retrieval.get_citation(
+        settings, principal, item["source_id"], item["snapshot_id"], item["source_hash"]) == item
+    retrieval.search(settings, principal, task["run_id"], cve="CVE-2025-0001")
+    assert seen == [0, 0]
+
+
+@requires_postgres
 def test_same_source_refresh_preserves_snapshot_and_citation(env):
     settings, task, _, _, principal, snapshot = _index(env)
     item = retrieval.search(settings, principal, task["run_id"])["items"][0]
