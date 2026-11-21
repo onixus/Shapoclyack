@@ -23,6 +23,7 @@ requirements lock) for the sake of formatting this does not use.
 from __future__ import annotations
 
 import csv
+import re
 import io
 import math
 import re
@@ -35,9 +36,30 @@ from xml.sax.saxutils import escape as _xml_escape  # nosemgrep: python.lang.sec
 # See the module docstring: the tab and carriage return are here because Excel
 # strips them before deciding whether a cell is a formula.
 FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+STATUS_LABELS = {"passed": "Pass", "failed": "Fail", "not_assessed": "No source data"}
 
 #: A table is ``(name, header, rows)``.
 Table = tuple[str, list[str], list[list[Any]]]
+
+
+def control_ref(control: dict[str, Any]) -> str:
+    """Normative point, never a catalogue label standing in for one.
+
+    Order 117's shorthand and every ``КИИ.*`` label are catalogue keys. A
+    citation that merely repeats ``control_id`` is the same false cite: the
+    parenthetical in the title is the point the catalogue was mapped to.
+    """
+
+    control_id = str(control.get("control_id") or "").strip()
+    citation = str(control.get("citation") or "").strip()
+    if citation and citation != control_id:
+        return citation
+    title = str(control.get("title") or "")
+    points = [part.strip() for part in re.findall(r"\(([^)]*)\)", title)]
+    point = points[-1] if points else ""
+    if point and point != control_id:
+        return point
+    return citation or control_id
 
 _SEVERITIES = ("critical", "high", "medium", "low", "unknown")
 _SLA_LABELS = {
@@ -166,18 +188,27 @@ def tables(body: dict[str, Any]) -> list[Table]:
     for framework in body.get("compliance") or []:
         controls = framework.get("controls") or []
         if controls:
-            header = ["Control", "Title", "Status", "Failing findings"]
+            header = ["Normative ref", "Catalogue id", "Title", "Status", "Failing findings"]
             rows: list[list[Any]] = [
-                [c.get("control_id"), c.get("title"), c.get("status"), c.get("failing_count")]
+                [
+                    control_ref(c),
+                    c.get("control_id"),
+                    c.get("title"),
+                    STATUS_LABELS.get(str(c.get("status")), c.get("status")),
+                    c.get("failing_count"),
+                ]
                 for c in controls
             ]
         else:
-            header = ["Control", "Title", "Coverage score", "Not assessed"]
+            header = ["Normative ref", "Title", "Coverage score", "No source data"]
             rows = [
                 [
                     "(summary)",
-                    f"{framework.get('controls_passed', 0)}/"
-                    f"{framework.get('controls_assessed', 0)} assessed controls passing",
+                    (
+                        f"{framework.get('controls_passed', 0)}/"
+                        f"{framework.get('controls_assessed', 0)} assessed controls passing. "
+                        "No source data is not a regulator verdict and is not a pass."
+                    ),
                     framework.get("coverage_score"),
                     framework.get("controls_not_assessed", 0),
                 ]
