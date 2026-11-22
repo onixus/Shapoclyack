@@ -14,17 +14,90 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from fpdf import FPDF
 
-from .report import SEVERITY_ORDER, host_label
+from .report import SEVERITY_ORDER
 
 logger = logging.getLogger(__name__)
 
 _SEVERITY_LABELS = ("critical", "high", "medium", "low", "unknown")
+_SEVERITY_RU = {
+    "critical": "Критический",
+    "high": "Высокий",
+    "medium": "Средний",
+    "low": "Низкий",
+    "unknown": "Не определён",
+}
+_STATUS_RU = {
+    "pass": "Пройден",
+    "passed": "Пройден",
+    "fail": "Не пройден",
+    "failed": "Не пройден",
+    "not_checked": "Не проверялся",
+    "not_assessed": "Не оценивался",
+}
+_RISK_RU = {
+    "critical": "Критический",
+    "high": "Высокий",
+    "medium": "Средний",
+    "low": "Низкий",
+    "unassessed": "Не оценён",
+    "not_checked": "Не проверялся",
+}
+_VERDICT_RU = {
+    "pass": "Пройден",
+    "fail": "Не пройден",
+    "not_checked": "Не проверялся",
+}
+# The same names the console shows. Unknown English titles stay as written:
+# inventing a label would hide which check fired.
+_FINDING_TITLES = {
+    "regreSSHion (OpenSSH signal handler race)": "Возможная уязвимость regreSSHion в OpenSSH",
+    "EternalBlue-related NetBIOS/SMB exposure": "Доступен NetBIOS/SMB: проверьте защиту от EternalBlue",
+    "BlueKeep (RDP RCE)": "Доступен RDP: проверьте защиту от BlueKeep",
+    "MySQL auth bypass family (historical + exposure)": "Доступен MySQL: проверьте аутентификацию",
+    "Elasticsearch groovy RCE class / exposure": "Доступен Elasticsearch: проверьте ограничения доступа",
+    "rpcbind / RPC exposure": "Доступна служба RPC",
+    "NFS export exposure": "Доступен NFS: проверьте общие каталоги",
+    "EternalBlue (SMBv1 RCE)": "Доступен SMB: проверьте защиту от EternalBlue",
+    "PostgreSQL COPY PROGRAM (misconfig RCE)": "Доступен PostgreSQL: проверьте права запуска команд",
+    "VNC exposure": "Доступна служба удалённого рабочего стола VNC",
+    "Java RMI exposure": "Доступен реестр удалённых вызовов Java RMI",
+    "Telnet cleartext protocol": "Telnet передаёт данные без шифрования",
+    "rexec/rlogin legacy exposure": "Доступны устаревшие службы rexec/rlogin",
+    "Server accepts weak TLS protocol": "Сервер принимает устаревший протокол TLS",
+    "TLS certificate self-signed (heuristic)": "Сертификат TLS самоподписанный",
+}
+_WHY = {
+    "No domains checked for DNS hygiene": "Ни один домен не проверен на ошибки DNS.",
+    "Credential leaks check was not configured or run":
+        "Проверка утечек учётных данных не настроена или не запускалась.",
+    "Mail authentication posture was not run": "Проверка защиты почты не выполнялась.",
+    "Mail authentication posture skipped: mail_posture.disabled":
+        "Проверка защиты почты пропущена: проверка отключена.",
+}
+_WHY_TEMPLATES = (
+    (
+        re.compile(r"^(\d+) high/critical TLS posture findings \(expired/weak/mismatch\)$"),
+        lambda m: (
+            f"Находок TLS высокой и критической серьёзности: {m.group(1)} "
+            "(истёкший, слабый или несовпадающий сертификат)."
+        ),
+    ),
+    (
+        re.compile(r"^(\d+) endpoint banner\(s\) disclose product/version information$"),
+        lambda m: f"Баннеров, раскрывающих продукт и версию: {m.group(1)}.",
+    ),
+    (
+        re.compile(r"^(\d+) high/critical vulnerabilities found across open services$"),
+        lambda m: f"Уязвимостей высокой и критической серьёзности в открытых сервисах: {m.group(1)}.",
+    ),
+)
 
 #: Same directories as ``api.services.reports.render``. Module-level so a test
 #: can point the lookup at the Cyrillic subset fixture or empty it. An
@@ -87,7 +160,13 @@ class _BusinessReportPDF(FPDF):
         # A zero-byte or truncated face is still ``is_file()``. Only parsing
         # can tell, and a bad file must not fail the scan report.
         faces = find_unicode_font()
-        self.font_family = "Helvetica"
+        # Not ``font_family``: that name is FPDF's own, and ``set_font``
+        # overwrites it with the face just selected. A later ``set_font``
+        # that names Helvetica (the hostname legend) would then make every
+        # following ``_font`` call draw in Helvetica while ``txt`` still
+        # hands it Cyrillic — which is how a controls table used to abort
+        # the report instead of writing summary.pdf.
+        self._face = "Helvetica"
         self.unicode_text = False
         if faces is None:
             logger.warning(
@@ -107,7 +186,7 @@ class _BusinessReportPDF(FPDF):
                     exc,
                 )
             else:
-                self.font_family = _UNICODE_FONT_FAMILY
+                self._face = _UNICODE_FONT_FAMILY
                 self.unicode_text = True
         self.set_auto_page_break(auto=True, margin=18)
         self.set_margins(left=15, top=16, right=15)
@@ -121,7 +200,7 @@ class _BusinessReportPDF(FPDF):
 
     def header(self) -> None:
         self.set_x(self.l_margin)
-        self.set_font(self.font_family, "B", 9)
+        self.set_font(self._face, "B", 9)
         self.set_text_color(30, 58, 138)
         label = "Shapoclyack"
         if self.org_name:
@@ -137,7 +216,7 @@ class _BusinessReportPDF(FPDF):
     def footer(self) -> None:
         self.set_y(-14)
         self.set_x(self.l_margin)
-        self.set_font(self.font_family, "", 8)
+        self.set_font(self._face, "", 8)
         self.set_text_color(100, 116, 139)
         self.cell(
             0,
@@ -156,7 +235,7 @@ def _reset(pdf: FPDF) -> None:
 
 
 def _font(pdf: _BusinessReportPDF, style: str, size: float) -> None:
-    pdf.set_font(pdf.font_family, style, size)
+    pdf.set_font(pdf._face, style, size)
 
 
 def _section_title(pdf: _BusinessReportPDF, title: str) -> None:
@@ -187,11 +266,77 @@ def _kv_row(pdf: _BusinessReportPDF, key: str, value: object) -> None:
     _reset(pdf)
 
 
+def _finding_title(item: dict) -> str:
+    title = str(item.get("title") or "").strip()
+    if title in _FINDING_TITLES:
+        return _FINDING_TITLES[title]
+    if title:
+        return title
+    return str(item.get("script_id") or "-")
+
+
+def _explain(text: object) -> str:
+    raw = str(text or "")
+    if not raw or any("\u0400" <= ch <= "\u04ff" for ch in raw):
+        return raw
+    known = _WHY.get(raw)
+    if known:
+        return known
+    for pattern, render in _WHY_TEMPLATES:
+        match = pattern.match(raw)
+        if match:
+            return render(match)
+    return raw
+
+
+def _row(pdf: _BusinessReportPDF, widths: list[float], cells: list[str], line_h: float = 4.0) -> None:
+    """One table row that wraps instead of clipping.
+
+    ``cell`` cuts a site name at the column edge, which is how the scanned
+    name used to disappear and leave the address.
+    """
+
+    text = [pdf.txt(cell) for cell in cells]
+    wrapped = [
+        pdf.multi_cell(width, line_h, value, dry_run=True, output="LINES") or [""]
+        for width, value in zip(widths, text, strict=True)
+    ]
+    row_h = line_h * max(len(lines) for lines in wrapped)
+    if pdf.get_y() + row_h > pdf.page_break_trigger:
+        pdf.add_page()
+    y = pdf.get_y()
+    x = pdf.l_margin
+    for width, value in zip(widths, text, strict=True):
+        pdf.set_xy(x, y)
+        pdf.multi_cell(width, line_h, value, border=1)
+        x += width
+    pdf.set_xy(pdf.l_margin, y + row_h)
+
+
+def _site_label(item: dict) -> str:
+    """The scanned site, with the address in parentheses when it differs.
+
+    The finding is about the name that was asked for. Printing the address in
+    the column, and the name only in a footnote, is how a site scan used to
+    read as a list of IPs.
+    """
+
+    host = str(item.get("host") or "")
+    name = str(item.get("hostname") or "").strip()
+    port = str(item.get("port") or "")
+    site = name if name and name != host else host
+    if port:
+        site = f"{site}:{port}"
+    if name and host and name != host:
+        site = f"{site} ({host})"
+    return site
+
+
 def write_business_pdf(
     output_dir: Path,
     *,
     run_id: str = "",
-    title: str = "Shapoclyack Security Scan Report",
+    title: str = "Отчёт о проверке безопасности Shapoclyack",
     org_name: str = "",
     max_vulnerabilities: int = 40,
 ) -> Path:
@@ -228,54 +373,54 @@ def write_business_pdf(
         width,
         6,
         pdf.txt(
-            "Executive summary of network reconnaissance results. "
-            "Figures below reflect the latest Shapoclyack pipeline run."
+            "Сводка результатов сетевой разведки. "
+            "Цифры ниже относятся к последнему прогону Shapoclyack."
         ),
     )
     pdf.ln(2)
-    _kv_row(pdf, "Run ID", resolved_run_id)
-    _kv_row(pdf, "Generated", generated_at)
+    _kv_row(pdf, "Прогон", resolved_run_id)
+    _kv_row(pdf, "Сформирован", generated_at)
     mode = run_meta.get("mode") or run_meta.get("profile")
     if mode:
-        _kv_row(pdf, "Profile", mode)
+        _kv_row(pdf, "Профиль", mode)
 
-    _section_title(pdf, "1. Executive Summary")
+    _section_title(pdf, "1. Краткие итоги")
     sev = summary.get("vulnerabilities_by_severity") or {}
-    _kv_row(pdf, "Targets in scope", summary.get("total_targets", 0))
-    _kv_row(pdf, "Alive hosts", summary.get("alive_hosts", 0))
-    _kv_row(pdf, "Named hosts", summary.get("alive_hosts_with_names", 0))
-    _kv_row(pdf, "Open host:port pairs", summary.get("open_host_port_pairs", 0))
-    _kv_row(pdf, "Detected services", summary.get("nmap_open_services", 0))
-    _kv_row(pdf, "Hosts with OS guess", summary.get("os_detected_hosts", 0))
+    _kv_row(pdf, "Целей в области", summary.get("total_targets", 0))
+    _kv_row(pdf, "Живых узлов", summary.get("alive_hosts", 0))
+    _kv_row(pdf, "Узлов с именем", summary.get("alive_hosts_with_names", 0))
+    _kv_row(pdf, "Открытых пар узел:порт", summary.get("open_host_port_pairs", 0))
+    _kv_row(pdf, "Обнаружено служб", summary.get("nmap_open_services", 0))
+    _kv_row(pdf, "Узлов с гипотезой ОС", summary.get("os_detected_hosts", 0))
     _kv_row(
         pdf,
-        "Potential vulnerabilities",
+        "Потенциальных уязвимостей",
         f"{summary.get('potential_vulnerabilities', 0)} "
-        f"across {summary.get('vulnerable_hosts', 0)} hosts",
+        f"на {summary.get('vulnerable_hosts', 0)} узлах",
     )
 
-    _section_title(pdf, "2. Severity Breakdown")
+    _section_title(pdf, "2. Разбивка по серьёзности")
     col_w = width / 2
     _reset(pdf)
     _font(pdf, "B", 10)
     pdf.set_fill_color(241, 245, 249)
     pdf.set_text_color(15, 23, 42)
-    pdf.cell(col_w, 7, "Severity", border=1, fill=True)
-    pdf.cell(col_w, 7, "Count", border=1, fill=True, new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(col_w, 7, pdf.txt("Серьёзность"), border=1, fill=True)
+    pdf.cell(col_w, 7, pdf.txt("Количество"), border=1, fill=True, new_x="LMARGIN", new_y="NEXT")
     _font(pdf, "", 10)
     for name in _SEVERITY_LABELS:
         _reset(pdf)
-        pdf.cell(col_w, 7, pdf.txt(name.capitalize()), border=1)
+        pdf.cell(col_w, 7, pdf.txt(_SEVERITY_RU.get(name, name)), border=1)
         pdf.cell(col_w, 7, str(int(sev.get(name, 0))), border=1, new_x="LMARGIN", new_y="NEXT")
 
     top_services = summary.get("top_services") or []
-    _section_title(pdf, "3. Top Services")
+    _section_title(pdf, "3. Частые службы")
     if top_services:
         _reset(pdf)
         _font(pdf, "B", 10)
         pdf.set_fill_color(241, 245, 249)
-        pdf.cell(col_w, 7, "Service", border=1, fill=True)
-        pdf.cell(col_w, 7, "Open instances", border=1, fill=True, new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(col_w, 7, pdf.txt("Служба"), border=1, fill=True)
+        pdf.cell(col_w, 7, pdf.txt("Открытых экземпляров"), border=1, fill=True, new_x="LMARGIN", new_y="NEXT")
         _font(pdf, "", 10)
         for service, count in top_services[:12]:
             _reset(pdf)
@@ -285,9 +430,9 @@ def write_business_pdf(
         _reset(pdf)
         _font(pdf, "", 10)
         pdf.set_text_color(100, 116, 139)
-        pdf.cell(0, 6, "No service fingerprints available.", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 6, pdf.txt("Отпечатков служб нет."), new_x="LMARGIN", new_y="NEXT")
 
-    _section_title(pdf, "4. Priority Findings")
+    _section_title(pdf, "4. Приоритетные находки")
     ranked = sorted(
         vulnerabilities,
         key=lambda item: (
@@ -304,49 +449,31 @@ def write_business_pdf(
     shown = priority[: max(1, max_vulnerabilities)] if priority else []
 
     if shown:
-        widths = [28.0, 38.0, 28.0, 16.0, width - 28.0 - 38.0 - 28.0 - 16.0]
-        headers = ["Severity", "Location", "CVE", "CVSS", "Source"]
+        # Site takes the room the address column used to waste: a name plus a
+        # port does not fit in 38 mm, and clipping it is what dropped the site.
+        widths = [28.0, 62.0, 28.0, 14.0, width - 28.0 - 62.0 - 28.0 - 14.0]
+        headers = ["Серьёзность", "Сайт", "CVE", "CVSS", "Источник"]
         _reset(pdf)
         _font(pdf, "B", 9)
         pdf.set_fill_color(241, 245, 249)
         pdf.set_text_color(15, 23, 42)
         for w, header in zip(widths, headers, strict=True):
-            pdf.cell(w, 7, header, border=1, fill=True)
+            pdf.cell(w, 7, pdf.txt(header), border=1, fill=True)
         pdf.ln()
         _font(pdf, "", 8)
         for item in shown:
-            host = str(item.get("host") or "")
-            port = str(item.get("port") or "")
-            # The address only: this column is 22 characters, and a domain plus
-            # an address does not fit. The domain is printed in full below.
-            location = f"{host}:{port}" if port else host
             cve = str(item.get("cve") or "-")
             cvss = item.get("cvss")
             cvss_s = f"{cvss:.1f}" if isinstance(cvss, (int, float)) else "-"
+            severity = str(item.get("severity") or "unknown")
             cells = [
-                str(item.get("severity") or "unknown").upper()[:14],
-                location[:22],
+                _SEVERITY_RU.get(severity, severity),
+                _site_label(item),
                 cve[:16],
                 cvss_s[:8],
-                str(item.get("script_id") or "-")[:36],
+                _finding_title(item),
             ]
-            _reset(pdf)
-            for w, cell in zip(widths, cells, strict=True):
-                pdf.cell(w, 6, pdf.txt(cell), border=1)
-            pdf.ln()
-        named = list(dict.fromkeys(
-            (str(item.get("host") or ""), str(item.get("hostname") or "").strip())
-            for item in shown
-            if str(item.get("hostname") or "").strip()
-            and str(item.get("hostname") or "").strip() != str(item.get("host") or "")
-        ))
-        if named:
-            pdf.ln(1)
-            _reset(pdf)
-            pdf.set_font("Helvetica", "", 8)
-            pdf.set_text_color(71, 85, 105)
-            for host, name in named:
-                pdf.multi_cell(width, 4, _safe(f"{host} — {name}"))
+            _row(pdf, widths, cells)
         if len(priority) > len(shown):
             pdf.ln(1)
             _reset(pdf)
@@ -356,32 +483,32 @@ def write_business_pdf(
                 width,
                 5,
                 pdf.txt(
-                    f"Showing {len(shown)} of {len(priority)} medium+ findings "
-                    f"({len(vulnerabilities)} total). See vulnerabilities.json for the full list."
+                    f"Показано {len(shown)} из {len(priority)} находок уровня «средний» и выше "
+                    f"(всего {len(vulnerabilities)}). Полный список — в vulnerabilities.json."
                 ),
             )
     else:
         _reset(pdf)
         _font(pdf, "", 10)
         pdf.set_text_color(100, 116, 139)
-        pdf.cell(0, 6, "No vulnerabilities recorded for this run.", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 6, pdf.txt("Для этого прогона уязвимости не записаны."), new_x="LMARGIN", new_y="NEXT")
 
     if diff is not None:
-        _section_title(pdf, "5. Changes Since Previous Run")
+        _section_title(pdf, "5. Изменения с прошлого прогона")
         counts = diff.get("counts") or {}
         _kv_row(
             pdf,
-            "Hosts",
+            "Узлы",
             f"+{counts.get('hosts_added', 0)} / -{counts.get('hosts_removed', 0)}",
         )
         _kv_row(
             pdf,
-            "Ports",
+            "Порты",
             f"+{counts.get('ports_added', 0)} / -{counts.get('ports_removed', 0)}",
         )
         _kv_row(
             pdf,
-            "Vulnerabilities",
+            "Уязвимости",
             f"+{counts.get('vulns_added', 0)} / -{counts.get('vulns_removed', 0)}",
         )
         added = ((diff.get("vulnerabilities") or {}).get("added") or [])[:8]
@@ -390,45 +517,41 @@ def write_business_pdf(
             _reset(pdf)
             _font(pdf, "B", 10)
             pdf.set_text_color(15, 23, 42)
-            pdf.cell(0, 6, "Newly observed issues:", new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(0, 6, pdf.txt("Новые наблюдения:"), new_x="LMARGIN", new_y="NEXT")
             _font(pdf, "", 9)
             for item in added:
-                port = item.get("port")
-                location = f"{host_label(item)}:{port}" if port else host_label(item)
-                label = item.get("cve") or item.get("script_id") or "finding"
-                sev_name = str(item.get("severity") or "unknown").upper()
+                location = _site_label(item)
+                label = item.get("cve") or item.get("title") or item.get("script_id") or "находка"
+                sev_name = _SEVERITY_RU.get(str(item.get("severity") or "unknown"), "Не определён")
                 _reset(pdf)
                 pdf.multi_cell(width, 5, pdf.txt(f"- [{sev_name}] {location} {label}"))
 
     controls_data = _load_json(output_dir / "controls.json", None)
     if isinstance(controls_data, dict) and controls_data.get("controls"):
-        _section_title(pdf, "Security Controls Matrix")
-        _kv_row(pdf, "Overall Verdict", str(controls_data.get("overall_verdict", "not_checked")).upper())
-        _kv_row(pdf, "NIST Risk Level", str(controls_data.get("overall_risk", "unassessed")).replace("_", " ").title())
+        _section_title(pdf, "Матрица контролей")
+        _kv_row(pdf, "Общий вывод", _VERDICT_RU.get(str(controls_data.get("overall_verdict") or "not_checked"), str(controls_data.get("overall_verdict") or "")))
+        _kv_row(pdf, "Уровень риска NIST", _RISK_RU.get(str(controls_data.get("overall_risk") or "unassessed"), str(controls_data.get("overall_risk") or "")))
         pdf.ln(1)
         c_widths = [45.0, 28.0, 28.0, width - 45.0 - 28.0 - 28.0]
-        c_headers = ["Control", "Status", "Risk Level", "Assessment"]
+        c_headers = ["Контроль", "Статус", "Риск", "Оценка"]
         _reset(pdf)
         _font(pdf, "B", 9)
         pdf.set_fill_color(241, 245, 249)
         pdf.set_text_color(15, 23, 42)
         for w, header in zip(c_widths, c_headers, strict=True):
-            pdf.cell(w, 7, header, border=1, fill=True)
+            pdf.cell(w, 7, pdf.txt(header), border=1, fill=True)
         pdf.ln()
         _font(pdf, "", 8)
         for c in controls_data.get("controls") or []:
             c_cells = [
-                str(c.get("title") or c.get("control") or "")[:26],
-                str(c.get("status") or "not_checked").upper()[:14],
-                str(c.get("risk_level") or "unassessed").replace("_", " ").title()[:14],
-                str(c.get("why") or "")[:55],
+                str(c.get("title") or c.get("control") or ""),
+                _STATUS_RU.get(str(c.get("status") or "not_checked"), str(c.get("status") or "")),
+                _RISK_RU.get(str(c.get("risk_level") or "unassessed"), str(c.get("risk_level") or "")),
+                _explain(c.get("why")),
             ]
-            _reset(pdf)
-            for w, cell in zip(c_widths, c_cells, strict=True):
-                pdf.cell(w, 6, pdf.txt(cell), border=1)
-            pdf.ln()
+            _row(pdf, c_widths, c_cells)
 
-    _section_title(pdf, "Notes")
+    _section_title(pdf, "Примечания")
     _reset(pdf)
     _font(pdf, "", 9)
     pdf.set_text_color(71, 85, 105)
@@ -436,10 +559,10 @@ def write_business_pdf(
         width,
         5,
         pdf.txt(
-            "This report is generated automatically from Shapoclyack pipeline artifacts. "
-            "CVE matches come from Pulse, Nuclei templates and (runs recorded before the Nmap stage was removed) NSE scripts, and may include "
-            "version-based associations that require analyst validation. Use only on "
-            "assets you are authorized to assess."
+            "Отчёт собран автоматически из артефактов прогона Shapoclyack. "
+            "Совпадения CVE приходят из Pulse, шаблонов Nuclei и (для прогонов до удаления стадии Nmap) скриптов NSE "
+            "и могут включать привязки по версии, которые должен подтвердить аналитик. "
+            "Используйте только для активов, которые разрешено проверять."
         ),
     )
 
