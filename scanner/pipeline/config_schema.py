@@ -847,7 +847,7 @@ class ReportingConfig(BaseModel):
     sarif_export: bool = True
     # Business PDF (summary.pdf) for leadership / ticket attachments.
     pdf_summary: bool = True
-    pdf_title: str = "Shapoclyack Security Scan Report"
+    pdf_title: str = "Отчёт о проверке безопасности Shapoclyack"
     pdf_org_name: str = ""
     pdf_max_vulnerabilities: int = Field(default=40, ge=1, le=500)
     diff: DiffReportingConfig = Field(default_factory=DiffReportingConfig)

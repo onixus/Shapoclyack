@@ -200,6 +200,75 @@ def _tounicode_points(out: bytes) -> set[int]:
     return points
 
 
+def test_priority_row_names_the_site_not_the_address(tmp_path: Path, monkeypatch):
+    """The findings column is the scanned site. The address used to be the
+    cell, clipped to 22 characters, with the name only in a footnote."""
+    monkeypatch.setattr(pdf_report, "_UNICODE_FONT_DIRS", (str(_FONT_FIXTURES),))
+    drawn: list[str] = []
+    real = pdf_report._row
+
+    def capture(pdf, widths, cells, line_h=4.0):
+        drawn.extend(cells)
+        return real(pdf, widths, cells, line_h)
+
+    monkeypatch.setattr(pdf_report, "_row", capture)
+    (tmp_path / "vulnerabilities.json").write_text(
+        json.dumps(
+            [
+                {
+                    "host": "176.57.65.67",
+                    "hostname": "skybez.ru",
+                    "port": "443",
+                    "title": "Server accepts weak TLS protocol",
+                    "severity": "high",
+                    "cvss": 7.5,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    write_business_pdf(tmp_path, run_id="site")
+    assert "skybez.ru:443 (176.57.65.67)" in drawn
+    assert "176.57.65.67:443" not in drawn
+    assert "Сервер принимает устаревший протокол TLS" in drawn
+    assert "Server accepts weak TLS protocol" not in drawn
+
+
+def test_cyrillic_controls_survive_a_core_font_legend(tmp_path: Path, monkeypatch):
+    """A Helvetica legend must not poison the face used for the controls table.
+
+    ``FPDF.set_font`` writes the selected family back onto ``font_family``.
+    Storing the chosen face there, then setting Helvetica for the hostname
+    legend, used to make the next section draw Cyrillic in Helvetica and abort
+    the report — the download then 404ed while the console still offered it.
+    """
+    monkeypatch.setattr(pdf_report, "_UNICODE_FONT_DIRS", (str(_FONT_FIXTURES),))
+    _seed_run(tmp_path)
+    (tmp_path / "vulnerabilities.json").write_text(
+        json.dumps(
+            [
+                {
+                    "host": "10.0.0.5",
+                    "hostname": "пример.example",
+                    "port": "22",
+                    "script_id": "vulners",
+                    "cve": "CVE-2016-10012",
+                    "cvss": 9.8,
+                    "severity": "critical",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    _seed_controls(tmp_path)
+    path = write_business_pdf(tmp_path, run_id="legend", org_name="Организация")
+    data = path.read_bytes()
+    assert data.startswith(b"%PDF")
+    needed = {ord(ch) for title in _CONTROL_TITLES for ch in title if "\u0400" <= ch <= "\u04ff"}
+    needed.add(ord("О"))
+    assert not needed - _tounicode_points(data)
+
+
 def test_summary_pdf_keeps_cyrillic_control_titles(tmp_path: Path, monkeypatch):
     """«Утечки учетных данных» has to stay that, not become ``?????? ??????? ??????``."""
     monkeypatch.setattr(pdf_report, "_UNICODE_FONT_DIRS", (str(_FONT_FIXTURES),))

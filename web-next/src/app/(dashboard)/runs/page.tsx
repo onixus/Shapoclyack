@@ -161,7 +161,7 @@ function RunsInner() {
       },
       {
         id: "flags",
-        accessorFn: (row) => `${row.has_diff ? 1 : 0}${row.has_summary ? 1 : 0}`,
+        accessorFn: (row) => `${row.has_diff ? 1 : 0}${row.has_pdf ? 1 : 0}`,
         header: t("col.artifacts"),
         cell: ({ row }) => (
           <div className="flex gap-1.5">
@@ -173,7 +173,7 @@ function RunsInner() {
                 {runText(t.locale, "diff")}
               </Badge>
             ) : null}
-            {row.original.has_summary ? (
+            {row.original.has_pdf ? (
               <Badge
                 variant="outline"
                 className="border-success/30 bg-success-subtle text-xs text-success"
