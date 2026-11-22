@@ -13,7 +13,7 @@ vi.mock("@/hooks/use-runs", () => ({
           unconfirmed_findings: 2,
           potential_vulnerabilities: 2,
           has_diff: true,
-          has_summary: true,
+          has_pdf: true,
         },
       ],
       total: 1,
