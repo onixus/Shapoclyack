@@ -49,7 +49,7 @@ function ControlRow({ control }: { control: ComplianceControlStatus }) {
           <span className="flex flex-wrap items-center gap-2">
             <span className="font-mono text-xs font-bold text-foreground">{ref}</span>
             {catalogueLabel ? (
-              <span className="font-mono text-[10px] text-muted-foreground">
+              <span className="font-mono text-xs text-muted-foreground">
                 {t("ui.catalogueId")}: {control.control_id}
               </span>
             ) : null}
