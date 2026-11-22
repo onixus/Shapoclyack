@@ -219,7 +219,9 @@ def test_foreign_tenant_cannot_read_cached_evidence(env):
         settings, owned, item["source_id"], item["snapshot_id"], item["source_hash"])
     assert opened is not None
     assert "canary-secret-token" not in json.dumps(opened)
-    assert jobs.list_jobs(settings)[1] == 0
+    # The fixture inserts one finished job so the evidence index has a run.
+    # That row is not a scan the operator started.
+    assert jobs.list_jobs(settings)[1] == 1
     assert session_id
 
 
