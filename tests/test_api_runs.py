@@ -166,6 +166,7 @@ def test_list_and_get_run(tmp_path: Path):
     body = listed.json()
     assert body["items"][0]["run_id"] == "run-a"
     assert body["items"][0]["has_diff"] is True
+    assert body["items"][0]["has_pdf"] is True
     assert body["items"][0]["unconfirmed_findings"] == 1
     assert body["total"] == len(body["items"])
     assert body["has_more"] is False
