@@ -23,7 +23,6 @@ requirements lock) for the sake of formatting this does not use.
 from __future__ import annotations
 
 import csv
-import re
 import io
 import math
 import re
