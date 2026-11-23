@@ -22,6 +22,8 @@ export type OperatorStatus = {
   parallel?: number | null;
   verified_at?: string | null;
   profile?: string | null;
+  /** Set only by a deployment that has recorded an offline cold-start pass. */
+  offline_verified?: boolean;
 };
 export type Citation = {
   source_id: string;

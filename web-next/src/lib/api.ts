@@ -563,6 +563,9 @@ export type RunSummary = {
   vulnerable_hosts: number | null;
   has_diff: boolean;
   has_summary: boolean;
+  /** ``summary.pdf`` was written. Distinct from ``has_summary``, which is the
+   * JSON summary and is true even when PDF rendering was skipped. */
+  has_pdf?: boolean;
   /** Which side of the perimeter the scan looked at (see lib/scan-surface.ts);
    * null for a run recorded before the marker existed. */
   surface?: "external" | "internal" | "mixed" | null;
@@ -3892,6 +3895,8 @@ export type ComplianceEvidenceItem = {
 
 export type ComplianceControlStatus = {
   control_id: string;
+  /** Paragraph or measure, when control_id is a catalogue label rather than a regulator code. */
+  citation?: string;
   title: string;
   status: "passed" | "failed" | "not_assessed";
   rationale: string;

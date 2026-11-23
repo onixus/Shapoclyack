@@ -123,6 +123,9 @@ class RunSummary(BaseModel):
     surface: str | None = None
     has_diff: bool = False
     has_summary: bool = False
+    # ``summary.pdf`` itself, not the JSON the scanner always writes. A PDF
+    # that failed to render (and was skipped) must not advertise a download.
+    has_pdf: bool = False
     path: str
 
 
@@ -3288,6 +3291,11 @@ class ComplianceEvidenceItem(BaseModel):
 
 class ComplianceControlStatus(BaseModel):
     control_id: str
+    #: Paragraph or measure this observation refers to, when ``control_id`` is a
+    #: catalogue label (order 117's shorthand, ``КИИ.*``) rather than a code in
+    #: the document. Empty means ``control_id`` is already that code. Reports
+    #: print this, not the label.
+    citation: str = ""
     title: str
     #: passed | failed | not_assessed
     status: str

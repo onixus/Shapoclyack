@@ -32,6 +32,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 
 from api.db import models
 from api.db.engine import get_session
@@ -159,39 +160,60 @@ def set_policy(
     cleaned = validate_settings(settings or {})
     app_settings = _require_settings()
     now = _now()
+    version = (desired_version or "").strip() or None
     with get_session(app_settings.postgres_url) as session:
-        row = session.scalar(
-            select(models.EndpointAgentPolicy).where(
-                models.EndpointAgentPolicy.tenant_id == tenant_id,
-                models.EndpointAgentPolicy.agent_id.is_(None)
-                if agent_id is None
-                else models.EndpointAgentPolicy.agent_id == agent_id,
-            )
-        )
+        row = _policy_row(session, tenant_id, agent_id)
         if row is None:
             row = models.EndpointAgentPolicy(
                 policy_id=f"eap_{uuid.uuid4().hex[:16]}",
                 tenant_id=tenant_id,
                 agent_id=agent_id,
                 settings=cleaned,
-                desired_version=(desired_version or "").strip() or None,
+                desired_version=version,
                 revision=1,
                 updated_at=now,
                 updated_by=updated_by,
             )
-            session.add(row)
+            # ZAP imports the same default three times at once (bare path,
+            # trailing slash, /api/v1). Two of those lose the unique index.
+            # Without a savepoint that IntegrityError is a 500.
+            try:
+                with session.begin_nested():
+                    session.add(row)
+                    session.flush()
+            except IntegrityError:
+                row = _policy_row(session, tenant_id, agent_id)
+                if row is None:
+                    raise
+                _replace_policy(row, cleaned, version, now, updated_by)
+                session.flush()
         else:
-            row.settings = cleaned
-            row.desired_version = (desired_version or "").strip() or None
-            # Monotonic per row. The agent compares the *sum* of the rows that
-            # apply to it, which stays monotonic when either changes — a max
-            # would not: a default bumped to 4 and an override later bumped to
-            # 4 is one change the agent would never see.
-            row.revision = (row.revision or 0) + 1
-            row.updated_at = now
-            row.updated_by = updated_by
-        session.flush()
+            _replace_policy(row, cleaned, version, now, updated_by)
+            session.flush()
         return _policy_info(row)
+
+
+def _policy_row(session, tenant_id: str, agent_id: str | None):
+    return session.scalar(
+        select(models.EndpointAgentPolicy).where(
+            models.EndpointAgentPolicy.tenant_id == tenant_id,
+            models.EndpointAgentPolicy.agent_id.is_(None)
+            if agent_id is None
+            else models.EndpointAgentPolicy.agent_id == agent_id,
+        )
+    )
+
+
+def _replace_policy(row, cleaned, version, now, updated_by) -> None:
+    row.settings = cleaned
+    row.desired_version = version
+    # Monotonic per row. The agent compares the *sum* of the rows that
+    # apply to it, which stays monotonic when either changes — a max
+    # would not: a default bumped to 4 and an override later bumped to
+    # 4 is one change the agent would never see.
+    row.revision = (row.revision or 0) + 1
+    row.updated_at = now
+    row.updated_by = updated_by
 
 
 def delete_policy(*, tenant_id: str, agent_id: str | None) -> bool:

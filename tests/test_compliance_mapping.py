@@ -174,6 +174,11 @@ def test_score_is_over_assessed_controls_and_an_empty_estate_scores_nothing(
         entry["status"] == compliance.NOT_ASSESSED and entry["not_assessed_reason"]
         for entry in posture["controls"]
     )
+    reasons = {entry["control_id"]: entry["not_assessed_reason"] for entry in posture["controls"]}
+    assert "registry" in reasons["1.1"]
+    assert "endpoint software inventory" in reasons["2.1"]
+    assert "no vulnerability records" in reasons["3.10"]
+    assert "not a pass" in reasons["3.10"]
 
 
 def test_closed_findings_stop_failing_and_accepted_risk_is_separated(tmp_path):
@@ -441,6 +446,10 @@ def test_fz187_keeps_the_tenant_clock_off_the_endpoint_inventory():
     assert endpoint.requires == (catalog.SOURCE_ENDPOINT_INVENTORY,)
     assert sig.INSECURE_PROTOCOL in by_id["КИИ.КАНАЛЫ"].signals
     assert "unencrypted" not in by_id["КИИ.СЕТЬ"].rationale
+    # КИИ.* is a catalogue label. The report cites the measure, not the label.
+    assert by_id["КИИ.УЯЗ"].citation == "№ 239 АУД.2"
+    assert by_id["КИИ.ИНВ"].citation == "№ 235 п. 3.2"
+    assert all(control.citation and "КИИ." not in control.citation for control in framework.controls)
 
 
 def test_the_fstec_window_is_the_regulators_clock():
@@ -485,6 +494,14 @@ def test_russian_catalogues_carry_the_regulators_codes_and_the_regulators_clock(
         assert any(
             sig.OVERDUE_FSTEC_WINDOW in control.all_signals for control in framework.controls
         ), framework_id
+    order_117 = catalog.get_framework("fstec-117")
+    assert order_117 is not None
+    by_label = {control.control_id: control for control in order_117.controls}
+    # Paragraph shorthand is not a measure code. The citation is what a report prints.
+    assert by_label["КУ"].citation == "п. 3.3 № 117"
+    assert by_label["КУ-сроки"].citation == "п. 3.3 № 117"
+    assert "КУ-сроки" not in by_label["КУ-сроки"].citation
+    assert "обозначения этого каталога" in order_117.scope_note
 
 
 def test_a_two_day_old_critical_fails_the_fstec_window_but_not_the_tenants_sla(

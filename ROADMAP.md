@@ -812,7 +812,10 @@ vendor-backed remediation cards, published-run comparison and the optional
 9B Q4_K_M model and 8192 context. Hybrid exact/full-text/semantic retrieval and
 bounded natural-language intent selection are implemented. Measured domain quality,
 offline cold start and deployment acceptance (#585–#593) remain open
-until their evidence gates pass. The default
+until their evidence gates pass. The 2026-11-21 software continuation
+([LO-10 record](docs/local-operator-lo10-software-acceptance.md)) names policy
+deviations in the console and adds foreign-tenant and audit-redaction cases
+to the security contract. It does not accept the Mac profile. The default
 is local offline operation with the optional inference adapter disabled;
 OpenRouter and an explicitly configured OmniRouter-compatible endpoint require
 hosted-provider opt-in. [ADR 0005](docs/adr/0005-local-operator-mac-acceptance.md)

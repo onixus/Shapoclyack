@@ -6,6 +6,19 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- The scan `summary.pdf` was still the English template, and the findings
+  column printed the address (clipped to 22 characters) with the scanned name
+  only in a footnote. The column is now the site — `name:port`, address in
+  parentheses — and the template, severity and known finding titles are Russian.
+
+- A scan with a hostname legend and Russian control titles aborted
+  `summary.pdf` (`FPDFUnicodeEncodingException`, font `helvetica`) and the
+  console still offered the download, which then 404ed. `set_font` writes the
+  selected family back onto `font_family`, so the Helvetica legend replaced
+  the face later sections asked for. The chosen face is now kept aside, and
+  the reports list offers PDF only when `summary.pdf` itself is present
+  (`has_pdf`).
+
 - The scan `summary.pdf` sets text in DejaVu Sans when the host has it, the
   same lookup as the report factory. Control titles are Russian, and the
   Helvetica core font was printing each of those letters as `?`. The scanner
@@ -13,6 +26,13 @@ All notable changes to Shapoclyack are documented in this file.
   and all-in-one images, so compose.full / scanner Jobs get the face too. A
   missing or unreadable face still produces the report and falls back to
   Latin-1.
+- Compliance reports no longer present catalogue labels as regulator
+  requirements. Order 117's `КК`/`КУ`/`КУ-сроки`/`КО`/`ОД`/`ПК` and every
+  `КИИ.*` label stay internal ids; the normative-ref column prints the
+  paragraph or measure (`п. 3.3 № 117`, `№ 239 АУД.2`). A control with an
+  empty source is labelled **No source data**, with the missing table named,
+  and is not a regulator verdict. The CISO wiki no longer claims orders 17
+  and 31, `РСБ`/`ОЦЛ`/`ФЗ.5`, or a NIST CSF report the factory does not build.
 
 ### Added
 

@@ -59,7 +59,14 @@ _SLA_LABELS = {
     "accepted": "Accepted risk",
     "none": "No deadline",
 }
-_STATUS_LABELS = {"passed": "Pass", "failed": "Fail", "not_assessed": "Not assessed"}
+_STATUS_LABELS = {"passed": "Pass", "failed": "Fail", "not_assessed": "No source data"}
+# Printed under the count so a leadership summary cannot read the number as a
+# regulator verdict. An empty source is excluded from the score, not passed.
+_NO_SOURCE_NOTE = (
+    "No source data is not a regulator verdict and is not a pass. "
+    "A control stays in this count until the tenant has the findings, asset "
+    "registry or endpoint inventory that control is wired to."
+)
 
 
 def _safe(text: object) -> str:
@@ -496,7 +503,11 @@ def render_pdf(body: dict[str, Any]) -> bytes:
                 f"{framework.get('controls_passed', 0)}/{framework.get('controls_assessed', 0)}"
                 + (f" ({score}%)" if score is not None else ""),
             )
-            _kv(pdf, "Not assessed", framework.get("controls_not_assessed", 0))
+            _kv(pdf, "No source data", framework.get("controls_not_assessed", 0))
+            pdf.set_font(pdf.font_family, "I", 8)
+            pdf.set_text_color(100, 116, 139)
+            pdf.multi_cell(width, 4.5, pdf.txt(_NO_SOURCE_NOTE))
+            pdf.ln(1)
             pdf.set_font(pdf.font_family, "I", 8)
             pdf.set_text_color(100, 116, 139)
             pdf.multi_cell(width, 4.5, pdf.txt(framework.get("scope_note") or ""))
@@ -505,10 +516,10 @@ def render_pdf(body: dict[str, Any]) -> bytes:
             if controls:
                 _table(
                     pdf,
-                    ["Control", "Title", "Status", "Failing"],
+                    ["Normative ref", "Title", "Status", "Failing"],
                     [
                         [
-                            str(control.get("control_id")),
+                            spreadsheet.control_ref(control),
                             str(control.get("title")),
                             _STATUS_LABELS.get(str(control.get("status")), str(control.get("status"))),
                             str(control.get("failing_count", 0)),
@@ -683,6 +694,7 @@ def render_html(body: dict[str, Any]) -> str:
             block = [
                 f"<h2>{html.escape(str(framework.get('name')))} "
                 f"{html.escape(str(framework.get('version')))}</h2>",
+                f"<p class=note>{html.escape(_NO_SOURCE_NOTE)}</p>"
                 f"<p class=note>{html.escape(str(framework.get('scope_note') or ''))}</p>",
                 "<table>"
                 + _rows(
@@ -693,7 +705,7 @@ def render_html(body: dict[str, Any]) -> str:
                             f"{framework.get('controls_assessed', 0)}"
                             + (f" ({score}%)" if score is not None else ""),
                         ),
-                        ("Not assessed", framework.get("controls_not_assessed", 0)),
+                        ("No source data", framework.get("controls_not_assessed", 0)),
                     ]
                 )
                 + "</table>",
@@ -703,7 +715,7 @@ def render_html(body: dict[str, Any]) -> str:
                 rows = "".join(
                     "<tr><td>{cid}</td><td>{title}</td><td class='{cls}'>{status}</td>"
                     "<td>{failing}</td></tr>".format(
-                        cid=html.escape(str(control.get("control_id"))),
+                        cid=html.escape(spreadsheet.control_ref(control)),
                         title=html.escape(str(control.get("title"))),
                         cls=html.escape(str(control.get("status"))),
                         status=html.escape(
@@ -716,7 +728,7 @@ def render_html(body: dict[str, Any]) -> str:
                     for control in controls
                 )
                 block.append(
-                    "<table><tr><th>Control</th><th>Title</th><th>Status</th>"
+                    "<table><tr><th>Normative ref</th><th>Title</th><th>Status</th>"
                     "<th>Failing</th></tr>" + rows + "</table>"
                 )
             parts.append("".join(block))

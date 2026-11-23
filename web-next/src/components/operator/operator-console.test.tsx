@@ -427,10 +427,22 @@ describe("operator console", () => {
             : /192.0.2.8:22 · SSH host key observed/,
       });
       expect(screen.queryByText(/long-private-source-id/)).not.toBeInTheDocument();
+      expect(screen.getByText("Review")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          locale === "ru"
+            ? "Это предварительный разбор для вашей проверки. Он не меняет находки, риск и состояние скана."
+            : "This is a draft for you to review. It does not change findings, risk, or the scan.",
+        ),
+      ).toBeInTheDocument();
       if (locale === "ru") {
         expect(screen.getByText(/Анализ скана · run1/)).toBeInTheDocument();
-        expect(screen.getByText("Неполные данные · Качество не подтверждено")).toBeInTheDocument();
+        expect(screen.getByText("Ответ готов к проверке")).toBeInTheDocument();
         expect(screen.queryByText("succeeded")).not.toBeInTheDocument();
+        const statusPair = screen.getByText("Неполные данные · Качество не подтверждено");
+        expect(statusPair.closest("details")).not.toHaveAttribute("open");
+        await userEvent.click(screen.getByText("Технические подробности"));
+        expect(statusPair.closest("details")).toHaveAttribute("open");
       }
       expect(operatorApi.evidence).toHaveBeenCalledTimes(1);
       await userEvent.click(row);
@@ -481,6 +493,10 @@ describe("operator console", () => {
     await waitFor(() => expect(operatorApi.evidence).toHaveBeenCalledTimes(1));
     expect(screen.queryByText(/hidden-source-id/)).not.toBeInTheDocument();
     expect(screen.queryByText(/SSH host key/)).not.toBeInTheDocument();
+    expect(await screen.findByText(/source card did not load/i)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/request could not be completed/i),
+    ).not.toBeInTheDocument();
   });
 
   it("renders malicious source text as text and fetches citations only after a click", async () => {
@@ -748,6 +764,40 @@ describe("operator console", () => {
     await userEvent.click(confirm);
     expect(await screen.findByRole("alert")).toHaveTextContent(/server rejected this plan/);
     expect(screen.queryByText(/could not be completed/)).not.toBeInTheDocument();
+  });
+
+  it("names a policy refusal only when safe_only rejects the requested mode", async () => {
+    savedSession();
+    sessionStorage.setItem(
+      `operator-proposal:${JSON.stringify(["tenant-a", "alice", "s1"])}`,
+      "plan1",
+    );
+    vi.mocked(operatorApi.proposal).mockResolvedValue({
+      ...plan,
+      arguments: { ...plan.arguments, mode: "fast" },
+      impact: {
+        targets: ["192.0.2.1"],
+        policy: { profile: "standard", safe_only: false },
+      },
+    });
+    const { unmount } = renderConsole();
+    expect(await screen.findByRole("button", { name: "Confirm this plan" })).toBeInTheDocument();
+    expect(screen.queryByText(/allows only the safe profile/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/fast → standard/)).not.toBeInTheDocument();
+    unmount();
+    vi.mocked(operatorApi.proposal).mockResolvedValue({
+      ...plan,
+      arguments: { ...plan.arguments, mode: "fast" },
+      impact: {
+        targets: ["192.0.2.1"],
+        policy: { profile: "fragile", safe_only: true },
+      },
+    });
+    renderConsole();
+    const notice = await screen.findByText(/allows only the safe profile/);
+    expect(notice).toHaveTextContent(/Safe profile only/);
+    expect(notice).not.toHaveTextContent(/fast → fragile/);
+    expect(screen.getByRole("button", { name: "Confirm this plan" })).toBeInTheDocument();
   });
 
   it("does not crash on null scope entries in a plan impact", async () => {
