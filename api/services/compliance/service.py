@@ -313,10 +313,28 @@ def _collect_evidence(settings: Settings, tenant_id: str | None) -> dict[str, An
     }
 
 
+_MISSING_SOURCE = {
+    catalog.SOURCE_FINDINGS: (
+        "no vulnerability records in this tenant; an empty register is not a pass"
+    ),
+    catalog.SOURCE_ASSETS: "no assets in this tenant's registry",
+    catalog.SOURCE_ENDPOINT_INVENTORY: "no endpoint software inventory in this tenant",
+}
+
+
+def _missing_source_reason(missing: set[str]) -> str:
+    """Name the empty table. This is not a regulator verdict."""
+
+    return "; ".join(
+        _MISSING_SOURCE.get(name, f"no {name} data in this tenant") for name in sorted(missing)
+    )
+
+
 def _assess_control(control: catalog.Control, collected: dict[str, Any]) -> dict[str, Any]:
     if not set(control.requires) <= collected["available_sources"]:
         return {
             "control_id": control.control_id,
+            "citation": control.citation,
             "title": control.title,
             "status": NOT_ASSESSED,
             "rationale": control.rationale,
@@ -326,10 +344,8 @@ def _assess_control(control: catalog.Control, collected: dict[str, Any]) -> dict
             "failing_count": 0,
             "accepted_count": 0,
             "evidence": [],
-            "not_assessed_reason": (
-                "no "
-                + ", ".join(sorted(set(control.requires) - collected["available_sources"]))
-                + " data in this tenant"
+            "not_assessed_reason": _missing_source_reason(
+                set(control.requires) - collected["available_sources"]
             ),
         }
 
@@ -348,6 +364,7 @@ def _assess_control(control: catalog.Control, collected: dict[str, Any]) -> dict
     failing.sort(key=lambda item: SEVERITY_ORDER.get(item.severity, 0), reverse=True)
     return {
         "control_id": control.control_id,
+        "citation": control.citation,
         "title": control.title,
         "status": FAILED if failing else PASSED,
         "rationale": control.rationale,

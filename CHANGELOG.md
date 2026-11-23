@@ -26,6 +26,13 @@ All notable changes to Shapoclyack are documented in this file.
   and all-in-one images, so compose.full / scanner Jobs get the face too. A
   missing or unreadable face still produces the report and falls back to
   Latin-1.
+- Compliance reports no longer present catalogue labels as regulator
+  requirements. Order 117's `КК`/`КУ`/`КУ-сроки`/`КО`/`ОД`/`ПК` and every
+  `КИИ.*` label stay internal ids; the normative-ref column prints the
+  paragraph or measure (`п. 3.3 № 117`, `№ 239 АУД.2`). A control with an
+  empty source is labelled **No source data**, with the missing table named,
+  and is not a regulator verdict. The CISO wiki no longer claims orders 17
+  and 31, `РСБ`/`ОЦЛ`/`ФЗ.5`, or a NIST CSF report the factory does not build.
 
 ### Added
 
