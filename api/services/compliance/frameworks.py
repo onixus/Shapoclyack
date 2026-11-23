@@ -22,11 +22,13 @@ failure — PCI's patching requirement is written about critical and high
 vulnerabilities, and a control that failed on an informational banner would be
 red in every tenant forever and therefore read by nobody.
 
-Control identifiers and titles are the frameworks' own, quoted for
-identification. They are references, not reproductions of the standards' text.
-The Russian catalogues keep the regulators' own Russian measure codes and
-titles for the same reason: an auditor looks for «АНЗ.1», not for a
-translation of it.
+Control identifiers and titles are quoted for identification. They are
+references, not reproductions of the standards' text. Where the regulator has
+a measure code an auditor looks up — «АНЗ.1», not a translation of it — that
+code is ``control_id``. Where the catalogue had to invent a label (order 117's
+paragraph shorthand, the split «КУ-сроки», every ``КИИ.*`` on 187-ФЗ), the
+label stays the stable ``control_id`` and ``citation`` is the paragraph or
+measure the observation actually refers to. A report prints ``citation``.
 
 **The Russian catalogues and the regulator's clock.** FSTEC's vulnerability
 management guidance of 17 May 2023 sets remediation windows by criticality
@@ -76,6 +78,10 @@ class Control:
     # console and in the compliance report, so a reader can judge the mapping
     # rather than trust it.
     rationale: str = ""
+    # Normative point this observation refers to, when ``control_id`` is a
+    # catalogue label rather than a code in the document. Empty means
+    # ``control_id`` is already that code. Reports print this, not the label.
+    citation: str = ""
 
     def __post_init__(self) -> None:
         unknown = sorted(set(self.all_signals) - set(sig.SIGNALS))
@@ -417,11 +423,14 @@ _FSTEC_117 = Framework(
         "защита каналов, аутентификация. Классы защищённости, моделирование угроз, "
         "документирование, ГосСОПКА, физическая защита и организационные мероприятия "
         "не представлены. Уровень опасности уязвимости по методике ФСТЭК заменён "
-        "серьёзностью находки по CVSS."
+        "серьёзностью находки по CVSS. Шифры КК, КУ, КО, ОД, ПК и КУ-сроки — "
+        "обозначения этого каталога для пунктов приказа, а не коды мер из "
+        "приложения; КУ-сроки в документе нет. В отчёте стоит пункт приказа."
     ),
     controls=(
         Control(
             control_id="КК",
+            citation="п. 3.2 № 117",
             title="Контроль конфигураций информационных систем (п. 3.2)",
             signals=(sig.MISCONFIGURATION, sig.INSECURE_PROTOCOL),
             rationale=(
@@ -431,6 +440,7 @@ _FSTEC_117 = Framework(
         ),
         Control(
             control_id="КУ",
+            citation="п. 3.3 № 117",
             title="Управление уязвимостями (п. 3.3)",
             signals=(sig.UNPATCHED_CVE, sig.KNOWN_EXPLOITED),
             severity_floor="high",
@@ -443,6 +453,7 @@ _FSTEC_117 = Framework(
         ),
         Control(
             control_id="КУ-сроки",
+            citation="п. 3.3 № 117",
             title="Сроки устранения уязвимостей по уровню критичности (п. 3.3)",
             signals=(sig.OVERDUE_FSTEC_WINDOW,),
             rationale=(
@@ -453,6 +464,7 @@ _FSTEC_117 = Framework(
         ),
         Control(
             control_id="КО",
+            citation="п. 3.4 № 117",
             title="Управление обновлениями (п. 3.4)",
             signals=(sig.OVERDUE_REMEDIATION,),
             rationale=(
@@ -463,6 +475,7 @@ _FSTEC_117 = Framework(
         ),
         Control(
             control_id="ОД",
+            citation="п. 3.5 № 117",
             title="Защита информации ограниченного доступа (п. 3.5)",
             signals=(sig.UNCLASSIFIED_ASSET,),
             requires=(SOURCE_ASSETS,),
@@ -474,6 +487,7 @@ _FSTEC_117 = Framework(
         ),
         Control(
             control_id="ПК",
+            citation="п. 3.19 № 117",
             title="Периодический контроль уровня защищённости (п. 3.19)",
             signals=(sig.STALE_ASSET,),
             requires=(SOURCE_ASSETS,),
@@ -737,11 +751,15 @@ _FZ_187 = Framework(
         "ФСТЭК, контроль конфигураций и обновлений, защиту периметра, безопасную аутентификацию "
         "и шифрование каналов связи. Категорирование объектов КИИ (127-ПП), модель угроз "
         "(ФСТЭК 2021), регламент взаимодействия с НКЦКИ/ГосСОПКА и организационные меры "
-        "подлежат оценке субъектом КИИ вне автоматического инструментального сканирования."
+        "подлежат оценке субъектом КИИ вне автоматического инструментального сканирования. "
+        "Шифры КИИ.* — обозначения этого каталога, их нет в 187-ФЗ и в приказах "
+        "№ 235 и № 239. В отчёте стоит пункт или мера, на которую опирается наблюдение, "
+        "а не шифр каталога."
     ),
     controls=(
         Control(
             control_id="КИИ.ИНВ",
+            citation="№ 235 п. 3.2",
             title="Учёт информационных ресурсов объектов КИИ (п. 3.2 № 235)",
             signals=(sig.STALE_ASSET, sig.UNCLASSIFIED_ASSET, sig.UNOWNED_ASSET),
             requires=(SOURCE_ASSETS,),
@@ -752,6 +770,7 @@ _FZ_187 = Framework(
         ),
         Control(
             control_id="КИИ.УЯЗ",
+            citation="№ 239 АУД.2",
             title="Анализ и выявление уязвимостей в программно-аппаратных комплексах КИИ (п. 24 № 235, АУД.2 № 239)",
             signals=(sig.UNPATCHED_CVE, sig.KNOWN_EXPLOITED),
             severity_floor="high",
@@ -762,6 +781,7 @@ _FZ_187 = Framework(
         ),
         Control(
             control_id="КИИ.СРОКИ",
+            citation="№ 239 ОПО.4",
             title="Соблюдение регламентных сроков устранения уязвимостей (Руководство ФСТЭК России, ОПО.4 № 239)",
             signals=(sig.OVERDUE_FSTEC_WINDOW,),
             rationale=(
@@ -771,6 +791,7 @@ _FZ_187 = Framework(
         ),
         Control(
             control_id="КИИ.ОПО",
+            citation="№ 239 ОПО.4",
             title="Управление обновлениями программного обеспечения (ОПО.4 № 239)",
             signals=(sig.OVERDUE_REMEDIATION,),
             rationale=(
@@ -781,6 +802,7 @@ _FZ_187 = Framework(
         ),
         Control(
             control_id="КИИ.УКФ",
+            citation="№ 239 УКФ.3",
             title="Контроль состава программного обеспечения на конечных точках (УКФ.3 № 239)",
             signals=(sig.UNASSESSABLE_SOFTWARE,),
             requires=(SOURCE_ENDPOINT_INVENTORY,),
@@ -791,6 +813,7 @@ _FZ_187 = Framework(
         ),
         Control(
             control_id="КИИ.КОНФ",
+            citation="п. 235, УКФ № 239",
             title="Контроль параметров настройки и безопасной конфигурации ПО и СЗИ (п. 235, УКФ № 239)",
             signals=(sig.MISCONFIGURATION, sig.INFORMATION_DISCLOSURE),
             rationale=(
@@ -800,6 +823,7 @@ _FZ_187 = Framework(
         ),
         Control(
             control_id="КИИ.ИАФ",
+            citation="№ 239 ИАФ.4",
             title="Идентификация, аутентификация и защита учётных данных (ИАФ.4, ИАФ.7 № 239)",
             signals=(sig.WEAK_CREDENTIALS, sig.INSECURE_PROTOCOL),
             rationale=(
@@ -809,6 +833,7 @@ _FZ_187 = Framework(
         ),
         Control(
             control_id="КИИ.СЕТЬ",
+            citation="№ 239 ЗИС.2",
             title="Защита периметра и сегментирование сетей объектов КИИ (ЗИС.2, УПД.3 № 239)",
             combinations=(_ADMIN_FROM_UNTRUSTED,),
             rationale=(
@@ -818,6 +843,7 @@ _FZ_187 = Framework(
         ),
         Control(
             control_id="КИИ.КАНАЛЫ",
+            citation="№ 239 ЗИС.19",
             title="Криптографическая защита данных при передаче по каналам связи (ЗИС.19 № 239)",
             signals=(sig.WEAK_CRYPTOGRAPHY, sig.INSECURE_PROTOCOL),
             rationale=(
@@ -827,6 +853,7 @@ _FZ_187 = Framework(
         ),
         Control(
             control_id="КИИ.УДАЛ",
+            citation="№ 239 УПД.13",
             title="Защищённый удалённый доступ к объектам КИИ (УПД.13 № 239)",
             combinations=(_CLEARTEXT_FROM_UNTRUSTED, _WEAK_AUTH_FROM_UNTRUSTED),
             rationale=(
