@@ -36,4 +36,12 @@ export const operatorSettingsApi = {
   },
   test: async (body: EndpointSettings, completion = false) =>
     (await api.post<ConnectionResult>("/operator/settings/test", { ...body, completion })).data,
+  models: async () =>
+    (
+      await api.get<{
+        provider: string;
+        model: string;
+        models: { id: string; context_tokens: number | null }[];
+      }>("/operator/settings/models")
+    ).data,
 };

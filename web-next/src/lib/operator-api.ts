@@ -186,10 +186,29 @@ export type RemediationStep = {
   owner?: string;
   command?: string | null;
 };
+export type ApplicabilityReview = {
+  finding_sha256: string;
+  source_sha256: string;
+  product: "apache_httpd";
+  version: string;
+  evidence_kind: "authenticated_process_inventory" | "operator_verified_container";
+  evidence_sha256: string;
+  image_id?: string;
+  reviewed: true;
+};
+export type ApplicabilityReviewResult = {
+  review_id: number;
+  finding_sha256: string;
+  source_sha256: string;
+  applicability: string;
+  effect_executed: false;
+};
 export type RemediationResult = {
   device_id?: string;
   vuln_id?: string;
   snapshot_id?: string;
+  finding_sha256?: string;
+  guidance_sha256?: string;
   state: string;
   quality_status: string;
   reason: string | null;
@@ -270,6 +289,9 @@ export const operatorApi = {
     return (await api.post<OperatorSession>("/operator/sessions", {}, options(tenant, signal)))
       .data;
   },
+  async deleteSession(tenant: string, session: string, signal?: AbortSignal) {
+    await api.delete(`/operator/sessions/${id(session)}`, options(tenant, signal));
+  },
   async submit(
     tenant: string,
     session: string,
@@ -340,6 +362,20 @@ export const operatorApi = {
       )
     ).data;
   },
+  async closeProposal(
+    tenant: string,
+    proposal: string,
+    resolution: "no_effect" | "effect_confirmed",
+    signal?: AbortSignal,
+  ) {
+    return (
+      await api.post<OperatorProposal>(
+        `/operator/proposals/${id(proposal)}/close`,
+        { resolution },
+        options(tenant, signal),
+      )
+    ).data;
+  },
   async remediation(tenant: string, device: string, language: "ru" | "en", signal?: AbortSignal) {
     return (
       await api.get<RemediationResult>(`/operator/remediation/devices/${id(device)}`, {
@@ -379,6 +415,20 @@ export const operatorApi = {
         ...options(tenant, signal),
         params: { tenant_id: tenant, language },
       })
+    ).data;
+  },
+  async reviewApplicability(
+    tenant: string,
+    finding: string,
+    body: ApplicabilityReview,
+    signal?: AbortSignal,
+  ) {
+    return (
+      await api.post<ApplicabilityReviewResult>(
+        `/operator/remediation/findings/${id(finding)}/applicability-review`,
+        body,
+        options(tenant, signal),
+      )
     ).data;
   },
   async findingRemediationSource(

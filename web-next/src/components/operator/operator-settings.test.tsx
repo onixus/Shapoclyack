@@ -46,6 +46,11 @@ beforeEach(() => {
   vi.spyOn(operatorSettingsApi, "get").mockResolvedValue(snapshot);
   vi.spyOn(operatorSettingsApi, "save").mockResolvedValue(snapshot);
   vi.spyOn(operatorSettingsApi, "reset").mockResolvedValue(undefined);
+  vi.spyOn(operatorSettingsApi, "models").mockResolvedValue({
+    provider: "local",
+    model: "m",
+    models: [{ id: "saved-model", context_tokens: 4096 }],
+  });
   vi.spyOn(operatorSettingsApi, "test").mockResolvedValue({
     ok: true,
     error: null,
@@ -79,6 +84,9 @@ describe("installation operator settings", () => {
     );
     expect(operatorSettingsApi.save).not.toHaveBeenCalled();
     expect(screen.getByText(/Discovered models/)).toHaveTextContent("discovered");
+    await user.click(screen.getByRole("button", { name: "Models on saved endpoint" }));
+    await waitFor(() => expect(operatorSettingsApi.models).toHaveBeenCalledTimes(1));
+    expect(operatorSettingsApi.test).toHaveBeenCalledTimes(1);
     expect(screen.getByLabelText("Allow sending task data to this cloud provider")).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Save connection" }));
     await waitFor(() => expect(operatorSettingsApi.save).toHaveBeenCalled());

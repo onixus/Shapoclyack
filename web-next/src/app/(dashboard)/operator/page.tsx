@@ -5,6 +5,7 @@ import { Bot } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { OperatorConsole } from "@/components/operator/operator-console";
 import { useAuthStore } from "@/lib/auth-store";
+import { isTenantAdmin } from "@/lib/authz";
 import { useT } from "@/lib/i18n";
 
 export default function OperatorPage() {
@@ -22,6 +23,7 @@ export default function OperatorPage() {
           tenant={tenant}
           actor={user.username}
           canOperate={canOperate}
+          canAdmin={isTenantAdmin(user)}
         />
       ) : (
         <p role="status" className="rounded-lg border bg-card p-6 text-sm">
