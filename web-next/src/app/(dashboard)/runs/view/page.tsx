@@ -3,7 +3,7 @@ import { runText } from "@/lib/run-presentation";
 
 import Link from "next/link";
 import { useT } from "@/lib/i18n";
-import { Suspense } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -18,6 +18,7 @@ import { ScreenshotsPanel } from "@/components/run/screenshots-panel";
 import { ControlsMatrix } from "@/components/run/controls-matrix";
 import { RelatedDomainsPanel } from "@/components/run/related-domains";
 import { SeverityFilter } from "@/components/run/severity-filter";
+import { setActiveTenant } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import { canOperate } from "@/lib/authz";
 import { useRunReport } from "@/hooks/use-run-report";
@@ -59,16 +60,50 @@ function BackToRuns() {
   );
 }
 
+const CVE_ID = /^CVE-[0-9]{4}-[0-9]{4,19}$/;
+
 function RunDetailInner() {
   const t = useT();
   const operator = useAuthStore((state) => canOperate(state.user));
+  const selectTenant = useAuthStore((state) => state.selectTenant);
   const searchParams = useSearchParams();
   const runId = (searchParams.get("runId") || "").trim();
+  const requestedHost = (searchParams.get("host") || "").trim();
+  const requestedPort = (searchParams.get("port") || "").trim();
+  const requestedCve = (searchParams.get("cve") || "").trim();
+  const requestedTenant = (searchParams.get("tenantId") || "").trim();
   const requestedTab = searchParams.get("tab") || "vulns";
   const allowedTabs = ["vulns", "hosts", "ports", "controls", "org-profile", "reports"];
   if (operator) allowedTabs.push("screenshots");
   const initialTab = allowedTabs.includes(requestedTab) ? requestedTab : "vulns";
-  const report = useRunReport(runId);
+  // A deep link names the tenant the citation was authorized in. Selecting it
+  // before the first fetch is what makes `?tenant_id=` reach the API: a fleet
+  // admin with no tenant selected otherwise resolves the first subtree that
+  // holds this run id, and a cached report from another tenant must not answer.
+  const [tenantReady, setTenantReady] = useState(!requestedTenant);
+  useEffect(() => {
+    if (!requestedTenant) return;
+    let cancelled = false;
+    setTenantReady(false);
+    setActiveTenant(requestedTenant);
+    void selectTenant(requestedTenant).finally(() => {
+      if (!cancelled) setTenantReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [requestedTenant, selectTenant]);
+  const report = useRunReport(
+    tenantReady ? runId : "",
+    {
+      host: /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,190}[A-Za-z0-9])?$/.test(requestedHost)
+        ? requestedHost
+        : null,
+      port: /^\d{1,5}$/.test(requestedPort) && Number(requestedPort) <= 65535 ? requestedPort : null,
+      cve: CVE_ID.test(requestedCve) ? requestedCve : null,
+    },
+    requestedTenant || null,
+  );
   const { filters } = report;
   const profile =
     report.detail?.meta?.profile ?? report.detail?.meta?.mode ?? report.summary?.profile;
@@ -78,10 +113,7 @@ function RunDetailInner() {
       <div className="space-y-4">
         <BackToRuns />
         <RunViews runId="" current="result" />
-        <Alert
-          variant="destructive"
-          className="border-danger/40 bg-danger-subtle text-danger"
-        >
+        <Alert variant="destructive" className="border-danger/40 bg-danger-subtle text-danger">
           <AlertDescription>{t("ui.missingRunidQueryParameter")}</AlertDescription>
         </Alert>
       </div>
@@ -92,10 +124,7 @@ function RunDetailInner() {
     return (
       <div className="space-y-4">
         <BackToRuns />
-        <Alert
-          variant="destructive"
-          className="border-danger/40 bg-danger-subtle text-danger"
-        >
+        <Alert variant="destructive" className="border-danger/40 bg-danger-subtle text-danger">
           <AlertDescription>
             {report.error instanceof Error
               ? report.error.message
@@ -122,8 +151,7 @@ function RunDetailInner() {
       <div className="space-y-2 border-b border-border pb-4">
         <BackToRuns />
         <h1 className="text-2xl font-extrabold tracking-tight text-foreground font-mono">
-          {runText(t.locale, "Run")}{" "}
-          <span className="text-primary">{report.detail.run_id}</span>
+          {runText(t.locale, "Run")} <span className="text-primary">{report.detail.run_id}</span>
         </h1>
         <RunViews runId={report.detail.run_id} current="result" />
         <p className="text-xs text-muted-foreground">
@@ -137,6 +165,7 @@ function RunDetailInner() {
               {runText(t.locale, "Active Filters")}
               {filters.host ? ` · ${runText(t.locale, "host {host}", { host: filters.host })}` : ""}
               {filters.port ? ` · ${runText(t.locale, "port {port}", { port: filters.port })}` : ""}
+              {filters.cve ? ` · ${runText(t.locale, "CVE {cve}", { cve: filters.cve })}` : ""}
               {report.isFilterFetching ? runText(t.locale, " · updating…") : ""}.{" "}
               <button
                 type="button"

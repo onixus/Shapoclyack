@@ -10,6 +10,7 @@ export type RunReportFilters = {
   severity: Severity | "all";
   host: string | null;
   port: string | null;
+  cve: string | null;
 };
 
 export type RunReportTruncation = {
@@ -24,15 +25,20 @@ export type RunReportTruncation = {
  * the API (server-side filtering); severity filtering and counting stay
  * client-side since the API has no severity parameter.
  */
-export function useRunReport(runId: string) {
+export function useRunReport(
+  runId: string,
+  initial?: { host?: string | null; port?: string | null; cve?: string | null },
+  tenantId?: string | null,
+) {
   const [severity, setSeverity] = useState<Severity | "all">("all");
-  const [host, setHost] = useState<string | null>(null);
-  const [port, setPort] = useState<string | null>(null);
+  const [host, setHost] = useState<string | null>(initial?.host || null);
+  const [port, setPort] = useState<string | null>(initial?.port || null);
+  const [cve, setCve] = useState<string | null>(initial?.cve || null);
 
-  const detailQuery = useRunDetail(runId);
-  const hostsQuery = useRunHosts(runId);
-  const portsQuery = useRunPorts(runId);
-  const vulnsQuery = useRunVulns(runId, { host, port });
+  const detailQuery = useRunDetail(runId, tenantId);
+  const hostsQuery = useRunHosts(runId, tenantId);
+  const portsQuery = useRunPorts(runId, tenantId);
+  const vulnsQuery = useRunVulns(runId, { host, port }, tenantId);
 
   const detail = detailQuery.data;
   const hosts = useMemo(() => hostsQuery.data || [], [hostsQuery.data]);
@@ -86,10 +92,11 @@ export function useRunReport(runId: string) {
     for (const item of enrichedVulns) {
       const sev = normalizeSeverity(item.severity);
       if (severity !== "all" && sev !== severity) continue;
+      if (cve && item.cve !== cve) continue;
       groups[sev].push(item);
     }
     return groups;
-  }, [enrichedVulns, severity]);
+  }, [enrichedVulns, severity, cve]);
 
   const truncation = useMemo<RunReportTruncation>(() => {
     const shown = vulns.length;
@@ -112,7 +119,7 @@ export function useRunReport(runId: string) {
     severityCounts,
     grouped,
     truncation,
-    filters: { severity, host, port } satisfies RunReportFilters,
+    filters: { severity, host, port, cve } satisfies RunReportFilters,
     setSeverity,
     toggleHost: (value: string) => {
       setHost((prev) => (prev === value ? null : value));
@@ -125,6 +132,7 @@ export function useRunReport(runId: string) {
     clearFilters: () => {
       setHost(null);
       setPort(null);
+      setCve(null);
     },
     isLoading:
       detailQuery.isLoading || hostsQuery.isLoading || portsQuery.isLoading || vulnsQuery.isLoading,

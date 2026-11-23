@@ -28,34 +28,34 @@ export function useRuns(
   });
 }
 
-export function useRunDetail(runId: string) {
+export function useRunDetail(runId: string, tenantId?: string | null) {
   return useQuery({
-    queryKey: queryKeys.run(runId),
+    queryKey: queryKeys.run(runId, tenantId),
     queryFn: () => fetchRun(runId),
     enabled: Boolean(runId),
   });
 }
 
-export function useRunHosts(runId: string) {
+export function useRunHosts(runId: string, tenantId?: string | null) {
   return useQuery({
-    queryKey: queryKeys.runHosts(runId),
+    queryKey: queryKeys.runHosts(runId, tenantId),
     queryFn: () => fetchHosts(runId),
     enabled: Boolean(runId),
   });
 }
 
-export function useRunPorts(runId: string) {
+export function useRunPorts(runId: string, tenantId?: string | null) {
   return useQuery({
-    queryKey: queryKeys.runPorts(runId),
+    queryKey: queryKeys.runPorts(runId, tenantId),
     queryFn: () => fetchPorts(runId),
     enabled: Boolean(runId),
   });
 }
 
 /** Operator-only. `enabled` must be false for a viewer so the manifest is never fetched. */
-export function useRunScreenshots(runId: string, enabled: boolean) {
+export function useRunScreenshots(runId: string, enabled: boolean, tenantId?: string | null) {
   return useQuery({
-    queryKey: queryKeys.runScreenshots(runId),
+    queryKey: queryKeys.runScreenshots(runId, tenantId),
     queryFn: () => fetchScreenshots(runId),
     enabled: Boolean(runId) && enabled,
   });
@@ -64,12 +64,13 @@ export function useRunScreenshots(runId: string, enabled: boolean) {
 export function useRunVulns(
   runId: string,
   filters?: { host?: string | null; port?: string | null; limit?: number },
+  tenantId?: string | null,
 ) {
   const host = filters?.host ?? null;
   const port = filters?.port ?? null;
   const limit = filters?.limit ?? VULN_FETCH_LIMIT;
   return useQuery({
-    queryKey: queryKeys.runVulns(runId, { host, port }),
+    queryKey: queryKeys.runVulns(runId, { host, port }, tenantId),
     queryFn: () => fetchVulns(runId, limit, host, port),
     enabled: Boolean(runId),
     staleTime: 30_000,

@@ -33,6 +33,15 @@ export type Citation = {
   status?: string;
   observed_at?: string;
 };
+/** Server-chosen same-origin destination. Never a model URL. */
+export type ConsoleTarget = {
+  kind: "finding" | "run" | "run_finding";
+  vuln_id?: string;
+  run_id?: string;
+  host?: string;
+  port?: number;
+  cve?: string | null;
+};
 export type OperatorAnswer = {
   status: string;
   summary: string;
@@ -125,6 +134,8 @@ export type RemediationSource = Citation & {
   advisory_id?: string;
   provider?: string;
   feed_date?: string;
+  url?: string;
+  kind?: string;
 };
 export type RemediationItem = {
   plan?: {
