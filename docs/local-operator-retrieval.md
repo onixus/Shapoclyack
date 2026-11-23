@@ -13,6 +13,11 @@ transaction. Tenant locking serializes refresh; legal holds forbid replacement.
 Each document records source hash, document hash, source time, snapshot and index
 time. Search and citation opening recheck publication eligibility and both source
 fingerprints. Changed or deleted artifacts are refused until a new refresh.
+The database session that read the snapshot is released before that recheck:
+file hashes are read with no connection held, then the snapshot id is read
+again. A hash match on a copy taken before the gap is not enough when the
+snapshot was deleted and rebuilt. Parallel source cards therefore do not each
+hold one pool connection while waiting for a second.
 Previously indexed chunks cannot be used after source deletion. Maintenance can
 prune stale snapshots; legal holds preserve stored data while reads still fail.
 Tenant deletion and run retention must also remove these derived tables.

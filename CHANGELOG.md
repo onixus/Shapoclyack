@@ -33,6 +33,15 @@ All notable changes to Shapoclyack are documented in this file.
   empty source is labelled **No source data**, with the missing table named,
   and is not a regulator verdict. The CISO wiki no longer claims orders 17
   and 31, `РСБ`/`ОЦЛ`/`ФЗ.5`, or a NIST CSF report the factory does not build.
+  [reports-and-compliance.md](docs/reports-and-compliance.md) and the
+  compliance page in [ui.md](docs/ui.md) say the same.
+
+- Opening an operator citation now follows a server-chosen console target:
+  the tracked finding when this publication still has one match, otherwise
+  the published run. The database session that read the evidence snapshot is
+  released before the source is reread, so parallel source cards do not empty
+  the connection pool. See [operator-evidence-api.md](docs/operator-evidence-api.md)
+  and [local-operator-retrieval.md](docs/local-operator-retrieval.md).
 
 ### Added
 

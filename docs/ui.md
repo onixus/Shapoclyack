@@ -1056,7 +1056,10 @@ the expiry.
 `/compliance` reads `GET /api/compliance/frameworks` and
 `GET /api/compliance/{framework_id}`, and shows one framework's control table
 for the selected tenant. Each row carries its status, the failing and accepted
-counts, and expands to the evidence behind it.
+counts, and expands to the evidence behind it. The row title is the regulator
+point (`citation`: `п. 3.3 № 117`, `№ 239 АУД.2`), not the catalogue label.
+`КК`/`КУ`/`КУ-сроки`/`КО`/`ОД`/`ПК` and every `КИИ.*` id stay internal; a
+control with an empty source is **No source data**, not a regulator verdict.
 
 Three things on the page are deliberate rather than decorative, and should stay
 that way if it is restyled:

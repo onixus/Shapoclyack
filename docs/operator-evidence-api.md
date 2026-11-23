@@ -16,6 +16,12 @@ index. Ordinary service tokens are rejected, including tokens with wildcard scop
 - `GET /api/operator/evidence/SOURCE?tenant_id=default&snapshot_id=SNAPSHOT&source_hash=HASH`
   opens a citation only when its current source still matches the supplied
   snapshot and lowercase SHA-256 digest. Both arguments are required.
+  The response may include `console_target`: a same-origin console path chosen
+  by the server after authorization, never by model text. A finding citation
+  opens the tracked finding card when this publication still has exactly one
+  matching host, port and CVE in the current tenant; several matches, or none,
+  stay on the published run report (`kind` is `finding`, `run_finding` or
+  `run`). The indexed source id is an internal document id, not a URL.
 - `GET /api/operator/evidence/runs/RUN/summary` opens a direct run-summary
   citation with the same required tenant/snapshot/hash bindings.
 - `POST /api/operator/evidence/devices/DEVICE/refresh` builds a typed current
