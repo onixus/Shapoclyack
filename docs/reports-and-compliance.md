@@ -271,7 +271,11 @@ for every glyph the core fonts lack: the same behaviour as before, and the
 reason a missing font is not a failed report. The scan artifact `summary.pdf`
 (`scanner/pipeline/pdf_report.py`) uses the same face and the same fallback,
 so Russian control titles are not replaced with `?` when DejaVu is installed.
-HTML and JSON are unaffected.
+The scan summary itself is Russian: template, severity and known finding
+titles. The findings column is the site (`name:port`, address in parentheses),
+not the address clipped to 22 characters with the scanned name only in a
+footnote. The reports list offers the file only when `summary.pdf` is present
+(`has_pdf`). HTML and JSON are unaffected.
 
 ### Branding
 
