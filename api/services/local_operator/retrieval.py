@@ -112,6 +112,27 @@ def _metadata(row):
             "indexed_at": row.indexed_at.isoformat() + "Z"}
 
 
+def _snapshot_view(row):
+    """Snapshot fields a freshness check can use after this session is closed.
+
+    The check opens its own connection and reads the published files. Calling
+    it while the caller's session is still checked out makes every parallel
+    source card hold one connection and wait for a second, which empties the pool.
+    """
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        snapshot_id=row.snapshot_id, tenant_id=row.tenant_id, run_id=row.run_id,
+        publication_snapshot=row.publication_snapshot, summary_hash=row.summary_hash,
+        findings_hash=row.findings_hash, state=row.state, indexed_at=row.indexed_at)
+
+
+def _document_view(row):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        source_id=row.source_id, source_hash=row.source_hash, artifact=row.artifact,
+        observed_at=row.observed_at, document_hash=row.document_hash, content=row.content)
+
+
 def _refresh_exact_run(settings, principal, run_id):
     counts, citation, findings, findings_hash, observed, state = _capture(settings, principal, run_id)
     now = datetime.now(UTC).replace(tzinfo=None)
@@ -166,6 +187,18 @@ def _current(settings, principal, row):
         raise _error("operator_source_changed")
 
 
+def _held_snapshot(settings, principal, snapshot_id):
+    """The snapshot row after the caller's session has been released.
+
+    File hashes can match a copy taken before the gap and still belong to a
+    snapshot that was deleted and rebuilt. Identity is the snapshot id.
+    """
+    with tenant_scope.tenant(principal.tenant_id), get_session(settings.postgres_url) as db:
+        return db.scalar(select(models.OperatorEvidenceSnapshot).where(
+            models.OperatorEvidenceSnapshot.snapshot_id == snapshot_id,
+            models.OperatorEvidenceSnapshot.tenant_id == principal.tenant_id))
+
+
 def _item(doc, snapshot):
     citation = {"source_id": doc.source_id, "source_hash": doc.source_hash,
                 "snapshot_id": snapshot.snapshot_id, "source_type": "finding" if doc.artifact == "vulnerabilities.json" else "document",
@@ -203,7 +236,14 @@ def search(settings, principal, run_id, query="", cve=None, package=None, limit=
         if snapshot is None:
             return {"snapshot_id": None, "state": "missing", "mode": "exact_fulltext",
                     "semantic_status": "unsupported", "items": []}
-        _current(settings, principal, snapshot)
+        held = _snapshot_view(snapshot)
+    _current(settings, principal, held)
+    with tenant_scope.tenant(principal.tenant_id), get_session(settings.postgres_url) as db:
+        snapshot = db.scalar(select(models.OperatorEvidenceSnapshot).where(
+            models.OperatorEvidenceSnapshot.tenant_id == principal.tenant_id,
+            models.OperatorEvidenceSnapshot.run_id == run_id))
+        if snapshot is None or snapshot.snapshot_id != held.snapshot_id:
+            raise _error("operator_source_changed")
         statement = select(models.OperatorEvidenceDocument).where(
             models.OperatorEvidenceDocument.tenant_id == principal.tenant_id,
             models.OperatorEvidenceDocument.snapshot_id == snapshot.snapshot_id)
@@ -261,8 +301,12 @@ def get_citation(settings, principal, source_id, snapshot_id, source_hash):
             models.OperatorEvidenceSnapshot.tenant_id == principal.tenant_id))
         if doc is None or snapshot is None:
             return None
-        _current(settings, principal, snapshot)
-        return _item(doc, snapshot)
+        held_doc = _document_view(doc)
+        held_snapshot = _snapshot_view(snapshot)
+    _current(settings, principal, held_snapshot)
+    if _held_snapshot(settings, principal, held_snapshot.snapshot_id) is None:
+        raise _error("operator_source_changed")
+    return _item(held_doc, held_snapshot)
 
 
 def verify_items(settings, principal, items):
@@ -286,8 +330,11 @@ def verify_items(settings, principal, items):
                 models.OperatorEvidenceDocument.tenant_id == principal.tenant_id,
                 models.OperatorEvidenceDocument.snapshot_id.in_(snapshot_ids),
                 models.OperatorEvidenceDocument.source_id.in_([item["source_id"] for item in items])))}
-        for snapshot in snapshots:
-            _current(settings, principal, snapshot)
+        held = [_snapshot_view(snapshot) for snapshot in snapshots]
+    for snapshot in held:
+        _current(settings, principal, snapshot)
+        if _held_snapshot(settings, principal, snapshot.snapshot_id) is None:
+            return False
     return all(current.get(item["source_id"]) == (item["source_hash"], item["document_hash"]) for item in items)
 
 
