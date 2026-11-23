@@ -194,6 +194,9 @@ const copy = {
       "This plan expired or is no longer awaiting confirmation. Prepare a new preview when required.",
     staleServer:
       "The server rejected this plan: it expired or is no longer awaiting confirmation. Nothing was executed. Prepare a new preview.",
+    policyDeviation:
+      "The tenant policy allows only the safe profile. The server refuses any other mode; confirmation does not override that.",
+    offlineUnverified: "Offline operation has not been verified on this installation.",
     remediation: "Find a vendor-backed fix",
     device: "Endpoint device ID",
     remediationScope: "Remediation context",
@@ -387,6 +390,9 @@ const copy = {
       "План истёк или уже не ожидает подтверждения. При необходимости подготовьте новый предпросмотр.",
     staleServer:
       "Сервер отклонил этот план: он истёк или уже не ожидает подтверждения. Ничего не выполнено. Подготовьте новый предпросмотр.",
+    policyDeviation:
+      "Политика тенанта разрешает только безопасный профиль. Сервер отклонит любой другой режим; подтверждение это не отменяет.",
+    offlineUnverified: "Автономная работа без сети на этой установке не проверена.",
     remediation: "Найти исправление из бюллетеня безопасности",
     device: "ID устройства",
     remediationScope: "Контекст исправления",
@@ -662,6 +668,9 @@ export function OperatorConsole({
           </div>
         </div>
           <p>{status.data.external_inference ? c.hosted : c.local}</p>
+          {status.data.offline_verified !== true && (
+            <p role="status">{c.offlineUnverified}</p>
+          )}
           <p>
             {status.data.runtime_status === "ready"
               ? c.runtimeReady
@@ -2104,6 +2113,12 @@ function PlanImpact({ proposal, c }: { proposal: OperatorProposal; c: Copy }) {
   if ("finding_state" in impact)
     rows.push([c.findingState, operatorStatusLabel(language, String(impact.finding_state))]);
   if ("approved" in scope) rows.push([c.scopeApproval, scope.approved]);
+  const requested = proposal.arguments.mode;
+  // Mode (safe/balanced/fast) and policy.profile (standard/fragile) are different
+  // axes. The server does not rewrite one into the other; it refuses only when
+  // safe_only is set and the requested mode is not safe.
+  const deviations: string[] = [];
+  if (policy.safe_only === true && requested !== "safe") deviations.push(c.safeOnly);
   if (impact.policy === null) rows.push([c.policy, null]);
   const policyLabels: Record<string, string> = {
     profile: c.policy,
@@ -2130,6 +2145,11 @@ function PlanImpact({ proposal, c }: { proposal: OperatorProposal; c: Copy }) {
   return (
     <div className="space-y-2">
       <h4 className="text-sm font-semibold">{c.impact}</h4>
+      {deviations.length > 0 && (
+        <p role="status" className="rounded border border-warning/40 bg-warning-subtle p-2 text-sm text-warning">
+          {c.policyDeviation} {deviations.join("; ")}
+        </p>
+      )}
       <PlanRows rows={rows} c={c} />
       {entries.length > 0 && (
         <div className="rounded border p-3 text-sm">

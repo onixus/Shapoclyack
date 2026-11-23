@@ -162,6 +162,101 @@ def test_viewer_and_foreign_actor_cannot_confirm_plan(env):
 
 
 @requires_postgres
+def test_foreign_tenant_cannot_read_cached_evidence(env):
+    """A citation minted for one tenant must not open for a principal of another.
+
+    Asking the default viewer for ``tenant_id=other`` stops in tenant resolution
+    with 403 before the evidence route runs. That refusal does not prove
+    ``get_citation`` filters by tenant. The evidence check is a principal whose
+    tenant is already the other one.
+    """
+    client, settings, headers, session_id = env
+    from datetime import UTC, datetime
+
+    from api.auth import TenantPrincipal
+    from api.db import models, tenant_scope
+    from api.db.engine import get_session
+    from api.services import artifact_store
+    from api.services.artifact_store import keys
+    from api.services.local_operator import retrieval
+
+    with tenant_scope.system("security gate foreign tenant"):
+        with get_session(settings.postgres_url) as db:
+            moment = datetime.now(UTC).replace(tzinfo=None)
+            db.add(models.Job(job_id="gate-job", tenant_id="default", run_id="gate-run",
+                              status="succeeded", queued_at=moment, finished_at=moment))
+            db.add(models.Tenant(tenant_id="other", name="Other", status="active",
+                                  created_at=moment))
+    store = artifact_store.get_store(settings)
+    ref = keys.run_ref("gate-run", "default")
+    store.put_bytes(keys.run_artifact(ref, "tenant.json"), json.dumps({
+        "tenant_id": "default", "job_id": "gate-job", "publication_id": "gate-pub",
+        "api_token": "canary-secret-token",
+    }).encode())
+    store.put_bytes(keys.run_artifact(ref, "summary.json"), json.dumps({
+        "alive_hosts": 1, "api_token": "canary-secret-token",
+    }).encode())
+    refreshed = client.post("/api/operator/evidence/runs/gate-run/refresh?tenant_id=default",
+                            headers=headers["operator"], json={})
+    assert refreshed.status_code == 200, refreshed.text
+    found = client.get("/api/operator/evidence/search", headers=headers["viewer"], params={
+        "tenant_id": "default", "run_id": "gate-run",
+    })
+    assert found.status_code == 200, found.text
+    assert "canary-secret-token" not in found.text
+    item = found.json()["items"][0]
+    unresolved = client.get("/api/operator/evidence/" + item["source_id"], headers=headers["viewer"],
+                            params={"tenant_id": "other", "snapshot_id": item["snapshot_id"],
+                                    "source_hash": item["source_hash"]})
+    assert unresolved.status_code == 403, unresolved.text
+    foreign = TenantPrincipal(username="viewer", tenant_id="other", role="viewer", rank=1,
+                              tenant_requested=True, is_platform_admin=False)
+    assert retrieval.get_citation(
+        settings, foreign, item["source_id"], item["snapshot_id"], item["source_hash"]) is None
+    owned = TenantPrincipal(username="viewer", tenant_id="default", role="viewer", rank=1,
+                            tenant_requested=True, is_platform_admin=False)
+    opened = retrieval.get_citation(
+        settings, owned, item["source_id"], item["snapshot_id"], item["source_hash"])
+    assert opened is not None
+    assert "canary-secret-token" not in json.dumps(opened)
+    # The fixture inserts one finished job so the evidence index has a run.
+    # That row is not a scan the operator started.
+    assert jobs.list_jobs(settings)[1] == 1
+    assert session_id
+
+
+def test_operator_audit_redacts_canary_secrets(monkeypatch):
+    """A refusal reason is kept; credential field names are replaced before the row."""
+    from sqlalchemy.orm import Session
+
+    from api.services.audit import record, system_context
+
+    secret = "canary-operator-token"
+    captured = []
+    session = Session()
+    monkeypatch.setattr(session, "add", captured.append)
+    record(
+        session,
+        system_context(),
+        action="operator.evidence.refused",
+        resource_type="operator_evidence",
+        resource_id="run-1",
+        before={"reason": "access_revoked", "api_token": secret,
+                "nested": {"client_secret": secret, "source_id": "run-1"}},
+        after={"reason": f"denied because {secret}"},
+    )
+    assert len(captured) == 1
+    row = captured[0]
+    assert row.before["reason"] == "access_revoked"
+    assert row.before["api_token"] == "[redacted]"
+    assert row.before["nested"]["client_secret"] == "[redacted]"
+    assert row.before["nested"]["source_id"] == "run-1"
+    # Prose is not a credential field. The contract does not claim to scrub it.
+    assert secret in row.after["reason"]
+    assert secret not in json.dumps(row.before)
+
+
+@requires_postgres
 def test_plain_chat_text_is_never_confirmation(env):
     client, settings, headers, session_id = env
     response = client.post(f"/api/operator/sessions/{session_id}/tasks?tenant_id=default",
