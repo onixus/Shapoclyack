@@ -4,6 +4,18 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+## [0.50-1124] — 2026-11-24
+
+Stable release cut from `main` at `26e27153` (after PR #676). It succeeds the
+candidate `shapoclyack-0.49-1111-rc1`. Plain-language notes:
+[docs/releases/0.50-1124.md](docs/releases/0.50-1124.md).
+
+### Security
+
+- The scanner, API and all-in-one images upgrade `libkrb5-3`, `libk5crypto3`
+  and `libgssapi-krb5-2` to the Debian security release, closing the Kerberos
+  flaws those packages carried.
+
 ### Fixed
 
 - The scan `summary.pdf` was still the English template, and the findings

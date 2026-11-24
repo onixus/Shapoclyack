@@ -7,16 +7,16 @@ fix is being prepared. Older release lines are not maintained indefinitely.
 
 | Version | Support status |
 |---|---|
-| `0.48-1021` / current `0.48` line | Supported |
-| `0.46` | Security fixes only; upgrade recommended |
-| `0.47-1009-rc1` (candidate, superseded), `0.45` and older | Unsupported |
+| `0.50-1124` / current `0.50` line | Supported |
+| `0.48-1021` / `0.48` line | Security fixes only; upgrade recommended |
+| `0.49-1111-rc1` (candidate, superseded), `0.46` and older | Unsupported |
 
 Use immutable release tags in production. Do not depend on `latest`.
 
 ```bash
-docker pull ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.48-1021
-docker pull ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.48-1021
-docker pull ghcr.io/onixus/shapoclyack-api:shapoclyack-0.48-1021
+docker pull ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.50-1124
+docker pull ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.50-1124
+docker pull ghcr.io/onixus/shapoclyack-api:shapoclyack-0.50-1124
 ```
 
 The current release is listed on the repository

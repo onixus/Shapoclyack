@@ -11,6 +11,7 @@ policy, and customer-side verification. It does not repeat what other pages own:
 |---|---|
 | Which release lines are supported, and how to report a vulnerability | [Security policy](../.github/SECURITY.md) |
 | What changed in a release | [CHANGELOG.md](../CHANGELOG.md) |
+| Preparing and publishing `0.50-1124` | [Release notes and checklist](releases/0.50-1124.md) |
 | Preparing and publishing `0.49-1111-rc1` | [Release notes and checklist](releases/0.49-1111-rc1.md) |
 | Preparing and publishing `0.48-1021` | [Release notes and checklist](releases/0.48-1021.md) |
 | The superseded `0.47-1009-rc1` candidate | [Candidate notes](releases/0.47-1009-rc1.md) |
@@ -78,6 +79,8 @@ the build when they disagree or the version has no pin.
 | `shapoclyack-0.46-0922` | `v1.1.0` | against the pinned digest; the pin itself was taken unsigned, because `v1.1.0` predates GenDec's release signing |
 | `shapoclyack-0.47-1009-rc1` (superseded candidate) | `v1.1.0` | against the pinned digest, and the image records it (below) |
 | `shapoclyack-0.48-1021` | `v1.4.0` | against the pinned digest (signed release, signature verified by `pulse-pin.sh`), and the image records it |
+| `shapoclyack-0.49-1111-rc1` (candidate) | `v1.5.0` | against the pinned digest, and the image records it |
+| `shapoclyack-0.50-1124` | `v1.5.0` | against the pinned digest, and the image records it |
 
 A support window for a release line ([SECURITY.md](../.github/SECURITY.md#supported-versions))
 covers its Pulse the same way it covers everything else in its images.
