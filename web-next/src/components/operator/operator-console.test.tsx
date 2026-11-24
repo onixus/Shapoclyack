@@ -46,13 +46,19 @@ const plan: OperatorProposal = {
 function savedSession(tenant = "tenant-a", actor = "alice", id = "s1") {
   sessionStorage.setItem(`operator-session:${JSON.stringify([tenant, actor])}`, id);
 }
-function renderConsole(tenant = "tenant-a", canOperate = true) {
+function renderConsole(tenant = "tenant-a", canOperate = true, canAdmin = false) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { retry: false } },
   });
   const view = render(
     <QueryClientProvider client={client}>
-      <OperatorConsole key={tenant} tenant={tenant} actor="alice" canOperate={canOperate} />
+      <OperatorConsole
+        key={tenant}
+        tenant={tenant}
+        actor="alice"
+        canOperate={canOperate}
+        canAdmin={canAdmin}
+      />
     </QueryClientProvider>,
   );
   return {
@@ -95,6 +101,12 @@ beforeEach(() => {
   vi.spyOn(operatorApi, "cancel").mockResolvedValue({ ...queued, cancel_requested: true });
   vi.spyOn(operatorApi, "prepare").mockResolvedValue(plan);
   vi.spyOn(operatorApi, "proposal").mockResolvedValue(plan);
+  vi.spyOn(operatorApi, "deleteSession").mockResolvedValue(undefined);
+  vi.spyOn(operatorApi, "closeProposal").mockResolvedValue({
+    ...plan,
+    status: "failed",
+    execution: { execution_id: "e1", status: "failed" },
+  });
   vi.spyOn(operatorApi, "confirm").mockResolvedValue({
     ...plan,
     status: "succeeded",
@@ -665,6 +677,40 @@ describe("operator console", () => {
       await screen.findByText("Cancellation requested; waiting for worker confirmation."),
     ).toBeInTheDocument();
     expect(screen.getByText("running")).toBeInTheDocument();
+  });
+
+  it("deletes the selected session without creating a replacement", async () => {
+    savedSession();
+    vi.spyOn(operatorApi, "createSession").mockResolvedValue(sessionRow);
+    renderConsole();
+    await screen.findByText("No tasks in this session.");
+    await userEvent.click(screen.getByRole("button", { name: "Delete this session" }));
+    await waitFor(() => expect(operatorApi.deleteSession).toHaveBeenCalledWith("tenant-a", "s1"));
+    expect(operatorApi.createSession).not.toHaveBeenCalled();
+  });
+
+  it("lets a tenant admin record an unresolved action without redispathing it", async () => {
+    savedSession();
+    vi.mocked(operatorApi.proposal).mockResolvedValue({
+      ...plan,
+      status: "unknown",
+      execution: { execution_id: "e1", status: "unknown", error: "dispatch_outcome_unknown" },
+    });
+    sessionStorage.setItem(
+      `operator-proposal:${JSON.stringify(["tenant-a", "alice", "s1"])}`,
+      "plan1",
+    );
+    const { unmount } = renderConsole();
+    expect(await screen.findByText(/Plan digest:/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Nothing was created" })).not.toBeInTheDocument();
+    unmount();
+    renderConsole("tenant-a", true, true);
+    await userEvent.click(await screen.findByRole("button", { name: "Nothing was created" }));
+    await waitFor(() =>
+      expect(operatorApi.closeProposal).toHaveBeenCalledWith("tenant-a", "plan1", "no_effect"),
+    );
+    expect(operatorApi.confirm).not.toHaveBeenCalled();
+    expect(operatorApi.prepare).not.toHaveBeenCalled();
   });
 
   it("requires review and confirms the stored plan hash exactly once", async () => {

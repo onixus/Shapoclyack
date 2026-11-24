@@ -75,6 +75,39 @@ describe("operator transport boundaries", () => {
       }),
     );
   });
+  it("deletes a session and closes an unresolved proposal on tenant-scoped routes", async () => {
+    const del = vi.spyOn(api, "delete").mockResolvedValue({ data: undefined });
+    const post = vi.spyOn(api, "post").mockResolvedValue({ data: {} });
+    await operatorApi.deleteSession("a", "s/1");
+    expect(del).toHaveBeenCalledWith("/operator/sessions/s%2F1", {
+      params: { tenant_id: "a" },
+      signal: undefined,
+    });
+    await operatorApi.closeProposal("a", "p/1", "no_effect");
+    expect(post).toHaveBeenCalledWith(
+      "/operator/proposals/p%2F1/close",
+      { resolution: "no_effect" },
+      { params: { tenant_id: "a" }, signal: undefined },
+    );
+  });
+  it("posts an applicability review without inferring evidence", async () => {
+    const post = vi.spyOn(api, "post").mockResolvedValue({ data: {} });
+    const body = {
+      finding_sha256: "a".repeat(64),
+      source_sha256: "b".repeat(64),
+      product: "apache_httpd" as const,
+      version: "2.4.62",
+      evidence_kind: "authenticated_process_inventory" as const,
+      evidence_sha256: "c".repeat(64),
+      reviewed: true as const,
+    };
+    await operatorApi.reviewApplicability("a", "finding/1", body);
+    expect(post).toHaveBeenCalledWith(
+      "/operator/remediation/findings/finding%2F1/applicability-review",
+      body,
+      { params: { tenant_id: "a" }, signal: undefined },
+    );
+  });
   it("refuses empty tenant without sending a request", async () => {
     const get = vi.spyOn(api, "get");
     await expect(operatorApi.status(" ")).rejects.toThrow("Explicit tenant required");

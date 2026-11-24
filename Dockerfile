@@ -279,6 +279,14 @@ RUN set -eux; \
         dpkg --compare-versions "$(dpkg-query -W -f='${Version}' "$pkg")" ge '3.0.4'; \
     done; \
     dpkg --compare-versions "$(dpkg-query -W -f='${Version}' zlib1g)" ge '1:1.3.dfsg+really1.3.1-1+deb13u1'; \
+    # CVE-2026-107364 and the 2026 krb5 KDC/kadmind batch. Fixed in
+    # 1.21.3-5+deb13u2; the pinned slim still has deb13u1. curl and git pull
+    # these libraries in even though the scanner does not run a KDC.
+    apt-get install -y --no-install-recommends --only-upgrade \
+        libkrb5-3 libkrb5support0 libgssapi-krb5-2 libk5crypto3; \
+    for pkg in libkrb5-3 libkrb5support0 libgssapi-krb5-2 libk5crypto3; do \
+        dpkg --compare-versions "$(dpkg-query -W -f='${Version}' "$pkg")" ge '1.21.3-5+deb13u2'; \
+    done; \
     rm -rf /var/lib/apt/lists/*
 
 # Pulse CLI for service_probe.backend=pulse|hybrid (GenDec release; see docs/pulse-backend.md).

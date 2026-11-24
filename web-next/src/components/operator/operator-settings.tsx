@@ -28,6 +28,9 @@ export function OperatorSettings({ actor }: { actor: string }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [result, setResult] = useState<ConnectionResult | null>(null);
+  const [savedModels, setSavedModels] = useState<{ id: string; context_tokens: number | null }[]>(
+    [],
+  );
   useEffect(() => {
     if (snapshot.data) {
       const values = snapshot.data.effective ?? snapshot.data.deployment;
@@ -45,14 +48,16 @@ export function OperatorSettings({ actor }: { actor: string }) {
     }
   }, [snapshot.data]);
 
-  async function run(action: "save" | "reset" | "discover" | "test") {
+  async function run(action: "save" | "reset" | "discover" | "test" | "saved-models") {
     if (!draft) return;
     setBusy(true);
     setMessage("");
     setResult(null);
     const body = { ...draft, api_key: clearKey ? "" : key || undefined };
     try {
-      if (action === "test" || action === "discover") {
+      if (action === "saved-models") {
+        setSavedModels((await operatorSettingsApi.models()).models);
+      } else if (action === "test" || action === "discover") {
         setResult(await operatorSettingsApi.test(body, action === "test" && completion));
       } else {
         if (action === "reset") await operatorSettingsApi.reset();
@@ -165,7 +170,7 @@ export function OperatorSettings({ actor }: { actor: string }) {
               onChange={(e) => setDraft({ ...draft, model: e.target.value })}
             />
             <datalist id="operator-discovered-models">
-              {result?.models.map((model) => (
+              {[...(result?.models ?? []), ...savedModels].map((model) => (
                 <option key={model.id} value={model.id} />
               ))}
             </datalist>
@@ -238,6 +243,9 @@ export function OperatorSettings({ actor }: { actor: string }) {
             <Button type="submit">{text("Save connection", "Сохранить подключение")}</Button>
             <Button type="button" variant="outline" onClick={() => void run("discover")}>
               {text("Discover models", "Найти модели")}
+            </Button>
+            <Button type="button" variant="outline" onClick={() => void run("saved-models")}>
+              {text("Models on saved endpoint", "Модели сохранённого подключения")}
             </Button>
             <Button type="button" variant="outline" onClick={() => void run("test")}>
               {text("Test connection", "Проверить подключение")}

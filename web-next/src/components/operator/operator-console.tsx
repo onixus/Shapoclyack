@@ -39,6 +39,7 @@ import {
   type OperatorProposal,
   type OperatorTask,
   type ProposalAction,
+  type ApplicabilityReview,
   type OperatorPlan,
   type PlannerRequest,
   type PlannerScan,
@@ -243,6 +244,25 @@ const copy = {
       "Actions require a server-validated plan. This console cannot install patches or close findings.",
     pending: "Request in progress…",
     busy: "A task is queued or running. Its state is restored from the server; reconnecting does not submit it again.",
+    deleteSession: "Delete this session",
+    deleteSessionHelp:
+      "Deletes this personal session and its history. A session with a queued task or an unresolved action cannot be deleted.",
+    closeUnknown: "Record the outcome of this unresolved action",
+    closeNoEffect: "Nothing was created",
+    closeEffect: "The effect exists",
+    closeHelp:
+      "Tenant administrator only. Records what you verified in jobs and findings. Nothing is started again.",
+    reviewApplicability: "Record Apache 2.4 applicability",
+    reviewHelp:
+      "Tenant administrator only. Records reviewed evidence for TRACE guidance. Nothing is installed or closed.",
+    reviewProduct: "Product",
+    reviewVersion: "Reviewed Apache version",
+    reviewEvidenceKind: "Evidence kind",
+    reviewEvidenceHash: "Evidence SHA-256",
+    reviewImage: "Image id (container evidence)",
+    reviewSubmit: "Record this review",
+    inventoryEvidence: "Authenticated process inventory",
+    containerEvidence: "Operator-verified container",
   },
   ru: {
     runtimeReady:
@@ -442,6 +462,25 @@ const copy = {
       "Действия требуют проверенного сервером плана. Консоль не устанавливает патчи и не закрывает находки.",
     pending: "Запрос выполняется…",
     busy: "Есть задача в очереди или в работе. Состояние восстанавливается с сервера; переподключение не отправляет её заново.",
+    deleteSession: "Удалить эту сессию",
+    deleteSessionHelp:
+      "Удаляет личную сессию и её историю. Сессию с задачей в очереди или невыясненным действием удалить нельзя.",
+    closeUnknown: "Зафиксировать исход невыясненного действия",
+    closeNoEffect: "Ничего не создано",
+    closeEffect: "Эффект есть",
+    closeHelp:
+      "Только администратор тенанта. Фиксирует то, что вы проверили в заданиях и находках. Ничего не запускается заново.",
+    reviewApplicability: "Зафиксировать применимость Apache 2.4",
+    reviewHelp:
+      "Только администратор тенанта. Записывает проверенные доказательства для рекомендации TRACE. Ничего не устанавливается и не закрывается.",
+    reviewProduct: "Продукт",
+    reviewVersion: "Проверенная версия Apache",
+    reviewEvidenceKind: "Вид доказательства",
+    reviewEvidenceHash: "SHA-256 доказательства",
+    reviewImage: "Идентификатор образа (для контейнера)",
+    reviewSubmit: "Записать эту проверку",
+    inventoryEvidence: "Инвентаризация процессов",
+    containerEvidence: "Проверенный оператором контейнер",
   },
 };
 
@@ -494,10 +533,12 @@ export function OperatorConsole({
   tenant,
   actor,
   canOperate,
+  canAdmin = false,
 }: {
   tenant: string;
   actor: string;
   canOperate: boolean;
+  canAdmin?: boolean;
 }) {
   const t = useT();
   const router = useRouter();
@@ -567,6 +608,19 @@ export function OperatorConsole({
     refetchInterval: (query) => (query.state.data?.tasks?.some(activeTask) ? 2000 : false),
     refetchOnWindowFocus: true,
     refetchOnReconnect: true,
+  });
+  const removeSession = useMutation({
+    mutationKey: [...prefix, "delete-session"],
+    mutationFn: (sessionId: string) => operatorApi.deleteSession(tenant, sessionId),
+    retry: false,
+    onSuccess: () => {
+      if (!active.current) return;
+      setSession("");
+      remember(storageKey, "");
+      setAdopted(null);
+      setSourceRequest(null);
+      void client.invalidateQueries({ queryKey: [...prefix, "sessions"] });
+    },
   });
   const create = useMutation({
     mutationKey: [...prefix, "create"],
@@ -829,6 +883,15 @@ export function OperatorConsole({
           <Button disabled={!canOperate || create.isPending} onClick={() => create.mutate()}>
             {c.newSession}
           </Button>
+          {session && (
+            <Button
+              variant="outline"
+              disabled={!canOperate || removeSession.isPending}
+              onClick={() => removeSession.mutate(session)}
+            >
+              {c.deleteSession}
+            </Button>
+          )}
           <Button
             variant="outline"
             onClick={() => {
@@ -842,7 +905,10 @@ export function OperatorConsole({
           {!sessions.data?.items.length && (
             <p className="text-sm text-muted-foreground">{c.noSessions}</p>
           )}
-          {(sessions.isError || create.isError || detail.isError) && <p role="alert">{c.failed}</p>}
+          {session && <p className="w-full text-sm text-muted-foreground">{c.deleteSessionHelp}</p>}
+          {(sessions.isError || create.isError || detail.isError || removeSession.isError) && (
+            <p role="alert">{c.failed}</p>
+          )}
         </CardContent>
       </Card>
       {session && detail.data && (
@@ -1007,6 +1073,7 @@ export function OperatorConsole({
                 actor={actor}
                 session={session}
                 canOperate={canOperate}
+                canAdmin={canAdmin}
                 c={c}
                 history={detail.data.proposals ?? []}
                 draft={draft}
@@ -1038,6 +1105,7 @@ export function OperatorConsole({
         actor={actor}
         language={language}
         c={c}
+        canAdmin={canAdmin}
         onSource={source}
         draft={draft}
       />
@@ -1783,6 +1851,7 @@ function ActionPanel({
   actor,
   session,
   canOperate,
+  canAdmin,
   c,
   history,
   draft,
@@ -1791,6 +1860,7 @@ function ActionPanel({
   actor: string;
   session: string;
   canOperate: boolean;
+  canAdmin: boolean;
   c: Copy;
   history: OperatorProposal[];
   draft?: AdoptedPlan;
@@ -1848,6 +1918,16 @@ function ActionPanel({
     mutationKey: [...operatorKey(tenant, actor), "confirm"],
     mutationFn: (data: OperatorProposal) =>
       operatorApi.confirm(tenant, data.proposal_id, data.arguments_sha256),
+    retry: false,
+    onSettled: () => {
+      if (!active.current) return;
+      void proposal.refetch();
+    },
+  });
+  const closeUnknown = useMutation({
+    mutationKey: [...operatorKey(tenant, actor), "close"],
+    mutationFn: (resolution: "no_effect" | "effect_confirmed") =>
+      operatorApi.closeProposal(tenant, proposalId, resolution),
     retry: false,
     onSettled: () => {
       if (!active.current) return;
@@ -2081,6 +2161,35 @@ function ActionPanel({
             >
               {c.retry}
             </Button>
+            {canAdmin &&
+              data.execution &&
+              (data.execution.status === "unknown" || data.execution.status === "executing") && (
+                <div className="space-y-2 rounded border p-3 text-sm">
+                  <p className="font-medium">{c.closeUnknown}</p>
+                  <p className="text-muted-foreground">{c.closeHelp}</p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={closeUnknown.isPending}
+                      onClick={() => closeUnknown.mutate("no_effect")}
+                    >
+                      {c.closeNoEffect}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={closeUnknown.isPending}
+                      onClick={() => closeUnknown.mutate("effect_confirmed")}
+                    >
+                      {c.closeEffect}
+                    </Button>
+                  </div>
+                  {closeUnknown.isError && <p role="alert">{c.failed}</p>}
+                </div>
+              )}
             {data.execution && (
               <div className="space-y-2 text-sm">
                 <p>{operatorStatusLabel(language, data.execution.status)}</p>
@@ -2330,6 +2439,7 @@ function RemediationPanel({
   actor,
   language,
   c,
+  canAdmin,
   onSource,
   draft,
 }: {
@@ -2337,6 +2447,7 @@ function RemediationPanel({
   actor: string;
   language: "ru" | "en";
   c: Copy;
+  canAdmin: boolean;
   onSource: (citation: Citation, device?: string, finding?: string, openRecord?: boolean) => void;
   draft?: AdoptedPlan;
 }) {
@@ -2364,6 +2475,15 @@ function RemediationPanel({
         : operatorApi.remediation(tenant, selected, language, signal),
     enabled: Boolean(selected),
     retry: false,
+  });
+  const review = useMutation({
+    mutationKey: [...operatorKey(tenant, actor), "applicability", selected],
+    mutationFn: (body: ApplicabilityReview) =>
+      operatorApi.reviewApplicability(tenant, selected, body),
+    retry: false,
+    onSuccess: () => {
+      void result.refetch();
+    },
   });
   return (
     <Card>
@@ -2453,6 +2573,21 @@ function RemediationPanel({
                 </ol>
               </section>
             )}
+            {canAdmin &&
+              scope === "finding" &&
+              result.data.reason === "application_review_required" &&
+              result.data.finding_sha256 &&
+              result.data.guidance_sha256 && (
+                <ApplicabilityReviewForm
+                  key={selected}
+                  findingSha={result.data.finding_sha256}
+                  sourceSha={result.data.guidance_sha256}
+                  pending={review.isPending}
+                  failed={review.isError}
+                  c={c}
+                  onSubmit={(body) => review.mutate(body)}
+                />
+              )}
             {result.data.items.map((item, index) => (
               <article
                 key={`${item.package}:${index}`}
@@ -2593,5 +2728,108 @@ function RemediationPanel({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function ApplicabilityReviewForm({
+  findingSha,
+  sourceSha,
+  pending,
+  failed,
+  c,
+  onSubmit,
+}: {
+  findingSha: string;
+  sourceSha: string;
+  pending: boolean;
+  failed: boolean;
+  c: Copy;
+  onSubmit: (body: ApplicabilityReview) => void;
+}) {
+  const [version, setVersion] = useState("");
+  const [kind, setKind] = useState<ApplicabilityReview["evidence_kind"]>(
+    "authenticated_process_inventory",
+  );
+  const [evidence, setEvidence] = useState("");
+  const [image, setImage] = useState("");
+  const [reviewed, setReviewed] = useState(false);
+  return (
+    <form
+      className="space-y-3 rounded border p-3 text-sm"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!reviewed) return;
+        onSubmit({
+          finding_sha256: findingSha,
+          source_sha256: sourceSha,
+          product: "apache_httpd",
+          version: version.trim(),
+          evidence_kind: kind,
+          evidence_sha256: evidence.trim(),
+          ...(kind === "operator_verified_container" ? { image_id: image.trim() } : {}),
+          reviewed: true,
+        });
+      }}
+    >
+      <h3 className="font-semibold">{c.reviewApplicability}</h3>
+      <p className="text-muted-foreground">{c.reviewHelp}</p>
+      <p className="break-all text-xs text-muted-foreground">
+        {c.hash}: {findingSha}
+      </p>
+      <label className="block space-y-1">
+        {c.reviewProduct}
+        <Input readOnly value="apache_httpd" />
+      </label>
+      <label className="block space-y-1">
+        {c.reviewVersion}
+        <Input
+          required
+          maxLength={16}
+          pattern="2\.4\.[0-9]{1,4}"
+          value={version}
+          onChange={(event) => setVersion(event.target.value)}
+        />
+      </label>
+      <label className="block space-y-1">
+        {c.reviewEvidenceKind}
+        <select
+          aria-label={c.reviewEvidenceKind}
+          className="block h-10 w-full rounded-md border border-control bg-background px-3 text-sm"
+          value={kind}
+          onChange={(event) => setKind(event.target.value as ApplicabilityReview["evidence_kind"])}
+        >
+          <option value="authenticated_process_inventory">{c.inventoryEvidence}</option>
+          <option value="operator_verified_container">{c.containerEvidence}</option>
+        </select>
+      </label>
+      <label className="block space-y-1">
+        {c.reviewEvidenceHash}
+        <Input
+          required
+          minLength={64}
+          maxLength={64}
+          pattern="[a-f0-9]{64}"
+          value={evidence}
+          onChange={(event) => setEvidence(event.target.value)}
+        />
+      </label>
+      {kind === "operator_verified_container" && (
+        <label className="block space-y-1">
+          {c.reviewImage}
+          <Input
+            required
+            maxLength={71}
+            pattern="sha256:[a-f0-9]{64}"
+            value={image}
+            onChange={(event) => setImage(event.target.value)}
+          />
+        </label>
+      )}
+      <CheckboxOption label={c.acknowledge} checked={reviewed} onCheckedChange={setReviewed} />
+      <Button type="submit" disabled={pending || !reviewed}>
+        {c.reviewSubmit}
+      </Button>
+      {failed && <p role="alert">{c.failed}</p>}
+    </form>
   );
 }
