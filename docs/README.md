@@ -89,7 +89,8 @@ docs/
 ├── releases/
 │   ├── 0.47-1009-rc1.md
 │   ├── 0.48-1021.md
-│   └── 0.49-1111-rc1.md
+│   ├── 0.49-1111-rc1.md
+│   └── 0.50-1124.md
 └── adr/
 
 ```
@@ -171,15 +172,26 @@ Documentation is part of the feature definition. A behavior change is incomplete
 
 ## Version scope
 
-This documentation index was reconciled with `main @ f01c2b6a` (after #644)
-on **2026-11-11**. The candidate pre-release cut from it,
-[shapoclyack-0.49-1111-rc1](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.49-1111-rc1),
-is the latest published pre-release; see its
-[release notes](releases/0.49-1111-rc1.md). It succeeds the latest stable
-release [`shapoclyack-0.48-1021`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.48-1021)
-(2026-10-21, [notes](releases/0.48-1021.md)) and previous stable release
-`shapoclyack-0.46-0922` (2026-09-22). Use the tagged documentation and
+This documentation index was reconciled with `main @ 26e27153` (after #676)
+on **2026-11-24**. The stable release cut from it,
+[shapoclyack-0.50-1124](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.50-1124),
+is the latest published release; see its
+[release notes](releases/0.50-1124.md). It succeeds the candidate
+[`shapoclyack-0.49-1111-rc1`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.49-1111-rc1)
+(2026-11-11, [notes](releases/0.49-1111-rc1.md)); the previous stable release
+was [`shapoclyack-0.48-1021`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.48-1021)
+(2026-10-21, [notes](releases/0.48-1021.md)). Use the tagged documentation and
 [CHANGELOG.md](../CHANGELOG.md) for a release's contract.
+
+### Additions in `shapoclyack-0.50-1124` (2026-11-24)
+
+| Area | Guide and delivered scope |
+| ----- | ----- |
+| Release baseline & migrations | [Release notes](releases/0.50-1124.md): API/sensor package `0.50-1124`, signed Pulse `v1.5.0`, DB head `0108_product_licenses` (migrations `0107`–`0108`) |
+| Product licensing | [ADR 0007](adr/0007-product-licensing.md): offline Ed25519 license, `GET\|POST /api/license`, console `/license`; enforcement off unless `OCTO_LICENSE_ENFORCEMENT_ENABLED` |
+| Brand Watch | [Brand watch](brand-watch.md): lookalike-name watch outside scan scope, migration `0107_brand_watch` |
+| Isolated screenshots | [ADR 0008](adr/0008-isolated-screenshot-worker.md): Chromium only in `screenshot-worker`, stage opt-in |
+| Operator and reports | [Operator evidence](operator-evidence-api.md), [Reports](reports-and-compliance.md): plain-language answers, citation targets, Russian `summary.pdf`, regulator points instead of catalogue labels |
 
 ### Additions in `shapoclyack-0.49-1111-rc1` (2026-11-11)
 

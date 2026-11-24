@@ -12,9 +12,9 @@ Shapoclyack turns external discovery into a verifiable remediation workflow. It 
 
 **[Getting Started](docs/getting-started.md)** · **[Closed-loop Demo](docs/demo-remediation-loop.md)** · **[Architecture](docs/architecture.md)** · **[Web UI](docs/ui.md)** · **[Documentation](docs/README.md)** · **[Русская версия](README.ru.md)** · **[Changelog](CHANGELOG.md)** · **[Roadmap](ROADMAP.md)**
 
-> Documentation describes `main` (`f01c2b6a`, after PR #644). The latest candidate pre-release is
-> [`shapoclyack-0.49-1111-rc1`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.49-1111-rc1) (2026-11-11); see its [release notes](docs/releases/0.49-1111-rc1.md)
-> (succeeding [`shapoclyack-0.48-1021`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.48-1021), [notes](docs/releases/0.48-1021.md)) and [version scope](docs/README.md#version-scope) before applying these
+> Documentation describes `main` (`26e27153`, after PR #676). The latest stable release is
+> [`shapoclyack-0.50-1124`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.50-1124) (2026-11-24); see its [release notes](docs/releases/0.50-1124.md)
+> (succeeding the candidate [`shapoclyack-0.49-1111-rc1`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.49-1111-rc1), [notes](docs/releases/0.49-1111-rc1.md)) and [version scope](docs/README.md#version-scope) before applying these
 > instructions to a release installation.
 
 ## Why Shapoclyack
@@ -139,7 +139,7 @@ These are focused installer checks. Full CI validation requires dedicated Postgr
 
 ## Releases & Container Images
 
-Latest candidate pre-release: [shapoclyack-0.49-1111-rc1](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.49-1111-rc1) ([notes](docs/releases/0.49-1111-rc1.md), Pulse `v1.5.0`, DB head `0106_saml_session_binding`, migrations `0097`–`0106`). Previous stable release: [shapoclyack-0.48-1021](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.48-1021) ([notes](docs/releases/0.48-1021.md)). Full release history is tracked in [CHANGELOG.md](CHANGELOG.md).
+Latest stable release: [shapoclyack-0.50-1124](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.50-1124) ([notes](docs/releases/0.50-1124.md), Pulse `v1.5.0`, DB head `0108_product_licenses`, migrations `0107`–`0108`). Previous candidate: [shapoclyack-0.49-1111-rc1](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.49-1111-rc1) ([notes](docs/releases/0.49-1111-rc1.md)). Full release history is tracked in [CHANGELOG.md](CHANGELOG.md).
 
 | Image | Contents |
 |---|---|

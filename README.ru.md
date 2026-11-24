@@ -4,7 +4,7 @@ Self-hosted платформа обнаружения внешней повер�
 
 [English](README.md) · [Документация](docs/README.md) · [Wiki](docs/wiki/README.md) · [Roadmap](ROADMAP.md) · [История изменений](CHANGELOG.md)
 
-Документация описывает исходники `main` (`f01c2b6a`, после PR #644). Актуальный пререлиз — [`shapoclyack-0.49-1111-rc1`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.49-1111-rc1) от 2026-11-11, см. [заметки к пререлизу](docs/releases/0.49-1111-rc1.md) (предыдущий стабильный релиз — [`shapoclyack-0.48-1021`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.48-1021), [заметки](docs/releases/0.48-1021.md)). Для установки релиза сверяйтесь с документацией его тега и [границами версий](docs/README.md#version-scope).
+Документация описывает исходники `main` (`26e27153`, после PR #676). Актуальный стабильный релиз — [`shapoclyack-0.50-1124`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.50-1124) от 2026-11-24, см. [заметки к релизу](docs/releases/0.50-1124.md) (предыдущий пререлиз — [`shapoclyack-0.49-1111-rc1`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.49-1111-rc1), [заметки](docs/releases/0.49-1111-rc1.md)). Для установки релиза сверяйтесь с документацией его тега и [границами версий](docs/README.md#version-scope).
 
 ## Возможности платформы
 
@@ -100,7 +100,7 @@ python -m pytest tests/test_server_installer.py tests/test_agent_install_pins.py
 
 ## Релизы и образы
 
-Актуальный пререлиз: [shapoclyack-0.49-1111-rc1](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.49-1111-rc1) ([заметки](docs/releases/0.49-1111-rc1.md), Pulse `v1.5.0`, схема БД `0106_saml_session_binding`, миграции `0097`–`0106`). Предыдущий стабильный релиз: [shapoclyack-0.48-1021](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.48-1021) ([заметки](docs/releases/0.48-1021.md)). Полная история изменений — в [CHANGELOG.md](CHANGELOG.md).
+Актуальный стабильный релиз: [shapoclyack-0.50-1124](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.50-1124) ([заметки](docs/releases/0.50-1124.md), Pulse `v1.5.0`, схема БД `0108_product_licenses`, миграции `0107`–`0108`). Предыдущий пререлиз: [shapoclyack-0.49-1111-rc1](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.49-1111-rc1) ([заметки](docs/releases/0.49-1111-rc1.md)). Полная история изменений — в [CHANGELOG.md](CHANGELOG.md).
 
 | Образ | Содержимое |
 |---|---|
