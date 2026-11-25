@@ -1,16 +1,24 @@
 # Isolated browser runtime (docs/adr/0008-isolated-screenshot-worker.md).
 #
-# Its own directory so the worker is a base component, not a sidecar of the
-# scanner-executor. It lives in network-scan (the parent kustomization's
-# unsetOnly transformer): the pod meets restricted, holds no credential, and
-# must not sit in network-scan-executor, whose Pod Security level is
-# privileged only because the executor needs NET_RAW.
+# A Component, not a base resource. The image is published separately
+# (Jenkinsfile.publish, ONLY=screenshot-worker) and is not tagged :latest, so
+# base must not schedule a pod that pulls a tag the release has not pushed.
+# Add it to an overlay once the Deployment image is pinned name:tag@sha256:
 #
+#   components:
+#     - ../../base/screenshot-worker
+#
+# It lives in network-scan (unsetOnly transformer): the pod meets restricted,
+# holds no credential, and must not sit in network-scan-executor, whose Pod
+# Security level is privileged only because the executor needs NET_RAW.
 # Capture is unsupported without this Deployment. The scanner image has no
 # browser; SCREENSHOT_WORKER_URL on the executor and the local-scan Jobs is
-# what points them here.
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
+# what points them here, and an unanswered URL skips the stage.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+transformers:
+  - namespace-transformer.yaml
 
 resources:
   - deployment.yaml

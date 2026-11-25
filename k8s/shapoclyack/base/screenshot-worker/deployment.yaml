@@ -2,8 +2,9 @@
 # in that pod would share the raw-socket capabilities and the provisioning
 # key. This pod has neither.
 #
-# Placeholder tag until Jenkinsfile.publish grows a path that does not tag
-# this image :latest (see the note at the top of Dockerfile.screenshot-worker).
+# Not in the default install. Jenkinsfile.publish builds this image only with
+# ONLY=screenshot-worker and does not tag it :latest. Pin name:tag@sha256
+# here before adding the component to an overlay (Dockerfile.screenshot-worker).
 apiVersion: apps/v1
 kind: Deployment
 metadata:

@@ -13,7 +13,8 @@ StatefulSet in its own namespace. What it does not: the optional components
 (`local-scan`, monitoring, enrichment, agents, API TLS), anything in
 `k8s/shapoclyack/examples/`, and the Secrets the base also expects you to create
 yourself (`shapoclyack-registry`, `scan-targets`, `shapoclyack-api-users`, the
-S3 credentials, the executor's provisioning key).
+S3 credentials in `k8s/shapoclyack/examples/backup-s3.secret.example.yaml`,
+the executor's provisioning key).
 
 ## Install
 
@@ -76,7 +77,7 @@ namespace ([Kubernetes hardening](k8s-hardening.md), enrolling the executor).
 | `externalSecrets.*` | disabled | See above |
 | `ingress.*` | disabled | Host, class, annotations, TLS. TLS is not optional (#309): no `hosts`, no `tls`, or a host missing from every `tls[].hosts`, is refused. A wildcard TLS host covers one label (`*.example.com` covers `a.example.com`, not `a.b.example.com` or `example.com`); a `tls` entry without `hosts` covers nothing here, list the host |
 | `images.<api\|aio\|clickhouse\|nats\|postgres\|awscli>` | digest-pinned, as in the base | Set `digest: ""` to deploy by tag |
-| `images.screenshotWorker` | placeholder tag, digest empty | The worker image is not published yet. Pin `digest` once `Dockerfile.screenshot-worker` has a publish path; do not invent one |
+| `screenshotWorker.enabled` | `false` | Browser runtime. Refused unless `images.screenshotWorker.digest` is set. Publish with `Jenkinsfile.publish` `ONLY=screenshot-worker`; that image is never tagged `:latest` |
 | `resources.*` | the base's requests and limits | One entry per workload |
 | `networkPolicy.enabled` | `true` | The datastore and executor-namespace ingress rules |
 | `podDisruptionBudget.enabled`, `backup.<postgres\|clickhouse>.enabled/schedule` | on | |

@@ -17,6 +17,13 @@ install open. Renders nothing.
 {{- end }}
 {{- end }}
 
+{{- /* The worker image is unpublished until a digest is pinned. Rendering it
+       by tag would schedule a pod that ImagePullBackOffs on a name that was
+       never pushed. */}}
+{{- if and $v.screenshotWorker.enabled (not $v.images.screenshotWorker.digest) }}
+{{- fail "screenshotWorker.enabled needs images.screenshotWorker.digest. The image is published by Jenkinsfile.publish with ONLY=screenshot-worker and is not tagged :latest; pin name:tag@sha256 before enabling. Do not invent a digest." }}
+{{- end }}
+
 {{- /* 2. More than one API replica needs shared (RWX) scanner-data. */}}
 {{- $maxApi := int $v.replicas.api }}
 {{- if $v.api.autoscaling.enabled }}

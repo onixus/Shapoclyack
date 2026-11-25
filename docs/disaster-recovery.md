@@ -312,7 +312,8 @@ What it needs that the Postgres job does not:
   `.lock` object while the backup runs and deletes it at the end (seen in the
   drill's S3 request log) — plus `s3:ListBucket` on the bucket with a prefix
   condition. On the Postgres job's key that `DeleteObject` would reach every
-  dump. `examples/externalsecret.example.yaml` has the ExternalSecret. The
+  dump. `examples/backup-s3.secret.example.yaml` is the Secret to apply by hand;
+  `examples/externalsecret.example.yaml` has the ExternalSecret. The
   restore needs `GetObject` and `ListBucket` only — give it a read-only key.
 - **A ClickHouse account of its own**, `shapoclyack_backup`
   (`base/clickhouse/configmap.yaml`, password in
