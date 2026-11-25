@@ -287,6 +287,10 @@ RUN set -eux; \
     for pkg in libkrb5-3 libkrb5support0 libgssapi-krb5-2 libk5crypto3; do \
         dpkg --compare-versions "$(dpkg-query -W -f='${Version}' "$pkg")" ge '1.21.3-5+deb13u2'; \
     done; \
+    # CVE-2026-124851 (zstd uninitialized buffer). Fixed in
+    # 1.5.7+dfsg-1+deb13u1; the pinned slim still has 1.5.7+dfsg-1.
+    apt-get install -y --no-install-recommends --only-upgrade libzstd1; \
+    dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libzstd1)" ge '1.5.7+dfsg-1+deb13u1'; \
     rm -rf /var/lib/apt/lists/*
 
 # Pulse CLI for service_probe.backend=pulse|hybrid (GenDec release; see docs/pulse-backend.md).
