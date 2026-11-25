@@ -45,14 +45,13 @@ concurrency:
 jobs:
   build-and-push:
     name: Build & push ${{ matrix.name }}
-    # Empty input builds the three release images. Names do not substring
-    # each other, so contains() is enough to honour a comma-separated list.
+    # Empty input builds scanner, api and aio. screenshot-worker is opt-in
+    # (`images: screenshot-worker`) and is never tagged :latest. Names do not
+    # substring each other, so contains() is enough for a comma-separated list.
     if: >-
       (matrix.name != 'screenshot-worker' && (github.event.inputs.images == '' || contains(github.event.inputs.images, matrix.name))) ||
       (matrix.name == 'screenshot-worker' && contains(github.event.inputs.images, 'screenshot-worker'))
     runs-on: ubuntu-latest
-    # A normal dispatch builds the three release images. screenshot-worker
-    # is opt-in (`images: screenshot-worker`) and is never tagged :latest.
     strategy:
       fail-fast: false
       matrix:
@@ -69,7 +68,6 @@ jobs:
           - name: aio
             dockerfile: Dockerfile.allinone
             image: ghcr.io/onixus/shapoclyack-aio
-            latest: true
           # Not part of a normal release. workflow_dispatch with this name
           # only; never :latest, same contract as Jenkinsfile.publish.
           - name: screenshot-worker

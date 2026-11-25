@@ -104,7 +104,7 @@ k8s/shapoclyack/
 ├── base/backup/          # daily pg_dump and ClickHouse BACKUP CronJobs to S3 (docs/disaster-recovery.md)
 ├── base/config/k8s.yaml  # scanner ConfigMap source (one copy per namespace)
 ├── base/networkpolicy-datastores.yaml # ingress to Postgres/ClickHouse/NATS: API (+backup) only
-├── base/screenshot-worker/ # optional component: browser runtime; image is not in the default release
+├── base/screenshot-worker/ # optional component, included by no overlay until its image is pinned
 ├── base/agents/          # optional VPA for the scanner-executor (not in default base)
 ├── base/local-scan/      # opt-in component: API-local scanning + scan Job/CronJob, network-scan privileged
 ├── base/enrichment/      # optional GeoIP/EPSS/KEV/CVSS4 component: RWX PVC + daily refresh CronJob + patch
@@ -119,7 +119,6 @@ k8s/shapoclyack/
 ├── overlays/local-scan/  # base + base/local-scan: the pre-#338 topology, a documented exception
 ├── overlays/enrichment/  # real GeoIP/EPSS/KEV/CVSS4 data, hot-reloaded, no restart needed
 ├── overlays/kind-enrichment/ # kind-dev + enrichment, with the PVC dropped to RWO for local-path
-├── overlays/screenshot-worker/ # base + browser runtime; image is not in the default release
 └── examples/             # Secrets / Ingress / remote sensor / NATS patches + ServiceMonitor + Kyverno/Gatekeeper exceptions
 ```
 
