@@ -265,6 +265,8 @@ class ProfilePulseConfig(BaseModel):
     syn: bool | None = None
     max_hosts: int | None = Field(default=None, ge=1, le=1_000_000)
     chunk_hosts: int | None = Field(default=None, ge=1, le=4096)
+    chunk_concurrency: int | None = Field(default=None, ge=1, le=8)
+    enrich_concurrency: int | None = Field(default=None, ge=1, le=64)
     retry_settle_seconds: int | None = Field(default=None, ge=0, le=600)
     plugins: bool | None = None
 
