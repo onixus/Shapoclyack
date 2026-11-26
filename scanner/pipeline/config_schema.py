@@ -654,6 +654,13 @@ class PulseProbeConfig(BaseModel):
     syn: bool = False
     max_hosts: int = Field(default=65536, ge=1, le=1_000_000)
     chunk_hosts: int = Field(default=64, ge=1, le=4096)
+    # How many Pulse chunk subprocesses may run at once (FTT-PULSE-2026-052 S3).
+    # 1 keeps the historical serial adapter; higher values overlap chunks whose
+    # host sets are disjoint by construction of ``plan_tcp_probe``.
+    chunk_concurrency: int = Field(default=1, ge=1, le=8)
+    # Forwarded to Pulse ``--enrich-concurrency`` (GenDec S1). 1 = serial TLS
+    # enrichment inside each chunk process.
+    enrich_concurrency: int = Field(default=1, ge=1, le=64)
     # The ports stage hands over the instant its last naabu batch returns, so the
     # probe can land while the path is still saturated by that burst: every
     # connect fails, the chunk reads as all-closed, and pulse writes that zero to

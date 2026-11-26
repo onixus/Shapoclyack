@@ -371,6 +371,7 @@ def test_build_pulse_command_flags():
     assert "--cve" in cmd
     assert "--checkpoint" in cmd
     assert "-f" in cmd and "json" in cmd
+    assert "--enrich-concurrency" not in cmd
     # Product features that duplicate Shapoclyack stay off the adapter CLI.
     joined = " ".join(cmd)
     assert "--jarm" not in cmd
@@ -379,6 +380,30 @@ def test_build_pulse_command_flags():
     assert "--server" not in cmd
     assert "--alert-" not in joined
     assert "monitor" not in cmd
+
+
+def test_build_pulse_command_enrich_concurrency():
+    hosts = Path("/tmp/hosts.txt")
+    cmd = build_pulse_command(
+        bin_path="pulse",
+        hosts_file=hosts,
+        ports=[443],
+        concurrency=50,
+        rate=100,
+        adaptive=False,
+        host_parallel=0,
+        timeout_ms=800,
+        banner=True,
+        os_detect=False,
+        cve=False,
+        cve_online=False,
+        syn=False,
+        checkpoint=None,
+        max_hosts=10,
+        enrich_concurrency=8,
+    )
+    assert "--enrich-concurrency" in cmd
+    assert cmd[cmd.index("--enrich-concurrency") + 1] == "8"
 
 
 def test_service_record_roundtrip():

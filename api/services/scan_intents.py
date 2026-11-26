@@ -5,13 +5,14 @@ hit the network. Intent chooses *which pipeline stages and nuclei floor* run
 so operators can schedule inventory often and full assessments rarely without
 hand-editing YAML (see ``docs/scan-performance.md``).
 
-| Intent     | Effect                                                              |
-|------------|---------------------------------------------------------------------|
-| inventory  | Ports-only L1 (``--skip-nse``), nuclei off, top_ports 100           |
-| vuln       | Full probe + nuclei critical/high only (no medium)                  |
-| full       | Default pipeline (nuclei critical/high/medium)                      |
-| delta      | Same as full + ``--delta`` discovery refresh                        |
-| org_profile| Full + the organization-profile stages (see docs/configuration.md)   |
+| Intent              | Effect                                                              |
+|---------------------|---------------------------------------------------------------------|
+| inventory           | Ports-only L1 (``--skip-nse``), nuclei off, top_ports 100           |
+| inventory_services  | Mid-tier: Pulse banners/services/OS/CVE, no plugins/tls-enum/nuclei |
+| vuln                | Full probe + nuclei critical/high only (no medium)                  |
+| full                | Default pipeline (nuclei critical/high/medium)                      |
+| delta               | Same as full + ``--delta`` discovery refresh                        |
+| org_profile         | Full + the organization-profile stages (see docs/configuration.md)  |
 
 When ``intent`` is omitted, legacy ``skip_nse`` / ``delta`` flags apply as
 before. When ``intent`` is set, it owns those flags (and nuclei/top_ports
@@ -24,9 +25,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-ScanIntent = Literal["inventory", "vuln", "full", "delta", "org_profile"]
+ScanIntent = Literal[
+    "inventory", "inventory_services", "vuln", "full", "delta", "org_profile"
+]
 
-INTENTS: tuple[ScanIntent, ...] = ("inventory", "vuln", "full", "delta", "org_profile")
+INTENTS: tuple[ScanIntent, ...] = (
+    "inventory",
+    "inventory_services",
+    "vuln",
+    "full",
+    "delta",
+    "org_profile",
+)
 
 # Scanner CLI --mode only accepts these (not "test").
 _CLI_MODES = frozenset({"safe", "balanced", "fast"})
@@ -90,6 +100,33 @@ def resolve_scan_options(
                 "runtime": {"skip_nse": True},
             },
             summary="inventory: ports-only, nuclei off, top 100 ports",
+        )
+
+    if intent == "inventory_services":
+        # Mid-tier (FTT-PULSE-2026-052 S3): L4 + Pulse banners/services without
+        # the TLS-enum / plugin / nuclei wall that bounds full assessment.
+        return ResolvedIntent(
+            intent="inventory_services",
+            mode=cli_mode,
+            delta=bool(delta),
+            skip_nse=False,
+            config_extra={
+                "nuclei": {"enabled": False},
+                "profiles": {profile_key: {"top_ports": 100}},
+                "tls_posture": {"enabled": False, "enumerate_ciphers": False},
+                "service_probe": {
+                    "pulse": {
+                        "banner": True,
+                        "plugins": False,
+                        "cve": True,
+                        "cve_online": False,
+                    }
+                },
+            },
+            summary=(
+                "inventory_services: Pulse banners/services, "
+                "no plugins/tls-enum/nuclei"
+            ),
         )
 
     if intent == "vuln":

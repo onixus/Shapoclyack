@@ -45,9 +45,14 @@ Treat scan work as **intent**, not one default full pipeline. **Product control
 | Intent | Goal | Control plane applies |
 |---|---|---|
 | **inventory** | Alive hosts + open ports | `--skip-nse`, nuclei off, `top_ports: 100`; optional `delta` |
+| **inventory_services** | Mid-tier banners/services | Pulse on; plugins/tls-enum/nuclei off (FTT-PULSE-2026-052 S3) |
 | **vuln** | High-signal CVE/misconfig | Full probe; nuclei **critical+high** only |
 | **full** | Assessment-grade completeness | Default pipeline; nuclei critical/high/medium |
 | **delta** | Re-check known perimeter | Full pipeline + forced `--delta` |
+
+Throughput levers (same FTT): Pulse `service_probe.pulse.chunk_concurrency` /
+`enrich_concurrency`, and `POST /api/jobs` `shard_count` for claimable partitions
+([ADR 0009](adr/0009-throughput-s1-s3-sharding.md)).
 
 Legacy: omit `intent` and use `skip_nse` / `delta` flags (UI: “legacy — manual flags”).
 
@@ -67,6 +72,7 @@ incompatible sensor ([API contract](api-and-rbac.md#scan-surface)).
 
 ```text
 hourly / 4h  → intent=inventory, delta=true
+shift        → intent=inventory_services (mid-tier banners)
 daily        → intent=vuln
 weekly       → intent=full
 on-demand    → intent=full or vuln

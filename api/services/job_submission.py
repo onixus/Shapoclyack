@@ -13,34 +13,36 @@ import logging
 import sys
 import threading
 import uuid
-from pathlib import Path
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from agent.runtime.invocation import ScanInvocation
-
 from api.db import models
 from api.db.engine import get_session
 from api.schemas import JobInfo, StartScanRequest
 from api.services import agent_groups as agent_groups_service
 from api.services import config_override as config_override_service
-from api.services import job_inputs
-from api.services import job_states
-from api.services import job_store
-from api.services import local_scan_executor
+from api.services import (
+    job_inputs,
+    job_sharding,
+    job_states,
+    job_store,
+    licensing,
+    local_scan_executor,
+    run_ids,
+    scan_admission,
+    scan_intents,
+    scan_surface,
+)
 from api.services import metrics as metrics_service
-from api.services import run_ids
+from api.services import tenants as tenants_service
 from api.services.artifact_store import keys as artifact_keys
 from api.services.artifact_store import workspace as artifact_workspace
-from api.services import licensing
-from api.services import scan_admission
-from api.services import scan_intents
-from api.services import scan_surface
-from api.services import tenants as tenants_service
 from api.services.licensing import LicenseExpired, LicenseMissing  # noqa: F401 — raised by assert
 from api.settings import Settings
 from scanner.pipeline import config_overlay
@@ -57,6 +59,7 @@ _IDEMPOTENCY_FIELDS = (
     "surface",
     "wordlist_id",
     "agent_group",
+    "shard_count",
 )
 _IDEMPOTENCY_TARGET_FIELDS = (
     "ranges",
@@ -123,6 +126,20 @@ def note_start_replay() -> None:
     metrics_service.JOB_IDEMPOTENT_REPLAYS_TOTAL.labels(
         operation="start"
     ).inc()
+
+
+def _annotate_shard_siblings(
+    settings: Settings, job_id: str, sibling_ids: list[str]
+) -> None:
+    """Record the full sibling set on each shard job after the group exists."""
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job_id)
+        if row is None:
+            return
+        options = dict(row.scan_options or {})
+        options["shard_job_ids"] = list(sibling_ids)
+        row.scan_options = options
+        session.commit()
 
 
 def find_by_idempotency_key(
@@ -227,8 +244,14 @@ def start_scan(
     min_overlay_version: int = 1,
     verification_of: str | None = None,
     expected_admission_sha256: str | None = None,
+    _shard_meta: dict[str, Any] | None = None,
 ) -> JobInfo:
     """Admit, persist and dispatch one new scan job.
+
+    When ``request.shard_count`` is set (and ``_shard_meta`` is absent), the
+    request is partitioned into claimable sibling jobs (FTT-PULSE-2026-052).
+    The caller receives shard 0; every sibling records ``shard_group_id`` and
+    ``shard_job_ids`` in ``scan_options``.
 
     ``widen_with_promoted`` is whether this scan carries the related domains
     the tenant's operators promoted (org_profile M4) on top of its own
@@ -277,6 +300,57 @@ def start_scan(
     # The saved console overrides, too (#548): a leftover Nmap setting is
     # refused here, for every way a scan starts, not by the sensor afterwards.
     config_override_service.assert_runnable(settings, config_extra)
+
+    # Horizontal scale: one estate → N claimable jobs (FTT-PULSE-2026-052).
+    if request.shard_count and _shard_meta is None:
+        partitions = job_sharding.partition_targets(
+            ranges=request.ranges,
+            domains=request.domains,
+            shard_count=request.shard_count,
+        )
+        group_id = uuid.uuid4().hex[:12]
+        created: list[JobInfo] = []
+        for part in partitions:
+            child = request.model_copy(
+                update={
+                    "ranges": part.ranges or None,
+                    "domains": part.domains or None,
+                    "shard_count": None,
+                }
+            )
+            created.append(
+                start_scan(
+                    settings,
+                    child,
+                    username=username,
+                    build_command=build_command,
+                    run_local_job=run_local_job,
+                    thread_factory=thread_factory,
+                    publish_offer=publish_offer,
+                    # One idempotency key covers the whole group; only shard 0
+                    # stores it so a replay finds the primary job.
+                    idempotency_key=idempotency_key if part.shard_index == 0 else None,
+                    quota_exempt=quota_exempt,
+                    widen_with_promoted=widen_with_promoted,
+                    config_extra=config_extra,
+                    min_overlay_version=min_overlay_version,
+                    verification_of=verification_of,
+                    expected_admission_sha256=None,
+                    _shard_meta={
+                        "shard_group_id": group_id,
+                        "shard_index": part.shard_index,
+                        "shard_count": request.shard_count,
+                    },
+                )
+            )
+        sibling_ids = [job.job_id for job in created]
+        for job in created:
+            _annotate_shard_siblings(settings, job.job_id, sibling_ids)
+        with get_session(settings.postgres_url) as session:
+            row = session.get(models.Job, created[0].job_id)
+            if row is not None:
+                return job_store.to_info(row)
+        return created[0]
 
     job_id = uuid.uuid4().hex[:12]
     execution = (
@@ -506,6 +580,7 @@ def start_scan(
                 else {}
             ),
             **wordlist_options,
+            **(_shard_meta or {}),
         },
         target_counts=target_counts,
         requested_by=username,
