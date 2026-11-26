@@ -57,7 +57,11 @@ INPUT_NAME = "config_overlay.json"
 #: * v2: ``nuclei.template_ids``. A build that applies it also writes the
 #:   coverage evidence a verification closure is judged on (``nuclei.json``'s
 #:   ``coverage`` block, ``adapter.cve`` in ``pulse/raw.json``).
-OVERLAY_VERSION = 3
+#: * v3: ``nuclei.verification_targets``.
+#: * v4: Pulse mid-tier controls for speed/heavy intents
+#:   (``service_probe.pulse.{banner,plugins,cve,cve_online}``,
+#:   ``tls_posture.enumerate_ciphers``) — ADR 0013 / FTT-056.
+OVERLAY_VERSION = 4
 
 
 def capability(version: int) -> str:
@@ -124,12 +128,25 @@ _V1_PATHS: frozenset[str] = frozenset(
 
 #: Every version's settings. Each is a superset of the one before: an older
 #: document is always one a newer build applies.
+_V2_PATHS: frozenset[str] = _V1_PATHS | {"nuclei.template_ids", "reachability.enabled"}
+_V3_PATHS: frozenset[str] = _V2_PATHS | {"nuclei.verification_targets"}
+# Speed/heavy intent overlays (ADR 0013 / FTT-056): Pulse banner / CVE
+# toggles and TLS cipher enum, never console-editable on their own.
+_V4_PATHS: frozenset[str] = _V3_PATHS | {
+    "service_probe.pulse.banner",
+    "service_probe.pulse.plugins",
+    "service_probe.pulse.cve",
+    "service_probe.pulse.cve_online",
+    "tls_posture.enumerate_ciphers",
+}
+
 PATHS_BY_VERSION: dict[int, frozenset[str]] = {
     1: _V1_PATHS,
     # Set by the platform only, for a verification re-scan
     # (api/services/vulnerabilities.py): never a console setting.
-    2: _V1_PATHS | {"nuclei.template_ids", "reachability.enabled"},
-    3: _V1_PATHS | {"nuclei.template_ids", "reachability.enabled", "nuclei.verification_targets"},
+    2: _V2_PATHS,
+    3: _V3_PATHS,
+    4: _V4_PATHS,
 }
 
 #: What this build accepts.
