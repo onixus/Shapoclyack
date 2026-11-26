@@ -14,6 +14,7 @@ rather than how one feature works. Feature design stays in its own guide.
 | [0006](0006-native-perimeter-observations.md) | Native informational perimeter observations | **Accepted** — user, 2026-10-29 | — |
 | [0007](0007-product-licensing.md) | Product licensing with signed entitlements | **Accepted** — user, 2026-11-14 | — |
 | [0008](0008-isolated-screenshot-worker.md) | Screenshot capture only in an isolated browser worker | **Accepted** — user, 2026-11-12 | — |
+| [0009](0009-scan-throughput-okr.md) | Throughput model for the 10 000 hosts/hour OKR | **Proposed** — decision by the owner | — |
 
 Decisions taken before this directory existed are recorded where they were
 made: the endpoint-inventory decisions in
