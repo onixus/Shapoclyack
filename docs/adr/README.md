@@ -16,6 +16,7 @@ rather than how one feature works. Feature design stays in its own guide.
 | [0008](0008-isolated-screenshot-worker.md) | Screenshot capture only in an isolated browser worker | **Accepted** — user, 2026-11-12 | — |
 | [0009](0009-scan-throughput-okr.md) | Throughput model for the 10 000 hosts/hour OKR | **Proposed** — decision by the owner | — |
 | [0010](0010-throughput-s1-s3-sharding.md) | S1 parallel enrichment, S3 chunk overlap, job sharding | **Proposed** — implementation under FTT-PULSE-2026-052 | — |
+| [0011](0011-executor-queue-depth-autoscale.md) | Executor KEDA/HPA on shard and job queue depth (S2) | **Proposed** — implementation under FTT-PULSE-2026-053 | — |
 
 Decisions taken before this directory existed are recorded where they were
 made: the endpoint-inventory decisions in

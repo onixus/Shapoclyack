@@ -98,8 +98,10 @@ enrichment and orchestration dominate.
 
 **CONDITIONAL CONFIRM** — required for reliable estate OKR.
 
-- Fan-out on create → N claimable shards; merge on completion.
-- Scale pods on **queued shard depth** (HPA/KEDA), not CPU.
+- Fan-out on create → N claimable shards; merge on completion
+  (FTT-052 / ADR 0010).
+- Scale pods on **queued shard depth** (HPA/KEDA), not CPU —
+  `octo_jobs_shard_queued` + `overlays/executor-keda` (FTT-053 / ADR 0011).
 - If one sensor full ≈ 400–800 hosts/h → need N ≈ 13–25 for assessment;
   inventory mid-tier ≈ 2–5 k/h/sensor → N ≈ 2–5.
 
@@ -170,7 +172,9 @@ policy. Numbers are models — validate with `stage_timings.json`.
    speed intents** (config/product, low risk).
 3. **GenDec `--enrich-concurrency`** (S1).
 4. **Adapter `pulse_chunk_concurrency`** (S3).
-5. **Job sharding + KEDA/HPA on queue depth** (S2) and/or **Stage2
+5. **Job sharding + KEDA/HPA on queue depth** (S2) — control-plane shards in
+   FTT-052 / ADR 0010; ops layer (`octo_jobs_shard_queued` +
+   `overlays/executor-keda`) in FTT-053 / ADR 0011. And/or **Stage2
    enrichment jobs** (S4).
 6. Heuristics S5; park S6.
 

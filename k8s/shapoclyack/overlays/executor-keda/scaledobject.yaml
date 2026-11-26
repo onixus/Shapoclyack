@@ -1,0 +1,70 @@
+# KEDA ScaledObject for the scanner-executor (FTT-PULSE-2026-053 / ADR 0011).
+#
+# KEDA creates and owns an HPA under the hood (keda-hpa-<name>). Scale signal is
+# queued claimable work, not CPU: each executor claims one job at a time
+# (FOR UPDATE SKIP LOCKED), so desired replicas ≈ waiting jobs.
+#
+# Replace PROMETHEUS_URL before apply. With OCTO_METRICS_TOKEN set on the API,
+# scrape auth is on the Prometheus side (ServiceMonitor bearerTokenSecret);
+# KEDA only queries Prometheus, so the trigger does not need the API token
+# unless Prometheus itself requires auth — then add a TriggerAuthentication.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: shapoclyack-scanner-executor
+  namespace: network-scan-executor
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: scanner-executor
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: shapoclyack-scanner-executor
+  # Floor matches base (one sensor always ready). Raising it for HA is an
+  # operator choice; the PDB already serialises drains at any replica count.
+  minReplicaCount: 1
+  # Ceiling from throughput-okr-10k Path B (N ≈ 15–30 for dense assessment).
+  # Raising past this needs a deliberate capacity review (NIC, Postgres, NATS).
+  maxReplicaCount: 25
+  pollingInterval: 15
+  cooldownPeriod: 300
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          # Scans finish in bursts; a short window flaps enrollment and leaves
+          # mid-lease jobs to expire. 15 minutes matches the API HPA pattern.
+          stabilizationWindowSeconds: 900
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 120
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: 4
+              periodSeconds: 60
+            - type: Percent
+              value: 100
+              periodSeconds: 60
+          selectPolicy: Max
+  triggers:
+    # Primary S2 signal: sharded estate backlog.
+    - type: prometheus
+      metadata:
+        serverAddress: PROMETHEUS_URL
+        metricName: octo_jobs_shard_queued
+        query: max(octo_jobs_shard_queued)
+        threshold: "1"
+        activationThreshold: "1"
+    # Catch non-sharded queued jobs so a single large unsplit scan still
+    # scales when operators have spare executor capacity.
+    - type: prometheus
+      metadata:
+        serverAddress: PROMETHEUS_URL
+        metricName: octo_jobs_queued
+        query: max(octo_jobs_queued)
+        threshold: "1"
+        activationThreshold: "1"

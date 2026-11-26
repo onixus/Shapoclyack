@@ -1,0 +1,8 @@
+# network-scan for objects this overlay adds that omit a namespace. unsetOnly
+# so the scanner-executor StatefulSet stays in network-scan-executor (#338).
+apiVersion: builtin
+kind: NamespaceTransformer
+metadata:
+  name: network-scan-namespace
+  namespace: network-scan
+unsetOnly: true
