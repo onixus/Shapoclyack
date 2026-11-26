@@ -15,6 +15,15 @@ MAX_SHARD_COUNT = 64
 MIN_SHARD_COUNT = 2
 
 
+def require_agent_execution_for_shards(execution: str) -> None:
+    """Refuse local fan-out: sibling threads cannot be rolled back safely."""
+    if execution != "agent":
+        raise ValueError(
+            "shard_count requires job_execution_mode=agent; "
+            "local mode cannot safely fan out or roll back sibling shards"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class TargetPartition:
     """One shard's newline-joined ranges and domains (may be empty strings)."""

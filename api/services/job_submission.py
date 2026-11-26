@@ -257,6 +257,7 @@ def start_scan(
     verification_of: str | None = None,
     expected_admission_sha256: str | None = None,
     _shard_meta: dict[str, Any] | None = None,
+    _defer_dispatch: bool = False,
 ) -> JobInfo:
     """Admit, persist and dispatch one new scan job.
 
@@ -336,6 +337,10 @@ def start_scan(
         execution = (
             "agent" if settings.job_execution_mode == "agent" else "local"
         )
+        # Local mode starts a scanner thread per job. Spawning N of them on
+        # the API pod (and being unable to cancel a running local job on
+        # partial failure) is not an estate-scale path — require agent mode.
+        job_sharding.require_agent_execution_for_shards(execution)
         admission = scan_admission.admit_scan(
             settings,
             request,
@@ -379,6 +384,18 @@ def start_scan(
                         "run_id": request.run_id if part.shard_index == partitions[0].shard_index else None,
                     }
                 )
+                is_primary = part.shard_index == partitions[0].shard_index
+                shard_meta: dict[str, Any] = {
+                    "shard_group_id": group_id,
+                    "shard_index": part.shard_index,
+                    "shard_count": part.shard_count,
+                    "shard_of": len(partitions),
+                }
+                # Persist the operator digest on insert so a concurrent retry
+                # of the same Idempotency-Key does not 409 against a child
+                # digest during the multi-insert window.
+                if is_primary and parent_digest:
+                    shard_meta["idempotency_digest"] = parent_digest
                 created.append(
                     start_scan(
                         settings,
@@ -391,16 +408,13 @@ def start_scan(
                         # One key covers the group and lives on the shard the
                         # caller is handed, so a replay finds that job.
                         idempotency_key=(
-                            idempotency_key
-                            if part.shard_index == partitions[0].shard_index
-                            else None
+                            idempotency_key if is_primary else None
                         ),
                         # Shard 0 spends the monthly scan and the queue slot.
                         # Siblings are the same estate, not N more scans, and
                         # must not trip the depth ceiling mid-group.
                         quota_exempt=(
-                            quota_exempt
-                            or part.shard_index != partitions[0].shard_index
+                            quota_exempt or not is_primary
                         ),
                         # Already folded into the admitted lines above.
                         widen_with_promoted=False,
@@ -408,15 +422,14 @@ def start_scan(
                         min_overlay_version=min_overlay_version,
                         verification_of=verification_of,
                         expected_admission_sha256=None,
-                        _shard_meta={
-                            "shard_group_id": group_id,
-                            "shard_index": part.shard_index,
-                            "shard_count": part.shard_count,
-                            "shard_of": len(partitions),
-                        },
+                        _shard_meta=shard_meta,
+                        # Persist the whole group before any NATS offer: a
+                        # mid-group failure must cancel queued siblings, not
+                        # leave sensors already claiming partial work.
+                        _defer_dispatch=True,
                     )
                 )
-        except Exception as exc:
+        except Exception:
             # A sibling that already queued is not a scan anyone asked for
             # on its own: the group did not finish. Cancel what landed,
             # including after losing the idempotency race to a concurrent
@@ -432,7 +445,7 @@ def start_scan(
                         job.job_id,
                         exc_info=True,
                     )
-            raise exc
+            raise
         sibling_ids = [job.job_id for job in created]
         primary = created[0]
         for job in created:
@@ -440,10 +453,11 @@ def start_scan(
                 settings,
                 job.job_id,
                 sibling_ids,
-                idempotency_digest_value=(
-                    parent_digest if job.job_id == primary.job_id else None
-                ),
             )
+        # Group is fully persisted and annotated — now wake sensors.
+        if settings.nats_url:
+            for job in created:
+                publish_offer(settings, job.job_id)
         with get_session(settings.postgres_url) as session:
             row = session.get(models.Job, primary.job_id)
             if row is not None:
@@ -678,6 +692,8 @@ def start_scan(
                 else {}
             ),
             **wordlist_options,
+            # Shard meta last so a parent idempotency_digest on the primary
+            # overrides the narrowed-child digest computed above.
             **(_shard_meta or {}),
         },
         target_counts=target_counts,
@@ -806,16 +822,17 @@ def start_scan(
             ", ".join(sorted(job_store.required_capabilities(row.scan_options))) or "-",
         )
 
-    if execution == "local":
-        thread = thread_factory(
-            target=run_local_job,
-            args=(settings, job_id, command),
-            name=f"octo-scan-{job_id}",
-            daemon=True,
-        )
-        local_scan_executor.register_thread(thread)
-        thread.start()
-    elif execution == "agent" and settings.nats_url:
-        publish_offer(settings, job_id)
+    if not _defer_dispatch:
+        if execution == "local":
+            thread = thread_factory(
+                target=run_local_job,
+                args=(settings, job_id, command),
+                name=f"octo-scan-{job_id}",
+                daemon=True,
+            )
+            local_scan_executor.register_thread(thread)
+            thread.start()
+        elif execution == "agent" and settings.nats_url:
+            publish_offer(settings, job_id)
 
     return info

@@ -37,6 +37,11 @@ Stage2 enrichment queue (canvas S4) remains a follow-up.
 ## Consequences
 
 - `POST /api/jobs` accepts `shard_count`; returns shard 0 with `scan_options.shard_*`.
+- `shard_count` requires `job_execution_mode=agent` (local fan-out is refused).
+- Sibling shards are persisted with `_defer_dispatch` and offered to NATS only
+  after the whole group exists; the parent idempotency digest is stored on insert.
+- Overlapped Pulse chunks split `--rate` / `-c` by `chunk_concurrency`; crash /
+  timeout breakers trip as futures complete (`as_completed`), not after the wave.
 - Intent vocabulary grows by `inventory_services`.
 - Pulse adapter records `chunk_concurrency` / `enrich_concurrency` in `raw.json`.
 
@@ -44,3 +49,4 @@ Stage2 enrichment queue (canvas S4) remains a follow-up.
 
 - KEDA scaling formulas and exact shard sizing for a given estate.
 - Automatic Stage2 enrichment job enqueue after Stage1 inventory.
+- Host-weighted (vs line round-robin) partition skew.

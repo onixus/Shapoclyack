@@ -61,7 +61,7 @@ import subprocess
 import tempfile
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
@@ -1316,6 +1316,10 @@ def _run_pulse_probe(
     )
 
     workers = max(1, min(8, int(chunk_concurrency)))
+    # Overlapped chunks share one sensor PPS budget. Each subprocess gets a
+    # 1/N slice so chunk_concurrency=4 does not mean 4× --rate / -c.
+    chunk_rate = max(1, int(rate) // workers) if rate else rate
+    chunk_concurrency_cap = max(1, int(concurrency) // workers)
     diag_lock = Lock()
     # Shared with the worker threads. A raw-socket refusal flips it off under
     # the lock, so a chunk that has not built its command yet — including one
@@ -1377,8 +1381,8 @@ def _run_pulse_probe(
             bin_path=pulse_bin,
             hosts_file=hosts_file,
             ports=ports_list,
-            concurrency=concurrency,
-            rate=rate,
+            concurrency=chunk_concurrency_cap,
+            rate=chunk_rate,
             adaptive=adaptive,
             host_parallel=host_parallel,
             timeout_ms=timeout_ms,
@@ -1436,8 +1440,8 @@ def _run_pulse_probe(
                 bin_path=pulse_bin,
                 hosts_file=hosts_file,
                 ports=ports_list,
-                concurrency=concurrency,
-                rate=rate,
+                concurrency=chunk_concurrency_cap,
+                rate=chunk_rate,
                 adaptive=adaptive,
                 host_parallel=host_parallel,
                 timeout_ms=timeout_ms,
@@ -1500,27 +1504,88 @@ def _run_pulse_probe(
             "stderr_for_os": stderr,
         }
 
+    def _apply_chunk_breakers(result: dict[str, Any]) -> None:
+        """Update crash/timeout counters; raise once a consecutive ceiling trips."""
+        nonlocal consecutive_crashes, consecutive_timeouts, os_detect_effective, os_detect_degraded
+        if result["os_raw_failed"] and os_detect_effective:
+            os_detect_effective = False
+            os_detect_degraded = os_state["degraded"] or "raw sockets unavailable"
+            logging.warning(
+                "pulse_probe: OS detection needs raw sockets and this process has none "
+                "(%s); continuing without --os for the rest of the run -- services, "
+                "banners and CVEs still run. Grant cap_net_raw/cap_net_admin to the "
+                "pulse binary or the pod (docs/pulse-backend.md) to get OS guesses back.",
+                os_detect_degraded,
+            )
+
+        returncode = result["returncode"]
+        payload = result["payload"]
+        timed_out = result["timed_out"]
+        stderr = result["stderr"]
+        chunk = result["chunk"]
+        host_chunk = result["host_chunk"]
+        crashed = returncode != 0 and not payload and not timed_out
+        if crashed:
+            consecutive_crashes += 1
+            if consecutive_crashes >= MAX_CONSECUTIVE_CRASHED_CHUNKS:
+                stop_probe.set()
+                raise PulseCrashLoopError(
+                    f"pulse exited {returncode} without JSON for "
+                    f"{consecutive_crashes} chunks in a row; last stderr: "
+                    f"{stderr[:500] or 'empty'}. Fix the binary/flags "
+                    f"({pulse_bin}) and re-run with --resume."
+                )
+        elif not timed_out:
+            consecutive_crashes = 0
+
+        if timed_out:
+            consecutive_timeouts += 1
+            if consecutive_timeouts >= MAX_CONSECUTIVE_TIMED_OUT_CHUNKS:
+                stop_probe.set()
+                raise PulseTimeoutLoopError(
+                    f"pulse did not finish within its timeout on {consecutive_timeouts} chunks in a row "
+                    f"(process timeout {timeout_seconds}s"
+                    + (
+                        f" plus up to {plugin_budget_seconds(chunk.endpoint_count)}s for the plugins"
+                        if script_dir
+                        else ""
+                    )
+                    + f", {len(host_chunk)} host(s) per chunk). Raise runtime.nse_timeout_seconds, lower "
+                    "service_probe.pulse.chunk_hosts, or turn the plugins off "
+                    "(service_probe.pulse.plugins: false) if a server is stalling them; hosts finished "
+                    "earlier are kept, and --resume asks again for the rest."
+                )
+        else:
+            consecutive_timeouts = 0
+
     for wave_start in range(0, len(chunks), workers):
+        if stop_probe.is_set():
+            break
         wave = list(range(wave_start, min(wave_start + workers, len(chunks))))
         if workers == 1:
             wave_results = [_run_chunk_subprocess(wave[0], chunks[wave[0]], os_detect_effective)]
+            for result in wave_results:
+                _apply_chunk_breakers(result)
         else:
             with ThreadPoolExecutor(max_workers=len(wave)) as pool:
-                futs = [
-                    pool.submit(_run_chunk_subprocess, idx, chunks[idx], os_detect_effective)
+                futs = {
+                    pool.submit(_run_chunk_subprocess, idx, chunks[idx], os_detect_effective): idx
                     for idx in wave
-                ]
-                # Fail as soon as one chunk raises. as_completed would still
-                # wait the wave out, and a crash loop would keep probing after
-                # the run had already decided to stop.
+                }
                 wave_results = []
                 try:
-                    for fut in futs:
-                        wave_results.append(fut.result())
+                    # Count breakers as soon as each future finishes so a wave
+                    # of crashers cannot finish all N before abort.
+                    for fut in as_completed(futs):
+                        result = fut.result()
+                        wave_results.append(result)
+                        _apply_chunk_breakers(result)
                 except Exception:
+                    stop_probe.set()
                     for pending in futs:
                         pending.cancel()
                     raise
+            wave_results.sort(key=lambda item: item["idx"])
 
         for result in wave_results:
             idx = result["idx"]
@@ -1533,51 +1598,6 @@ def _run_pulse_probe(
             stderr = result["stderr"]
             timed_out = result["timed_out"]
             probe_calls = result["probe_calls"]
-
-            if result["os_raw_failed"] and os_detect_effective:
-                os_detect_effective = False
-                os_detect_degraded = os_state["degraded"] or "raw sockets unavailable"
-                logging.warning(
-                    "pulse_probe: OS detection needs raw sockets and this process has none "
-                    "(%s); continuing without --os for the rest of the run -- services, "
-                    "banners and CVEs still run. Grant cap_net_raw/cap_net_admin to the "
-                    "pulse binary or the pod (docs/pulse-backend.md) to get OS guesses back.",
-                    os_detect_degraded,
-                )
-
-            crashed = returncode != 0 and not payload and not timed_out
-            if crashed:
-                consecutive_crashes += 1
-                if consecutive_crashes >= MAX_CONSECUTIVE_CRASHED_CHUNKS:
-                    stop_probe.set()
-                    raise PulseCrashLoopError(
-                        f"pulse exited {returncode} without JSON for "
-                        f"{consecutive_crashes} chunks in a row; last stderr: "
-                        f"{stderr[:500] or 'empty'}. Fix the binary/flags "
-                        f"({pulse_bin}) and re-run with --resume."
-                    )
-            elif not timed_out:
-                consecutive_crashes = 0
-
-            if timed_out:
-                consecutive_timeouts += 1
-                if consecutive_timeouts >= MAX_CONSECUTIVE_TIMED_OUT_CHUNKS:
-                    stop_probe.set()
-                    raise PulseTimeoutLoopError(
-                        f"pulse did not finish within its timeout on {consecutive_timeouts} chunks in a row "
-                        f"(process timeout {timeout_seconds}s"
-                        + (
-                            f" plus up to {plugin_budget_seconds(chunk.endpoint_count)}s for the plugins"
-                            if script_dir
-                            else ""
-                        )
-                        + f", {len(host_chunk)} host(s) per chunk). Raise runtime.nse_timeout_seconds, lower "
-                        "service_probe.pulse.chunk_hosts, or turn the plugins off "
-                        "(service_probe.pulse.plugins: false) if a server is stalling them; hosts finished "
-                        "earlier are kept, and --resume asks again for the rest."
-                    )
-            else:
-                consecutive_timeouts = 0
 
             if script_dir:
                 for error in parse_plugin_errors(stderr):

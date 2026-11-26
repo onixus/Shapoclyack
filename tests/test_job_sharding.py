@@ -70,3 +70,12 @@ def test_partition_rejects_bad_count_and_empty_input():
         partition_targets(ranges="10.0.0.0/8", domains=None, shard_count=100)
     with pytest.raises(ValueError):
         partition_targets(ranges="# only\n", domains=None, shard_count=2)
+
+
+def test_shard_count_requires_agent_execution_mode():
+    """Local mode must refuse fan-out: uncancellable threads + API-pod load."""
+    from api.services.job_sharding import require_agent_execution_for_shards
+
+    require_agent_execution_for_shards("agent")
+    with pytest.raises(ValueError, match="job_execution_mode=agent"):
+        require_agent_execution_for_shards("local")
