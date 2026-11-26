@@ -3,20 +3,24 @@
 Speed profile (``mode``: safe/balanced/fast) stays orthogonal: how hard to
 hit the network. Intent chooses *which pipeline stages and nuclei floor* run
 so operators can schedule inventory often and full assessments rarely without
-hand-editing YAML (see ``docs/scan-performance.md``).
+hand-editing YAML (see ``docs/scan-performance.md``, ADR 0009 / ADR 0013).
 
-| Intent     | Effect                                                              |
-|------------|---------------------------------------------------------------------|
-| inventory  | Ports-only L1 (``--skip-nse``), nuclei off, top_ports 100           |
-| vuln       | Full probe + nuclei critical/high only (no medium)                  |
-| full       | Default pipeline (nuclei critical/high/medium)                      |
-| delta      | Same as full + ``--delta`` discovery refresh                        |
-| org_profile| Full + the organization-profile stages (see docs/configuration.md)   |
+| Intent              | Effect                                                              |
+|---------------------|---------------------------------------------------------------------|
+| inventory           | Ports-only L1 (``--skip-nse``), nuclei off, top_ports 100;          |
+|                     | plugins + cipher-enum forced OFF                                    |
+| inventory_services  | Mid-tier: Pulse banners/services, no plugins/tls-enum/nuclei        |
+| enrichment          | Assessment Pulse: plugins + tls-enum + nuclei (Stage2 contract)     |
+| vuln                | Full probe + nuclei critical/high only (no medium); heavy Pulse     |
+| full                | Assessment-grade pipeline; heavy Pulse                              |
+| delta               | Same as full + ``--delta`` discovery refresh                        |
+| org_profile         | Full + the organization-profile stages (see docs/configuration.md)  |
 
 When ``intent`` is omitted, legacy ``skip_nse`` / ``delta`` flags apply as
-before. When ``intent`` is set, it owns those flags (and nuclei/top_ports
-config); explicit ``skip_nse``/``delta`` on the request are ignored so the
-product control is unambiguous.
+before (shipped YAML keeps plugins/tls-enum on). When ``intent`` is set, it
+owns those flags (and nuclei/top_ports/plugins/cipher-enum config); explicit
+``skip_nse``/``delta`` on the request are ignored so the product control is
+unambiguous.
 """
 
 from __future__ import annotations
@@ -24,9 +28,33 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-ScanIntent = Literal["inventory", "vuln", "full", "delta", "org_profile"]
+ScanIntent = Literal[
+    "inventory",
+    "inventory_services",
+    "enrichment",
+    "vuln",
+    "full",
+    "delta",
+    "org_profile",
+]
 
-INTENTS: tuple[ScanIntent, ...] = ("inventory", "vuln", "full", "delta", "org_profile")
+INTENTS: tuple[ScanIntent, ...] = (
+    "inventory",
+    "inventory_services",
+    "enrichment",
+    "vuln",
+    "full",
+    "delta",
+    "org_profile",
+)
+
+#: Intents that must not inherit assessment-grade plugins / cipher enum.
+SPEED_INTENTS: frozenset[ScanIntent] = frozenset({"inventory", "inventory_services"})
+
+#: Intents that keep (or restore) plugins + cipher enumeration.
+HEAVY_INTENTS: frozenset[ScanIntent] = frozenset(
+    {"enrichment", "vuln", "full", "delta", "org_profile"}
+)
 
 # Scanner CLI --mode only accepts these (not "test").
 _CLI_MODES = frozenset({"safe", "balanced", "fast"})
@@ -51,6 +79,22 @@ def _cli_mode(mode: str) -> str:
     # API historically allowed "test"; map to balanced + leave intent overlays
     # to cut coverage (inventory-like knobs if intent also set).
     return "balanced"
+
+
+def _speed_pulse_overlay() -> dict[str, Any]:
+    """ADR 0013: speed paths never pay tls-enum / Rhai plugin wall-clock."""
+    return {
+        "tls_posture": {"enumerate_ciphers": False},
+        "service_probe": {"pulse": {"plugins": False}},
+    }
+
+
+def _heavy_pulse_overlay() -> dict[str, Any]:
+    """ADR 0013: assessment paths keep plugins + cipher grades."""
+    return {
+        "tls_posture": {"enabled": True, "enumerate_ciphers": True},
+        "service_probe": {"pulse": {"plugins": True, "banner": True}},
+    }
 
 
 def resolve_scan_options(
@@ -79,6 +123,8 @@ def resolve_scan_options(
 
     if intent == "inventory":
         # L1: discover + ports + report. No Pulse/NSE/Nuclei wall-clock.
+        # Still force plugins/tls-enum OFF so a resume without skip_nse cannot
+        # inherit assessment defaults (FTT-056 / ADR 0013).
         return ResolvedIntent(
             intent="inventory",
             mode=cli_mode,
@@ -88,8 +134,54 @@ def resolve_scan_options(
                 "nuclei": {"enabled": False},
                 "profiles": {profile_key: {"top_ports": 100}},
                 "runtime": {"skip_nse": True},
+                **_speed_pulse_overlay(),
             },
-            summary="inventory: ports-only, nuclei off, top 100 ports",
+            summary="inventory: ports-only, nuclei/plugins/tls-enum off, top 100 ports",
+        )
+
+    if intent == "inventory_services":
+        # Mid-tier (ADR 0009 / FTT-056): L4 + Pulse banners/services without
+        # the TLS-enum / plugin / nuclei wall. S3 chunk overlap knobs stay in
+        # the S3 PR — this slice is the product default only.
+        return ResolvedIntent(
+            intent="inventory_services",
+            mode=cli_mode,
+            delta=bool(delta),
+            skip_nse=False,
+            config_extra={
+                "nuclei": {"enabled": False},
+                "profiles": {profile_key: {"top_ports": 100}},
+                "tls_posture": {"enabled": False, "enumerate_ciphers": False},
+                "service_probe": {
+                    "pulse": {
+                        "banner": True,
+                        "plugins": False,
+                        "cve": True,
+                        "cve_online": False,
+                    }
+                },
+            },
+            summary=(
+                "inventory_services: Pulse banners/services, "
+                "no plugins/tls-enum/nuclei"
+            ),
+        )
+
+    if intent == "enrichment":
+        # Stage2 assessment contract (config only here; queue fan-out is S4).
+        return ResolvedIntent(
+            intent="enrichment",
+            mode=cli_mode,
+            delta=False,
+            skip_nse=False,
+            config_extra={
+                "nuclei": {
+                    "enabled": True,
+                    "severities": ["critical", "high", "medium"],
+                },
+                **_heavy_pulse_overlay(),
+            },
+            summary="enrichment: Stage2 TLS/plugins/nuclei on known hosts",
         )
 
     if intent == "vuln":
@@ -103,8 +195,9 @@ def resolve_scan_options(
                     "enabled": True,
                     "severities": ["critical", "high"],
                 },
+                **_heavy_pulse_overlay(),
             },
-            summary="vuln: full probe, nuclei critical+high only",
+            summary="vuln: full probe, nuclei critical+high only, heavy Pulse",
         )
 
     if intent == "delta":
@@ -118,8 +211,9 @@ def resolve_scan_options(
                     "enabled": True,
                     "severities": ["critical", "high", "medium"],
                 },
+                **_heavy_pulse_overlay(),
             },
-            summary="delta: full pipeline with incremental discovery",
+            summary="delta: full pipeline with incremental discovery, heavy Pulse",
         )
 
     if intent == "org_profile":
@@ -142,7 +236,7 @@ def resolve_scan_options(
                     "controls": {"enabled": True},
                 },
                 "fingerprint": {"enabled": True},
-                "tls_posture": {"enabled": True},
+                **_heavy_pulse_overlay(),
             },
             summary="org_profile: full assessment with complete org_profile & security controls evaluation",
         )
@@ -158,8 +252,9 @@ def resolve_scan_options(
                 "enabled": True,
                 "severities": ["critical", "high", "medium"],
             },
+            **_heavy_pulse_overlay(),
         },
-        summary="full: assessment-grade pipeline",
+        summary="full: assessment-grade pipeline, heavy Pulse",
     )
 
 

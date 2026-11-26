@@ -167,7 +167,9 @@ policy. Numbers are models — validate with `stage_timings.json`.
 1. **Measure** a representative estate: `stage_timings.json` + Pulse
    `stats.l4_complete` vs full complete.
 2. **Ship mid-tier intent + turn off default cipher-enum/plugins for
-   speed intents** (config/product, low risk).
+   speed intents** (config/product, low risk) — **shipped** in
+   [FTT-056](ftt-pulse-2026-056-product-defaults-speed-intents.md) /
+   [ADR 0013](adr/0013-product-defaults-speed-intents.md).
 3. **GenDec `--enrich-concurrency`** (S1).
 4. **Adapter `pulse_chunk_concurrency`** (S3).
 5. **Job sharding + KEDA/HPA on queue depth** (S2) and/or **Stage2

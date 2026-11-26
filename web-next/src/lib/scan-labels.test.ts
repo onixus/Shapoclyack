@@ -2,7 +2,16 @@ import { describe, expect, it } from "vitest";
 import { scanIntentLabel, scanModeLabel, scanExecutionLabel, scanTargetLabel } from "./scan-labels";
 describe("scan presentation", () => {
   it("translates all supported scan profiles and intents", () => {
-    for (const v of ["inventory", "vuln", "full", "delta", "org_profile", "legacy"])
+    for (const v of [
+      "inventory",
+      "inventory_services",
+      "enrichment",
+      "vuln",
+      "full",
+      "delta",
+      "org_profile",
+      "legacy",
+    ])
       expect(scanIntentLabel("ru", v)).not.toBe(v);
     for (const v of ["safe", "balanced", "fast", "test"])
       expect(scanModeLabel("ru", v)).not.toBe(v);

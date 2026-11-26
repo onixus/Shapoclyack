@@ -482,6 +482,10 @@ export default function SchedulesPage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="inventory">{t("launcher.intent.inventory")}</SelectItem>
+                      <SelectItem value="inventory_services">
+                        {t("launcher.intent.inventory_services")}
+                      </SelectItem>
+                      <SelectItem value="enrichment">{t("launcher.intent.enrichment")}</SelectItem>
                       <SelectItem value="vuln">{t("launcher.intent.vuln")}</SelectItem>
                       <SelectItem value="full">{t("launcher.intent.full")}</SelectItem>
                       <SelectItem value="delta">{t("launcher.intent.delta")}</SelectItem>
