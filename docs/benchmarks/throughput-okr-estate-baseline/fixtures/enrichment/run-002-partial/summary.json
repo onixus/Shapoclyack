@@ -1,0 +1,6 @@
+{
+  "total_targets": 500,
+  "throughput_cohort": "enrichment",
+  "intent": "enrichment",
+  "note": "synthetic OKR Measure fixture; not a live estate"
+}

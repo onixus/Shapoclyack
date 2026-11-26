@@ -1,0 +1,29 @@
+{
+  "cohorts": {
+    "enrichment": {
+      "enrichment_share_median": 0.979,
+      "hosts_per_hour_median": 200.0,
+      "meets_okr": false,
+      "seconds_per_host": 18.0
+    },
+    "full": {
+      "enrichment_share_median": 0.979,
+      "hosts_per_hour_median": 125.0,
+      "meets_okr": false,
+      "seconds_per_host": 28.8
+    },
+    "inventory": {
+      "enrichment_share_median": null,
+      "hosts_per_hour_median": 5000.0,
+      "meets_okr": false,
+      "seconds_per_host": 0.72
+    },
+    "inventory_services": {
+      "enrichment_share_median": 0.75,
+      "hosts_per_hour_median": 4000.0,
+      "meets_okr": false,
+      "seconds_per_host": 0.9
+    }
+  },
+  "source": "shapoclyack.throughput_okr_baseline.v1"
+}

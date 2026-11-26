@@ -1,0 +1,26 @@
+{
+  "meta": {
+    "scanner": "pulse",
+    "schema": "pulse.scan.v3",
+    "coverage_complete": true
+  },
+  "adapter": {
+    "note": "synthetic fixture"
+  },
+  "stats": {
+    "total": 1500,
+    "open": 1500,
+    "closed": 0,
+    "filtered": 0,
+    "skipped": 0,
+    "elapsed_ms": 300000,
+    "rate_pps": 5.0,
+    "complete": true,
+    "l4_complete": true,
+    "cancelled": false,
+    "fatal_error": null,
+    "errors": 0,
+    "incomplete": 0
+  },
+  "open": []
+}

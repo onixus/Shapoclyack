@@ -31,6 +31,23 @@ stage timings: pipeline_wall=…s stages_sum=…s top=[nuclei=…, ports=…, �
 Use this file before changing rates or concurrency. The usual ranking on
 web-heavy scopes is **nuclei ≫ ports / pulse ≫ discover**.
 
+### Estate throughput baseline (OKR Measure)
+
+For the 10 000 hosts/hour OKR, turn run directories into hosts/hour,
+`top_stages`, and Pulse **L4 vs enrichment** (FTT-PULSE-2026-055):
+
+```bash
+python3 scripts/throughput_okr_measure.py runs-dir "$OCTO_OUTPUT_DIR/runs" \
+  --cohort inventory --out /tmp/inventory-baseline.json
+python3 scripts/throughput_okr_model.py \
+  --calibration docs/benchmarks/throughput-okr-estate-baseline/calibration.json
+```
+
+Pulse `stats.elapsed_ms` is L4 wall; enrichment wall ≈ pulse stage
+`duration_sec − elapsed_ms/1000`. Completeness cites `stats.l4_complete` vs
+`stats.complete`. Fixture pack:
+[benchmarks/throughput-okr-estate-baseline](benchmarks/throughput-okr-estate-baseline/README.md).
+
 Load CI also records overall `duration_sec` and `peak_rss_mb` (see
 `tests/load/run.sh`). Peak RSS used to always report `0` because the monitor
 exited before the scanner container existed; that race is fixed.
