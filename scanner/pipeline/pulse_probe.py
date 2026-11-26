@@ -1589,7 +1589,6 @@ def _run_pulse_probe(
 
         for result in wave_results:
             idx = result["idx"]
-            chunk = result["chunk"]
             host_chunk = result["host_chunk"]
             ports_list = result["ports_list"]
             key = result["key"]
