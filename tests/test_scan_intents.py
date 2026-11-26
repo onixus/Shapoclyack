@@ -46,6 +46,22 @@ def test_inventory_services_intent_mid_tier() -> None:
     config_overlay.check_config(r.config_extra)
 
 
+def test_enrichment_intent_stage2() -> None:
+    r = resolve_scan_options(
+        intent="enrichment", mode="balanced", delta=True, skip_nse=True
+    )
+    assert r.intent == "enrichment"
+    assert r.delta is False  # Stage2 does not re-run incremental discovery
+    assert r.skip_nse is False
+    assert r.config_extra["nuclei"]["enabled"] is True
+    assert r.config_extra["tls_posture"]["enumerate_ciphers"] is True
+    assert r.config_extra["service_probe"]["pulse"]["plugins"] is True
+    assert "enrichment" in r.summary
+    from scanner.pipeline import config_overlay
+
+    config_overlay.check_config(r.config_extra)
+
+
 def test_vuln_sets_nuclei_floor() -> None:
     r = resolve_scan_options(intent="vuln", mode="balanced", delta=False, skip_nse=True)
     assert r.skip_nse is False  # intent owns the flag

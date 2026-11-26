@@ -24,6 +24,9 @@ from api.db import models
 #: (``run_completion.on_run_published``).
 ASSETS = "assets"
 FINDINGS = "findings"
+#: Stage2 enrichment fan-out (FTT-PULSE-2026-054). Marked before sibling jobs
+#: are created so a republished run cannot open a second Stage2 group.
+STAGE2 = "stage2"
 
 
 def first_pass(session, publication_id: str | None, step: str) -> bool:

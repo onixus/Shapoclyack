@@ -373,6 +373,12 @@ class StartScanRequest(BaseModel):
     # per non-empty partition and returns shard 0; siblings share
     # ``scan_options.shard_group_id``.
     shard_count: int | None = Field(default=None, ge=2, le=64)
+    # Stage2 enrichment queue (FTT-PULSE-2026-054): after this Stage1 job's run
+    # publishes successfully, fan out claimable ``intent=enrichment`` jobs for
+    # hosts observed in ``open_ports.txt``. Default off — inventory stays the
+    # inventory SLO. Ignored (and refused by the enqueue guard) when the job
+    # itself is already a Stage2 child.
+    stage2_enrichment: bool = False
 
 
 class JobPriorityRequest(BaseModel):

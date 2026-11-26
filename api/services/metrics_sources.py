@@ -119,6 +119,9 @@ class ClusterSnapshot:
     #: Queued jobs that belong to a shard group (``scan_options.shard_group_id``).
     #: KEDA scales the scanner-executor on this depth (FTT-PULSE-2026-053).
     jobs_shard_queued: int = 0
+    #: Queued Stage2 enrichment jobs (``scan_options.stage2_group_id``).
+    #: Depth signal for assessment fan-out after Stage1 (FTT-PULSE-2026-054).
+    jobs_stage2_queued: int = 0
     #: ``{"active": n, "stale": m}``, or ``None`` with the endpoint inventory off.
     endpoint_devices: dict[str, int] | None = None
 
@@ -138,7 +141,7 @@ def cluster_snapshot(now: datetime | None = None) -> ClusterSnapshot | None:
         fleet = agents_service.fleet_heartbeats(
             session, now=now, stale_seconds=settings.agent_stale_seconds
         )
-        queued, running, shard_queued = job_store.job_counts(session)
+        queued, running, shard_queued, stage2_queued = job_store.job_counts(session)
         devices = (
             endpoint_inventory.device_state_counts(
                 session, now=now, stale_hours=settings.endpoint_stale_hours
@@ -151,6 +154,7 @@ def cluster_snapshot(now: datetime | None = None) -> ClusterSnapshot | None:
         jobs_queued=queued,
         jobs_running=running,
         jobs_shard_queued=shard_queued,
+        jobs_stage2_queued=stage2_queued,
         endpoint_devices=devices,
     )
 

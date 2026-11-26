@@ -174,8 +174,9 @@ policy. Numbers are models — validate with `stage_timings.json`.
 4. **Adapter `pulse_chunk_concurrency`** (S3).
 5. **Job sharding + KEDA/HPA on queue depth** (S2) — control-plane shards in
    FTT-052 / ADR 0010; ops layer (`octo_jobs_shard_queued` +
-   `overlays/executor-keda`) in FTT-053 / ADR 0011. And/or **Stage2
-   enrichment jobs** (S4).
+   `overlays/executor-keda`) in FTT-053 / ADR 0011. **Stage2 enrichment
+   jobs** (S4) — FTT-054 / ADR 0012 (`stage2_enrichment` +
+   `octo_jobs_stage2_queued`).
 6. Heuristics S5; park S6.
 
 ---

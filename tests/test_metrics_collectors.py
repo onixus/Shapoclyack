@@ -354,6 +354,7 @@ def _cluster(**overrides) -> metrics_sources.ClusterSnapshot:
         "jobs_queued": 2,
         "jobs_running": 1,
         "jobs_shard_queued": 1,
+        "jobs_stage2_queued": 2,
         "endpoint_devices": {"active": 3, "stale": 1},
     }
     base.update(overrides)
@@ -381,6 +382,7 @@ def test_the_cluster_snapshot_is_reused_across_scrapes():
     assert _value(samples, "octo_jobs_queued") == 2
     assert _value(samples, "octo_jobs_running") == 1
     assert _value(samples, "octo_jobs_shard_queued") == 1
+    assert _value(samples, "octo_jobs_stage2_queued") == 2
     assert _value(samples, "octo_endpoint_devices", state="active") == 3
     _samples(collector)
     assert len(calls) == 1
@@ -662,6 +664,7 @@ def test_every_replica_reports_the_queue_the_table_holds(tmp_path, monkeypatch):
     body = client.get("/metrics").text
     assert "octo_jobs_queued 1.0" in body
     assert "octo_jobs_shard_queued 0.0" in body
+    assert "octo_jobs_stage2_queued 0.0" in body
 
     with get_session(settings.postgres_url) as session:
         session.execute(update(models.Job).where(models.Job.job_id == job_id).values(status="claimed"))
@@ -707,6 +710,47 @@ def test_shard_queued_counts_only_jobs_with_shard_group_id(tmp_path, monkeypatch
     body = client.get("/metrics").text
     assert "octo_jobs_queued 2.0" in body
     assert "octo_jobs_shard_queued 1.0" in body
+
+
+@requires_postgres
+def test_stage2_queued_counts_only_jobs_with_stage2_group_id(tmp_path, monkeypatch):
+    """Stage2 depth must not count ordinary or shard-only queued jobs
+    (FTT-PULSE-2026-054 FR-07)."""
+    settings = make_settings(tmp_path, job_execution_mode="agent")
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with get_session(settings.postgres_url) as session:
+        session.add(
+            models.Job(
+                job_id=f"plain-{uuid4().hex[:12]}",
+                tenant_id="default",
+                status="queued",
+                execution="agent",
+                queued_at=now,
+                scan_options={"surface": "internal"},
+            )
+        )
+        session.add(
+            models.Job(
+                job_id=f"s2-{uuid4().hex[:12]}",
+                tenant_id="default",
+                status="queued",
+                execution="agent",
+                queued_at=now,
+                scan_options={
+                    "stage2_group_id": "s2-grp-1",
+                    "stage2_index": 0,
+                    "stage2_count": 1,
+                    "stage2_of": "parent-1",
+                    "intent": "enrichment",
+                },
+            )
+        )
+    _expire_scrape_caches()
+    body = client.get("/metrics").text
+    assert "octo_jobs_queued 2.0" in body
+    assert "octo_jobs_stage2_queued 1.0" in body
+    assert "octo_jobs_shard_queued 0.0" in body
 
 
 @requires_postgres

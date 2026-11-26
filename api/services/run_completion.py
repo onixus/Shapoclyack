@@ -360,6 +360,9 @@ VERIFICATION = "verification"
 SERVICES = "services"
 EVENTS = "events"
 NOTIFY = "notify"
+#: Stage2 enrichment fan-out (FTT-PULSE-2026-054). Only on succeeded Stage1
+#: runs that opted in; the step itself no-ops when the flag is off.
+STAGE2 = "stage2"
 
 #: What a published run feeds, by the outcome committed beside it (#454).
 #: One table for both execution paths: a local run and a sensor's upload
@@ -381,7 +384,15 @@ NOTIFY = "notify"
 #: was holding in ``VERIFYING`` is given back to ``FIXING`` (#451): that reads
 #: the outcome, not the run, and is not derived from anything the run says.
 POST_PUBLICATION: dict[str, tuple[str, ...]] = {
-    job_states.SUCCEEDED: (SCOPE_DENIALS, ASSETS, FINDINGS, SERVICES, EVENTS, NOTIFY),
+    job_states.SUCCEEDED: (
+        SCOPE_DENIALS,
+        ASSETS,
+        FINDINGS,
+        SERVICES,
+        EVENTS,
+        STAGE2,
+        NOTIFY,
+    ),
     job_states.FAILED: (SCOPE_DENIALS, VERIFICATION),
     job_states.CANCELLED: (SCOPE_DENIALS, VERIFICATION),
 }
@@ -440,10 +451,37 @@ def project_published_run(
         EVENTS: lambda: publish_asset_events_best_effort(
             settings, tenant_id=tenant_id, run_id=run_id, job_id=job_id
         ),
+        STAGE2: lambda: _enqueue_stage2_best_effort(
+            settings,
+            job_id,
+            run_id=run_id,
+            tenant_id=tenant_id,
+            publication_id=publication_id,
+        ),
     }
     for action in actions_for(status):
         if action in steps:
             steps[action]()
+
+
+def _enqueue_stage2_best_effort(
+    settings: Settings,
+    job_id: str,
+    *,
+    run_id: str,
+    tenant_id: str,
+    publication_id: str | None,
+) -> None:
+    """Opt-in Stage2 enrichment queue (FTT-PULSE-2026-054). Never raises."""
+    from api.services import stage2_enrichment
+
+    stage2_enrichment.enqueue_stage2_best_effort(
+        settings,
+        job_id,
+        run_id=run_id,
+        tenant_id=tenant_id,
+        publication_id=publication_id,
+    )
 
 
 def on_run_published(

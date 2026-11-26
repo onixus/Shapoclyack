@@ -9,6 +9,7 @@ hand-editing YAML (see ``docs/scan-performance.md``).
 |---------------------|---------------------------------------------------------------------|
 | inventory           | Ports-only L1 (``--skip-nse``), nuclei off, top_ports 100           |
 | inventory_services  | Mid-tier: Pulse banners/services/OS/CVE, no plugins/tls-enum/nuclei |
+| enrichment          | Stage2: Pulse plugins + tls-enum + nuclei on known hosts (S4)       |
 | vuln                | Full probe + nuclei critical/high only (no medium)                  |
 | full                | Default pipeline (nuclei critical/high/medium)                      |
 | delta               | Same as full + ``--delta`` discovery refresh                        |
@@ -26,12 +27,19 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 ScanIntent = Literal[
-    "inventory", "inventory_services", "vuln", "full", "delta", "org_profile"
+    "inventory",
+    "inventory_services",
+    "enrichment",
+    "vuln",
+    "full",
+    "delta",
+    "org_profile",
 ]
 
 INTENTS: tuple[ScanIntent, ...] = (
     "inventory",
     "inventory_services",
+    "enrichment",
     "vuln",
     "full",
     "delta",
@@ -130,6 +138,37 @@ def resolve_scan_options(
             summary=(
                 "inventory_services: Pulse banners/services, "
                 "no plugins/tls-enum/nuclei"
+            ),
+        )
+
+    if intent == "enrichment":
+        # Stage2 assessment (FTT-PULSE-2026-054): TLS posture + Pulse plugins
+        # + nuclei on hosts already observed by Stage1. Overlap knobs match
+        # the mid-tier intent so a single Stage2 pod is not serial by default.
+        return ResolvedIntent(
+            intent="enrichment",
+            mode=cli_mode,
+            delta=False,
+            skip_nse=False,
+            config_extra={
+                "nuclei": {
+                    "enabled": True,
+                    "severities": ["critical", "high", "medium"],
+                },
+                "tls_posture": {"enabled": True, "enumerate_ciphers": True},
+                "service_probe": {
+                    "pulse": {
+                        "banner": True,
+                        "plugins": True,
+                        "cve": True,
+                        "cve_online": False,
+                        "chunk_concurrency": 2,
+                        "enrich_concurrency": 8,
+                    }
+                },
+            },
+            summary=(
+                "enrichment: Stage2 TLS/plugins/nuclei on known hosts"
             ),
         )
 

@@ -61,6 +61,7 @@ _IDEMPOTENCY_FIELDS = (
     "wordlist_id",
     "agent_group",
     "shard_count",
+    "stage2_enrichment",
 )
 _IDEMPOTENCY_TARGET_FIELDS = (
     "ranges",
@@ -257,6 +258,7 @@ def start_scan(
     verification_of: str | None = None,
     expected_admission_sha256: str | None = None,
     _shard_meta: dict[str, Any] | None = None,
+    _stage2_meta: dict[str, Any] | None = None,
     _defer_dispatch: bool = False,
 ) -> JobInfo:
     """Admit, persist and dispatch one new scan job.
@@ -692,9 +694,20 @@ def start_scan(
                 else {}
             ),
             **wordlist_options,
+            # Opt-in Stage2 fan-out after this job's run publishes
+            # (FTT-PULSE-2026-054). Stage2 children pass ``_stage2_meta`` and
+            # keep this false so they never recurse.
+            **(
+                {"stage2_enrichment": True}
+                if request.stage2_enrichment and not _stage2_meta
+                else {}
+            ),
             # Shard meta last so a parent idempotency_digest on the primary
             # overrides the narrowed-child digest computed above.
             **(_shard_meta or {}),
+            # Stage2 meta after shard meta: server-only keys (``stage2_of``,
+            # ``stage2_group_id``, …) must win over any client-shaped overlap.
+            **(_stage2_meta or {}),
         },
         target_counts=target_counts,
         requested_by=username,
