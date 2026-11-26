@@ -58,10 +58,17 @@ def partition_targets(
     domains: str | None,
     shard_count: int,
 ) -> tuple[TargetPartition, ...]:
-    """Split admitted-style target text into stable, disjoint shards.
+    """Split admitted target lines into stable, disjoint shards.
 
-    Raises ``ValueError`` when ``shard_count`` is out of bounds or when every
-    shard would be empty (no usable target lines).
+    ``ranges`` and ``domains`` are already-accepted lines (scope-checked,
+    comments dropped), not the operator's raw text. Callers that still hold
+    raw text must parse it before cutting.
+
+    Raises ``ValueError`` when ``shard_count`` is out of bounds or when there
+    is no usable target line. Empty buckets are omitted rather than queued as
+    no-op jobs. ``shard_index`` stays the bucket the line landed in, and
+    ``shard_count`` stays the requested N, so a missing bucket is visible as
+    a gap instead of a renumbered ``0`` that still claims N siblings.
     """
     if shard_count < MIN_SHARD_COUNT or shard_count > MAX_SHARD_COUNT:
         raise ValueError(
@@ -88,14 +95,4 @@ def partition_targets(
     kept = tuple(part for part in partitions if not part.is_empty)
     if not kept:
         raise ValueError("sharding produced no non-empty partitions")
-    # Re-index kept shards so operators see contiguous 0..len-1 while
-    # ``shard_count`` remains the requested N (horizontal scale intent).
-    return tuple(
-        TargetPartition(
-            shard_index=index,
-            shard_count=shard_count,
-            ranges=part.ranges,
-            domains=part.domains,
-        )
-        for index, part in enumerate(kept)
-    )
+    return kept

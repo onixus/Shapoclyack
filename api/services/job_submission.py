@@ -28,6 +28,7 @@ from api.schemas import JobInfo, StartScanRequest
 from api.services import agent_groups as agent_groups_service
 from api.services import config_override as config_override_service
 from api.services import (
+    job_control,
     job_inputs,
     job_sharding,
     job_states,
@@ -129,15 +130,26 @@ def note_start_replay() -> None:
 
 
 def _annotate_shard_siblings(
-    settings: Settings, job_id: str, sibling_ids: list[str]
+    settings: Settings,
+    job_id: str,
+    sibling_ids: list[str],
+    *,
+    idempotency_digest_value: str | None = None,
 ) -> None:
-    """Record the full sibling set on each shard job after the group exists."""
+    """Record the sibling set once every shard of the group exists.
+
+    ``idempotency_digest_value`` is the digest of the *operator's* request,
+    not of the narrowed child. A replay compares the key against that body;
+    a digest of one shard would 409 the retry that asked for the group.
+    """
     with get_session(settings.postgres_url) as session:
         row = session.get(models.Job, job_id)
         if row is None:
             return
         options = dict(row.scan_options or {})
         options["shard_job_ids"] = list(sibling_ids)
+        if idempotency_digest_value:
+            options["idempotency_digest"] = idempotency_digest_value
         row.scan_options = options
         session.commit()
 
@@ -249,9 +261,13 @@ def start_scan(
     """Admit, persist and dispatch one new scan job.
 
     When ``request.shard_count`` is set (and ``_shard_meta`` is absent), the
-    request is partitioned into claimable sibling jobs (FTT-PULSE-2026-052).
-    The caller receives shard 0; every sibling records ``shard_group_id`` and
-    ``shard_job_ids`` in ``scan_options``.
+    request is admitted once and the *accepted* ranges and domains are
+    partitioned into claimable sibling jobs (FTT-PULSE-2026-052). The caller
+    receives the lowest shard; every sibling records ``shard_group_id`` and
+    ``shard_job_ids`` in ``scan_options``. A repeat of the same
+    ``Idempotency-Key`` raises ``IdempotentReplay`` of that shard rather than
+    queueing a second group. Shard 0 spends the quota and the queue slot;
+    its siblings are exempt, so one estate is one scan.
 
     ``widen_with_promoted`` is whether this scan carries the related domains
     the tenant's operators promoted (org_profile M4) on top of its own
@@ -302,55 +318,137 @@ def start_scan(
     config_override_service.assert_runnable(settings, config_extra)
 
     # Horizontal scale: one estate → N claimable jobs (FTT-PULSE-2026-052).
+    # Cut the *admitted* lines, never the raw text: scope, promoted domains
+    # and the maintenance window are decided against the whole estate first,
+    # then the accepted set is split. A retry of the same key finds shard 0
+    # and replays it; it must not queue a second group.
     if request.shard_count and _shard_meta is None:
+        if idempotency_key:
+            existing = find_by_idempotency_key(
+                settings,
+                tenant_id=(request.tenant_id or tenants_service.DEFAULT_TENANT_ID).strip(),
+                key=idempotency_key,
+                request=request,
+            )
+            if existing is not None:
+                raise IdempotentReplay(existing)
+        preview_id = uuid.uuid4().hex[:12]
+        execution = (
+            "agent" if settings.job_execution_mode == "agent" else "local"
+        )
+        admission = scan_admission.admit_scan(
+            settings,
+            request,
+            username=username,
+            job_id=preview_id,
+            execution=execution,
+            quota_exempt=quota_exempt,
+            widen_with_promoted=widen_with_promoted,
+        )
+        if expected_admission_sha256 is not None and scan_admission.admission_digest(
+                admission, execution=execution) != expected_admission_sha256:
+            raise ValueError("Confirmed scan admission changed; prepare a new proposal")
+        parsed = admission.parsed_targets
+        admitted_ranges = list(parsed.ranges or []) if parsed else []
+        admitted_domains = list(parsed.domains or []) if parsed else []
+        # Promoted names ride with the estate, but each name belongs to one
+        # shard. Copying the whole list onto every child would scan them N
+        # times and could pull a name into a shard whose own targets never
+        # justified it.
+        admitted_domains.extend(admission.promoted_admitted)
         partitions = job_sharding.partition_targets(
-            ranges=request.ranges,
-            domains=request.domains,
+            ranges="\n".join(admitted_ranges),
+            domains="\n".join(admitted_domains),
             shard_count=request.shard_count,
         )
         group_id = uuid.uuid4().hex[:12]
+        parent_digest = (
+            idempotency_digest(request) if idempotency_key else None
+        )
         created: list[JobInfo] = []
-        for part in partitions:
-            child = request.model_copy(
-                update={
-                    "ranges": part.ranges or None,
-                    "domains": part.domains or None,
-                    "shard_count": None,
-                }
-            )
-            created.append(
-                start_scan(
-                    settings,
-                    child,
-                    username=username,
-                    build_command=build_command,
-                    run_local_job=run_local_job,
-                    thread_factory=thread_factory,
-                    publish_offer=publish_offer,
-                    # One idempotency key covers the whole group; only shard 0
-                    # stores it so a replay finds the primary job.
-                    idempotency_key=idempotency_key if part.shard_index == 0 else None,
-                    quota_exempt=quota_exempt,
-                    widen_with_promoted=widen_with_promoted,
-                    config_extra=config_extra,
-                    min_overlay_version=min_overlay_version,
-                    verification_of=verification_of,
-                    expected_admission_sha256=None,
-                    _shard_meta={
-                        "shard_group_id": group_id,
-                        "shard_index": part.shard_index,
-                        "shard_count": request.shard_count,
-                    },
+        try:
+            for part in partitions:
+                child = request.model_copy(
+                    update={
+                        "ranges": part.ranges or None,
+                        "domains": part.domains or None,
+                        "shard_count": None,
+                        # The group's run id, if the operator named one, belongs
+                        # to shard 0. A shared run id would collide on the
+                        # local reservation and mix artifact trees.
+                        "run_id": request.run_id if part.shard_index == partitions[0].shard_index else None,
+                    }
                 )
-            )
+                created.append(
+                    start_scan(
+                        settings,
+                        child,
+                        username=username,
+                        build_command=build_command,
+                        run_local_job=run_local_job,
+                        thread_factory=thread_factory,
+                        publish_offer=publish_offer,
+                        # One key covers the group and lives on the shard the
+                        # caller is handed, so a replay finds that job.
+                        idempotency_key=(
+                            idempotency_key
+                            if part.shard_index == partitions[0].shard_index
+                            else None
+                        ),
+                        # Shard 0 spends the monthly scan and the queue slot.
+                        # Siblings are the same estate, not N more scans, and
+                        # must not trip the depth ceiling mid-group.
+                        quota_exempt=(
+                            quota_exempt
+                            or part.shard_index != partitions[0].shard_index
+                        ),
+                        # Already folded into the admitted lines above.
+                        widen_with_promoted=False,
+                        config_extra=config_extra,
+                        min_overlay_version=min_overlay_version,
+                        verification_of=verification_of,
+                        expected_admission_sha256=None,
+                        _shard_meta={
+                            "shard_group_id": group_id,
+                            "shard_index": part.shard_index,
+                            "shard_count": part.shard_count,
+                            "shard_of": len(partitions),
+                        },
+                    )
+                )
+        except Exception as exc:
+            # A sibling that already queued is not a scan anyone asked for
+            # on its own: the group did not finish. Cancel what landed,
+            # including after losing the idempotency race to a concurrent
+            # start of the same key.
+            for job in created:
+                try:
+                    job_control.cancel_job(
+                        settings, job.job_id, username=username
+                    )
+                except Exception:
+                    _log.warning(
+                        "Could not cancel shard %s after the group failed",
+                        job.job_id,
+                        exc_info=True,
+                    )
+            raise exc
         sibling_ids = [job.job_id for job in created]
+        primary = created[0]
         for job in created:
-            _annotate_shard_siblings(settings, job.job_id, sibling_ids)
+            _annotate_shard_siblings(
+                settings,
+                job.job_id,
+                sibling_ids,
+                idempotency_digest_value=(
+                    parent_digest if job.job_id == primary.job_id else None
+                ),
+            )
         with get_session(settings.postgres_url) as session:
-            row = session.get(models.Job, created[0].job_id)
+            row = session.get(models.Job, primary.job_id)
             if row is not None:
                 return job_store.to_info(row)
-        return created[0]
+        return primary
 
     job_id = uuid.uuid4().hex[:12]
     execution = (

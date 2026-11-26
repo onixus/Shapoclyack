@@ -38,8 +38,29 @@ def test_partition_skips_empty_and_comments():
     )
     assert len(parts) == 1
     assert parts[0].ranges == "10.0.0.0/8"
+    # The empty bucket is a gap, not a renumbered shard 0 of a 2-wide group.
     assert parts[0].shard_index == 0
     assert parts[0].shard_count == 2
+
+
+def test_a_gap_keeps_its_bucket_index():
+    """One line that lands past bucket 0 must not be renumbered to shard 0.
+
+    Operators read ``shard_index`` against the requested ``shard_count``. A
+    renumbered 0 of a 2-wide group looks like a lost sibling.
+    """
+    parts = partition_targets(ranges=None, domains="only.example", shard_count=2)
+    assert len(parts) == 1
+    assert parts[0].shard_index == 0
+    assert parts[0].domains == "only.example"
+
+    # Two lines into three buckets: index 2 stays empty and is dropped, and
+    # the kept shards keep the buckets they were cut into.
+    parts = partition_targets(
+        ranges="10.0.0.0/24\n10.0.1.0/24", domains=None, shard_count=3
+    )
+    assert [part.shard_index for part in parts] == [0, 1]
+    assert all(part.shard_count == 3 for part in parts)
 
 
 def test_partition_rejects_bad_count_and_empty_input():

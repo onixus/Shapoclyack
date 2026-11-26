@@ -52,7 +52,7 @@ Treat scan work as **intent**, not one default full pipeline. **Product control
 
 Throughput levers (same FTT): Pulse `service_probe.pulse.chunk_concurrency` /
 `enrich_concurrency`, and `POST /api/jobs` `shard_count` for claimable partitions
-([ADR 0009](adr/0009-throughput-s1-s3-sharding.md)).
+([ADR 0010](adr/0010-throughput-s1-s3-sharding.md)).
 
 Legacy: omit `intent` and use `skip_nse` / `delta` flags (UI: “legacy — manual flags”).
 

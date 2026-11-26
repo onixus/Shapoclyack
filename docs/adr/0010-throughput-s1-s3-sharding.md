@@ -1,4 +1,4 @@
-# ADR 0009: Throughput path — S1 parallel enrichment, S3 chunk overlap, job sharding
+# ADR 0010: Throughput path — S1 parallel enrichment, S3 chunk overlap, job sharding
 
 - **Status**: Proposed (implementation landed under FTT-PULSE-2026-052; owner acceptance pending)
 - **Date**: 2026-11-26

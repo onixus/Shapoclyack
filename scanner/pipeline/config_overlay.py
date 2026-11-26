@@ -60,7 +60,9 @@ INPUT_NAME = "config_overlay.json"
 #: * v3: ``nuclei.verification_targets``.
 #: * v4: Pulse mid-tier controls for ``inventory_services``
 #:   (``service_probe.pulse.{banner,plugins,cve,cve_online}``,
-#:   ``tls_posture.enumerate_ciphers``).
+#:   ``tls_posture.enumerate_ciphers``) and the S3 overlap knobs
+#:   (``service_probe.pulse.chunk_concurrency`` /
+#:   ``enrich_concurrency`` and the same leaves under ``profiles.*.pulse``).
 OVERLAY_VERSION = 4
 
 
@@ -131,12 +133,20 @@ _V1_PATHS: frozenset[str] = frozenset(
 _V2_PATHS: frozenset[str] = _V1_PATHS | {"nuclei.template_ids", "reachability.enabled"}
 _V3_PATHS: frozenset[str] = _V2_PATHS | {"nuclei.verification_targets"}
 # Mid-tier inventory_services intent (FTT-PULSE-2026-052 S3): Pulse banner /
-# CVE toggles and TLS cipher enum, never console-editable on their own.
+# CVE toggles, TLS cipher enum, and the overlap knobs. Without the last two
+# an intent that asks for overlapping chunks is refused, or — worse — silently
+# runs at the serial default because the path never reached the sensor.
+_V4_PULSE_LEAVES = (
+    "banner",
+    "plugins",
+    "cve",
+    "cve_online",
+    "chunk_concurrency",
+    "enrich_concurrency",
+)
 _V4_PATHS: frozenset[str] = _V3_PATHS | {
-    "service_probe.pulse.banner",
-    "service_probe.pulse.plugins",
-    "service_probe.pulse.cve",
-    "service_probe.pulse.cve_online",
+    *(f"service_probe.pulse.{leaf}" for leaf in _V4_PULSE_LEAVES),
+    *(f"profiles.{profile}.pulse.{leaf}" for profile in _PROFILES for leaf in _V4_PULSE_LEAVES),
     "tls_posture.enumerate_ciphers",
 }
 

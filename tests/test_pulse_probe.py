@@ -662,6 +662,25 @@ def test_ruleset_ids_parse_strictly_and_normalise_the_harmless_differences():
         assert parse_ruleset(unreadable) is None
 
 
+def test_os_degrade_sticks_across_an_overlapping_wave(tmp_path, monkeypatch):
+    """A raw-socket refusal must reach the siblings of the same wave.
+
+    With chunk_concurrency > 1 the flag used to be cleared only after the
+    wave returned, so every chunk in it paid the doomed --os attempt.
+    """
+    calls, _ = _run_probe(
+        tmp_path,
+        monkeypatch,
+        [_NO_RAW_SOCKETS, _ONE_SERVICE, _ONE_SERVICE, _ONE_SERVICE],
+        open_ports=("10.0.0.1:22/tcp", "10.0.0.2:22/tcp"),
+        chunk_hosts=1,
+        chunk_concurrency=2,
+    )
+    os_calls = [c for c in calls if "--os" in c]
+    assert len(os_calls) == 1, calls
+    assert all("--os" not in c for c in calls if c is not os_calls[0])
+
+
 def test_os_degrade_sticks_for_later_chunks(tmp_path, monkeypatch):
     """Every later chunk would hit the same refusal; do not pay it per chunk."""
     calls, _ = _run_probe(

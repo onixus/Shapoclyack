@@ -120,6 +120,10 @@ def resolve_scan_options(
                         "plugins": False,
                         "cve": True,
                         "cve_online": False,
+                        # S3: overlap the mid-tier chunks. Serial (1) is the
+                        # historical adapter; this intent exists to leave it.
+                        "chunk_concurrency": 4,
+                        "enrich_concurrency": 8,
                     }
                 },
             },

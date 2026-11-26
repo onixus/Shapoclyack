@@ -65,7 +65,7 @@ from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
 from typing import Any
 
 from . import distro_revision
@@ -1317,6 +1317,14 @@ def _run_pulse_probe(
 
     workers = max(1, min(8, int(chunk_concurrency)))
     diag_lock = Lock()
+    # Shared with the worker threads. A raw-socket refusal flips it off under
+    # the lock, so a chunk that has not built its command yet — including one
+    # already submitted in this wave — skips the doomed ``--os`` attempt
+    # instead of only the waves that start afterwards.
+    os_state = {"effective": os_detect, "degraded": None}
+    # Set when a wave has already decided the run is a crash or timeout loop,
+    # so a sibling chunk still inside its retry does not start another probe.
+    stop_probe = Event()
 
     def _probe_once(
         *,
@@ -1358,6 +1366,13 @@ def _run_pulse_probe(
         key = chunk_key(host_chunk, ports_list, scan_mode, chunk_plugins)
         hosts_file = pulse_dir / f"chunk_{key}.hosts.txt"
         write_lines(hosts_file, host_chunk)
+        with diag_lock:
+            # Overlapping chunks start together, so a refusal discovered
+            # mid-wave cannot reach a sibling that already built its command.
+            # Probe the first chunk of a wave with --os and the rest without
+            # it: one doomed attempt per wave, not one per chunk. A refusal
+            # still flips the flag, so later waves skip it entirely.
+            use_os = os_state["effective"] and with_os and idx % workers == 0
         command = build_pulse_command(
             bin_path=pulse_bin,
             hosts_file=hosts_file,
@@ -1368,7 +1383,7 @@ def _run_pulse_probe(
             host_parallel=host_parallel,
             timeout_ms=timeout_ms,
             banner=banner,
-            os_detect=with_os,
+            os_detect=use_os,
             services_db=services_db,
             script_dir=script_dir,
             probe_db=probe_db,
@@ -1388,6 +1403,10 @@ def _run_pulse_probe(
             len(host_chunk),
             len(ports_list),
         )
+        if stop_probe.is_set():
+            raise PulseCrashLoopError(
+                f"pulse_probe chunk {idx}: aborted, the run already hit a crash or timeout loop"
+            )
         state = {"probe_calls": 0, "timed_out": False}
         payload, returncode, stderr = _probe_once(
             idx=idx, endpoint_count=chunk.endpoint_count, command=command, state=state
@@ -1395,10 +1414,24 @@ def _run_pulse_probe(
         os_raw_failed = (
             returncode != 0
             and not payload
-            and with_os
+            and use_os
             and _is_os_raw_socket_failure(stderr)
         )
         if os_raw_failed:
+            # Before the retry, and before any sibling in this wave builds
+            # its own command: the rest of the run does not ask for --os.
+            with diag_lock:
+                if os_state["effective"]:
+                    os_state["effective"] = False
+                    os_state["degraded"] = next(
+                        (
+                            line.strip()
+                            for line in stderr.splitlines()
+                            if "raw socket" in line.lower()
+                        ),
+                        "raw sockets unavailable",
+                    )[:200]
+        if os_raw_failed and not stop_probe.is_set():
             command = build_pulse_command(
                 bin_path=pulse_bin,
                 hosts_file=hosts_file,
@@ -1425,7 +1458,7 @@ def _run_pulse_probe(
                 idx=idx, endpoint_count=chunk.endpoint_count, command=command, state=state
             )
         crashed = returncode != 0 and not payload and not state["timed_out"]
-        if crashed:
+        if crashed and not stop_probe.is_set():
             logging.warning(
                 "pulse_probe chunk %s: pulse exited %s without JSON (%s); re-probing now",
                 idx,
@@ -1435,7 +1468,12 @@ def _run_pulse_probe(
             payload, returncode, stderr = _probe_once(
                 idx=idx, endpoint_count=chunk.endpoint_count, command=command, state=state
             )
-        elif not state["timed_out"] and not payload.get("open") and retry_settle_seconds:
+        elif (
+            not stop_probe.is_set()
+            and not state["timed_out"]
+            and not payload.get("open")
+            and retry_settle_seconds
+        ):
             logging.warning(
                 "pulse_probe chunk %s: 0 services across %s host(s) with known-open "
                 "ports; re-probing in %ss",
@@ -1472,7 +1510,17 @@ def _run_pulse_probe(
                     pool.submit(_run_chunk_subprocess, idx, chunks[idx], os_detect_effective)
                     for idx in wave
                 ]
-                wave_results = [fut.result() for fut in futs]
+                # Fail as soon as one chunk raises. as_completed would still
+                # wait the wave out, and a crash loop would keep probing after
+                # the run had already decided to stop.
+                wave_results = []
+                try:
+                    for fut in futs:
+                        wave_results.append(fut.result())
+                except Exception:
+                    for pending in futs:
+                        pending.cancel()
+                    raise
 
         for result in wave_results:
             idx = result["idx"]
@@ -1488,14 +1536,7 @@ def _run_pulse_probe(
 
             if result["os_raw_failed"] and os_detect_effective:
                 os_detect_effective = False
-                os_detect_degraded = next(
-                    (
-                        line.strip()
-                        for line in result["stderr_for_os"].splitlines()
-                        if "raw socket" in line.lower()
-                    ),
-                    "raw sockets unavailable",
-                )[:200]
+                os_detect_degraded = os_state["degraded"] or "raw sockets unavailable"
                 logging.warning(
                     "pulse_probe: OS detection needs raw sockets and this process has none "
                     "(%s); continuing without --os for the rest of the run -- services, "
@@ -1508,6 +1549,7 @@ def _run_pulse_probe(
             if crashed:
                 consecutive_crashes += 1
                 if consecutive_crashes >= MAX_CONSECUTIVE_CRASHED_CHUNKS:
+                    stop_probe.set()
                     raise PulseCrashLoopError(
                         f"pulse exited {returncode} without JSON for "
                         f"{consecutive_crashes} chunks in a row; last stderr: "
@@ -1520,6 +1562,7 @@ def _run_pulse_probe(
             if timed_out:
                 consecutive_timeouts += 1
                 if consecutive_timeouts >= MAX_CONSECUTIVE_TIMED_OUT_CHUNKS:
+                    stop_probe.set()
                     raise PulseTimeoutLoopError(
                         f"pulse did not finish within its timeout on {consecutive_timeouts} chunks in a row "
                         f"(process timeout {timeout_seconds}s"
