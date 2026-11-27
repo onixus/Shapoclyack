@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Status** | **Proposed** — implementation under FTT-PULSE-2026-058; owner acceptance pending |
+| **Status** | **Accepted** — onixus, 2026-11-27 (implementation under FTT-PULSE-2026-058; [FTT-PULSE-2026-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md)) |
 | **Date** | 2026-11-27 |
-| **Related** | [FTT-PULSE-2026-058](../ftt-pulse-2026-058-stage2-queue-keda.md), [ADR 0011](0011-executor-queue-depth-autoscale.md), [ADR 0012](0012-stage2-enrichment-queue.md), [ADR 0009](0009-scan-throughput-okr.md), [throughput-okr-10k.md](../throughput-okr-10k.md) |
+| **Related** | [FTT-PULSE-2026-058](../ftt-pulse-2026-058-stage2-queue-keda.md), [FTT-PULSE-2026-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md), [ADR 0011](0011-executor-queue-depth-autoscale.md), [ADR 0012](0012-stage2-enrichment-queue.md), [ADR 0009](0009-scan-throughput-okr.md), [throughput-okr-10k.md](../throughput-okr-10k.md) |
 
 ## Context
 
@@ -64,4 +64,7 @@ decision. Keep Stage2 on the scanner-executor claim path (ADR 0012).
 - Host-weighted Stage2 partition skew (still ADR 0012).
 - Automatic Stage2 for every `full` intent.
 - Raising `maxReplicaCount` past 25.
-- Accepting ADR 0009 / promoting sibling throughput ADRs (acceptance pack).
+
+ADR 0009 acceptance and sibling throughput ADR promotion are decided in
+[FTT-PULSE-2026-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md)
+(this pack). S6 rejection is [ADR 0016](0016-reject-s6-ebpf-masscan-okr.md).

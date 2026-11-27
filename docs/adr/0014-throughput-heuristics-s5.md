@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Status** | Accepted (implementation in tree) |
+| **Status** | **Accepted** — onixus, 2026-11-27 (implementation in tree; [FTT-PULSE-2026-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md)) |
 | **Date** | 2026-11-26 |
-| **Related** | [ADR 0009](0009-scan-throughput-okr.md), [FTT-PULSE-2026-057](../ftt-pulse-2026-057-heuristics-s5.md), [throughput-okr-10k.md](../throughput-okr-10k.md), [scan-performance.md](../scan-performance.md) |
+| **Related** | [ADR 0009](0009-scan-throughput-okr.md), [FTT-PULSE-2026-057](../ftt-pulse-2026-057-heuristics-s5.md), [FTT-PULSE-2026-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md), [throughput-okr-10k.md](../throughput-okr-10k.md), [scan-performance.md](../scan-performance.md) |
 
 ## Context
 

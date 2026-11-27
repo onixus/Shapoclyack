@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Status** | **Proposed** — implementation under FTT-PULSE-2026-054; owner acceptance pending |
+| **Status** | **Accepted** — onixus, 2026-11-27 (implementation under FTT-PULSE-2026-054; [FTT-PULSE-2026-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md)) |
 | **Date** | 2026-11-26 |
-| **Related** | [FTT-PULSE-2026-054](../ftt-pulse-2026-054-stage2-enrichment-queue.md), [throughput-okr-10k.md](../throughput-okr-10k.md), ADR 0008, ADR 0009, ADR 0010, ADR 0011 |
+| **Related** | [FTT-PULSE-2026-054](../ftt-pulse-2026-054-stage2-enrichment-queue.md), [FTT-PULSE-2026-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md), [throughput-okr-10k.md](../throughput-okr-10k.md), ADR 0008, ADR 0009, ADR 0010, ADR 0011 |
 
 ## Context
 

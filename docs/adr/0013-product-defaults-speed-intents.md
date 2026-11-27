@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Status** | **Accepted** (implements ADR 0009 recommendation #4 + build-order #2) |
+| **Status** | **Accepted** — onixus, 2026-11-27 (implements ADR 0009 recommendation #4 + build-order #2; [FTT-PULSE-2026-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md)) |
 | **Date** | 2026-11-26 |
-| **Related** | [ADR 0009](0009-scan-throughput-okr.md), [FTT-PULSE-2026-056](../ftt-pulse-2026-056-product-defaults-speed-intents.md), [scan-performance.md](../scan-performance.md) |
+| **Related** | [ADR 0009](0009-scan-throughput-okr.md), [FTT-PULSE-2026-056](../ftt-pulse-2026-056-product-defaults-speed-intents.md), [FTT-PULSE-2026-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md), [scan-performance.md](../scan-performance.md) |
 
 ## Context
 

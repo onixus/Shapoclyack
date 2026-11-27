@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Status** | **Proposed** — decision by the owner |
+| **Status** | **Accepted** — onixus, 2026-11-27 ([FTT-PULSE-2026-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md) acceptance pack) |
 | **Date** | 2026-11-26 |
-| **Related** | [scan-performance.md](../scan-performance.md), [throughput-okr-10k.md](../throughput-okr-10k.md), [FTT-PULSE-2026-055](../ftt-pulse-2026-055-estate-baseline-measure.md), [scale-profile.md](../scale-profile.md), ADR 0003, ADR 0008 |
+| **Related** | [scan-performance.md](../scan-performance.md), [throughput-okr-10k.md](../throughput-okr-10k.md), [FTT-PULSE-2026-055](../ftt-pulse-2026-055-estate-baseline-measure.md), [FTT-PULSE-2026-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md), [scale-profile.md](../scale-profile.md), ADR 0003, ADR 0008, ADR 0010–0016 |
 
 ## Context
 
@@ -110,10 +110,10 @@ intents; legacy no-intent jobs keep YAML assessment defaults.
   (separate Pulse FTT).
 - Product default YAML / intent shipping (Measure does not change defaults).
 
-## Acceptance evidence (citations for owner decision)
+## Acceptance evidence
 
-Still **Proposed** until the owner flips status to Accepted. Measure
-artifacts ready for that review:
+Accepted under [FTT-PULSE-2026-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md).
+Measure artifacts that grounded the decision:
 
 | Citation | Path / command |
 |---|---|

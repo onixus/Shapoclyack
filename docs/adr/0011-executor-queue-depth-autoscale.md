@@ -1,8 +1,9 @@
 # ADR 0011: Executor autoscaling on shard / job queue depth (S2)
 
-- **Status**: Proposed (implementation under FTT-PULSE-2026-053; owner acceptance pending)
+- **Status**: **Accepted** — onixus, 2026-11-27 (implementation under FTT-PULSE-2026-053; [FTT-PULSE-2026-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md))
 - **Date**: 2026-11-26
 - **Related**: [FTT-PULSE-2026-053](../ftt-pulse-2026-053-shard-queue-autoscale.md),
+  [FTT-PULSE-2026-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md),
   [ADR 0010](0010-throughput-s1-s3-sharding.md), [ADR 0009](0009-scan-throughput-okr.md),
   [throughput-okr-10k.md](../throughput-okr-10k.md)
 

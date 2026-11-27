@@ -1,8 +1,8 @@
 # ADR 0010: Throughput path — S1 parallel enrichment, S3 chunk overlap, job sharding
 
-- **Status**: Proposed (implementation landed under FTT-PULSE-2026-052; owner acceptance pending)
+- **Status**: **Accepted** — onixus, 2026-11-27 (implementation under FTT-PULSE-2026-052; [FTT-PULSE-2026-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md))
 - **Date**: 2026-11-26
-- **Related**: [FTT-PULSE-2026-052](https://github.com/onixus/GenDec/blob/main/docs/requirements/FTT-PULSE-2026-052.md), [scan-performance.md](../scan-performance.md)
+- **Related**: [FTT-PULSE-2026-052](https://github.com/onixus/GenDec/blob/main/docs/requirements/FTT-PULSE-2026-052.md), [FTT-PULSE-2026-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md), [scan-performance.md](../scan-performance.md)
 
 ## Context
 
