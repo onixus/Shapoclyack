@@ -1,4 +1,5 @@
-# Hand-applied KEDA ScaledObject for the scanner-executor (FTT-PULSE-2026-053).
+# Hand-applied KEDA ScaledObject for the scanner-executor
+# (FTT-PULSE-2026-053 / ADR 0011 + FTT-PULSE-2026-058 / ADR 0015).
 #
 # Prefer the kustomize overlay when you already run overlays/agents:
 #   kubectl apply -k k8s/shapoclyack/overlays/executor-keda
@@ -8,8 +9,10 @@
 #
 #   kubectl apply -f k8s/shapoclyack/examples/executor-keda-scaledobject.example.yaml
 #
-# See docs/adr/0011-executor-queue-depth-autoscale.md and
-# docs/ftt-pulse-2026-053-shard-queue-autoscale.md.
+# See docs/adr/0011-executor-queue-depth-autoscale.md,
+# docs/adr/0015-stage2-queue-depth-keda.md,
+# docs/ftt-pulse-2026-053-shard-queue-autoscale.md, and
+# docs/ftt-pulse-2026-058-stage2-queue-keda.md.
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
@@ -59,5 +62,12 @@ spec:
         serverAddress: PROMETHEUS_URL
         metricName: octo_jobs_queued
         query: max(octo_jobs_queued)
+        threshold: "1"
+        activationThreshold: "1"
+    - type: prometheus
+      metadata:
+        serverAddress: PROMETHEUS_URL
+        metricName: octo_jobs_stage2_queued
+        query: max(octo_jobs_stage2_queued)
         threshold: "1"
         activationThreshold: "1"
