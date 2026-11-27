@@ -37,24 +37,27 @@ Companion IB protocol (sibling ADR acceptance pack #689):
 
 ## 2. Open human actions (required for program close)
 
-### A. Merge stack bottom-up (dependency chain)
+### A. Merge stack bottom-up (superseded by one rollup)
 
-Merge **only after** each base is on `main` (or retarget). Order:
+Do **not** merge the stacked train separately — that re-runs PR Gate for days.
+The dependency chain is already combined, bottom-up, in the rollup branch
+`feat/throughput-okr-rollup` (one PR to `main`):
 
-1. [ ] **#681** `cursor/s1-s3-sharding-throughput-6501` → `main`
-2. [ ] **#682** `cursor/s2-shard-queue-keda-d4ac` → base `#681` branch (retarget `main` after 1)
-3. [ ] **#684** `cursor/s4-stage2-enrichment-queue-6501` → base `#682` branch (retarget after 2)
-4. [ ] **#688** `cursor/stage2-keda-enrichment-6501` → base `#684` branch (retarget after 3)
+1. [x] **#681** `cursor/s1-s3-sharding-throughput-6501` → included in the rollup
+2. [x] **#682** `cursor/s2-shard-queue-keda-d4ac` → included (was based on `#681`)
+3. [x] **#684** `cursor/s4-stage2-enrichment-queue-6501` → included (was based on `#682`)
+4. [x] **#688** `cursor/stage2-keda-enrichment-6501` → included (was based on `#684`)
 
 ### B. Parallel `main`-based docs/feature PRs
 
-May land independently once conflicts with Accepted ADRs are resolved:
+Included in the same rollup (conflicts with the stack resolved there):
 
-5. [ ] **#685** Measure estate baseline harness
-6. [ ] **#686** Product defaults — speed intents
-7. [ ] **#687** S5 throughput heuristics
-8. [ ] **#689** ADR acceptance pack (0009–0015 Accepted; 0016 Rejected)
-9. [ ] **This PR** FTT-060 closure checklist
+5. [x] **#685** Measure estate baseline harness
+6. [x] **#686** Product defaults — speed intents
+7. [x] **#687** S5 throughput heuristics
+8. [x] **#689** ADR acceptance pack (0009–0015 Accepted; 0016 Rejected)
+9. [x] **#690** FTT-060 closure checklist
+10. [x] **#679** unpublished screenshot worker kept out of a default install
 
 ### C. Release / operator (outside feature invent)
 
