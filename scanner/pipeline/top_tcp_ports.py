@@ -263,12 +263,17 @@ _EXTRA_SERVICES: tuple[int, ...] = (
     61616,
 )
 
-_WELL_KNOWN = tuple(p for p in range(1, 1025) if p not in set(TOP_TCP_100))
-TOP_TCP_1000: tuple[int, ...] = _dedupe(TOP_TCP_100 + _EXTRA_SERVICES + _WELL_KNOWN)[:1000]
+# Curated extras only. Do not fill 1–1024: that is the silent widen FTT-057
+# rejects. The list may be shorter than 1000.
+TOP_TCP_1000: tuple[int, ...] = _dedupe(TOP_TCP_100 + _EXTRA_SERVICES)
 
 
 def top_tcp_ports(n: int) -> tuple[int, ...]:
-    """Return the first ``n`` ports of the curated set (100 or 1000 typical)."""
+    """Return the first ``n`` ports of the curated set.
+
+    ``n <= 100`` stays inside the top-100 prefix. Larger ``n`` walks the
+    curated extras and stops at the list — it never invents 1–1024.
+    """
     if n <= 0:
         return ()
     if n <= 100:

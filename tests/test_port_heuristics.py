@@ -19,8 +19,11 @@ from scanner.pipeline.utils import write_lines
 def test_top_tcp_ports_sizes() -> None:
     assert len(TOP_TCP_100) == 100
     assert len(set(TOP_TCP_100)) == 100
-    assert len(top_tcp_ports(1000)) == 1000
+    # Curated extras only — shorter than 1000, and not a silent 1–1024 fill.
+    curated = top_tcp_ports(1000)
+    assert 100 < len(curated) < 1000
     assert 80 in TOP_TCP_100 and 443 in TOP_TCP_100
+    assert 787 not in curated
 
 
 def test_tcp_ports_from_open_ports_lines_ignores_udp() -> None:
@@ -33,6 +36,16 @@ def test_tcp_ports_from_open_ports_lines_ignores_udp() -> None:
         ]
     )
     assert ports == {443, 22}
+
+
+def test_union_honors_requested_top_n_without_well_known_fill() -> None:
+    narrow = union_historical_and_top_n(historical=set(), top_n=50)
+    assert len(narrow) == 50
+    assert set(narrow) == set(top_tcp_ports(50))
+    wide = union_historical_and_top_n(historical={31337}, top_n=1000)
+    assert 787 not in wide
+    assert 31337 in wide
+    assert len(wide) == len(top_tcp_ports(1000)) + 1
 
 
 def test_union_includes_historical_and_top_n() -> None:

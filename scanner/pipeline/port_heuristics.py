@@ -60,7 +60,7 @@ def union_historical_and_top_n(
     exclude: set[int] | None = None,
 ) -> list[int]:
     """Sorted unique TCP ports: historical ∪ curated top-N, minus excludes."""
-    n = 100 if top_n <= 100 else 1000
+    n = max(1, min(int(top_n), 1000))
     combined = set(historical) | set(top_tcp_ports(n))
     if exclude:
         combined -= set(exclude)
@@ -143,7 +143,7 @@ def apply_historical_top_n_union(
     meta = {
         "schema": "octo.port_heuristic_union.v1",
         "historical_count": len(historical),
-        "top_n": 100 if top_n <= 100 else 1000,
+        "top_n": max(1, min(int(top_n), 1000)),
         "union_count": len(ports),
         "previous_run_dir": str(previous_run_dir) if previous_run_dir else "",
         "ports_file": str(dest),
