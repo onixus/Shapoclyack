@@ -69,13 +69,12 @@ def _refuse(address: str) -> str | None:
 
 def test_capability_is_advertised_next_to_the_existing_ones():
     assert "brand_watch" in worker.CAPABILITIES
-    assert worker.CAPABILITIES[:4] == (
+    assert worker.CAPABILITIES[:5] == (
         "scan_policy",
         "config_overlay.v1",
         "config_overlay.v2",
         "config_overlay.v3",
         "config_overlay.v4",
-        "config_overlay.v3",
     )
 
 
