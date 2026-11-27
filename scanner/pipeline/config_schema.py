@@ -266,6 +266,8 @@ class ProfilePulseConfig(BaseModel):
     max_hosts: int | None = Field(default=None, ge=1, le=1_000_000)
     chunk_hosts: int | None = Field(default=None, ge=1, le=4096)
     retry_settle_seconds: int | None = Field(default=None, ge=0, le=600)
+    # S5 / FTT-057: optional per-profile JARM gate (mirrors PulseProbeConfig.jarm).
+    jarm: bool | None = None
     plugins: bool | None = None
 
 
