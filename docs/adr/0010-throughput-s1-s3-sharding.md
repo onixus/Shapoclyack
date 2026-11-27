@@ -47,6 +47,9 @@ Stage2 enrichment queue (canvas S4) remains a follow-up.
 
 ## Not decided here
 
-- KEDA scaling formulas and exact shard sizing for a given estate.
+- Exact shard sizing for a given estate (operator-chosen `shard_count`).
 - Automatic Stage2 enrichment job enqueue after Stage1 inventory.
 - Host-weighted (vs line round-robin) partition skew.
+
+KEDA / queue-depth executor scale-out is decided in
+[ADR 0011](0011-executor-queue-depth-autoscale.md) (FTT-PULSE-2026-053).

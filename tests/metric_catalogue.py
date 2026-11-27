@@ -66,7 +66,11 @@ def _populated_cluster() -> metrics_sources.ClusterSnapshot:
         stale_seconds=120,
     )
     return metrics_sources.ClusterSnapshot(
-        fleet=fleet, jobs_queued=1, jobs_running=1, endpoint_devices={"active": 1, "stale": 1}
+        fleet=fleet,
+        jobs_queued=1,
+        jobs_running=1,
+        jobs_shard_queued=1,
+        endpoint_devices={"active": 1, "stale": 1},
     )
 
 
