@@ -165,14 +165,24 @@ policy. Numbers are models — validate with `stage_timings.json`.
 ## Recommended build order
 
 1. **Measure** a representative estate: `stage_timings.json` + Pulse
-   `stats.l4_complete` vs full complete.
+   `stats.l4_complete` vs full complete — **harness shipped** (FTT-055 / #685);
+   live calibration remains an **operator** action.
 2. **Ship mid-tier intent + turn off default cipher-enum/plugins for
-   speed intents** (config/product, low risk).
-3. **GenDec `--enrich-concurrency`** (S1).
-4. **Adapter `pulse_chunk_concurrency`** (S3).
-5. **Job sharding + KEDA/HPA on queue depth** (S2) and/or **Stage2
-   enrichment jobs** (S4).
-6. Heuristics S5; park S6.
+   speed intents** — **shipped** (FTT-056 / ADR 0013 / #686).
+3. **GenDec `--enrich-concurrency`** (S1) — **shipped** (GenDec #56 / FTT-052).
+4. **Adapter `pulse_chunk_concurrency`** (S3) — **shipped** (#681 / FTT-052 /
+   ADR 0010).
+5. **Job sharding + KEDA/HPA on queue depth** (S2) — **shipped** (FTT-053 /
+   ADR 0011 / #682). **Stage2 enrichment jobs** (S4) — **shipped** (FTT-054 /
+   ADR 0012 / #684). **Stage2 KEDA Path B trigger** — **shipped** (FTT-058 /
+   ADR 0015 / #688).
+6. Heuristics S5 — **shipped** (FTT-057 / ADR 0014 / #687). **S6 Rejected**
+   as OKR primary (ADR 0016 / FTT-059 / #689).
+7. **ADR acceptance pack** — **shipped** (FTT-059 / #689).
+8. **Engineering closure** — **this gate** (FTT-060): no further code P0;
+   open human actions in
+   [throughput-okr-closure-checklist.md](throughput-okr-closure-checklist.md)
+   (merge stack bottom-up, Pulse image pin, live Measure, IB sign-off).
 
 ---
 
