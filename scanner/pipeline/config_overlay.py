@@ -190,7 +190,12 @@ def required_version(config: dict[str, Any]) -> int:
 
     What the document is written at and what its job asks of a claimant, so a
     sensor that predates a setting is refused only the jobs that use it.
+    An empty document is v1: a higher floor is the caller's, not a path.
     """
+    if not isinstance(config, dict):
+        raise ConfigOverlayError("config overlay: 'config' must be an object")
+    if not config:
+        return 1
     check_config(config)
     paths = set(_flatten(config))
     return next(v for v in sorted(PATHS_BY_VERSION) if paths <= PATHS_BY_VERSION[v])
@@ -201,10 +206,22 @@ def required_capability(config: dict[str, Any]) -> str:
     return capability(required_version(config))
 
 
-def to_document(config: dict[str, Any]) -> dict[str, Any]:
+def to_document(config: dict[str, Any], *, version: int | None = None) -> dict[str, Any]:
     """The document the API writes. Checked here so a path the scanner would
-    refuse is refused where the job is created, not on the executor later."""
-    return {"overlay_version": required_version(config), "config": config}
+    refuse is refused where the job is created, not on the executor later.
+
+    ``version`` raises the written version above what the paths need. A
+    verification with an empty config still has to name its floor, or a
+    sensor that predates the coverage evidence takes the job.
+    """
+    needed = required_version(config)
+    written = needed if version is None else max(needed, int(version))
+    if written not in PATHS_BY_VERSION:
+        raise ConfigOverlayError(
+            f"config overlay version {written!r} is not one this build applies"
+        )
+    check_config(config, written)
+    return {"overlay_version": written, "config": config}
 
 
 def check_config(config: Any, version: int = OVERLAY_VERSION) -> dict[str, Any]:

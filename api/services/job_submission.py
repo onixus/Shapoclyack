@@ -542,6 +542,11 @@ def start_scan(
         if execution == "agent"
         else None
     )
+    # agent_overlay returns None when there is nothing to merge. A
+    # verification floor above v1 still needs a document, or claim treats
+    # the job as a plain v1 one.
+    if execution == "agent" and overlay is None and min_overlay_version > 1:
+        overlay = {}
 
     # Admission already refused everything that can be refused, so what is
     # left here is file writing. Anything that escapes it is a half-written
@@ -558,9 +563,14 @@ def start_scan(
                 policy=policy_snapshot,
             )
         )
-        if overlay:
+        if overlay or min_overlay_version > 1:
             input_paths[job_inputs.CONFIG_OVERLAY_INPUT] = (
-                job_inputs.write_config_overlay_input(settings, job_id, overlay)
+                job_inputs.write_config_overlay_input(
+                    settings,
+                    job_id,
+                    overlay or {},
+                    version=min_overlay_version,
+                )
             )
         job_inputs.publish(settings, job_id)
     except Exception:
