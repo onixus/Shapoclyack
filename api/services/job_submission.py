@@ -662,7 +662,15 @@ def start_scan(
             # What the executor was sent, for the job record and for the claim:
             # a job carrying one is only handed to an agent that applies it.
             # Never holds a secret — ``agent_overlay`` leaves SECRET_PATHS out.
-            **({"config_overlay": overlay} if overlay else {}),
+            # A verification with nothing to merge still carries an empty
+            # document when its floor is above v1. Claim refuses a job only
+            # when config_overlay is present; a bare capability would not
+            # keep a v1 sensor off a re-scan that must write coverage evidence.
+            **(
+                {"config_overlay": overlay or {}}
+                if overlay or min_overlay_version > 1
+                else {}
+            ),
             # And which overlay version that claimant has to apply: the
             # lowest that covers it, so a sensor that predates a setting is
             # refused only the jobs that use it (config_overlay.py).
@@ -672,7 +680,7 @@ def start_scan(
                         max(config_overlay.required_version(overlay), min_overlay_version)
                     )
                 }
-                if overlay
+                if overlay or min_overlay_version > 1
                 else {}
             ),
             **({"verification_of": verification_of} if verification_of else {}),

@@ -688,8 +688,9 @@ def test_a_verification_job_needs_v2_whatever_its_overlay_carries(tmp_path, monk
         verification_of="vln_1",
     )
     # verification_of does not inherit the vuln intent's heavy Pulse overlay.
-    # Nothing was pinned, so there is no document; the floor is still v2.
-    assert "config_overlay" not in (job.scan_options or {})
+    # Nothing was pinned, so the document is empty; the floor is still v2
+    # and the document is what makes claim refuse a v1 sensor.
+    assert job.scan_options["config_overlay"] == {}
     assert job.scan_options["config_overlay_capability"] == "config_overlay.v2"
     assert job.scan_options["verification_of"] == "vln_1"
 
@@ -699,9 +700,9 @@ def test_a_verification_job_needs_v2_whatever_its_overlay_carries(tmp_path, monk
     assert "config_overlay.v2" in detail
     assert "console's config overrides" not in detail
 
-    claimed = _claim(client, _register(client, "v4-sensor", CURRENT_AGENT))
+    claimed = _claim(client, _register(client, "v2-sensor", ["scan_policy", "config_overlay.v1", "config_overlay.v2"]))
     assert claimed.status_code == 200, claimed.text
-    assert OVERLAY_INPUT not in claimed.json()["inputs"]
+    assert json.loads(claimed.json()["inputs"][OVERLAY_INPUT])["overlay_version"] == 2
 
 
 @requires_postgres

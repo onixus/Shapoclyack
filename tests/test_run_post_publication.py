@@ -390,7 +390,10 @@ def test_the_recorded_change_against_main_is_the_documented_one():
         ("sensor", "cancelled"),
         ("sensor", "partial"),
     }
-    assert sorted(BEFORE_454[("sensor", "succeeded")]) == sorted(MATRIX["succeeded"])
+    # stage2 landed after #454; the snapshot of main must not grow with it.
+    assert sorted(BEFORE_454[("sensor", "succeeded")]) == sorted(
+        n for n in MATRIX["succeeded"] if n not in AFTER_454
+    )
     for case in ("failed", "cancelled", "partial"):
         assert [n for n in BEFORE_454[("sensor", case)] if n != "assets"] == [
             n for n in MATRIX[case] if n not in AFTER_454
