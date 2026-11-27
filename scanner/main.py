@@ -998,9 +998,10 @@ def _run_pipeline_body(
                     cve_online=pulse_cfg.cve_online,
                     tls_enum=(config.tls_posture.enabled and config.tls_posture.enumerate_ciphers
                               and runtime.per_host_rate is None),
-                    # S5: product JARM gate (intent / explicit overlay). Pulse
-                    # records the flag; engine ``--jarm`` arrives only when
-                    # GenDec grows an opt-in switch.
+                    # S5: product JARM gate. Pinned Pulse fingerprints during TLS
+                    # probing and has no --no-jarm, so the stage must not run
+                    # when the intent turned TLS posture off. The adapter still
+                    # records the flag for receipts.
                     jarm=bool(
                         pulse_cfg.jarm
                         and config.tls_posture.jarm

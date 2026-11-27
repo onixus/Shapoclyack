@@ -40,6 +40,16 @@ def test_partition_hosts_round_robin_omits_empty_and_caps():
     assert s2.partition_hosts((), shard_count=2) == ()
 
 
+def test_stage2_width_uses_requested_shard_count_not_realized_partitions():
+    """``shard_of`` is how many buckets were non-empty, not the operator N."""
+    options = {"shard_count": 8, "shard_of": 3, "shard_group_id": "abc"}
+    requested = options.get("shard_count")
+    assert requested == 8
+    assert s2.stage2_shard_count(20, requested=int(requested)) == 8
+    # The old lookup (shard_of first) would have opened only 3 Stage2 jobs.
+    assert s2.stage2_shard_count(20, requested=int(options["shard_of"])) == 3
+
+
 def test_stage2_shard_count_respects_caps_and_host_count():
     assert s2.stage2_shard_count(0) == 0
     assert s2.stage2_shard_count(5) == 1

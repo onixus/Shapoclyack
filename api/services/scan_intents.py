@@ -138,7 +138,14 @@ def resolve_scan_options(
                 "profiles": {profile_key: {"top_ports": 100}},
                 "runtime": {"skip_nse": True},
                 "ports": {"heuristic_union": True},
-                "tls_posture": {"enumerate_ciphers": False, "jarm": False},
+                # enabled false is the real JARM gate: Pulse fingerprints during
+                # TLS probing and has no --no-jarm. A jarm:false overlay alone
+                # leaves the shipped tls_posture.enabled default on.
+                "tls_posture": {
+                    "enabled": False,
+                    "enumerate_ciphers": False,
+                    "jarm": False,
+                },
                 "service_probe": {
                     "pulse": {
                         "plugins": False,

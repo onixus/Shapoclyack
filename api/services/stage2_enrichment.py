@@ -252,10 +252,11 @@ def enqueue_stage2_after_stage1(
         )
         hosts = hosts[:MAX_STAGE2_HOSTS]
 
-    # Prefer Stage1 group width when the estate was already sharded.
-    parent_shard_count = parent_snapshot["options"].get("shard_of")
-    if parent_shard_count is None:
-        parent_shard_count = parent_snapshot["options"].get("shard_count")
+    # Operator-requested width, not ``shard_of``. Submission stores the
+    # requested N in ``shard_count`` and the number of non-empty partitions
+    # in ``shard_of``; reading the latter undersizes Stage2 when a bucket
+    # was empty.
+    parent_shard_count = parent_snapshot["options"].get("shard_count")
     try:
         n = stage2_shard_count(
             len(hosts),

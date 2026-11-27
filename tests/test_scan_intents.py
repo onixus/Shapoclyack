@@ -117,6 +117,7 @@ def test_inventory_s5_heuristics() -> None:
     """S5: historical∪top-N, JARM/tls-enum off, short connect/silence timeouts."""
     r = resolve_scan_options(intent="inventory", mode="balanced", delta=False, skip_nse=False)
     assert r.config_extra["ports"]["heuristic_union"] is True
+    assert r.config_extra["tls_posture"]["enabled"] is False
     assert r.config_extra["tls_posture"]["enumerate_ciphers"] is False
     assert r.config_extra["tls_posture"]["jarm"] is False
     assert r.config_extra["service_probe"]["pulse"]["jarm"] is False
@@ -132,6 +133,7 @@ def test_inventory_s5_heuristics() -> None:
 def test_speed_intents_gate_jarm_and_tls_enum() -> None:
     for intent in SPEED_INTENTS:
         r = resolve_scan_options(intent=intent, mode="fast", delta=False, skip_nse=False)
+        assert r.config_extra["tls_posture"]["enabled"] is False
         assert r.config_extra["tls_posture"]["enumerate_ciphers"] is False
         assert r.config_extra["tls_posture"]["jarm"] is False
         assert r.config_extra["service_probe"]["pulse"]["jarm"] is False
