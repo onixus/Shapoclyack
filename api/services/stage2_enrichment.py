@@ -319,8 +319,8 @@ def enqueue_stage2_after_stage1(
             job_id,
             len(created),
         )
-        # The publication mark committed before this loop. Leave it and a
-        # republish treats the lost group as already fanned out.
+        # The publication mark committed before this loop. Drop it so a
+        # republish can retry instead of treating the lost group as done.
         _release_stage2_mark(settings, publication_id)
         # Best-effort cancel what landed so a partial group is not claimed.
         from api.services import job_control
