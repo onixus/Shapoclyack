@@ -151,8 +151,8 @@ def scan_failure_event(row: models.Job) -> dict[str, Any]:
     }
 
 
-def job_counts(session: Any) -> tuple[int, int, int]:
-    """``(queued, running, shard_queued)`` across every tenant, from the shared table.
+def job_counts(session: Any) -> tuple[int, int, int, int]:
+    """``(queued, running, shard_queued, stage2_queued)`` across every tenant.
 
     ``claimed`` (P1.3) counts as running: the job is out with a worker and no
     longer waiting, so folding it into the queue depth would read as a backlog
@@ -164,6 +164,10 @@ def job_counts(session: Any) -> tuple[int, int, int]:
     ``scan_options`` carry ``shard_group_id`` — the depth KEDA uses for
     estate-scale executor scale-out. Non-sharded queued jobs are still in
     ``queued`` and remain a separate Prometheus trigger.
+
+    ``stage2_queued`` (FTT-PULSE-2026-054) is the subset of ``queued`` whose
+    ``scan_options`` carry ``stage2_group_id`` — Stage2 enrichment work
+    fanned out after Stage1 inventory.
     """
     counts = dict(
         session.execute(
@@ -184,7 +188,17 @@ def job_counts(session: Any) -> tuple[int, int, int]:
             )
         ).scalar_one()
     )
-    return queued, running, shard_queued
+    stage2_queued = int(
+        session.execute(
+            select(func.count())
+            .select_from(models.Job)
+            .where(
+                models.Job.status == job_states.QUEUED,
+                models.Job.scan_options["stage2_group_id"].as_string().is_not(None),
+            )
+        ).scalar_one()
+    )
+    return queued, running, shard_queued, stage2_queued
 
 
 def refresh_job_gauges(settings: Settings) -> None:

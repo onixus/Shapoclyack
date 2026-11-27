@@ -70,6 +70,7 @@ def _populated_cluster() -> metrics_sources.ClusterSnapshot:
         jobs_queued=1,
         jobs_running=1,
         jobs_shard_queued=1,
+        jobs_stage2_queued=1,
         endpoint_devices={"active": 1, "stale": 1},
     )
 
