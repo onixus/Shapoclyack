@@ -53,3 +53,21 @@ def first_pass(session, publication_id: str | None, step: str) -> bool:
     # A new list, not an append: the JSON column does not track in-place edits.
     row.projected = [*done, step]
     return True
+
+
+def release(session, publication_id: str | None, step: str) -> None:
+    """Drop ``step`` so a failed fan-out can be retried on republish.
+
+    ``None`` is a no-op (no publication row to unlock). A missing row or a
+    step that was never marked is also a no-op. A new list, not an in-place
+    edit: the JSON column does not track mutation.
+    """
+    if publication_id is None:
+        return
+    row = session.get(models.RunPublication, publication_id, with_for_update=True)
+    if row is None:
+        return
+    done = list(row.projected or [])
+    if step not in done:
+        return
+    row.projected = [item for item in done if item != step]

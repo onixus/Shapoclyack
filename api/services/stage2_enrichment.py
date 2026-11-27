@@ -319,6 +319,9 @@ def enqueue_stage2_after_stage1(
             job_id,
             len(created),
         )
+        # The publication mark committed before this loop. Leave it and a
+        # republish treats the lost group as already fanned out.
+        _release_stage2_mark(settings, publication_id)
         # Best-effort cancel what landed so a partial group is not claimed.
         from api.services import job_control
 
@@ -357,6 +360,19 @@ def enqueue_stage2_after_stage1(
         run_id,
     )
     return tuple(sibling_ids)
+
+
+def _release_stage2_mark(settings: Settings, publication_id: str | None) -> None:
+    """Undo a Stage2 claim so a failed fan-out is not permanent."""
+    try:
+        with get_session(settings.postgres_url) as session:
+            publication_marks.release(session, publication_id, PUBLICATION_STEP)
+    except Exception:
+        _log.warning(
+            "Could not release Stage2 publication mark %s",
+            publication_id,
+            exc_info=True,
+        )
 
 
 def _annotate_stage2_siblings(
