@@ -79,7 +79,7 @@ BEFORE_454 = {
 #: and so no publication at all. ``verification`` (#451) came after #454: a
 #: run that did not succeed gives back the finding its job was verifying.
 MATRIX = {
-    "succeeded": ["scope_denials", "assets", "findings", "services", "events", "notify"],
+    "succeeded": ["scope_denials", "assets", "findings", "services", "events", "stage2", "notify"],
     "failed": ["scope_denials", "verification"],
     "cancelled": ["scope_denials", "verification"],
     "partial": ["scope_denials", "verification"],

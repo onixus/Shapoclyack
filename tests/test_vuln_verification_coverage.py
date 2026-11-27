@@ -1584,7 +1584,9 @@ def test_a_verification_no_live_sensor_can_run_is_refused_not_parked(tmp_path):
     _agent_mode(settings, tenant_id, capabilities=("scan_policy", "config_overlay.v1"))
     _advance_to_fixing(settings, tenant_id, vuln["vuln_id"])
 
-    with pytest.raises(vulns.VerificationDispatchError, match="config_overlay.v4"):
+    # Pinned templates need v2. The heavy Pulse overlay is not part of a
+    # verification re-scan, so a v1-only fleet is refused at v2, not v4.
+    with pytest.raises(vulns.VerificationDispatchError, match="config_overlay.v2"):
         vulns.trigger_verification(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"], actor="alice")
 
     after = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"])

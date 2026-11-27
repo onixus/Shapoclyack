@@ -222,7 +222,9 @@ def test_an_agent_that_cannot_apply_the_overlay_is_refused_the_job(tmp_path, mon
     old_agent = _register(client, "old-agent", ["scan_policy"])
     refused = _claim(client, old_agent)
     assert refused.status_code == 426, refused.text
-    assert CAPABILITY in refused.json()["detail"]
+    # Inventory carries S5 heuristic paths, so the refusal names v4, not the
+    # base capability a console-only overlay used to need.
+    assert "config_overlay.v4" in refused.json()["detail"]
 
     operator = auth_headers(client, "operator")
     assert client.get(f"/api/jobs/{job['job_id']}", headers=operator).json()["status"] == "queued"
@@ -644,9 +646,10 @@ def test_a_sensor_that_predates_template_ids_is_refused_only_the_jobs_that_pin_t
     # Heavy intents carry S5 JARM/tls-enum paths → v4; template_ids alone were v2.
     assert pinned.scan_options["config_overlay_capability"] == "config_overlay.v4"
     assert pinned.scan_options["config_overlay"]["nuclei"]["template_ids"] == ["CVE-2021-44228"]
-    # Legacy no-intent stays at the base overlay capability (v1).
+    # Legacy no-intent forwards nothing, so a v1 sensor still takes it.
     plain = _start(client)
-    assert plain["scan_options"]["config_overlay_capability"] == CAPABILITY
+    assert "config_overlay" not in (plain["scan_options"] or {})
+    assert "config_overlay_capability" not in (plain["scan_options"] or {})
 
     old_sensor = _register(client, "v1-sensor", ["scan_policy", CAPABILITY])
     first = _claim(client, old_sensor)
@@ -773,7 +776,9 @@ def test_a_group_whose_sensors_cannot_take_the_job_says_so(tmp_path, monkeypatch
             **extra,
         )
 
-    assert start().agent_group_unavailable is False
+    # vuln carries heavy Pulse paths (v4). A listening v1 sensor cannot take
+    # it, which is the same wait the group used to report for a v2 job.
+    assert start().agent_group_unavailable is True
     assert start(min_overlay_version=2, verification_of="vln_1").agent_group_unavailable is True
 
 

@@ -505,8 +505,13 @@ def start_scan(
     agent_group = admission.agent_group
     parsed_targets = admission.parsed_targets
 
+    # A verification re-scan names intent=vuln so the pipeline still runs the
+    # vulnerability checks, but its overlay is the detector plan
+    # (``config_extra`` + ``min_overlay_version``), not the product heavy-Pulse
+    # defaults. Those would demand config_overlay.v4 and turn JARM/plugins on
+    # for a job that only re-checks one finding.
     resolved = scan_intents.resolve_scan_options(
-        intent=request.intent,
+        intent=None if verification_of else request.intent,
         mode=request.mode,
         delta=request.delta,
         skip_nse=request.skip_nse,
