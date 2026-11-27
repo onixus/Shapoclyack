@@ -33,9 +33,14 @@ def test_publish_matrix_has_no_nmap_variants() -> None:
     jenkins = (ROOT / "Jenkinsfile.publish").read_text(encoding="utf-8")
     matrix = jenkins.split("def MATRIX = [", 1)[1].split("\n]", 1)[0]
     assert re.findall(r"name: '([\w-]+)'", matrix) == ["scanner", "api", "aio"]
+    assert "latest: false" in jenkins
+    assert "m.latest != false" in jenkins
 
     workflow = (ROOT / ".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
-    assert re.findall(r"- name: ([\w-]+)\n\s+dockerfile:", workflow) == ["scanner", "api", "aio"]
+    names = re.findall(r"- name: ([\w-]+)\n\s+dockerfile:", workflow)
+    assert names[:3] == ["scanner", "api", "aio"]
+    assert "screenshot-worker" in names
+    assert "latest: false" in workflow
 
 
 def test_migration_note_is_linked_from_docs_index() -> None:

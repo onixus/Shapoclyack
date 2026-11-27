@@ -108,8 +108,9 @@ New base component `k8s/shapoclyack/base/screenshot-worker/`:
 - Executor env `SCREENSHOT_WORKER_URL=http://shapoclyack-screenshot-worker.network-scan.svc:8077`.
 - Local-scan Job gets the same env, pointing at the in-cluster Service.
 - Do not add the worker container to the scanner StatefulSet.
-- Image tag in manifests: `shapoclyack-0.49-screenshot-worker` (placeholder
-  until publish). `imagePullPolicy: IfNotPresent`.
+- Image tag in manifests: `shapoclyack-0.49-screenshot-worker` until a
+  publish pins `name:tag@sha256`. The component is not in the default apply.
+  `imagePullPolicy: IfNotPresent`.
 
 ### Configuration
 

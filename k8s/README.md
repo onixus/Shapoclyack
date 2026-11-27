@@ -104,6 +104,7 @@ k8s/shapoclyack/
 ├── base/backup/          # daily pg_dump and ClickHouse BACKUP CronJobs to S3 (docs/disaster-recovery.md)
 ├── base/config/k8s.yaml  # scanner ConfigMap source (one copy per namespace)
 ├── base/networkpolicy-datastores.yaml # ingress to Postgres/ClickHouse/NATS: API (+backup) only
+├── base/screenshot-worker/ # optional component, included by no overlay until its image is pinned
 ├── base/agents/          # optional VPA for the scanner-executor (not in default base)
 ├── base/local-scan/      # opt-in component: API-local scanning + scan Job/CronJob, network-scan privileged
 ├── base/enrichment/      # optional GeoIP/EPSS/KEV/CVSS4 component: RWX PVC + daily refresh CronJob + patch
@@ -423,6 +424,15 @@ manual step you have to remember, so the same
 every tenant's raw scan results; the full rationale, the two NATS users, and
 the upgrade path for an existing cluster are in
 [operations.md § Data-plane credentials](../docs/operations.md#data-plane-credentials).
+
+The backup CronJobs are in base and start failing at their deadline until
+their bucket Secrets exist. They are not in `api-secrets.example.yaml`:
+those placeholders must never be applied as a working backup target.
+Edit and apply
+[`examples/backup-s3.secret.example.yaml`](shapoclyack/examples/backup-s3.secret.example.yaml)
+(`shapoclyack-backup` and `shapoclyack-clickhouse-backup-s3`, two key pairs).
+With External Secrets Operator the same keys are already in
+`examples/externalsecret.example.yaml`.
 
 Ingress to Postgres, ClickHouse and NATS is additionally restricted by
 `base/networkpolicy-datastores.yaml` (base, not an example — see

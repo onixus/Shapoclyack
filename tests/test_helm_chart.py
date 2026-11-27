@@ -367,7 +367,7 @@ def test_spread_and_autoscaling_are_the_prod_ha_overlay_field_for_field(tools, t
 
 
 def test_network_policy_switch_removes_exactly_the_policies(tools):
-    assert len(_kinds(_render(), "NetworkPolicy")) == 5
+    assert len(_kinds(_render(), "NetworkPolicy")) == 4
     assert _kinds(_render("--set", "networkPolicy.enabled=false"), "NetworkPolicy") == []
 
 

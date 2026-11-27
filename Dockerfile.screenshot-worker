@@ -3,12 +3,11 @@
 # Dockerfile.allinone must not: published scanner and API images stay
 # browser-free, and capture is unsupported without this Deployment.
 #
-# Publish gap: not in Jenkinsfile.publish MATRIX. That loop tags every entry
-# `${image}:${TAG}` and, for a non-prerelease, `${image}:latest`. Adding a
-# fourth image would publish :latest on shapoclyack-screenshot-worker and
-# change the release-tag contract (TAG is the k8s tag for scanner/api/aio).
-# Publish this image separately; manifests pin shapoclyack-0.49-screenshot-worker
-# until that happens.
+# Published by Jenkinsfile.publish with ONLY=screenshot-worker. That entry is
+# outside MATRIX, so a normal release does not build it and never tags it
+# :latest (TAG is the k8s tag for scanner/api/aio). After a publish, pin the
+# pushed digest in base/screenshot-worker/deployment.yaml before opting the
+# component into an overlay. Do not put this image in MATRIX.
 #
 # Chromium cannot use its user-namespace sandbox here: the pod is non-root,
 # drops every capability (no SYS_ADMIN, no NET_RAW) and runs under

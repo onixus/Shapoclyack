@@ -114,6 +114,7 @@ spec:
       app.kubernetes.io/name: shapoclyack
   policyTypes:
   - Ingress
+{{- if .Values.screenshotWorker.enabled }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -152,4 +153,5 @@ spec:
       app.kubernetes.io/name: shapoclyack
   policyTypes:
   - Ingress
+{{- end }}
 {{- end }}
