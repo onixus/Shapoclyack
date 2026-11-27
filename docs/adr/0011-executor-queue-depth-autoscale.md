@@ -46,13 +46,16 @@ snapshot alongside existing queue gauges.
 - Operators install KEDA + point `PROMETHEUS_URL` before applying the overlay.
 - Scale-out enrolls new executor ordinals; scale-down must respect PDB and lease
   expiry (existing behaviour).
-- Stage2 enrichment queue depth is a separate gauge (`octo_jobs_stage2_queued`,
-  FTT-054 / ADR 0012); this overlay may add it as a trigger later.
+- Stage2 enrichment queue depth (`octo_jobs_stage2_queued`, FTT-054 /
+  ADR 0012) is wired as a third trigger on this overlay in
+  [ADR 0015](0015-stage2-queue-depth-keda.md) / FTT-058 — same StatefulSet,
+  independently tunable threshold.
 
 ## Not decided here
 
 - Host-weighted shard sizing.
 - Per-tenant scale ceilings.
-- Dedicated KEDA ScaledObject keyed only on `octo_jobs_stage2_queued`.
+- Dedicated KEDA ScaledObject / Deployment keyed only on
+  `octo_jobs_stage2_queued` (still deferred; see ADR 0015).
 - Whether Stage2 enrichment uses a dedicated Deployment image (ADR 0012 keeps
   Stage2 on the scanner-executor claim path for now).

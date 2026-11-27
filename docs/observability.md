@@ -202,7 +202,7 @@ counted where they happen (use `sum()`).
 | `octo_job_duration_seconds` | histogram, 30 s – 8 h buckets | `status` (`succeeded`, `failed`), `execution` (`local`, `agent`) | E |
 | `octo_jobs_queued`, `octo_jobs_running` | gauge, read from the jobs table at scrape time | — | C |
 | `octo_jobs_shard_queued` | gauge, queued jobs with `scan_options.shard_group_id` (KEDA executor scale signal, FTT-PULSE-2026-053) | — | C |
-| `octo_jobs_stage2_queued` | gauge, queued Stage2 enrichment jobs with `scan_options.stage2_group_id` (FTT-PULSE-2026-054) | — | C |
+| `octo_jobs_stage2_queued` | gauge, queued Stage2 enrichment jobs with `scan_options.stage2_group_id` (KEDA executor Path B scale signal, FTT-PULSE-2026-054 / FTT-PULSE-2026-058) | — | C |
 | `octo_job_lease_expired_total` | counter | `outcome` (`requeued`, `failed`) | E |
 | `octo_result_integrity_total` | counter | `check` (`schema`, `signature`), `outcome` (`ok`, `rejected`, `warned`, `verified`, `unsigned`, `unverifiable`) | E |
 | `octo_job_cancellations_total` | counter | `outcome` (`queued`, `confirmed`, `unconfirmed`, `late_results`) | E |

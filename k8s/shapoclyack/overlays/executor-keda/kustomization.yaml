@@ -1,8 +1,10 @@
-# Opt-in S2 executor autoscaling on queue depth (FTT-PULSE-2026-053, ADR 0011).
+# Opt-in executor autoscaling on queue depth
+# (FTT-PULSE-2026-053 / ADR 0011 + FTT-PULSE-2026-058 / ADR 0015).
 #
 # Builds on overlays/agents (multi-replica StatefulSet + VPA) and adds a KEDA
 # ScaledObject that drives an HPA from Prometheus gauges:
-#   max(octo_jobs_shard_queued) and max(octo_jobs_queued).
+#   max(octo_jobs_shard_queued), max(octo_jobs_queued),
+#   and max(octo_jobs_stage2_queued).
 #
 # Prerequisites (NOT installed by this repository):
 #   - KEDA CRDs / operator (https://keda.sh)

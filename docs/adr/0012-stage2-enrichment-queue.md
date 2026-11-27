@@ -44,8 +44,9 @@ same product shape to Pulse enrichment.
    partitions unique hosts, and enqueues Stage2 jobs with `intent=enrichment`.
 3. Stage2 jobs carry `stage2_of` / `stage2_group_id` metadata (server-written
    only), are `quota_exempt`, and do not recurse.
-4. Export `octo_jobs_stage2_queued` for future KEDA triggers alongside
-   `octo_jobs_shard_queued`.
+4. Export `octo_jobs_stage2_queued` for KEDA triggers alongside
+   `octo_jobs_shard_queued` — wired on the existing executor ScaledObject in
+   [ADR 0015](0015-stage2-queue-depth-keda.md) / FTT-058.
 
 ## Consequences
 
@@ -54,12 +55,14 @@ same product shape to Pulse enrichment.
 - Operators must opt in; default behaviour is unchanged.
 - A dedicated enrichment Deployment remains possible later without changing
   the job contract.
+- Path B scale-out can follow Stage2 backlog explicitly (ADR 0015), not only
+  via the generic `octo_jobs_queued` trigger.
 
 ## Not decided here
 
 - Automatic Stage2 for every `full` intent (kept opt-in).
 - Host-weighted (vs round-robin) Stage2 partition skew.
-- A separate KEDA ScaledObject for Stage2-only pools (metric is ready;
-  overlay wiring deferred).
+- A separate KEDA ScaledObject / Deployment for Stage2-only pools (metric +
+  same-fleet trigger shipped; dedicated pool still deferred — ADR 0015).
 - Whether Stage2 should consume parent `open_ports.txt` as a pinned ports
   input instead of rediscovering (future adapter seam).

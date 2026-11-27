@@ -101,7 +101,9 @@ enrichment and orchestration dominate.
 - Fan-out on create → N claimable shards; merge on completion
   (FTT-052 / ADR 0010).
 - Scale pods on **queued shard depth** (HPA/KEDA), not CPU —
-  `octo_jobs_shard_queued` + `overlays/executor-keda` (FTT-053 / ADR 0011).
+  `octo_jobs_shard_queued` + `overlays/executor-keda` (FTT-053 / ADR 0011);
+  Stage2 enrichment depth `octo_jobs_stage2_queued` is an explicit Path B
+  trigger on the same overlay (FTT-058 / ADR 0015).
 - If one sensor full ≈ 400–800 hosts/h → need N ≈ 13–25 for assessment;
   inventory mid-tier ≈ 2–5 k/h/sensor → N ≈ 2–5.
 
@@ -117,7 +119,8 @@ intent `inventory_services` (banner on, plugins/tls-enum/nuclei off).
 
 - Stage1: discover + ports (+ optional light banner) → inventory SLO.
 - Stage2: open endpoints as claimable work → TLS/plugins/CVE/nuclei
-  pods scale under load (screenshot-worker pattern, ADR 0008).
+  pods scale under load (screenshot-worker pattern, ADR 0008;
+  KEDA on `octo_jobs_stage2_queued` — FTT-058 / ADR 0015).
 
 ### S5 — Heuristics (not ML-first)
 
@@ -176,8 +179,9 @@ policy. Numbers are models — validate with `stage_timings.json`.
    FTT-052 / ADR 0010; ops layer (`octo_jobs_shard_queued` +
    `overlays/executor-keda`) in FTT-053 / ADR 0011. **Stage2 enrichment
    jobs** (S4) — FTT-054 / ADR 0012 (`stage2_enrichment` +
-   `octo_jobs_stage2_queued`).
-6. Heuristics S5; park S6.
+   `octo_jobs_stage2_queued`). **Stage2 KEDA Path B trigger** —
+   FTT-058 / ADR 0015 (`octo_jobs_stage2_queued` on the same overlay).
+6. Heuristics S5 — shipped in sibling PRs; park S6 (rejected as OKR primary).
 
 ---
 

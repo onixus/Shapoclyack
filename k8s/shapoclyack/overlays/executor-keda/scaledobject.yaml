@@ -1,8 +1,13 @@
-# KEDA ScaledObject for the scanner-executor (FTT-PULSE-2026-053 / ADR 0011).
+# KEDA ScaledObject for the scanner-executor
+# (FTT-PULSE-2026-053 / ADR 0011 + FTT-PULSE-2026-058 / ADR 0015).
 #
 # KEDA creates and owns an HPA under the hood (keda-hpa-<name>). Scale signal is
 # queued claimable work, not CPU: each executor claims one job at a time
 # (FOR UPDATE SKIP LOCKED), so desired replicas ≈ waiting jobs.
+#
+# Triggers cover shard backlog (S2), any queued job, and Stage2 enrichment
+# backlog (S4 Path B). Stage2 jobs also appear in octo_jobs_queued; the
+# dedicated trigger keeps Path B scale intent explicit and independently tunable.
 #
 # Replace PROMETHEUS_URL before apply. With OCTO_METRICS_TOKEN set on the API,
 # scrape auth is on the Prometheus side (ServiceMonitor bearerTokenSecret);
@@ -66,5 +71,16 @@ spec:
         serverAddress: PROMETHEUS_URL
         metricName: octo_jobs_queued
         query: max(octo_jobs_queued)
+        threshold: "1"
+        activationThreshold: "1"
+    # Path B / S4: Stage2 enrichment backlog after inventory publish.
+    # Same StatefulSet claim path as ordinary jobs (ADR 0012); explicit
+    # series so operators can raise this threshold without touching shard
+    # or generic queue triggers.
+    - type: prometheus
+      metadata:
+        serverAddress: PROMETHEUS_URL
+        metricName: octo_jobs_stage2_queued
+        query: max(octo_jobs_stage2_queued)
         threshold: "1"
         activationThreshold: "1"
