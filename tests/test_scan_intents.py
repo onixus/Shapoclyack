@@ -6,7 +6,9 @@ import pytest
 
 from api.services.scan_intents import (
     HEAVY_INTENTS,
+    SPEED_CONNECT_TIMEOUT_MS,
     SPEED_INTENTS,
+    SPEED_RETRY_SETTLE_SECONDS,
     merge_config_extras,
     resolve_scan_options,
 )
@@ -111,11 +113,45 @@ def test_enrichment_intent_stage2() -> None:
     config_overlay.check_config(r.config_extra)
 
 
+def test_inventory_s5_heuristics() -> None:
+    """S5: historical∪top-N, JARM/tls-enum off, short connect/silence timeouts."""
+    r = resolve_scan_options(intent="inventory", mode="balanced", delta=False, skip_nse=False)
+    assert r.config_extra["ports"]["heuristic_union"] is True
+    assert r.config_extra["tls_posture"]["enumerate_ciphers"] is False
+    assert r.config_extra["tls_posture"]["jarm"] is False
+    assert r.config_extra["service_probe"]["pulse"]["jarm"] is False
+    assert r.config_extra["service_probe"]["pulse"]["timeout_ms"] == SPEED_CONNECT_TIMEOUT_MS
+    assert (
+        r.config_extra["service_probe"]["pulse"]["retry_settle_seconds"]
+        == SPEED_RETRY_SETTLE_SECONDS
+    )
+    assert SPEED_CONNECT_TIMEOUT_MS < 800
+    assert SPEED_RETRY_SETTLE_SECONDS < 15
+
+
+def test_speed_intents_gate_jarm_and_tls_enum() -> None:
+    for intent in SPEED_INTENTS:
+        r = resolve_scan_options(intent=intent, mode="fast", delta=False, skip_nse=False)
+        assert r.config_extra["tls_posture"]["enumerate_ciphers"] is False
+        assert r.config_extra["tls_posture"]["jarm"] is False
+        assert r.config_extra["service_probe"]["pulse"]["jarm"] is False
+
+
+def test_heavy_intents_keep_jarm_and_tls_enum() -> None:
+    for intent in HEAVY_INTENTS:
+        r = resolve_scan_options(intent=intent, mode="balanced", delta=False, skip_nse=True)
+        assert r.config_extra["tls_posture"]["enumerate_ciphers"] is True
+        assert r.config_extra["tls_posture"]["jarm"] is True
+        assert r.config_extra["tls_posture"]["enabled"] is True
+        assert r.config_extra["service_probe"]["pulse"]["jarm"] is True
+
+
 def test_vuln_sets_nuclei_floor() -> None:
     r = resolve_scan_options(intent="vuln", mode="balanced", delta=False, skip_nse=True)
     assert r.skip_nse is False  # intent owns the flag
     assert r.config_extra["nuclei"]["severities"] == ["critical", "high"]
     assert r.config_extra["service_probe"]["pulse"]["plugins"] is True
+    assert r.config_extra["tls_posture"]["jarm"] is True
 
 
 def test_delta_intent_forces_delta_flag() -> None:
@@ -131,6 +167,7 @@ def test_full_intent() -> None:
     assert "medium" in r.config_extra["nuclei"]["severities"]
     assert r.config_extra["service_probe"]["pulse"]["plugins"] is True
     assert r.config_extra["tls_posture"]["enumerate_ciphers"] is True
+    assert r.config_extra["service_probe"]["pulse"]["jarm"] is True
 
 
 def test_unknown_intent_raises() -> None:
@@ -169,6 +206,7 @@ def test_org_profile_intent() -> None:
     assert r.config_extra["tls_posture"]["enabled"] is True
     assert r.config_extra["tls_posture"]["enumerate_ciphers"] is True
     assert r.config_extra["service_probe"]["pulse"]["plugins"] is True
+    assert r.config_extra["tls_posture"]["jarm"] is True
 
 
 def test_request_schemas_accept_every_resolver_intent() -> None:

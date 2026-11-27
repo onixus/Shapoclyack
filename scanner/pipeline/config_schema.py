@@ -268,6 +268,8 @@ class ProfilePulseConfig(BaseModel):
     chunk_concurrency: int | None = Field(default=None, ge=1, le=8)
     enrich_concurrency: int | None = Field(default=None, ge=1, le=64)
     retry_settle_seconds: int | None = Field(default=None, ge=0, le=600)
+    # S5 / FTT-057: optional per-profile JARM gate (mirrors PulseProbeConfig.jarm).
+    jarm: bool | None = None
     plugins: bool | None = None
 
 
@@ -630,6 +632,11 @@ class PortsConfig(BaseModel):
     # which it applies on top of whatever ``-p``/``-top-ports`` selected — so
     # an excluded port stays unscanned even when a custom port file names it.
     exclude_ports: list[int] = Field(default_factory=list)
+    # S5 / FTT-057: when true and a previous run's open_ports.txt exists, the
+    # ports stage scans historical opens ∪ curated top-N instead of widening
+    # to 1–1024. Operator custom_ports_file still wins. Inventory intent
+    # forces this on; assessment intents leave it off (top_ports / custom).
+    heuristic_union: bool = False
     # naabu's own -s default is "c" (CONNECT) -- it never probes for privileges,
     # so leaving the flag off means the CAP_NET_RAW the images grant naabu
     # (setcap in the Dockerfiles, capabilities.add in the manifests) is paid for
@@ -669,6 +676,11 @@ class PulseProbeConfig(BaseModel):
     # its checkpoint as "status: done". Pause and re-probe once when a chunk
     # contradicts the open ports naabu just proved. 0 disables the retry.
     retry_settle_seconds: int = Field(default=15, ge=0, le=600)
+    # S5 / FTT-057: request JARM fingerprints. Pulse currently fingerprints as
+    # part of TLS probing when the stage runs; the adapter records the flag and
+    # passes ``--jarm`` only when the binary advertises it. Speed intents force
+    # false; heavy intents / explicit overlay force true.
+    jarm: bool = True
     # Rhai plugins passed to Pulse with --script-dir (docs/pulse-plugins.md):
     # what is left of NSE ``default,safe`` that Pulse's sandbox can do -- weak
     # SSH algorithms, anonymous FTP, services that cannot start TLS. They open
@@ -1201,6 +1213,9 @@ class TlsPostureConfig(BaseModel):
     hostname_mismatch: bool = True
     # Opt-in raw ServerHello enumeration; requires Pulse supporting --tls-enum.
     enumerate_ciphers: bool = False
+    # S5 / FTT-057: product gate for JARM (paired with service_probe.pulse.jarm).
+    # Speed intents force false; heavy intents force true. Explicit overlay wins.
+    jarm: bool = False
     # Stdlib TLS probe when Pulse produced no TLS rows.
     probe_fallback: bool = True
     probe_timeout_seconds: float = Field(default=5.0, ge=0.5, le=60.0)

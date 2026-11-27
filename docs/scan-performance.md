@@ -61,14 +61,14 @@ Treat scan work as **intent**, not one default full pipeline. **Product control
 
 | Intent | Goal | Control plane applies |
 |---|---|---|
-| **inventory** | Alive hosts + open ports | `--skip-nse`, nuclei off, `top_ports: 100`; plugins + cipher-enum **off**; optional `delta` |
-| **inventory_services** | Mid-tier banners/services | Pulse banners on; plugins / tls-enum / nuclei **off**; S3 chunk overlap (FTT-PULSE-2026-052, [ADR 0013](adr/0013-product-defaults-speed-intents.md)) |
-| **enrichment** | Stage2 assessment on known hosts | Pulse plugins + tls-enum + nuclei; queue fan-out (FTT-PULSE-2026-054) |
-| **vuln** | High-signal CVE/misconfig | Full probe; nuclei **critical+high** only; heavy Pulse |
-| **full** | Assessment-grade completeness | Nuclei critical/high/medium; heavy Pulse |
-| **delta** | Re-check known perimeter | Full pipeline + forced `--delta`; heavy Pulse |
+| **inventory** | Alive hosts + open ports | `--skip-nse`, nuclei off, `top_ports: 100` ∪ historical opens; plugins + JARM/tls-enum **off**; short Pulse connect timeouts ([ADR 0013](adr/0013-product-defaults-speed-intents.md), [ADR 0014](adr/0014-throughput-heuristics-s5.md)) |
+| **inventory_services** | Mid-tier banners/services | Pulse banners on; plugins / tls-enum / JARM / nuclei **off**; S3 chunk overlap (FTT-PULSE-2026-052, [ADR 0013](adr/0013-product-defaults-speed-intents.md)) |
+| **enrichment** | Stage2 assessment on known hosts | Pulse plugins + tls-enum + JARM + nuclei; queue fan-out (FTT-PULSE-2026-054) |
+| **vuln** | High-signal CVE/misconfig | Full probe; nuclei **critical+high** only; heavy Pulse; JARM/tls-enum **on** |
+| **full** | Assessment-grade completeness | Nuclei critical/high/medium; heavy Pulse; JARM/tls-enum **on** |
+| **delta** | Re-check known perimeter | Full pipeline + forced `--delta`; heavy Pulse; JARM/tls-enum **on** |
 
-Throughput levers (same FTT): Pulse `service_probe.pulse.chunk_concurrency` /
+Throughput levers: Pulse `service_probe.pulse.chunk_concurrency` /
 `enrich_concurrency`, `POST /api/jobs` `shard_count` for claimable partitions
 ([ADR 0010](adr/0010-throughput-s1-s3-sharding.md)), and
 `stage2_enrichment=true` on Stage1 inventory jobs to fan out Stage2
@@ -84,10 +84,10 @@ POST /api/jobs
 ```
 
 Persisted as `scan_options.intent` (+ `intent_summary`). Local execution merges
-nuclei/top_ports/plugins/tls-enum into the job effective config. Agent execution
+nuclei/top_ports/plugins/heuristics into the job effective config. Agent execution
 delivers the validated `config_overlay.json` to sensors advertising
-`config_overlay.v1`; the current sensor also advertises v2 for targeted
-template IDs. Fleet capability checks keep jobs requiring an overlay from being
+`config_overlay.v1+`; S3 overlap, product-default Pulse gates and S5 heuristic
+paths need **v4**. Fleet capability checks keep jobs requiring an overlay from being
 claimed by an incompatible sensor ([API contract](api-and-rbac.md#scan-surface)).
 
 ### Suggested schedule shape (same fleet)

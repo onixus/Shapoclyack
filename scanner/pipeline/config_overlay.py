@@ -58,11 +58,9 @@ INPUT_NAME = "config_overlay.json"
 #:   coverage evidence a verification closure is judged on (``nuclei.json``'s
 #:   ``coverage`` block, ``adapter.cve`` in ``pulse/raw.json``).
 #: * v3: ``nuclei.verification_targets``.
-#: * v4: Pulse mid-tier controls for speed/heavy intents
-#:   (``service_probe.pulse.{banner,plugins,cve,cve_online}``,
-#:   ``tls_posture.enumerate_ciphers``; ADR 0013 / FTT-056) and the S3
-#:   overlap knobs (``service_probe.pulse.chunk_concurrency`` /
-#:   ``enrich_concurrency`` and the same leaves under ``profiles.*.pulse``).
+#: * v4: Pulse mid-tier controls for speed/heavy intents (ADR 0013) and the
+#:   S3 overlap knobs, plus S5 heuristics (FTT-057 / ADR 0014): historical∪top-N,
+#:   JARM/tls-enum gates, shortened Pulse connect / settle timeouts.
 OVERLAY_VERSION = 4
 
 
@@ -132,9 +130,9 @@ _V1_PATHS: frozenset[str] = frozenset(
 #: document is always one a newer build applies.
 _V2_PATHS: frozenset[str] = _V1_PATHS | {"nuclei.template_ids", "reachability.enabled"}
 _V3_PATHS: frozenset[str] = _V2_PATHS | {"nuclei.verification_targets"}
-# Speed/heavy intent overlays (ADR 0013 / FTT-056) plus S3 overlap knobs.
-# Without chunk/enrich concurrency an intent that asks for overlapping chunks
-# is refused, or silently runs at the serial default.
+# Speed/heavy intent overlays (ADR 0013) plus S3 overlap knobs and S5
+# heuristic paths. Without chunk/enrich concurrency an intent that asks for
+# overlapping chunks is refused, or silently runs at the serial default.
 _V4_PULSE_LEAVES = (
     "banner",
     "plugins",
@@ -142,11 +140,16 @@ _V4_PULSE_LEAVES = (
     "cve_online",
     "chunk_concurrency",
     "enrich_concurrency",
+    "jarm",
+    "timeout_ms",
+    "retry_settle_seconds",
 )
 _V4_PATHS: frozenset[str] = _V3_PATHS | {
     *(f"service_probe.pulse.{leaf}" for leaf in _V4_PULSE_LEAVES),
     *(f"profiles.{profile}.pulse.{leaf}" for profile in _PROFILES for leaf in _V4_PULSE_LEAVES),
     "tls_posture.enumerate_ciphers",
+    "tls_posture.jarm",
+    "ports.heuristic_union",
 }
 
 PATHS_BY_VERSION: dict[int, frozenset[str]] = {

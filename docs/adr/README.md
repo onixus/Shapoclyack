@@ -18,11 +18,9 @@ rather than how one feature works. Feature design stays in its own guide.
 | [0010](0010-throughput-s1-s3-sharding.md) | S1 parallel enrichment, S3 chunk overlap, job sharding | **Proposed** — implementation under FTT-PULSE-2026-052 | — |
 | [0011](0011-executor-queue-depth-autoscale.md) | Executor KEDA/HPA on shard and job queue depth (S2) | **Proposed** — implementation under FTT-PULSE-2026-053 | — |
 | [0012](0012-stage2-enrichment-queue.md) | Stage2 enrichment queue after Stage1 inventory (S4) | **Proposed** — implementation under FTT-PULSE-2026-054 | — |
+| [0013](0013-product-defaults-speed-intents.md) | Product defaults: speed paths without cipher-enum/plugins | **Accepted** — implementation in tree | — |
+| [0014](0014-throughput-heuristics-s5.md) | Throughput heuristics S5 (historical∪top-N, JARM/tls-enum gates) | **Accepted** — implementation in tree | — |
 | [0015](0015-stage2-queue-depth-keda.md) | Stage2 enrichment queue-depth KEDA trigger (Path B) | **Proposed** — implementation under FTT-PULSE-2026-058 | — |
-
-Sibling throughput ADRs **0013** (product defaults) and **0014** (S5
-heuristics) land on independent `main`-based PRs and are intentionally not
-renumbered here; this stack adds **0015** after 0012.
 
 Decisions taken before this directory existed are recorded where they were
 made: the endpoint-inventory decisions in

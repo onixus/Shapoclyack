@@ -3,25 +3,26 @@
 Speed profile (``mode``: safe/balanced/fast) stays orthogonal: how hard to
 hit the network. Intent chooses *which pipeline stages and nuclei floor* run
 so operators can schedule inventory often and full assessments rarely without
-hand-editing YAML (see ``docs/scan-performance.md``, ADR 0009 / ADR 0013).
+hand-editing YAML (see ``docs/scan-performance.md``, ADR 0009 / ADR 0013 /
+ADR 0014).
 
 | Intent              | Effect                                                              |
 |---------------------|---------------------------------------------------------------------|
 | inventory           | Ports-only L1 (``--skip-nse``), nuclei off, top_ports 100;          |
-|                     | plugins + cipher-enum forced OFF                                    |
-| inventory_services  | Mid-tier: Pulse banners/services/OS/CVE, no plugins/tls-enum/nuclei;|
+|                     | plugins + cipher-enum + JARM OFF; historical∪top-N; short timeouts  |
+| inventory_services  | Mid-tier: Pulse banners/services/OS/CVE, no plugins/tls-enum/JARM;  |
 |                     | S3 chunk overlap                                                    |
-| enrichment          | Stage2: Pulse plugins + tls-enum + nuclei on known hosts (S4)       |
-| vuln                | Full probe + nuclei critical/high only (no medium); heavy Pulse     |
-| full                | Assessment-grade pipeline; heavy Pulse                              |
+| enrichment          | Stage2: Pulse plugins + tls-enum + JARM + nuclei on known hosts     |
+| vuln                | Full probe + nuclei critical/high only; heavy Pulse + JARM          |
+| full                | Assessment-grade pipeline; heavy Pulse + JARM                       |
 | delta               | Same as full + ``--delta`` discovery refresh                        |
 | org_profile         | Full + the organization-profile stages (see docs/configuration.md)  |
 
 When ``intent`` is omitted, legacy ``skip_nse`` / ``delta`` flags apply as
-before (shipped YAML keeps plugins/tls-enum on). When ``intent`` is set, it
-owns those flags (and nuclei/top_ports/plugins/cipher-enum config); explicit
-``skip_nse``/``delta`` on the request are ignored so the product control is
-unambiguous.
+before (shipped YAML keeps plugins/tls-enum/JARM on). When ``intent`` is set,
+it owns those flags (and nuclei/top_ports/plugins/cipher-enum/heuristic/JARM
+config); explicit ``skip_nse``/``delta`` on the request are ignored so the
+product control is unambiguous.
 """
 
 from __future__ import annotations
@@ -49,16 +50,42 @@ INTENTS: tuple[ScanIntent, ...] = (
     "org_profile",
 )
 
-#: Intents that must not inherit assessment-grade plugins / cipher enum.
+#: Intents that must not inherit assessment-grade plugins / cipher enum / JARM.
 SPEED_INTENTS: frozenset[ScanIntent] = frozenset({"inventory", "inventory_services"})
 
-#: Intents that keep (or restore) plugins + cipher enumeration.
+#: Intents that keep (or restore) plugins + cipher enumeration + JARM.
 HEAVY_INTENTS: frozenset[ScanIntent] = frozenset(
     {"enrichment", "vuln", "full", "delta", "org_profile"}
 )
 
 # Scanner CLI --mode only accepts these (not "test").
 _CLI_MODES = frozenset({"safe", "balanced", "fast"})
+
+#: Connect / silence wait on the inventory speed path (Pulse ``-t``). RST
+#: closes return immediately; this only bounds filtered/silent targets (FTT-057).
+SPEED_CONNECT_TIMEOUT_MS = 300
+#: Shorter settle before contradicting naabu opens on the inventory speed path.
+SPEED_RETRY_SETTLE_SECONDS = 3
+
+
+def _cli_mode(mode: str) -> str:
+    if mode in _CLI_MODES:
+        return mode
+    # API historically allowed "test"; map to balanced + leave intent overlays
+    # to cut coverage (inventory-like knobs if intent also set).
+    return "balanced"
+
+
+def _heavy_pulse_overlay() -> dict[str, Any]:
+    """ADR 0013 + ADR 0014: assessment paths keep plugins, cipher grades, JARM."""
+    return {
+        "tls_posture": {
+            "enabled": True,
+            "enumerate_ciphers": True,
+            "jarm": True,
+        },
+        "service_probe": {"pulse": {"plugins": True, "banner": True, "jarm": True}},
+    }
 
 
 @dataclass(frozen=True)
@@ -72,30 +99,6 @@ class ResolvedIntent:
     config_extra: dict[str, Any]
     # Human-readable summary for UI / scan_options audit.
     summary: str
-
-
-def _cli_mode(mode: str) -> str:
-    if mode in _CLI_MODES:
-        return mode
-    # API historically allowed "test"; map to balanced + leave intent overlays
-    # to cut coverage (inventory-like knobs if intent also set).
-    return "balanced"
-
-
-def _speed_pulse_overlay() -> dict[str, Any]:
-    """ADR 0013: speed paths never pay tls-enum / Rhai plugin wall-clock."""
-    return {
-        "tls_posture": {"enumerate_ciphers": False},
-        "service_probe": {"pulse": {"plugins": False}},
-    }
-
-
-def _heavy_pulse_overlay() -> dict[str, Any]:
-    """ADR 0013: assessment paths keep plugins + cipher grades."""
-    return {
-        "tls_posture": {"enabled": True, "enumerate_ciphers": True},
-        "service_probe": {"pulse": {"plugins": True, "banner": True}},
-    }
 
 
 def resolve_scan_options(
@@ -124,8 +127,7 @@ def resolve_scan_options(
 
     if intent == "inventory":
         # L1: discover + ports + report. No Pulse/NSE/Nuclei wall-clock.
-        # Still force plugins/tls-enum OFF so a resume without skip_nse cannot
-        # inherit assessment defaults (FTT-056 / ADR 0013).
+        # Plugins/tls-enum/JARM stay OFF, and S5 shortens silence waits.
         return ResolvedIntent(
             intent="inventory",
             mode=cli_mode,
@@ -135,14 +137,26 @@ def resolve_scan_options(
                 "nuclei": {"enabled": False},
                 "profiles": {profile_key: {"top_ports": 100}},
                 "runtime": {"skip_nse": True},
-                **_speed_pulse_overlay(),
+                "ports": {"heuristic_union": True},
+                "tls_posture": {"enumerate_ciphers": False, "jarm": False},
+                "service_probe": {
+                    "pulse": {
+                        "plugins": False,
+                        "jarm": False,
+                        "timeout_ms": SPEED_CONNECT_TIMEOUT_MS,
+                        "retry_settle_seconds": SPEED_RETRY_SETTLE_SECONDS,
+                    }
+                },
             },
-            summary="inventory: ports-only, nuclei/plugins/tls-enum off, top 100 ports",
+            summary=(
+                "inventory: ports-only, nuclei/plugins/JARM/tls-enum off, "
+                "top 100 ∪ historical, short connect timeouts"
+            ),
         )
 
     if intent == "inventory_services":
-        # Mid-tier (FTT-PULSE-2026-052 S3): L4 + Pulse banners/services without
-        # the TLS-enum / plugin / nuclei wall that bounds full assessment.
+        # Mid-tier (FTT-PULSE-2026-052 S3 + ADR 0013): banners/services without
+        # the TLS-enum / plugin / JARM / nuclei wall, with overlapping chunks.
         return ResolvedIntent(
             intent="inventory_services",
             mode=cli_mode,
@@ -151,11 +165,16 @@ def resolve_scan_options(
             config_extra={
                 "nuclei": {"enabled": False},
                 "profiles": {profile_key: {"top_ports": 100}},
-                "tls_posture": {"enabled": False, "enumerate_ciphers": False},
+                "tls_posture": {
+                    "enabled": False,
+                    "enumerate_ciphers": False,
+                    "jarm": False,
+                },
                 "service_probe": {
                     "pulse": {
                         "banner": True,
                         "plugins": False,
+                        "jarm": False,
                         "cve": True,
                         "cve_online": False,
                         # S3: overlap the mid-tier chunks. Serial (1) is the
@@ -167,14 +186,13 @@ def resolve_scan_options(
             },
             summary=(
                 "inventory_services: Pulse banners/services, "
-                "no plugins/tls-enum/nuclei"
+                "no plugins/tls-enum/JARM/nuclei"
             ),
         )
 
     if intent == "enrichment":
         # Stage2 assessment (FTT-PULSE-2026-054): TLS posture + Pulse plugins
-        # + nuclei on hosts already observed by Stage1. Overlap knobs match
-        # the mid-tier intent so a single Stage2 pod is not serial by default.
+        # + JARM + nuclei on hosts already observed by Stage1.
         return ResolvedIntent(
             intent="enrichment",
             mode=cli_mode,
@@ -185,11 +203,16 @@ def resolve_scan_options(
                     "enabled": True,
                     "severities": ["critical", "high", "medium"],
                 },
-                "tls_posture": {"enabled": True, "enumerate_ciphers": True},
+                "tls_posture": {
+                    "enabled": True,
+                    "enumerate_ciphers": True,
+                    "jarm": True,
+                },
                 "service_probe": {
                     "pulse": {
                         "banner": True,
                         "plugins": True,
+                        "jarm": True,
                         "cve": True,
                         "cve_online": False,
                         "chunk_concurrency": 2,
@@ -197,9 +220,7 @@ def resolve_scan_options(
                     }
                 },
             },
-            summary=(
-                "enrichment: Stage2 TLS/plugins/nuclei on known hosts"
-            ),
+            summary="enrichment: Stage2 TLS/plugins/JARM/nuclei on known hosts",
         )
 
     if intent == "vuln":

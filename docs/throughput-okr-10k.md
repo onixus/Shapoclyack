@@ -124,7 +124,9 @@ intent `inventory_services` (banner on, plugins/tls-enum/nuclei off).
 
 ### S5 — Heuristics (not ML-first)
 
-**CONFIRM heuristics; REJECT ML-first.**
+**CONFIRM heuristics; REJECT ML-first.** **Shipped** in
+[FTT-057](ftt-pulse-2026-057-heuristics-s5.md) /
+[ADR 0014](adr/0014-throughput-heuristics-s5.md).
 
 - Historical∪top-N ports, skip JARM/tls-enum unless risk/intent requires,
   shorten silence timeouts after RST evidence.
@@ -186,7 +188,9 @@ policy. Numbers are models — validate with `stage_timings.json`.
    jobs** (S4) — FTT-054 / ADR 0012 (`stage2_enrichment` +
    `octo_jobs_stage2_queued`). **Stage2 KEDA Path B trigger** —
    FTT-058 / ADR 0015 (`octo_jobs_stage2_queued` on the same overlay).
-6. Heuristics S5 — shipped in sibling PRs; park S6 (rejected as OKR primary).
+6. Heuristics S5 — **shipped** in
+   [FTT-057](ftt-pulse-2026-057-heuristics-s5.md) /
+   [ADR 0014](adr/0014-throughput-heuristics-s5.md); park S6.
 
 ---
 
