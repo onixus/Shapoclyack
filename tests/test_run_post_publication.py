@@ -86,7 +86,7 @@ MATRIX = {
 }
 
 #: Steps added to the matrix after #454, left out of its before/after record.
-AFTER_454 = {"verification"}
+AFTER_454 = {"verification", "stage2"}
 
 
 def _expected(mode: str, case: str) -> list[str]:
@@ -144,6 +144,10 @@ def derived(monkeypatch) -> _Derived:
     monkeypatch.setattr(asset_services, "record_run", spy.record("services", {}))
     monkeypatch.setattr(asset_events, "publish_run_events", spy.record("events", 0))
     monkeypatch.setattr(channels_service, "notify_run_complete_async", spy.record("notify"))
+    monkeypatch.setattr(
+        "api.services.stage2_enrichment.enqueue_stage2_best_effort",
+        spy.record("stage2"),
+    )
 
     real_denied = auth_audit.record_denied
 

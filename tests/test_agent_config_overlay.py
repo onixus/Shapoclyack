@@ -687,22 +687,21 @@ def test_a_verification_job_needs_v2_whatever_its_overlay_carries(tmp_path, monk
         min_overlay_version=2,
         verification_of="vln_1",
     )
-    assert "template_ids" not in job.scan_options["config_overlay"]["nuclei"]
-    # Vuln intent carries S5 JARM/tls-enum paths → document/capability v4;
-    # min_overlay_version=2 still requires a post-v1 sensor for coverage evidence.
-    assert job.scan_options["config_overlay_capability"] == "config_overlay.v4"
+    # verification_of does not inherit the vuln intent's heavy Pulse overlay.
+    # Nothing was pinned, so there is no document; the floor is still v2.
+    assert "config_overlay" not in (job.scan_options or {})
+    assert job.scan_options["config_overlay_capability"] == "config_overlay.v2"
     assert job.scan_options["verification_of"] == "vln_1"
 
     refused = _claim(client, _register(client, "v1-sensor", ["scan_policy", CAPABILITY]))
     assert refused.status_code == 426, refused.text
     detail = refused.json()["detail"]
-    assert "config_overlay.v4" in detail
+    assert "config_overlay.v2" in detail
     assert "console's config overrides" not in detail
 
     claimed = _claim(client, _register(client, "v4-sensor", CURRENT_AGENT))
     assert claimed.status_code == 200, claimed.text
-    # The document itself is the lowest version that covers every path (v4).
-    assert json.loads(claimed.json()["inputs"][OVERLAY_INPUT])["overlay_version"] == 4
+    assert OVERLAY_INPUT not in claimed.json()["inputs"]
 
 
 @requires_postgres
@@ -779,7 +778,14 @@ def test_a_group_whose_sensors_cannot_take_the_job_says_so(tmp_path, monkeypatch
     # vuln carries heavy Pulse paths (v4). A listening v1 sensor cannot take
     # it, which is the same wait the group used to report for a v2 job.
     assert start().agent_group_unavailable is True
-    assert start(min_overlay_version=2, verification_of="vln_1").agent_group_unavailable is True
+    # verification_of drops that overlay. The floor is still v2, and this
+    # group only speaks v1, so the wait reads the same — but only when the
+    # job actually carries an overlay the floor applies to.
+    assert start(
+        min_overlay_version=2,
+        verification_of="vln_1",
+        config_extra={"reachability": {"enabled": True}},
+    ).agent_group_unavailable is True
 
 
 # ---------------------------------------------------------------------------

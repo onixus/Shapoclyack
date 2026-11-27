@@ -1497,7 +1497,7 @@ def test_a_finding_seen_on_a_name_is_re_scanned_on_that_name_with_its_template(t
     assert overlay["nuclei"]["enabled"] is True
     # The connect probe a refusal is judged on, on every verification.
     assert overlay["reachability"] == {"enabled": True}
-    assert job.scan_options["config_overlay_capability"] == "config_overlay.v4"
+    assert job.scan_options["config_overlay_capability"] == "config_overlay.v2"
     started = _last_event(settings, tenant_id, vuln["vuln_id"])
     assert started["detail"]["plan"]["template_ids"] == [TEMPLATE]
 
@@ -1552,7 +1552,7 @@ def test_an_nse_finding_another_detector_also_saw_is_re_scanned_as_before(tmp_pa
     # The Nmap stage is gone (#548): no backend is asked of the sensor for the NSE detector.
     assert "service_probe" not in job.scan_options["config_overlay"]
     assert job.scan_options["config_overlay"]["reachability"] == {"enabled": True}
-    assert job.scan_options["config_overlay_capability"] == "config_overlay.v4"
+    assert job.scan_options["config_overlay_capability"] == "config_overlay.v2"
     assert job.scan_options["verification_of"] == vuln["vuln_id"]
 
 

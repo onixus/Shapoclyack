@@ -508,7 +508,7 @@ def test_verification_uses_real_lifecycle_and_never_machine_closes(env, monkeypa
     assert result["finding_state"] == "VERIFYING"
     job = jobs.get_job(settings, result["job_id"])
     assert job.scan_options["verification_of"] == vuln_id
-    assert job.scan_options["config_overlay_capability"] == "config_overlay.v4"
+    assert job.scan_options["config_overlay_capability"] == "config_overlay.v2"
     assert jobs.list_jobs(settings)[1] == 1
     assert _confirm(env, proposal).json()["execution"]["result"]["job_id"] == job.job_id
     assert vulnerabilities.get_vulnerability(settings, tenant_id="default", vuln_id=vuln_id)["state"] == "VERIFYING"
