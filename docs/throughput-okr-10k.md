@@ -127,9 +127,11 @@ intent `inventory_services` (banner on, plugins/tls-enum/nuclei off).
 
 ### S6 — eBPF/XDP, masscan-class TX, in-pod SHM, WASM plugins
 
-**REJECT as OKR primary.** Pulse SYN already ~10 k+ pps class for
-Stage1; privilege and hardening cost dominate. Revisit only if Stage1
-PPS (not enrichment) remains the measured wall after S4–S5.
+**REJECT as OKR primary** — recorded in
+[ADR 0016](adr/0016-reject-s6-ebpf-masscan-okr.md) (FTT-059 acceptance pack).
+Pulse SYN already ~10 k+ pps class for Stage1; privilege and hardening cost
+dominate. Revisit only if Stage1 PPS (not enrichment) remains the measured
+wall after S4–S5.
 
 ---
 
@@ -165,14 +167,26 @@ policy. Numbers are models — validate with `stage_timings.json`.
 ## Recommended build order
 
 1. **Measure** a representative estate: `stage_timings.json` + Pulse
-   `stats.l4_complete` vs full complete.
+   `stats.l4_complete` vs full complete — **harness shipped** (FTT-055 / #685);
+   replace synthetic fixtures with stand runs before production shard sizing.
 2. **Ship mid-tier intent + turn off default cipher-enum/plugins for
-   speed intents** (config/product, low risk).
-3. **GenDec `--enrich-concurrency`** (S1).
-4. **Adapter `pulse_chunk_concurrency`** (S3).
-5. **Job sharding + KEDA/HPA on queue depth** (S2) and/or **Stage2
-   enrichment jobs** (S4).
-6. Heuristics S5; park S6.
+   speed intents** — **shipped** (FTT-056 / ADR 0013 / #686).
+3. **GenDec `--enrich-concurrency`** (S1) — **shipped** (GenDec #56 / FTT-052).
+4. **Adapter `pulse_chunk_concurrency`** (S3) — **shipped** (#681 / FTT-052 /
+   ADR 0010).
+5. **Job sharding + KEDA/HPA on queue depth** (S2) — **shipped** (FTT-053 /
+   ADR 0011 / #682). **Stage2 enrichment jobs** (S4) — **shipped** (FTT-054 /
+   ADR 0012 / #684). **Stage2 KEDA Path B trigger** — **shipped** (FTT-058 /
+   ADR 0015 / #688).
+6. Heuristics S5 — **shipped** (FTT-057 / ADR 0014 / #687). **S6 parked /
+   Rejected** as OKR primary ([ADR 0016](adr/0016-reject-s6-ebpf-masscan-okr.md)).
+7. **ADR acceptance pack** — **this program gate** (FTT-059): ADRs 0009–0015
+   Accepted; ADR 0016 Rejected; IB protocol in
+   [security-acceptance-throughput-okr.md](security-acceptance-throughput-okr.md).
+
+Next after acceptance: live-estate Measure calibration (operator `runs-dir`),
+GenDec Pulse image pin, and Architect IB sign-off on the merged code train —
+not more S6 work.
 
 ---
 

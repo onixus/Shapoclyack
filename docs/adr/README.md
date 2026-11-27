@@ -14,7 +14,19 @@ rather than how one feature works. Feature design stays in its own guide.
 | [0006](0006-native-perimeter-observations.md) | Native informational perimeter observations | **Accepted** — user, 2026-10-29 | — |
 | [0007](0007-product-licensing.md) | Product licensing with signed entitlements | **Accepted** — user, 2026-11-14 | — |
 | [0008](0008-isolated-screenshot-worker.md) | Screenshot capture only in an isolated browser worker | **Accepted** — user, 2026-11-12 | — |
-| [0009](0009-scan-throughput-okr.md) | Throughput model for the 10 000 hosts/hour OKR | **Proposed** — decision by the owner | — |
+| [0009](0009-scan-throughput-okr.md) | Throughput model for the 10 000 hosts/hour OKR | **Accepted** — onixus, 2026-11-27 | [FTT-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md) |
+| [0010](0010-throughput-s1-s3-sharding.md) | S1 parallel enrichment, S3 chunk overlap, job sharding | **Accepted** — onixus, 2026-11-27 | FTT-052 |
+| [0011](0011-executor-queue-depth-autoscale.md) | Executor KEDA/HPA on shard and job queue depth (S2) | **Accepted** — onixus, 2026-11-27 | FTT-053 |
+| [0012](0012-stage2-enrichment-queue.md) | Stage2 enrichment queue after Stage1 inventory (S4) | **Accepted** — onixus, 2026-11-27 | FTT-054 |
+| [0013](0013-product-defaults-speed-intents.md) | Product defaults — speed intents without cipher-enum/plugins | **Accepted** — onixus, 2026-11-27 | FTT-056 |
+| [0014](0014-throughput-heuristics-s5.md) | Throughput heuristics S5 (historical∪top-N, JARM/tls-enum gates) | **Accepted** — onixus, 2026-11-27 | FTT-057 |
+| [0015](0015-stage2-queue-depth-keda.md) | Stage2 enrichment queue-depth KEDA trigger (Path B) | **Accepted** — onixus, 2026-11-27 | FTT-058 |
+| [0016](0016-reject-s6-ebpf-masscan-okr.md) | Reject S6 (eBPF/XDP / masscan-class TX) as OKR primary | **Rejected** — onixus, 2026-11-27 | [FTT-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md) |
+
+Throughput ADRs **0009–0016** are accepted or rejected together by the
+[FTT-PULSE-2026-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md)
+acceptance pack. IB checklist:
+[security-acceptance-throughput-okr.md](../security-acceptance-throughput-okr.md).
 
 Decisions taken before this directory existed are recorded where they were
 made: the endpoint-inventory decisions in
