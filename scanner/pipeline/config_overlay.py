@@ -58,10 +58,10 @@ INPUT_NAME = "config_overlay.json"
 #:   coverage evidence a verification closure is judged on (``nuclei.json``'s
 #:   ``coverage`` block, ``adapter.cve`` in ``pulse/raw.json``).
 #: * v3: ``nuclei.verification_targets``.
-#: * v4: Pulse mid-tier controls for ``inventory_services``
+#: * v4: Pulse mid-tier controls for speed/heavy intents
 #:   (``service_probe.pulse.{banner,plugins,cve,cve_online}``,
-#:   ``tls_posture.enumerate_ciphers``) and the S3 overlap knobs
-#:   (``service_probe.pulse.chunk_concurrency`` /
+#:   ``tls_posture.enumerate_ciphers``; ADR 0013 / FTT-056) and the S3
+#:   overlap knobs (``service_probe.pulse.chunk_concurrency`` /
 #:   ``enrich_concurrency`` and the same leaves under ``profiles.*.pulse``).
 OVERLAY_VERSION = 4
 
@@ -132,10 +132,9 @@ _V1_PATHS: frozenset[str] = frozenset(
 #: document is always one a newer build applies.
 _V2_PATHS: frozenset[str] = _V1_PATHS | {"nuclei.template_ids", "reachability.enabled"}
 _V3_PATHS: frozenset[str] = _V2_PATHS | {"nuclei.verification_targets"}
-# Mid-tier inventory_services intent (FTT-PULSE-2026-052 S3): Pulse banner /
-# CVE toggles, TLS cipher enum, and the overlap knobs. Without the last two
-# an intent that asks for overlapping chunks is refused, or — worse — silently
-# runs at the serial default because the path never reached the sensor.
+# Speed/heavy intent overlays (ADR 0013 / FTT-056) plus S3 overlap knobs.
+# Without chunk/enrich concurrency an intent that asks for overlapping chunks
+# is refused, or silently runs at the serial default.
 _V4_PULSE_LEAVES = (
     "banner",
     "plugins",

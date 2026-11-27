@@ -61,12 +61,12 @@ Treat scan work as **intent**, not one default full pipeline. **Product control
 
 | Intent | Goal | Control plane applies |
 |---|---|---|
-| **inventory** | Alive hosts + open ports | `--skip-nse`, nuclei off, `top_ports: 100`; optional `delta` |
-| **inventory_services** | Mid-tier banners/services | Pulse on; plugins/tls-enum/nuclei off (FTT-PULSE-2026-052 S3) |
-| **enrichment** | Stage2 assessment on known hosts | Pulse plugins + tls-enum + nuclei (FTT-PULSE-2026-054 S4) |
-| **vuln** | High-signal CVE/misconfig | Full probe; nuclei **critical+high** only |
-| **full** | Assessment-grade completeness | Default pipeline; nuclei critical/high/medium |
-| **delta** | Re-check known perimeter | Full pipeline + forced `--delta` |
+| **inventory** | Alive hosts + open ports | `--skip-nse`, nuclei off, `top_ports: 100`; plugins + cipher-enum **off**; optional `delta` |
+| **inventory_services** | Mid-tier banners/services | Pulse banners on; plugins / tls-enum / nuclei **off**; S3 chunk overlap (FTT-PULSE-2026-052, [ADR 0013](adr/0013-product-defaults-speed-intents.md)) |
+| **enrichment** | Stage2 assessment on known hosts | Pulse plugins + tls-enum + nuclei; queue fan-out (FTT-PULSE-2026-054) |
+| **vuln** | High-signal CVE/misconfig | Full probe; nuclei **critical+high** only; heavy Pulse |
+| **full** | Assessment-grade completeness | Nuclei critical/high/medium; heavy Pulse |
+| **delta** | Re-check known perimeter | Full pipeline + forced `--delta`; heavy Pulse |
 
 Throughput levers (same FTT): Pulse `service_probe.pulse.chunk_concurrency` /
 `enrich_concurrency`, `POST /api/jobs` `shard_count` for claimable partitions
@@ -75,6 +75,8 @@ Throughput levers (same FTT): Pulse `service_probe.pulse.chunk_concurrency` /
 `enrichment` work after publish ([ADR 0012](adr/0012-stage2-enrichment-queue.md)).
 
 Legacy: omit `intent` and use `skip_nse` / `delta` flags (UI: “legacy — manual flags”).
+Legacy keeps shipped YAML defaults (`plugins: true`, `enumerate_ciphers: true`).
+Speed intents never inherit that assessment load ([ADR 0009](adr/0009-scan-throughput-okr.md)).
 
 ```http
 POST /api/jobs
@@ -82,21 +84,22 @@ POST /api/jobs
 ```
 
 Persisted as `scan_options.intent` (+ `intent_summary`). Local execution merges
-nuclei/top_ports into the job effective config. Agent execution delivers the
-validated `config_overlay.json` to sensors advertising `config_overlay.v1`;
-the current sensor also advertises v2 for targeted template IDs. Fleet
-capability checks keep jobs requiring an overlay from being claimed by an
-incompatible sensor ([API contract](api-and-rbac.md#scan-surface)).
+nuclei/top_ports/plugins/tls-enum into the job effective config. Agent execution
+delivers the validated `config_overlay.json` to sensors advertising
+`config_overlay.v1`; the current sensor also advertises v2 for targeted
+template IDs. Fleet capability checks keep jobs requiring an overlay from being
+claimed by an incompatible sensor ([API contract](api-and-rbac.md#scan-surface)).
 
 ### Suggested schedule shape (same fleet)
 
 ```text
 hourly / 4h  → intent=inventory, delta=true
              → (+ stage2_enrichment when assessment should follow)
-shift        → intent=inventory_services (mid-tier banners)
+shift        → intent=inventory_services (mid-tier banners, plugins off)
 daily        → intent=vuln  (or Stage2 enrichment jobs from inventory)
 weekly       → intent=full
 on-demand    → intent=full or vuln
+Stage2       → intent=enrichment (after inventory publish; fan-out is S4)
 ```
 
 Same sensors, same packet budget, far less average wall-clock per day.

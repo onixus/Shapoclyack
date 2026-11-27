@@ -418,6 +418,9 @@ service_probe:
     # lists extra repositories (and the official one, when you pin it here);
     # a non-empty list must match the receipt in plugins_dir or the plugins
     # stay off for that run. A speed profile cannot override either field.
+    # Shipped on for legacy (no-intent) assessment jobs. Speed intents
+    # (inventory, inventory_services) overlay plugins: false; heavy intents
+    # (full, enrichment, …) overlay true — see ADR 0013 / FTT-056.
     plugins: true
     plugins_dir: ""
     plugin_sources: []
@@ -445,6 +448,7 @@ service_probe:
 tls_posture:
   enabled: true
   # Raw suite selection. Pinned Pulse 1.4.0 provides --tls-enum.
+  # Shipped on for legacy assessment; speed intents force false (ADR 0013).
   enumerate_ciphers: true
   max_targets: 2000
   expiring_soon_days: 30

@@ -683,7 +683,14 @@ export type PortAggregate = {
   services: string[];
 };
 
-export type ScanIntent = "inventory" | "vuln" | "full" | "delta" | "org_profile";
+export type ScanIntent =
+  | "inventory"
+  | "inventory_services"
+  | "enrichment"
+  | "vuln"
+  | "full"
+  | "delta"
+  | "org_profile";
 
 export type ControlFinding = {
   id: string;

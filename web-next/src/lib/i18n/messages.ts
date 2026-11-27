@@ -29,6 +29,8 @@ export const en = {
   "scanCopy.local": "local",
   "scanCopy.agent": "agent",
   "scanCopy.inventory": "inventory",
+  "scanCopy.inventory_services": "inventory_services",
+  "scanCopy.enrichment": "enrichment",
   "scanCopy.vuln": "vuln",
   "scanCopy.full": "full",
   "scanCopy.delta": "delta",
@@ -1689,6 +1691,9 @@ export const en = {
   "launcher.intentHint":
     "Intent chooses stages (what to run). Speed profile chooses rate (how hard).",
   "launcher.intent.inventory": "inventory — ports only, fast recheck",
+  "launcher.intent.inventory_services":
+    "inventory_services — banners/services, no plugins/tls-enum",
+  "launcher.intent.enrichment": "enrichment — TLS/plugins/nuclei on known hosts",
   "launcher.intent.vuln": "vuln — probe + nuclei critical/high",
   "launcher.intent.full": "full — assessment-grade pipeline",
   "launcher.intent.delta": "delta — full + incremental discovery",
@@ -2576,6 +2581,8 @@ export const ru: Record<MsgKey, string> = {
   "scanCopy.local": "Локально",
   "scanCopy.agent": "На агенте",
   "scanCopy.inventory": "Инвентаризация",
+  "scanCopy.inventory_services": "Сервисы",
+  "scanCopy.enrichment": "Обогащение",
   "scanCopy.vuln": "Проверка уязвимостей",
   "scanCopy.full": "Полная проверка",
   "scanCopy.delta": "Проверка изменений",
@@ -4228,6 +4235,9 @@ export const ru: Record<MsgKey, string> = {
   "launcher.intentHint":
     "Намерение выбирает стадии (что делать). Профиль скорости — темп (как сильно).",
   "launcher.intent.inventory": "Инвентаризация — только порты, быстрая перепроверка",
+  "launcher.intent.inventory_services":
+    "Сервисы — баннеры/сервисы без plugins и tls-enum",
+  "launcher.intent.enrichment": "Обогащение — TLS/plugins/nuclei по известным хостам",
   "launcher.intent.vuln":
     "Уязвимости — сервисы и проверки Nuclei высокой и критической серьёзности",
   "launcher.intent.full": "Полная проверка — весь конвейер оценки",

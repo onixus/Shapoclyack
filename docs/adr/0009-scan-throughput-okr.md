@@ -73,7 +73,9 @@ as accelerators — not as the sole path.**
    rate) and adapter `pulse_chunk_concurrency` for single-sensor speed.
 4. **Add a mid-tier intent** (working name `inventory_services`): Pulse
    banner on; plugins / tls-enum / nuclei off — between today’s
-   `inventory` and `full`.
+   `inventory` and `full`. **Shipped** in
+   [ADR 0013](0013-product-defaults-speed-intents.md) /
+   [FTT-056](../ftt-pulse-2026-056-product-defaults-speed-intents.md).
 5. **Heuristics before ML**: historical∪top-N ports, skip JARM/tls-enum
    unless risk/intent requires them, silence-timeout shortening after
    RST. Defer ML models and XDP/masscan unless Stage1 PPS is the
@@ -82,6 +84,8 @@ as accelerators — not as the sole path.**
 Default shipped YAML should stop treating `enumerate_ciphers: true` and
 `plugins: true` as the only path for every large job; speed profiles and
 intents must be able to turn them off without dropping banners.
+**Product intent overlays** (ADR 0013) enforce that for speed vs heavy
+intents; legacy no-intent jobs keep YAML assessment defaults.
 
 ## Consequences
 

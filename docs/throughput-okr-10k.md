@@ -175,7 +175,9 @@ policy. Numbers are models — validate with `stage_timings.json`.
    [benchmark pack](benchmarks/throughput-okr-estate-baseline/README.md)).
    Replace synthetic fixtures with stand runs before production shard sizing.
 2. **Ship mid-tier intent + turn off default cipher-enum/plugins for
-   speed intents** (config/product, low risk) — *not* this Measure slice.
+   speed intents** (config/product, low risk) — **shipped** in
+   [FTT-056](ftt-pulse-2026-056-product-defaults-speed-intents.md) /
+   [ADR 0013](adr/0013-product-defaults-speed-intents.md).
 3. **GenDec `--enrich-concurrency`** (S1).
 4. **Adapter `pulse_chunk_concurrency`** (S3).
 5. **Job sharding + KEDA/HPA on queue depth** (S2) — control-plane shards in
