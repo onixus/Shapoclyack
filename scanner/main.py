@@ -985,6 +985,8 @@ def _run_pipeline_body(
                     done_hosts=checkpoint.done_items("pulse") if args.resume else set(),
                     on_host_done=lambda host: checkpoint.mark_item_done("pulse", host),
                     chunk_hosts=pulse_cfg.chunk_hosts,
+                    chunk_concurrency=pulse_cfg.chunk_concurrency,
+                    enrich_concurrency=pulse_cfg.enrich_concurrency,
                     report_primary=report_primary_pulse,
                     retry_settle_seconds=pulse_cfg.retry_settle_seconds,
                     on_unresolved=unresolved.extend,

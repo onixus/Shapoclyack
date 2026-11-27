@@ -113,6 +113,7 @@ CAPABILITIES: tuple[str, ...] = (
     "config_overlay.v1",
     "config_overlay.v2",
     "config_overlay.v3",
+    "config_overlay.v4",
     "brand_watch",
 )
 

@@ -26,6 +26,26 @@ def test_inventory_forces_skip_nse_and_disables_nuclei() -> None:
     assert r.config_extra["profiles"]["fast"]["top_ports"] == 100
 
 
+def test_inventory_services_intent_mid_tier() -> None:
+    r = resolve_scan_options(
+        intent="inventory_services", mode="balanced", delta=False, skip_nse=True
+    )
+    assert r.intent == "inventory_services"
+    assert r.skip_nse is False
+    assert r.config_extra["nuclei"]["enabled"] is False
+    assert r.config_extra["service_probe"]["pulse"]["plugins"] is False
+    assert r.config_extra["service_probe"]["pulse"]["banner"] is True
+    assert r.config_extra["service_probe"]["pulse"]["chunk_concurrency"] == 4
+    assert r.config_extra["service_probe"]["pulse"]["enrich_concurrency"] == 8
+    assert r.config_extra["tls_posture"]["enumerate_ciphers"] is False
+    assert "inventory_services" in r.summary
+    # The overlap knobs have to be overlay paths, or the sensor refuses the
+    # job that this intent just built.
+    from scanner.pipeline import config_overlay
+
+    config_overlay.check_config(r.config_extra)
+
+
 def test_vuln_sets_nuclei_floor() -> None:
     r = resolve_scan_options(intent="vuln", mode="balanced", delta=False, skip_nse=True)
     assert r.skip_nse is False  # intent owns the flag

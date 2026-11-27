@@ -57,7 +57,13 @@ INPUT_NAME = "config_overlay.json"
 #: * v2: ``nuclei.template_ids``. A build that applies it also writes the
 #:   coverage evidence a verification closure is judged on (``nuclei.json``'s
 #:   ``coverage`` block, ``adapter.cve`` in ``pulse/raw.json``).
-OVERLAY_VERSION = 3
+#: * v3: ``nuclei.verification_targets``.
+#: * v4: Pulse mid-tier controls for ``inventory_services``
+#:   (``service_probe.pulse.{banner,plugins,cve,cve_online}``,
+#:   ``tls_posture.enumerate_ciphers``) and the S3 overlap knobs
+#:   (``service_probe.pulse.chunk_concurrency`` /
+#:   ``enrich_concurrency`` and the same leaves under ``profiles.*.pulse``).
+OVERLAY_VERSION = 4
 
 
 def capability(version: int) -> str:
@@ -124,12 +130,33 @@ _V1_PATHS: frozenset[str] = frozenset(
 
 #: Every version's settings. Each is a superset of the one before: an older
 #: document is always one a newer build applies.
+_V2_PATHS: frozenset[str] = _V1_PATHS | {"nuclei.template_ids", "reachability.enabled"}
+_V3_PATHS: frozenset[str] = _V2_PATHS | {"nuclei.verification_targets"}
+# Mid-tier inventory_services intent (FTT-PULSE-2026-052 S3): Pulse banner /
+# CVE toggles, TLS cipher enum, and the overlap knobs. Without the last two
+# an intent that asks for overlapping chunks is refused, or — worse — silently
+# runs at the serial default because the path never reached the sensor.
+_V4_PULSE_LEAVES = (
+    "banner",
+    "plugins",
+    "cve",
+    "cve_online",
+    "chunk_concurrency",
+    "enrich_concurrency",
+)
+_V4_PATHS: frozenset[str] = _V3_PATHS | {
+    *(f"service_probe.pulse.{leaf}" for leaf in _V4_PULSE_LEAVES),
+    *(f"profiles.{profile}.pulse.{leaf}" for profile in _PROFILES for leaf in _V4_PULSE_LEAVES),
+    "tls_posture.enumerate_ciphers",
+}
+
 PATHS_BY_VERSION: dict[int, frozenset[str]] = {
     1: _V1_PATHS,
     # Set by the platform only, for a verification re-scan
     # (api/services/vulnerabilities.py): never a console setting.
-    2: _V1_PATHS | {"nuclei.template_ids", "reachability.enabled"},
-    3: _V1_PATHS | {"nuclei.template_ids", "reachability.enabled", "nuclei.verification_targets"},
+    2: _V2_PATHS,
+    3: _V3_PATHS,
+    4: _V4_PATHS,
 }
 
 #: What this build accepts.

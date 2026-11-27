@@ -371,6 +371,7 @@ def test_build_pulse_command_flags():
     assert "--cve" in cmd
     assert "--checkpoint" in cmd
     assert "-f" in cmd and "json" in cmd
+    assert "--enrich-concurrency" not in cmd
     # Product features that duplicate Shapoclyack stay off the adapter CLI.
     joined = " ".join(cmd)
     assert "--jarm" not in cmd
@@ -379,6 +380,30 @@ def test_build_pulse_command_flags():
     assert "--server" not in cmd
     assert "--alert-" not in joined
     assert "monitor" not in cmd
+
+
+def test_build_pulse_command_enrich_concurrency():
+    hosts = Path("/tmp/hosts.txt")
+    cmd = build_pulse_command(
+        bin_path="pulse",
+        hosts_file=hosts,
+        ports=[443],
+        concurrency=50,
+        rate=100,
+        adaptive=False,
+        host_parallel=0,
+        timeout_ms=800,
+        banner=True,
+        os_detect=False,
+        cve=False,
+        cve_online=False,
+        syn=False,
+        checkpoint=None,
+        max_hosts=10,
+        enrich_concurrency=8,
+    )
+    assert "--enrich-concurrency" in cmd
+    assert cmd[cmd.index("--enrich-concurrency") + 1] == "8"
 
 
 def test_service_record_roundtrip():
@@ -635,6 +660,25 @@ def test_ruleset_ids_parse_strictly_and_normalise_the_harmless_differences():
     # A date that does not exist would sort newer than every real ruleset.
     for unreadable in ("2026-08-02", "v2026.07.29", "2026.07.29-rc1", "2026.13.45", "2026.02.30", "", None):
         assert parse_ruleset(unreadable) is None
+
+
+def test_os_degrade_sticks_across_an_overlapping_wave(tmp_path, monkeypatch):
+    """A raw-socket refusal must reach the siblings of the same wave.
+
+    With chunk_concurrency > 1 the flag used to be cleared only after the
+    wave returned, so every chunk in it paid the doomed --os attempt.
+    """
+    calls, _ = _run_probe(
+        tmp_path,
+        monkeypatch,
+        [_NO_RAW_SOCKETS, _ONE_SERVICE, _ONE_SERVICE, _ONE_SERVICE],
+        open_ports=("10.0.0.1:22/tcp", "10.0.0.2:22/tcp"),
+        chunk_hosts=1,
+        chunk_concurrency=2,
+    )
+    os_calls = [c for c in calls if "--os" in c]
+    assert len(os_calls) == 1, calls
+    assert all("--os" not in c for c in calls if c is not os_calls[0])
 
 
 def test_os_degrade_sticks_for_later_chunks(tmp_path, monkeypatch):

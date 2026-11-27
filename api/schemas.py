@@ -368,6 +368,11 @@ class StartScanRequest(BaseModel):
     # retry that changed only its priority is the same scan, and the queued
     # job's priority can be moved with ``PUT /api/jobs/{id}/priority``.
     priority: int = Field(default=0, ge=-100, le=100)
+    # Horizontal scale (FTT-PULSE-2026-052): split admitted ranges/domains into
+    # N claimable jobs. Omitted → one job. When set, the API creates one job
+    # per non-empty partition and returns shard 0; siblings share
+    # ``scan_options.shard_group_id``.
+    shard_count: int | None = Field(default=None, ge=2, le=64)
 
 
 class JobPriorityRequest(BaseModel):
