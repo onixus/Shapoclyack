@@ -1,0 +1,52 @@
+{
+  "synthetic": "tests.fixtures.throughput_measure",
+  "pipeline_wall_sec": 720.0,
+  "stages_sum_sec": 715.0,
+  "stages": [
+    {
+      "name": "discover",
+      "duration_sec": 90.0,
+      "status": "ok"
+    },
+    {
+      "name": "ports",
+      "duration_sec": 600.0,
+      "status": "ok"
+    },
+    {
+      "name": "pulse",
+      "duration_sec": 0.0,
+      "status": "skipped"
+    },
+    {
+      "name": "nuclei",
+      "duration_sec": 0.0,
+      "status": "skipped"
+    },
+    {
+      "name": "report",
+      "duration_sec": 25.0,
+      "status": "ok"
+    }
+  ],
+  "top_stages": [
+    {
+      "name": "ports",
+      "duration_sec": 600.0
+    },
+    {
+      "name": "discover",
+      "duration_sec": 90.0
+    },
+    {
+      "name": "report",
+      "duration_sec": 25.0
+    }
+  ],
+  "resources": {
+    "cpu_sec": 288.0,
+    "children_cpu_sec": 360.0,
+    "max_rss_mb": 400.0,
+    "children_max_rss_mb": 800.0
+  }
+}

@@ -356,6 +356,9 @@ def _is_os_raw_socket_failure(stderr: str) -> bool:
 #: ``complete`` / ``l4_complete`` are true only when every chunk that reported
 #: the key said so. ``cancelled`` is true when any chunk was cancelled.
 #: ``fatal_error`` keeps the first non-empty diagnostic (Pulse caps it at 512).
+#: ``elapsed_ms`` is L4 wall (GenDec sets it when the port scan finishes);
+#: throughput OKR Measure compares it to the timed ``pulse`` stage for the
+#: enrichment split (``tests.fixtures.throughput_measure``, FTT-055).
 _STATS_AND = ("complete", "l4_complete")
 _STATS_FATAL = "fatal_error"
 _STATS_FATAL_MAX = 512

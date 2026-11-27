@@ -170,9 +170,12 @@ policy. Numbers are models — validate with `stage_timings.json`.
 ## Recommended build order
 
 1. **Measure** a representative estate: `stage_timings.json` + Pulse
-   `stats.l4_complete` vs full complete.
+   `stats.l4_complete` vs full complete — **harness shipped**
+   ([FTT-PULSE-2026-055](ftt-pulse-2026-055-estate-baseline-measure.md),
+   [benchmark pack](benchmarks/throughput-okr-estate-baseline/README.md)).
+   Replace synthetic fixtures with stand runs before production shard sizing.
 2. **Ship mid-tier intent + turn off default cipher-enum/plugins for
-   speed intents** (config/product, low risk).
+   speed intents** (config/product, low risk) — *not* this Measure slice.
 3. **GenDec `--enrich-concurrency`** (S1).
 4. **Adapter `pulse_chunk_concurrency`** (S3).
 5. **Job sharding + KEDA/HPA on queue depth** (S2) — control-plane shards in
@@ -185,11 +188,43 @@ policy. Numbers are models — validate with `stage_timings.json`.
 
 ---
 
+## Measure harness
+
+```bash
+# Synthetic pack (CI / ADR citations)
+python3 scripts/throughput_okr_measure.py fixtures
+
+# Stand runs (read-only); cohort is an explicit label
+python3 scripts/throughput_okr_measure.py runs-dir "$OCTO_OUTPUT_DIR/runs" \
+  --cohort inventory_services --out /tmp/midtier.json
+
+# Same entry via scale_measure
+python3 -m tests.fixtures.scale_measure okr-baseline \
+  docs/benchmarks/throughput-okr-estate-baseline/fixtures
+```
+
+Per run the harness reports `hosts_per_hour`, `top_stages`, Pulse
+`l4_complete` / `complete`, and enrichment share
+(`1 − l4_wall / pulse_stage`). Cohort roll-ups feed
+`calibration.json` for the model below.
+
+| Fixture cohort | Median hosts/h | Notes |
+|---|---|---|
+| inventory | 5000 | Ports-only; Path A needs ≥2 sensors for OKR |
+| inventory_services | 4000 | Enrich share ~75% of Pulse stage |
+| enrichment | 200 | L4 complete even when full `complete` false |
+| full | 125 | Nuclei appears in `top_stages` |
+
+---
+
 ## Simulation helper
 
 ```bash
 python3 scripts/throughput_okr_model.py
+python3 scripts/throughput_okr_model.py \
+  --calibration docs/benchmarks/throughput-okr-estate-baseline/calibration.json
 ```
 
 Prints hosts/hour under the models above for default / balanced / fast
-and for enrichment serial vs parallel. It does not send packets.
+and for enrichment serial vs parallel, then (with `--calibration`) the
+Measure medians. It does not send packets.

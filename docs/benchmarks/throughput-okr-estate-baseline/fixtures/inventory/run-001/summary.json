@@ -1,0 +1,6 @@
+{
+  "total_targets": 1000,
+  "throughput_cohort": "inventory",
+  "intent": "inventory",
+  "note": "synthetic OKR Measure fixture; not a live estate"
+}

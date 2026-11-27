@@ -2,6 +2,11 @@
 
 Writes machine-readable ``stage_timings.json`` and a ranked log line so
 operators can see which stage dominates without OpenTelemetry.
+
+Estate throughput OKR Measure (FTT-PULSE-2026-055) reads this file together
+with Pulse ``stats`` via ``tests.fixtures.throughput_measure`` /
+``scripts/throughput_okr_measure.py`` — hosts/hour, ``top_stages``, and
+L4 vs enrichment split. This module does not compute the OKR fields itself.
 """
 
 from __future__ import annotations

@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | **Proposed** — decision by the owner |
 | **Date** | 2026-11-26 |
-| **Related** | [scan-performance.md](../scan-performance.md), [throughput-okr-10k.md](../throughput-okr-10k.md), [scale-profile.md](../scale-profile.md), ADR 0003, ADR 0008 |
+| **Related** | [scan-performance.md](../scan-performance.md), [throughput-okr-10k.md](../throughput-okr-10k.md), [FTT-PULSE-2026-055](../ftt-pulse-2026-055-estate-baseline-measure.md), [scale-profile.md](../scale-profile.md), ADR 0003, ADR 0008 |
 
 ## Context
 
@@ -102,3 +102,25 @@ intents must be able to turn them off without dropping banners.
 - Changes to Nuclei scheduling beyond existing intent severity gates.
 - GenDec release train / FTT identifiers for `--enrich-concurrency`
   (separate Pulse FTT).
+- Product default YAML / intent shipping (Measure does not change defaults).
+
+## Acceptance evidence (citations for owner decision)
+
+Still **Proposed** until the owner flips status to Accepted. Measure
+artifacts ready for that review:
+
+| Citation | Path / command |
+|---|---|
+| Measure FTT | [FTT-PULSE-2026-055](../ftt-pulse-2026-055-estate-baseline-measure.md) |
+| Analysis | [throughput-okr-10k.md](../throughput-okr-10k.md) |
+| Fixture baseline README | [benchmarks/throughput-okr-estate-baseline](../benchmarks/throughput-okr-estate-baseline/README.md) |
+| Calibration coefficients | `docs/benchmarks/throughput-okr-estate-baseline/calibration.json` |
+| Harness | `python3 scripts/throughput_okr_measure.py fixtures` |
+| Model + calibration | `python3 scripts/throughput_okr_model.py --calibration docs/benchmarks/throughput-okr-estate-baseline/calibration.json` |
+| L4 vs enrich contract | Pulse `stats.elapsed_ms` = L4; adapter `pulse` stage = L4+enrich (`scanner/pipeline/pulse_probe.py`, GenDec report) |
+| Completeness | `stats.l4_complete` vs `stats.complete` in `pulse/raw.json` |
+
+Fixture medians (synthetic, order-of-magnitude): inventory **5000**/h,
+inventory_services **4000**/h, enrichment **200**/h, full **125**/h —
+supporting Path A (horizontal inventory) and Path B (Stage2 / shards for
+assessment) without claiming a live estate measurement.
