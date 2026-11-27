@@ -2,7 +2,9 @@
 
 How to get faster *operator outcomes* from Shapoclyack without adding CPU,
 RAM, sensors, or packet rate. Companion to [configuration.md](configuration.md),
-[slo.md](slo.md), and [scale-profile.md](scale-profile.md).
+[slo.md](slo.md), [scale-profile.md](scale-profile.md), and the estate-scale
+OKR analysis [throughput-okr-10k.md](throughput-okr-10k.md)
+([ADR 0009](adr/0009-scan-throughput-okr.md)).
 
 ## Diagnosis first: stage timings
 
