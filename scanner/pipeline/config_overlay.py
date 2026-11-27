@@ -57,7 +57,10 @@ INPUT_NAME = "config_overlay.json"
 #: * v2: ``nuclei.template_ids``. A build that applies it also writes the
 #:   coverage evidence a verification closure is judged on (``nuclei.json``'s
 #:   ``coverage`` block, ``adapter.cve`` in ``pulse/raw.json``).
-OVERLAY_VERSION = 3
+#: * v3: ``nuclei.verification_targets``.
+#: * v4: S5 heuristics (FTT-057 / ADR 0014) — historical∪top-N, JARM/tls-enum
+#:   gates, shortened Pulse connect / settle timeouts on speed paths.
+OVERLAY_VERSION = 4
 
 
 def capability(version: int) -> str:
@@ -122,6 +125,19 @@ _V1_PATHS: frozenset[str] = frozenset(
     }
 )
 
+#: S5 heuristic / TLS gate paths (intent-authored; not console-editable alone).
+_V4_PATHS: frozenset[str] = frozenset(
+    {
+        "ports.heuristic_union",
+        "tls_posture.enabled",
+        "tls_posture.enumerate_ciphers",
+        "tls_posture.jarm",
+        "service_probe.pulse.jarm",
+        "service_probe.pulse.timeout_ms",
+        "service_probe.pulse.retry_settle_seconds",
+    }
+)
+
 #: Every version's settings. Each is a superset of the one before: an older
 #: document is always one a newer build applies.
 PATHS_BY_VERSION: dict[int, frozenset[str]] = {
@@ -130,6 +146,11 @@ PATHS_BY_VERSION: dict[int, frozenset[str]] = {
     # (api/services/vulnerabilities.py): never a console setting.
     2: _V1_PATHS | {"nuclei.template_ids", "reachability.enabled"},
     3: _V1_PATHS | {"nuclei.template_ids", "reachability.enabled", "nuclei.verification_targets"},
+    4: (
+        _V1_PATHS
+        | {"nuclei.template_ids", "reachability.enabled", "nuclei.verification_targets"}
+        | _V4_PATHS
+    ),
 }
 
 #: What this build accepts.

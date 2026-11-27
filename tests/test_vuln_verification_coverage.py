@@ -1445,7 +1445,7 @@ def test_a_failed_verification_job_releases_only_its_own_findings(tmp_path):
 def _sensor(
     settings,
     tenant_id,
-    capabilities=("scan_policy", "config_overlay.v1", "config_overlay.v2"),
+    capabilities=("scan_policy", "config_overlay.v1", "config_overlay.v2", "config_overlay.v3", "config_overlay.v4"),
     group: str | None = None,
 ):
     """A live scanner sensor of the tenant declaring ``capabilities``, in ``group``."""
@@ -1497,7 +1497,7 @@ def test_a_finding_seen_on_a_name_is_re_scanned_on_that_name_with_its_template(t
     assert overlay["nuclei"]["enabled"] is True
     # The connect probe a refusal is judged on, on every verification.
     assert overlay["reachability"] == {"enabled": True}
-    assert job.scan_options["config_overlay_capability"] == "config_overlay.v2"
+    assert job.scan_options["config_overlay_capability"] == "config_overlay.v4"
     started = _last_event(settings, tenant_id, vuln["vuln_id"])
     assert started["detail"]["plan"]["template_ids"] == [TEMPLATE]
 
@@ -1552,7 +1552,7 @@ def test_an_nse_finding_another_detector_also_saw_is_re_scanned_as_before(tmp_pa
     # The Nmap stage is gone (#548): no backend is asked of the sensor for the NSE detector.
     assert "service_probe" not in job.scan_options["config_overlay"]
     assert job.scan_options["config_overlay"]["reachability"] == {"enabled": True}
-    assert job.scan_options["config_overlay_capability"] == "config_overlay.v2"
+    assert job.scan_options["config_overlay_capability"] == "config_overlay.v4"
     assert job.scan_options["verification_of"] == vuln["vuln_id"]
 
 
@@ -1584,7 +1584,7 @@ def test_a_verification_no_live_sensor_can_run_is_refused_not_parked(tmp_path):
     _agent_mode(settings, tenant_id, capabilities=("scan_policy", "config_overlay.v1"))
     _advance_to_fixing(settings, tenant_id, vuln["vuln_id"])
 
-    with pytest.raises(vulns.VerificationDispatchError, match="config_overlay.v2"):
+    with pytest.raises(vulns.VerificationDispatchError, match="config_overlay.v4"):
         vulns.trigger_verification(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"], actor="alice")
 
     after = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"])
@@ -1709,7 +1709,7 @@ def test_a_group_briefly_without_a_sensor_is_waited_for_not_rerouted(tmp_path, m
     agent_groups.create_group(settings, tenant_id=tenant_id, name="dmz")
     vuln = _tracked_from(settings, tenant_id, PULSE, agent="sensor-int", group="internal")
     _agent_mode(settings, tenant_id, group="internal")
-    _sensor(settings, tenant_id, capabilities=("scan_policy", "config_overlay.v1", "config_overlay.v2", "x"), group="dmz")
+    _sensor(settings, tenant_id, capabilities=("scan_policy", "config_overlay.v1", "config_overlay.v2", "config_overlay.v3", "config_overlay.v4", "x"), group="dmz")
     age = {
         "3m": timedelta(minutes=3),
         "59m": timedelta(minutes=59),
@@ -1767,7 +1767,7 @@ def test_a_group_of_agents_the_claim_refuses_is_no_sensor_for_a_verification(tmp
     agent = agents_service.register_agent(
         hostname="dmz-member",
         tenant_id=tenant_id,
-        capabilities=["scan_policy", "config_overlay.v1", "config_overlay.v2"],
+        capabilities=["scan_policy", "config_overlay.v1", "config_overlay.v2", "config_overlay.v3", "config_overlay.v4"],
         **{"version": "9.1", **member},
     )
     agent_groups.set_agent_group(settings, tenant_id=tenant_id, agent_id=agent.agent_id, name="dmz")

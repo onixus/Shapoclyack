@@ -44,10 +44,10 @@ Treat scan work as **intent**, not one default full pipeline. **Product control
 
 | Intent | Goal | Control plane applies |
 |---|---|---|
-| **inventory** | Alive hosts + open ports | `--skip-nse`, nuclei off, `top_ports: 100`; optional `delta` |
-| **vuln** | High-signal CVE/misconfig | Full probe; nuclei **critical+high** only |
-| **full** | Assessment-grade completeness | Default pipeline; nuclei critical/high/medium |
-| **delta** | Re-check known perimeter | Full pipeline + forced `--delta` |
+| **inventory** | Alive hosts + open ports | `--skip-nse`, nuclei off, `top_ports: 100` ∪ historical opens; JARM/tls-enum **off**; short Pulse connect timeouts ([ADR 0014](adr/0014-throughput-heuristics-s5.md)) |
+| **vuln** | High-signal CVE/misconfig | Full probe; nuclei **critical+high** only; JARM/tls-enum **on** |
+| **full** | Assessment-grade completeness | Default pipeline; nuclei critical/high/medium; JARM/tls-enum **on** |
+| **delta** | Re-check known perimeter | Full pipeline + forced `--delta`; JARM/tls-enum **on** |
 
 Legacy: omit `intent` and use `skip_nse` / `delta` flags (UI: “legacy — manual flags”).
 
@@ -57,11 +57,11 @@ POST /api/jobs
 ```
 
 Persisted as `scan_options.intent` (+ `intent_summary`). Local execution merges
-nuclei/top_ports into the job effective config. Agent execution delivers the
-validated `config_overlay.json` to sensors advertising `config_overlay.v1`;
-the current sensor also advertises v2 for targeted template IDs. Fleet
-capability checks keep jobs requiring an overlay from being claimed by an
-incompatible sensor ([API contract](api-and-rbac.md#scan-surface)).
+nuclei/top_ports/heuristics into the job effective config. Agent execution
+delivers the validated `config_overlay.json` to sensors advertising
+`config_overlay.v1+`; S5 heuristic paths need **v4**. Fleet capability checks
+keep jobs requiring an overlay from being claimed by an incompatible sensor
+([API contract](api-and-rbac.md#scan-surface)).
 
 ### Suggested schedule shape (same fleet)
 

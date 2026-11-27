@@ -37,7 +37,7 @@ def finding(env):
     vuln_id = vulnerabilities.list_vulnerabilities(settings, tenant_id="default")[0][0]["vuln_id"]
     vulnerabilities.transition(settings, tenant_id="default", vuln_id=vuln_id, to_state="FIXING", actor="operator")
     agents.register_agent(hostname="cross-entry-verifier", tenant_id="default", version="99.0.0",
-        capabilities=["scan_policy", "config_overlay.v1", "config_overlay.v2"])
+        capabilities=["scan_policy", "config_overlay.v1", "config_overlay.v2", "config_overlay.v3", "config_overlay.v4"])
     response = client.post("/api/remediation-campaigns", headers=operator,
         json={"name": "cross-entry", "selection": {"vuln_ids": [vuln_id]}})
     assert response.status_code == 201, response.text

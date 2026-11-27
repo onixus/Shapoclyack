@@ -480,7 +480,7 @@ def test_verification_uses_real_lifecycle_and_never_machine_closes(env, monkeypa
     vuln_id = finding["vuln_id"]
     vulnerabilities.transition(settings, tenant_id="default", vuln_id=vuln_id, to_state="FIXING", actor="operator")
     agents.register_agent(hostname="verify-scanner", tenant_id="default", version="99.0.0",
-        capabilities=["scan_policy", "config_overlay.v1", "config_overlay.v2"])
+        capabilities=["scan_policy", "config_overlay.v1", "config_overlay.v2", "config_overlay.v3", "config_overlay.v4"])
     response = client.post(f"/api/operator/sessions/{session}/proposals?tenant_id=default", headers=operator,
         json={"action": "verify_finding", "arguments": {"vuln_id": vuln_id}})
     assert response.status_code == 201, response.text
@@ -508,7 +508,7 @@ def test_verification_uses_real_lifecycle_and_never_machine_closes(env, monkeypa
     assert result["finding_state"] == "VERIFYING"
     job = jobs.get_job(settings, result["job_id"])
     assert job.scan_options["verification_of"] == vuln_id
-    assert job.scan_options["config_overlay_capability"] == "config_overlay.v2"
+    assert job.scan_options["config_overlay_capability"] == "config_overlay.v4"
     assert jobs.list_jobs(settings)[1] == 1
     assert _confirm(env, proposal).json()["execution"]["result"]["job_id"] == job.job_id
     assert vulnerabilities.get_vulnerability(settings, tenant_id="default", vuln_id=vuln_id)["state"] == "VERIFYING"

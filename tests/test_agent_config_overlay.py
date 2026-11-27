@@ -35,8 +35,14 @@ AGENT = {"Authorization": "Bearer test-agent-token"}
 #: another release has to agree on, not implementation details.
 OVERLAY_INPUT = "config_overlay.json"
 CAPABILITY = "config_overlay.v1"
-#: What an agent built from this tree reports.
-CURRENT_AGENT = ["scan_policy", CAPABILITY]
+#: What an agent built from this tree reports (every overlay version it applies).
+CURRENT_AGENT = [
+    "scan_policy",
+    "config_overlay.v1",
+    "config_overlay.v2",
+    "config_overlay.v3",
+    "config_overlay.v4",
+]
 
 
 def _client(tmp_path, monkeypatch):
@@ -104,7 +110,8 @@ def _executor_run_config(tmp_path: Path, claim: dict, *, scan_policy: dict | Non
 def test_the_inventory_intent_reaches_the_executor(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     job = _start(client, mode="test", intent="inventory")
-    assert job["scan_options"]["intent_summary"] == "inventory: ports-only, nuclei off, top 100 ports"
+    assert "ports-only" in job["scan_options"]["intent_summary"]
+    assert job["scan_options"]["config_overlay_capability"] == "config_overlay.v4"
 
     claimed = _claim(client, _register(client, "exec", CURRENT_AGENT))
     assert claimed.status_code == 200, claimed.text
@@ -116,6 +123,9 @@ def test_the_inventory_intent_reaches_the_executor(tmp_path, monkeypatch):
     assert config.nuclei.enabled is False
     assert config.profiles[profile].top_ports == 100
     assert claim["skip_nse"] is True
+    assert config.ports.heuristic_union is True
+    assert config.tls_posture.jarm is False
+    assert config.service_probe.pulse.timeout_ms == 300
 
 
 @requires_postgres
@@ -414,6 +424,7 @@ OVERLAY_PATHS_DIGEST = {
     1: "e32112da7d251a59295b425ed27fd5851cb0d679746ae4b1ba40e9aeb004a1fe",
     2: "342e983c49846574883fdb39090ddc28efc22aebd1d6565b97665e8ccccd3145",
     3: "8aa537d77f2d6d4ca92ee7adaa7127d85d413640b8908792b674165d43afc625",
+    4: "aa69f450109e7ae80e3791d57d4023b12f095aeda75dd4f1c081fe6a535e7850",
 }
 
 
@@ -630,9 +641,11 @@ def test_a_sensor_that_predates_template_ids_is_refused_only_the_jobs_that_pin_t
     settings = _agent_settings(tmp_path)
     client = configured_client(tmp_path, monkeypatch, settings=settings)
     pinned = _pinned_job(settings)
-    assert pinned.scan_options["config_overlay_capability"] == "config_overlay.v2"
+    # Heavy intents carry S5 JARM/tls-enum paths → v4; template_ids alone were v2.
+    assert pinned.scan_options["config_overlay_capability"] == "config_overlay.v4"
     assert pinned.scan_options["config_overlay"]["nuclei"]["template_ids"] == ["CVE-2021-44228"]
-    plain = _start(client, intent="inventory")
+    # Legacy no-intent stays at the base overlay capability (v1).
+    plain = _start(client)
     assert plain["scan_options"]["config_overlay_capability"] == CAPABILITY
 
     old_sensor = _register(client, "v1-sensor", ["scan_policy", CAPABILITY])
@@ -641,15 +654,16 @@ def test_a_sensor_that_predates_template_ids_is_refused_only_the_jobs_that_pin_t
     assert first.json()["job_id"] == plain["job_id"]
     refused = _claim(client, old_sensor)
     assert refused.status_code == 426, refused.text
-    assert "config_overlay.v2" in refused.json()["detail"]
+    assert "config_overlay.v4" in refused.json()["detail"]
 
-    new_sensor = _register(client, "v2-sensor", ["scan_policy", CAPABILITY, "config_overlay.v2"])
+    new_sensor = _register(client, "v4-sensor", CURRENT_AGENT)
     claimed = _claim(client, new_sensor)
     assert claimed.status_code == 200, claimed.text
     assert claimed.json()["job_id"] == pinned.job_id
-    assert json.loads(claimed.json()["inputs"][OVERLAY_INPUT])["overlay_version"] == 2
+    assert json.loads(claimed.json()["inputs"][OVERLAY_INPUT])["overlay_version"] == 4
     config, _ = _executor_run_config(tmp_path, claimed.json())
     assert config.nuclei.template_ids == ["CVE-2021-44228"]
+    assert config.tls_posture.jarm is True
 
 
 @requires_postgres
@@ -671,19 +685,21 @@ def test_a_verification_job_needs_v2_whatever_its_overlay_carries(tmp_path, monk
         verification_of="vln_1",
     )
     assert "template_ids" not in job.scan_options["config_overlay"]["nuclei"]
-    assert job.scan_options["config_overlay_capability"] == "config_overlay.v2"
+    # Vuln intent carries S5 JARM/tls-enum paths → document/capability v4;
+    # min_overlay_version=2 still requires a post-v1 sensor for coverage evidence.
+    assert job.scan_options["config_overlay_capability"] == "config_overlay.v4"
     assert job.scan_options["verification_of"] == "vln_1"
 
     refused = _claim(client, _register(client, "v1-sensor", ["scan_policy", CAPABILITY]))
     assert refused.status_code == 426, refused.text
     detail = refused.json()["detail"]
-    assert "config_overlay.v2" in detail and "coverage evidence" in detail
+    assert "config_overlay.v4" in detail
     assert "console's config overrides" not in detail
 
-    claimed = _claim(client, _register(client, "v2-sensor", ["scan_policy", CAPABILITY, "config_overlay.v2"]))
+    claimed = _claim(client, _register(client, "v4-sensor", CURRENT_AGENT))
     assert claimed.status_code == 200, claimed.text
-    # The document itself stays the lowest version that covers it.
-    assert json.loads(claimed.json()["inputs"][OVERLAY_INPUT])["overlay_version"] == 1
+    # The document itself is the lowest version that covers every path (v4).
+    assert json.loads(claimed.json()["inputs"][OVERLAY_INPUT])["overlay_version"] == 4
 
 
 @requires_postgres
@@ -692,7 +708,9 @@ def test_a_pinned_job_waits_visibly_while_only_v1_sensors_are_live(tmp_path, mon
     client = configured_client(tmp_path, monkeypatch, settings=settings)
     _register(client, "v1-sensor", ["scan_policy", CAPABILITY])
     assert _pinned_job(settings).sensor_unavailable is True
-    assert _start(client, intent="inventory")["sensor_unavailable"] is False
+    # Inventory needs overlay v4 (S5 heuristics); legacy no-intent stays claimable by v1.
+    assert _start(client, intent="inventory")["sensor_unavailable"] is True
+    assert _start(client)["sensor_unavailable"] is False
 
 
 @requires_postgres

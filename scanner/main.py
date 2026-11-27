@@ -75,6 +75,7 @@ from scanner.pipeline.defectdojo import export_to_defectdojo
 from scanner.pipeline.pdf_report import write_business_pdf
 from scanner.pipeline.related_domains import discover_related_domains
 from scanner.pipeline.report import build_reports
+from scanner.pipeline.port_heuristics import apply_historical_top_n_union
 from scanner.pipeline.report_diff import resolve_previous_run_dir, write_report_diff
 from scanner.pipeline.resolve import resolve_fqdns
 from scanner.pipeline import scan_scope
@@ -403,9 +404,11 @@ def _run_pipeline_body(
         )
 
     # Capture previous run *before* resolve_run_paths overwrites latest_run.json.
+    # S5 heuristics (historical∪top-N) need the same pointer even when report
+    # diff is disabled.
     diff_enabled = config.reporting.diff.enabled and not args.no_diff and not args.resume
     previous_run_dir = None
-    if diff_enabled:
+    if diff_enabled or config.ports.heuristic_union:
         previous_run_dir = resolve_previous_run_dir(
             output_base=output_base,
             state_base=state_base,
@@ -831,6 +834,23 @@ def _run_pipeline_body(
         timer.skip("ports")
         open_ports = sorted(set(read_lines(open_file)))
     else:
+        # S5: historical∪top-N for inventory-class jobs (never widen to 1–1024).
+        if config.ports.heuristic_union and not args.resume:
+            heuristic_file = apply_historical_top_n_union(
+                output_dir=paths.output_dir,
+                previous_run_dir=previous_run_dir,
+                top_n=int(profile.top_ports),
+                exclude_ports=config.ports.exclude_ports,
+                existing_custom_ports_file=Path(config.ports.custom_ports_file),
+            )
+            if heuristic_file is not None:
+                config = config.model_copy(
+                    update={
+                        "ports": config.ports.model_copy(
+                            update={"custom_ports_file": str(heuristic_file)}
+                        )
+                    }
+                )
 
         def _ports_stage() -> list[str]:
             open_set: set[str] = set(read_lines(open_file)) if args.resume else set()
@@ -978,6 +998,14 @@ def _run_pipeline_body(
                     cve_online=pulse_cfg.cve_online,
                     tls_enum=(config.tls_posture.enabled and config.tls_posture.enumerate_ciphers
                               and runtime.per_host_rate is None),
+                    # S5: product JARM gate (intent / explicit overlay). Pulse
+                    # records the flag; engine ``--jarm`` arrives only when
+                    # GenDec grows an opt-in switch.
+                    jarm=bool(
+                        pulse_cfg.jarm
+                        and config.tls_posture.jarm
+                        and config.tls_posture.enabled
+                    ),
                     syn=pulse_cfg.syn,
                     max_hosts=pulse_cfg.max_hosts,
                     timeout_seconds=runtime.nse_timeout_seconds,

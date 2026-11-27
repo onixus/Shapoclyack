@@ -119,7 +119,9 @@ intent `inventory_services` (banner on, plugins/tls-enum/nuclei off).
 
 ### S5 — Heuristics (not ML-first)
 
-**CONFIRM heuristics; REJECT ML-first.**
+**CONFIRM heuristics; REJECT ML-first.** **Shipped** in
+[FTT-057](ftt-pulse-2026-057-heuristics-s5.md) /
+[ADR 0014](adr/0014-throughput-heuristics-s5.md).
 
 - Historical∪top-N ports, skip JARM/tls-enum unless risk/intent requires,
   shorten silence timeouts after RST evidence.
@@ -172,7 +174,9 @@ policy. Numbers are models — validate with `stage_timings.json`.
 4. **Adapter `pulse_chunk_concurrency`** (S3).
 5. **Job sharding + KEDA/HPA on queue depth** (S2) and/or **Stage2
    enrichment jobs** (S4).
-6. Heuristics S5; park S6.
+6. Heuristics S5 — **shipped** in
+   [FTT-057](ftt-pulse-2026-057-heuristics-s5.md) /
+   [ADR 0014](adr/0014-throughput-heuristics-s5.md); park S6.
 
 ---
 

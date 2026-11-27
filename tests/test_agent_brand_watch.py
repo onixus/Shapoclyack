@@ -74,6 +74,8 @@ def test_capability_is_advertised_next_to_the_existing_ones():
         "config_overlay.v1",
         "config_overlay.v2",
         "config_overlay.v3",
+        "config_overlay.v4",
+        "config_overlay.v3",
     )
 
 

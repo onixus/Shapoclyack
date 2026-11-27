@@ -76,8 +76,10 @@ as accelerators — not as the sole path.**
    `inventory` and `full`.
 5. **Heuristics before ML**: historical∪top-N ports, skip JARM/tls-enum
    unless risk/intent requires them, silence-timeout shortening after
-   RST. Defer ML models and XDP/masscan unless Stage1 PPS is the
-   measured limiter after D–E.
+   RST. **Shipped** in
+   [ADR 0014](0014-throughput-heuristics-s5.md) /
+   [FTT-057](../ftt-pulse-2026-057-heuristics-s5.md). Defer ML models and
+   XDP/masscan unless Stage1 PPS is the measured limiter after D–E.
 
 Default shipped YAML should stop treating `enumerate_ciphers: true` and
 `plugins: true` as the only path for every large job; speed profiles and

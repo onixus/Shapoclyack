@@ -433,6 +433,18 @@ def _port_spec(ports: list[int]) -> str:
     return ",".join(str(p) for p in ports)
 
 
+def _default_port_spec() -> str:
+    """S5: never fall back to a silent 1–1024 sweep when ports are empty.
+
+    Inventory / heuristic paths always pass an explicit list; this is only the
+    last-resort Pulse argv when a caller forgot ports. Curated top-100 matches
+    the inventory default (FTT-057).
+    """
+    from .top_tcp_ports import TOP_TCP_100
+
+    return _port_spec(list(TOP_TCP_100))
+
+
 # Requested feature contract; older candidate receipts did not request STARTTLS.
 _TLS_ENUMERATION_CONTRACT = "raw-starttls-v2"
 
@@ -458,6 +470,7 @@ def build_pulse_command(
     script_dir: str | None = None,
     probe_db: ProbeDbInfo | None | object = _RESOLVE,
     tls_enum: bool = False,
+    jarm: bool = False,
 ) -> list[str]:
     # Pulse runs in a private temporary directory (``_probe_chunk``), so every
     # path it is given must mean the same from there: an output_dir that is
@@ -467,7 +480,7 @@ def build_pulse_command(
         "--targets-file",
         os.path.abspath(hosts_file),
         "-p",
-        _port_spec(ports) if ports else "1-1024",
+        _port_spec(ports) if ports else _default_port_spec(),
         "-c",
         str(max(1, concurrency)),
         "-t",
@@ -508,6 +521,11 @@ def build_pulse_command(
         cmd.append("--cve")
     if tls_enum:
         cmd.append("--tls-enum")
+    # JARM: product gate is recorded on the adapter; pinned Pulse fingerprints
+    # during TLS probing today and has no ``--jarm`` / ``--no-jarm`` switch, so
+    # we do not invent a CLI flag here (S5 / FTT-057 — GenDec only if required).
+    # ``jarm`` is accepted so callers and tests share one contract.
+    _ = jarm
     if cve_online:
         cmd.append("--cve-online")
     if syn:
@@ -1019,6 +1037,7 @@ def _run_pulse_probe(
     cve: bool = True,
     cve_online: bool = False,
     tls_enum: bool = False,
+    jarm: bool = False,
     syn: bool = False,
     max_hosts: int = 65536,
     timeout_seconds: int = 600,
@@ -1129,10 +1148,11 @@ def _run_pulse_probe(
                 raise ValueError("expected an object")
             previous_adapter = previous.get("adapter") or {}
             same_tls_contract = not tls_enum or previous_adapter.get("tls_enumeration_contract") == _TLS_ENUMERATION_CONTRACT
-            if bool(previous_adapter.get("tls_enum")) == tls_enum and same_tls_contract:
+            same_jarm = bool(previous_adapter.get("jarm")) == bool(jarm)
+            if bool(previous_adapter.get("tls_enum")) == tls_enum and same_tls_contract and same_jarm:
                 done, cached = retain_completed_payload(grouped, requested_done, previous)
             else:
-                logging.warning("pulse: TLS enumeration request contract changed; re-probing completed hosts")
+                logging.warning("pulse: TLS/JARM request contract changed; re-probing completed hosts")
             prior = ((previous.get("adapter") or {}).get("plugins") or {}) if done else {}
             if verified:
                 same = str(prior.get("digest") or "") == plugin_receipt["digest"]
@@ -1245,6 +1265,7 @@ def _run_pulse_probe(
             "cve_online": cve_online,
             "tls_enum": tls_enum,
             "tls_enumeration_contract": _TLS_ENUMERATION_CONTRACT if tls_enum else None,
+            "jarm": bool(jarm),
             "ruleset": None,
             "pulse_version": None,
             "plugins": plugin_receipt,
@@ -1362,6 +1383,7 @@ def _run_pulse_probe(
                 cve=cve,
                 cve_online=cve_online,
                 tls_enum=tls_enum,
+                jarm=jarm,
                 syn=syn,
                 checkpoint=None,
                 max_hosts=max(max_hosts, len(host_chunk) + 1),
@@ -1580,6 +1602,7 @@ def _run_pulse_probe(
         "cve_online": cve_online,
         "tls_enum": tls_enum,
         "tls_enumeration_contract": _TLS_ENUMERATION_CONTRACT if tls_enum else None,
+        "jarm": bool(jarm),
         # The oldest ruleset any chunk matched with: one binary has one, and
         # if two ever answered, the claim made for the run is the weaker one.
         "ruleset": min(rulesets, key=ruleset_order) if rulesets else None,
