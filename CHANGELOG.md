@@ -4,6 +4,18 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Pulse is bumped from `v1.5.0` to `v1.6.0` in `scripts/install-pulse.sh`, both
+  Dockerfiles, `Jenkinsfile.publish` and `.github/workflows/docker-publish.yml`.
+  `scripts/pulse-pinned.sha256` carries the `v1.6.0` digests, taken with
+  `scripts/pulse-pin.sh` after its cosign signature over `checksums.txt` verified
+  against GenDec's `release.yml` on tag `v1.6.0`. Findings can change: the new
+  binary adds scoped IPv6 sources, TLS/HTTP-aware enumeration with SAN/vhost
+  coverage, discovery MAC/names and distro package revision, the `pulse.scan.v3`
+  report contract, and parallel TLS enrichment (`--enrich-concurrency`).
+
+
 ## [0.50-1124] — 2026-11-24
 
 Stable release cut from `main` at `26e27153` (after PR #676). It succeeds the

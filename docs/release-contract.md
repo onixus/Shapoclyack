@@ -81,6 +81,7 @@ the build when they disagree or the version has no pin.
 | `shapoclyack-0.48-1021` | `v1.4.0` | against the pinned digest (signed release, signature verified by `pulse-pin.sh`), and the image records it |
 | `shapoclyack-0.49-1111-rc1` (candidate) | `v1.5.0` | against the pinned digest, and the image records it |
 | `shapoclyack-0.50-1124` | `v1.5.0` | against the pinned digest, and the image records it |
+| next release (unreleased) | `v1.6.0` | against the pinned digest; signature verified by `pulse-pin.sh` on tag `v1.6.0`, not yet shipped in a Shapoclyack tag |
 
 A support window for a release line ([SECURITY.md](../.github/SECURITY.md#supported-versions))
 covers its Pulse the same way it covers everything else in its images.
