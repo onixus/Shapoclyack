@@ -233,6 +233,7 @@ def test_precise_dispatch_checks_current_scope_and_v3_sensor(tmp_path, scenario)
     vulns.register_findings_from_run(settings, tenant_id=tenant, run_id='run-1')
     finding = vulns.list_vulnerabilities(settings, tenant_id=tenant)[0][0]
     _advance_to_fixing(settings, tenant, finding['vuln_id'])
+    # old_sensor stops at v2: exact verification targets need v3.
     capabilities = ['scan_policy', 'config_overlay.v1', 'config_overlay.v2']
     if scenario != 'old_sensor':
         capabilities.append('config_overlay.v3')

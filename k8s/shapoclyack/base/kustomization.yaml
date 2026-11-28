@@ -39,9 +39,11 @@ resources:
   # network-scan (they share the scanner-data PVC with the API), which a
   # baseline namespace refuses; they moved to the opt-in local-scan/ component.
   - scanner-executor
-  # Isolated browser runtime. Capture is unsupported without it; the scanner
-  # image has no Playwright. Not a sidecar of the executor.
-  - screenshot-worker
+  # screenshot-worker is not here. Its image is not in the release matrix's
+  # :latest contract, so a default apply must not pull a tag that does not
+  # exist yet. Opt in with components: [base/screenshot-worker] once the
+  # image is published (Jenkinsfile.publish, ONLY=screenshot-worker) and the
+  # Deployment's image is pinned name:tag@sha256.
 
 configMapGenerator:
   - name: scanner-config

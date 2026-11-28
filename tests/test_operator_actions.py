@@ -480,7 +480,7 @@ def test_verification_uses_real_lifecycle_and_never_machine_closes(env, monkeypa
     vuln_id = finding["vuln_id"]
     vulnerabilities.transition(settings, tenant_id="default", vuln_id=vuln_id, to_state="FIXING", actor="operator")
     agents.register_agent(hostname="verify-scanner", tenant_id="default", version="99.0.0",
-        capabilities=["scan_policy", "config_overlay.v1", "config_overlay.v2"])
+        capabilities=["scan_policy", "config_overlay.v1", "config_overlay.v2", "config_overlay.v3", "config_overlay.v4"])
     response = client.post(f"/api/operator/sessions/{session}/proposals?tenant_id=default", headers=operator,
         json={"action": "verify_finding", "arguments": {"vuln_id": vuln_id}})
     assert response.status_code == 201, response.text

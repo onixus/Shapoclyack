@@ -41,9 +41,8 @@ images:
   # The API and its migrate init container run the API image since #338.
   - name: ghcr.io/onixus/shapoclyack-api
     newName: registry.internal.example/shapoclyack/shapoclyack-api
-  # Placeholder tag, no digest: the worker image is not published yet
-  # (Dockerfile.screenshot-worker). newName still rewrites the registry so an
-  # air-gapped render does not name ghcr.io.
+  # Not in base. Rewrites the name if an overlay adds the component after
+  # the image is published and pinned (Dockerfile.screenshot-worker).
   - name: ghcr.io/onixus/shapoclyack-screenshot-worker
     newName: registry.internal.example/shapoclyack/shapoclyack-screenshot-worker
   - name: postgres

@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from api.services.scan_intents import merge_config_extras, resolve_scan_options
+from api.services.scan_intents import (
+    HEAVY_INTENTS,
+    SPEED_CONNECT_TIMEOUT_MS,
+    SPEED_INTENTS,
+    SPEED_RETRY_SETTLE_SECONDS,
+    merge_config_extras,
+    resolve_scan_options,
+)
 
 
 def test_legacy_flags_when_no_intent() -> None:
@@ -24,24 +31,145 @@ def test_inventory_forces_skip_nse_and_disables_nuclei() -> None:
     assert r.mode == "fast"
     assert r.config_extra["nuclei"]["enabled"] is False
     assert r.config_extra["profiles"]["fast"]["top_ports"] == 100
+    assert r.config_extra["service_probe"]["pulse"]["plugins"] is False
+    assert r.config_extra["tls_posture"]["enumerate_ciphers"] is False
+
+
+def test_inventory_services_mid_tier_disables_plugins_and_tls_enum() -> None:
+    r = resolve_scan_options(
+        intent="inventory_services", mode="balanced", delta=False, skip_nse=True
+    )
+    assert r.intent == "inventory_services"
+    assert r.skip_nse is False  # intent owns the flag — Pulse banners run
+    assert r.config_extra["nuclei"]["enabled"] is False
+    assert r.config_extra["service_probe"]["pulse"]["banner"] is True
+    assert r.config_extra["service_probe"]["pulse"]["plugins"] is False
+    assert r.config_extra["tls_posture"]["enumerate_ciphers"] is False
+    assert r.config_extra["tls_posture"]["enabled"] is False
+    # Combined with S3: speed path still overlaps chunks.
+    assert r.config_extra["service_probe"]["pulse"]["chunk_concurrency"] == 4
+    assert r.config_extra["service_probe"]["pulse"]["enrich_concurrency"] == 8
+
+
+def test_speed_intents_turn_off_plugins_and_cipher_enum() -> None:
+    for intent in SPEED_INTENTS:
+        r = resolve_scan_options(intent=intent, mode="fast", delta=False, skip_nse=False)
+        assert r.config_extra["service_probe"]["pulse"]["plugins"] is False
+        assert r.config_extra["tls_posture"]["enumerate_ciphers"] is False
+
+
+def test_heavy_intents_keep_plugins_and_cipher_enum() -> None:
+    for intent in HEAVY_INTENTS:
+        r = resolve_scan_options(intent=intent, mode="balanced", delta=False, skip_nse=True)
+        assert r.config_extra["service_probe"]["pulse"]["plugins"] is True
+        assert r.config_extra["tls_posture"]["enumerate_ciphers"] is True
+        assert r.config_extra["tls_posture"]["enabled"] is True
+
+
+def test_enrichment_intent_is_heavy() -> None:
+    r = resolve_scan_options(intent="enrichment", mode="balanced", delta=True, skip_nse=True)
+    assert r.intent == "enrichment"
+    assert r.delta is False  # Stage2 contract: not an incremental discovery pass
+    assert r.skip_nse is False
+    assert r.config_extra["nuclei"]["enabled"] is True
+    assert "medium" in r.config_extra["nuclei"]["severities"]
+    assert r.config_extra["service_probe"]["pulse"]["plugins"] is True
+    assert r.config_extra["tls_posture"]["enumerate_ciphers"] is True
+
+
+def test_inventory_services_intent_mid_tier() -> None:
+    r = resolve_scan_options(
+        intent="inventory_services", mode="balanced", delta=False, skip_nse=True
+    )
+    assert r.intent == "inventory_services"
+    assert r.skip_nse is False
+    assert r.config_extra["nuclei"]["enabled"] is False
+    assert r.config_extra["service_probe"]["pulse"]["plugins"] is False
+    assert r.config_extra["service_probe"]["pulse"]["banner"] is True
+    assert r.config_extra["service_probe"]["pulse"]["chunk_concurrency"] == 4
+    assert r.config_extra["service_probe"]["pulse"]["enrich_concurrency"] == 8
+    assert r.config_extra["tls_posture"]["enumerate_ciphers"] is False
+    assert "inventory_services" in r.summary
+    # The overlap knobs have to be overlay paths, or the sensor refuses the
+    # job that this intent just built.
+    from scanner.pipeline import config_overlay
+
+    config_overlay.check_config(r.config_extra)
+
+
+def test_enrichment_intent_stage2() -> None:
+    r = resolve_scan_options(
+        intent="enrichment", mode="balanced", delta=True, skip_nse=True
+    )
+    assert r.intent == "enrichment"
+    assert r.delta is False  # Stage2 does not re-run incremental discovery
+    assert r.skip_nse is False
+    assert r.config_extra["nuclei"]["enabled"] is True
+    assert r.config_extra["tls_posture"]["enumerate_ciphers"] is True
+    assert r.config_extra["service_probe"]["pulse"]["plugins"] is True
+    assert "enrichment" in r.summary
+    from scanner.pipeline import config_overlay
+
+    config_overlay.check_config(r.config_extra)
+
+
+def test_inventory_s5_heuristics() -> None:
+    """S5: historical∪top-N, JARM/tls-enum off, short connect/silence timeouts."""
+    r = resolve_scan_options(intent="inventory", mode="balanced", delta=False, skip_nse=False)
+    assert r.config_extra["ports"]["heuristic_union"] is True
+    assert r.config_extra["tls_posture"]["enabled"] is False
+    assert r.config_extra["tls_posture"]["enumerate_ciphers"] is False
+    assert r.config_extra["tls_posture"]["jarm"] is False
+    assert r.config_extra["service_probe"]["pulse"]["jarm"] is False
+    assert r.config_extra["service_probe"]["pulse"]["timeout_ms"] == SPEED_CONNECT_TIMEOUT_MS
+    assert (
+        r.config_extra["service_probe"]["pulse"]["retry_settle_seconds"]
+        == SPEED_RETRY_SETTLE_SECONDS
+    )
+    assert SPEED_CONNECT_TIMEOUT_MS < 800
+    assert SPEED_RETRY_SETTLE_SECONDS < 15
+
+
+def test_speed_intents_gate_jarm_and_tls_enum() -> None:
+    for intent in SPEED_INTENTS:
+        r = resolve_scan_options(intent=intent, mode="fast", delta=False, skip_nse=False)
+        assert r.config_extra["tls_posture"]["enabled"] is False
+        assert r.config_extra["tls_posture"]["enumerate_ciphers"] is False
+        assert r.config_extra["tls_posture"]["jarm"] is False
+        assert r.config_extra["service_probe"]["pulse"]["jarm"] is False
+
+
+def test_heavy_intents_keep_jarm_and_tls_enum() -> None:
+    for intent in HEAVY_INTENTS:
+        r = resolve_scan_options(intent=intent, mode="balanced", delta=False, skip_nse=True)
+        assert r.config_extra["tls_posture"]["enumerate_ciphers"] is True
+        assert r.config_extra["tls_posture"]["jarm"] is True
+        assert r.config_extra["tls_posture"]["enabled"] is True
+        assert r.config_extra["service_probe"]["pulse"]["jarm"] is True
 
 
 def test_vuln_sets_nuclei_floor() -> None:
     r = resolve_scan_options(intent="vuln", mode="balanced", delta=False, skip_nse=True)
     assert r.skip_nse is False  # intent owns the flag
     assert r.config_extra["nuclei"]["severities"] == ["critical", "high"]
+    assert r.config_extra["service_probe"]["pulse"]["plugins"] is True
+    assert r.config_extra["tls_posture"]["jarm"] is True
 
 
 def test_delta_intent_forces_delta_flag() -> None:
     r = resolve_scan_options(intent="delta", mode="safe", delta=False, skip_nse=False)
     assert r.delta is True
     assert r.skip_nse is False
+    assert r.config_extra["tls_posture"]["enumerate_ciphers"] is True
 
 
 def test_full_intent() -> None:
     r = resolve_scan_options(intent="full", mode="balanced", delta=False, skip_nse=False)
     assert r.intent == "full"
     assert "medium" in r.config_extra["nuclei"]["severities"]
+    assert r.config_extra["service_probe"]["pulse"]["plugins"] is True
+    assert r.config_extra["tls_posture"]["enumerate_ciphers"] is True
+    assert r.config_extra["service_probe"]["pulse"]["jarm"] is True
 
 
 def test_unknown_intent_raises() -> None:
@@ -78,7 +206,9 @@ def test_org_profile_intent() -> None:
     assert r.config_extra["org_profile"]["controls"]["enabled"] is True
     assert r.config_extra["fingerprint"]["enabled"] is True
     assert r.config_extra["tls_posture"]["enabled"] is True
-
+    assert r.config_extra["tls_posture"]["enumerate_ciphers"] is True
+    assert r.config_extra["service_probe"]["pulse"]["plugins"] is True
+    assert r.config_extra["tls_posture"]["jarm"] is True
 
 
 def test_request_schemas_accept_every_resolver_intent() -> None:

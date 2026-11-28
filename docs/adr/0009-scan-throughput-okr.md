@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Status** | **Proposed** — decision by the owner |
+| **Status** | **Accepted** — onixus, 2026-11-27 ([FTT-PULSE-2026-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md) acceptance pack) |
 | **Date** | 2026-11-26 |
-| **Related** | [scan-performance.md](../scan-performance.md), [throughput-okr-10k.md](../throughput-okr-10k.md), [scale-profile.md](../scale-profile.md), ADR 0003, ADR 0008 |
+| **Related** | [scan-performance.md](../scan-performance.md), [throughput-okr-10k.md](../throughput-okr-10k.md), [FTT-PULSE-2026-055](../ftt-pulse-2026-055-estate-baseline-measure.md), [FTT-PULSE-2026-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md), [scale-profile.md](../scale-profile.md), ADR 0003, ADR 0008, ADR 0010–0016 |
 
 ## Context
 
@@ -73,15 +73,21 @@ as accelerators — not as the sole path.**
    rate) and adapter `pulse_chunk_concurrency` for single-sensor speed.
 4. **Add a mid-tier intent** (working name `inventory_services`): Pulse
    banner on; plugins / tls-enum / nuclei off — between today’s
-   `inventory` and `full`.
+   `inventory` and `full`. **Shipped** in
+   [ADR 0013](0013-product-defaults-speed-intents.md) /
+   [FTT-056](../ftt-pulse-2026-056-product-defaults-speed-intents.md).
 5. **Heuristics before ML**: historical∪top-N ports, skip JARM/tls-enum
    unless risk/intent requires them, silence-timeout shortening after
-   RST. Defer ML models and XDP/masscan unless Stage1 PPS is the
-   measured limiter after D–E.
+   RST. **Shipped** in
+   [ADR 0014](0014-throughput-heuristics-s5.md) /
+   [FTT-057](../ftt-pulse-2026-057-heuristics-s5.md). Defer ML models and
+   XDP/masscan unless Stage1 PPS is the measured limiter after D–E.
 
 Default shipped YAML should stop treating `enumerate_ciphers: true` and
 `plugins: true` as the only path for every large job; speed profiles and
 intents must be able to turn them off without dropping banners.
+**Product intent overlays** (ADR 0013) enforce that for speed vs heavy
+intents; legacy no-intent jobs keep YAML assessment defaults.
 
 ## Consequences
 
@@ -102,3 +108,25 @@ intents must be able to turn them off without dropping banners.
 - Changes to Nuclei scheduling beyond existing intent severity gates.
 - GenDec release train / FTT identifiers for `--enrich-concurrency`
   (separate Pulse FTT).
+- Product default YAML / intent shipping (Measure does not change defaults).
+
+## Acceptance evidence
+
+Accepted under [FTT-PULSE-2026-059](../ftt-pulse-2026-059-throughput-adr-acceptance.md).
+Measure artifacts that grounded the decision:
+
+| Citation | Path / command |
+|---|---|
+| Measure FTT | [FTT-PULSE-2026-055](../ftt-pulse-2026-055-estate-baseline-measure.md) |
+| Analysis | [throughput-okr-10k.md](../throughput-okr-10k.md) |
+| Fixture baseline README | [benchmarks/throughput-okr-estate-baseline](../benchmarks/throughput-okr-estate-baseline/README.md) |
+| Calibration coefficients | `docs/benchmarks/throughput-okr-estate-baseline/calibration.json` |
+| Harness | `python3 scripts/throughput_okr_measure.py fixtures` |
+| Model + calibration | `python3 scripts/throughput_okr_model.py --calibration docs/benchmarks/throughput-okr-estate-baseline/calibration.json` |
+| L4 vs enrich contract | Pulse `stats.elapsed_ms` = L4; adapter `pulse` stage = L4+enrich (`scanner/pipeline/pulse_probe.py`, GenDec report) |
+| Completeness | `stats.l4_complete` vs `stats.complete` in `pulse/raw.json` |
+
+Fixture medians (synthetic, order-of-magnitude): inventory **5000**/h,
+inventory_services **4000**/h, enrichment **200**/h, full **125**/h —
+supporting Path A (horizontal inventory) and Path B (Stage2 / shards for
+assessment) without claiming a live estate measurement.

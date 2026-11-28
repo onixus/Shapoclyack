@@ -79,14 +79,14 @@ BEFORE_454 = {
 #: and so no publication at all. ``verification`` (#451) came after #454: a
 #: run that did not succeed gives back the finding its job was verifying.
 MATRIX = {
-    "succeeded": ["scope_denials", "assets", "findings", "services", "events", "notify"],
+    "succeeded": ["scope_denials", "assets", "findings", "services", "events", "stage2", "notify"],
     "failed": ["scope_denials", "verification"],
     "cancelled": ["scope_denials", "verification"],
     "partial": ["scope_denials", "verification"],
 }
 
 #: Steps added to the matrix after #454, left out of its before/after record.
-AFTER_454 = {"verification"}
+AFTER_454 = {"verification", "stage2"}
 
 
 def _expected(mode: str, case: str) -> list[str]:
@@ -144,6 +144,10 @@ def derived(monkeypatch) -> _Derived:
     monkeypatch.setattr(asset_services, "record_run", spy.record("services", {}))
     monkeypatch.setattr(asset_events, "publish_run_events", spy.record("events", 0))
     monkeypatch.setattr(channels_service, "notify_run_complete_async", spy.record("notify"))
+    monkeypatch.setattr(
+        "api.services.stage2_enrichment.enqueue_stage2_best_effort",
+        spy.record("stage2"),
+    )
 
     real_denied = auth_audit.record_denied
 
@@ -386,7 +390,10 @@ def test_the_recorded_change_against_main_is_the_documented_one():
         ("sensor", "cancelled"),
         ("sensor", "partial"),
     }
-    assert sorted(BEFORE_454[("sensor", "succeeded")]) == sorted(MATRIX["succeeded"])
+    # stage2 landed after #454; the snapshot of main must not grow with it.
+    assert sorted(BEFORE_454[("sensor", "succeeded")]) == sorted(
+        n for n in MATRIX["succeeded"] if n not in AFTER_454
+    )
     for case in ("failed", "cancelled", "partial"):
         assert [n for n in BEFORE_454[("sensor", case)] if n != "assets"] == [
             n for n in MATRIX[case] if n not in AFTER_454

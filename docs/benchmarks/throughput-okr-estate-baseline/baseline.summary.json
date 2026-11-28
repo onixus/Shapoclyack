@@ -1,0 +1,423 @@
+{
+  "calibration": {
+    "cohorts": {
+      "enrichment": {
+        "enrichment_share_median": 0.979,
+        "hosts_per_hour_median": 200.0,
+        "meets_okr": false,
+        "seconds_per_host": 18.0
+      },
+      "full": {
+        "enrichment_share_median": 0.979,
+        "hosts_per_hour_median": 125.0,
+        "meets_okr": false,
+        "seconds_per_host": 28.8
+      },
+      "inventory": {
+        "enrichment_share_median": null,
+        "hosts_per_hour_median": 5000.0,
+        "meets_okr": false,
+        "seconds_per_host": 0.72
+      },
+      "inventory_services": {
+        "enrichment_share_median": 0.75,
+        "hosts_per_hour_median": 4000.0,
+        "meets_okr": false,
+        "seconds_per_host": 0.9
+      }
+    },
+    "source": "shapoclyack.throughput_okr_baseline.v1"
+  },
+  "cohorts": {
+    "enrichment": {
+      "complete_false": 1,
+      "complete_true": 1,
+      "enrichment_share_median": 0.979,
+      "hosts_per_hour_max": 200.0,
+      "hosts_per_hour_median": 200.0,
+      "hosts_per_hour_min": 200.0,
+      "hosts_total": 1500,
+      "l4_complete_false": 0,
+      "l4_complete_true": 2,
+      "meets_okr_any": false,
+      "pipeline_wall_sec_median": 13500.0,
+      "runs": 2,
+      "top_stages_sample": [
+        {
+          "duration_sec": 16200.0,
+          "name": "pulse"
+        },
+        {
+          "duration_sec": 200.0,
+          "name": "ports"
+        },
+        {
+          "duration_sec": 60.0,
+          "name": "discover"
+        },
+        {
+          "duration_sec": 40.0,
+          "name": "report"
+        }
+      ]
+    },
+    "full": {
+      "complete_false": 0,
+      "complete_true": 1,
+      "enrichment_share_median": 0.979,
+      "hosts_per_hour_max": 125.0,
+      "hosts_per_hour_median": 125.0,
+      "hosts_per_hour_min": 125.0,
+      "hosts_total": 1000,
+      "l4_complete_false": 0,
+      "l4_complete_true": 1,
+      "meets_okr_any": false,
+      "pipeline_wall_sec_median": 28800.0,
+      "runs": 1,
+      "top_stages_sample": [
+        {
+          "duration_sec": 14400.0,
+          "name": "pulse"
+        },
+        {
+          "duration_sec": 12000.0,
+          "name": "nuclei"
+        },
+        {
+          "duration_sec": 240.0,
+          "name": "ports"
+        },
+        {
+          "duration_sec": 90.0,
+          "name": "discover"
+        },
+        {
+          "duration_sec": 60.0,
+          "name": "report"
+        }
+      ]
+    },
+    "inventory": {
+      "complete_false": null,
+      "complete_true": null,
+      "enrichment_share_median": null,
+      "hosts_per_hour_max": 5000.0,
+      "hosts_per_hour_median": 5000.0,
+      "hosts_per_hour_min": 5000.0,
+      "hosts_total": 1000,
+      "l4_complete_false": null,
+      "l4_complete_true": null,
+      "meets_okr_any": false,
+      "pipeline_wall_sec_median": 720.0,
+      "runs": 1,
+      "top_stages_sample": [
+        {
+          "duration_sec": 600.0,
+          "name": "ports"
+        },
+        {
+          "duration_sec": 90.0,
+          "name": "discover"
+        },
+        {
+          "duration_sec": 25.0,
+          "name": "report"
+        }
+      ]
+    },
+    "inventory_services": {
+      "complete_false": 0,
+      "complete_true": 1,
+      "enrichment_share_median": 0.75,
+      "hosts_per_hour_max": 4000.0,
+      "hosts_per_hour_median": 4000.0,
+      "hosts_per_hour_min": 4000.0,
+      "hosts_total": 1000,
+      "l4_complete_false": 0,
+      "l4_complete_true": 1,
+      "meets_okr_any": false,
+      "pipeline_wall_sec_median": 900.0,
+      "runs": 1,
+      "top_stages_sample": [
+        {
+          "duration_sec": 720.0,
+          "name": "pulse"
+        },
+        {
+          "duration_sec": 120.0,
+          "name": "ports"
+        },
+        {
+          "duration_sec": 60.0,
+          "name": "discover"
+        },
+        {
+          "duration_sec": 30.0,
+          "name": "report"
+        }
+      ]
+    }
+  },
+  "environment": {
+    "git_commit": null,
+    "measured_at": "fixture",
+    "note": "synthetic fixture pack; re-run `python3 -m tests.fixtures.throughput_measure fixtures` for live environment"
+  },
+  "fixture_digest_sha256": "732862ef0896674365f760793b47c517c83dad4c04b0c3e880b73891b7643b2b",
+  "fixture_pack": "docs/benchmarks/throughput-okr-estate-baseline",
+  "okr_hosts_per_hour": 10000,
+  "root": "docs/benchmarks/throughput-okr-estate-baseline/fixtures",
+  "runs": [
+    {
+      "cohort": "inventory",
+      "hosts": 1000,
+      "hosts_per_hour": 5000.0,
+      "meets_okr": false,
+      "okr_hosts_per_hour": 10000,
+      "pipeline_wall_sec": 720.0,
+      "pulse": {
+        "complete": null,
+        "elapsed_ms": null,
+        "enrichment_share": null,
+        "enrichment_wall_sec": null,
+        "l4_complete": null,
+        "l4_share": null,
+        "l4_wall_sec": null,
+        "open": null,
+        "pulse_stage_sec": null,
+        "rate_pps": null,
+        "total": null
+      },
+      "resources": {
+        "children_cpu_sec": 360.0,
+        "children_max_rss_mb": 800.0,
+        "cpu_sec": 288.0,
+        "max_rss_mb": 400.0
+      },
+      "run": "inventory/run-001",
+      "stages_sum_sec": 715.0,
+      "synthetic": "tests.fixtures.throughput_measure",
+      "targets": 1000,
+      "top_stages": [
+        {
+          "duration_sec": 600.0,
+          "name": "ports"
+        },
+        {
+          "duration_sec": 90.0,
+          "name": "discover"
+        },
+        {
+          "duration_sec": 25.0,
+          "name": "report"
+        }
+      ]
+    },
+    {
+      "cohort": "inventory_services",
+      "hosts": 1000,
+      "hosts_per_hour": 4000.0,
+      "meets_okr": false,
+      "okr_hosts_per_hour": 10000,
+      "pipeline_wall_sec": 900.0,
+      "pulse": {
+        "complete": true,
+        "elapsed_ms": 180000,
+        "enrichment_share": 0.75,
+        "enrichment_wall_sec": 540.0,
+        "l4_complete": true,
+        "l4_share": 0.25,
+        "l4_wall_sec": 180.0,
+        "open": 1200,
+        "pulse_stage_sec": 720.0,
+        "rate_pps": 55.6,
+        "total": 10000
+      },
+      "resources": {
+        "children_cpu_sec": 450.0,
+        "children_max_rss_mb": 800.0,
+        "cpu_sec": 360.0,
+        "max_rss_mb": 400.0
+      },
+      "run": "inventory_services/run-001",
+      "stages_sum_sec": 930.0,
+      "synthetic": "tests.fixtures.throughput_measure",
+      "targets": 1000,
+      "top_stages": [
+        {
+          "duration_sec": 720.0,
+          "name": "pulse"
+        },
+        {
+          "duration_sec": 120.0,
+          "name": "ports"
+        },
+        {
+          "duration_sec": 60.0,
+          "name": "discover"
+        },
+        {
+          "duration_sec": 30.0,
+          "name": "report"
+        }
+      ]
+    },
+    {
+      "cohort": "enrichment",
+      "hosts": 1000,
+      "hosts_per_hour": 200.0,
+      "meets_okr": false,
+      "okr_hosts_per_hour": 10000,
+      "pipeline_wall_sec": 18000.0,
+      "pulse": {
+        "complete": true,
+        "elapsed_ms": 300000,
+        "enrichment_share": 0.9815,
+        "enrichment_wall_sec": 15900.0,
+        "l4_complete": true,
+        "l4_share": 0.0185,
+        "l4_wall_sec": 300.0,
+        "open": 1200,
+        "pulse_stage_sec": 16200.0,
+        "rate_pps": 4.0,
+        "total": 1200
+      },
+      "resources": {
+        "children_cpu_sec": 9000.0,
+        "children_max_rss_mb": 800.0,
+        "cpu_sec": 7200.0,
+        "max_rss_mb": 400.0
+      },
+      "run": "enrichment/run-001",
+      "stages_sum_sec": 16500.0,
+      "synthetic": "tests.fixtures.throughput_measure",
+      "targets": 1000,
+      "top_stages": [
+        {
+          "duration_sec": 16200.0,
+          "name": "pulse"
+        },
+        {
+          "duration_sec": 200.0,
+          "name": "ports"
+        },
+        {
+          "duration_sec": 60.0,
+          "name": "discover"
+        },
+        {
+          "duration_sec": 40.0,
+          "name": "report"
+        }
+      ]
+    },
+    {
+      "cohort": "enrichment",
+      "hosts": 500,
+      "hosts_per_hour": 200.0,
+      "meets_okr": false,
+      "okr_hosts_per_hour": 10000,
+      "pipeline_wall_sec": 9000.0,
+      "pulse": {
+        "complete": false,
+        "elapsed_ms": 200000,
+        "enrichment_share": 0.9765,
+        "enrichment_wall_sec": 8300.0,
+        "l4_complete": true,
+        "l4_share": 0.0235,
+        "l4_wall_sec": 200.0,
+        "open": 600,
+        "pulse_stage_sec": 8500.0,
+        "rate_pps": 4.0,
+        "total": 800
+      },
+      "resources": {
+        "children_cpu_sec": 4500.0,
+        "children_max_rss_mb": 800.0,
+        "cpu_sec": 3600.0,
+        "max_rss_mb": 400.0
+      },
+      "run": "enrichment/run-002-partial",
+      "stages_sum_sec": 8660.0,
+      "synthetic": "tests.fixtures.throughput_measure",
+      "targets": 500,
+      "top_stages": [
+        {
+          "duration_sec": 8500.0,
+          "name": "pulse"
+        },
+        {
+          "duration_sec": 100.0,
+          "name": "ports"
+        },
+        {
+          "duration_sec": 40.0,
+          "name": "discover"
+        },
+        {
+          "duration_sec": 20.0,
+          "name": "report"
+        }
+      ]
+    },
+    {
+      "cohort": "full",
+      "hosts": 1000,
+      "hosts_per_hour": 125.0,
+      "meets_okr": false,
+      "okr_hosts_per_hour": 10000,
+      "pipeline_wall_sec": 28800.0,
+      "pulse": {
+        "complete": true,
+        "elapsed_ms": 300000,
+        "enrichment_share": 0.9792,
+        "enrichment_wall_sec": 14100.0,
+        "l4_complete": true,
+        "l4_share": 0.0208,
+        "l4_wall_sec": 300.0,
+        "open": 1500,
+        "pulse_stage_sec": 14400.0,
+        "rate_pps": 5.0,
+        "total": 1500
+      },
+      "resources": {
+        "children_cpu_sec": 14400.0,
+        "children_max_rss_mb": 800.0,
+        "cpu_sec": 11520.0,
+        "max_rss_mb": 400.0
+      },
+      "run": "full/run-001",
+      "stages_sum_sec": 26790.0,
+      "synthetic": "tests.fixtures.throughput_measure",
+      "targets": 1000,
+      "top_stages": [
+        {
+          "duration_sec": 14400.0,
+          "name": "pulse"
+        },
+        {
+          "duration_sec": 12000.0,
+          "name": "nuclei"
+        },
+        {
+          "duration_sec": 240.0,
+          "name": "ports"
+        },
+        {
+          "duration_sec": 90.0,
+          "name": "discover"
+        },
+        {
+          "duration_sec": 60.0,
+          "name": "report"
+        }
+      ]
+    }
+  ],
+  "schema": "shapoclyack.throughput_okr_baseline.v1",
+  "skipped": {
+    "missing": 0,
+    "resumed_or_foreign_synthetic": 0
+  },
+  "unlabeled_runs": 0
+}

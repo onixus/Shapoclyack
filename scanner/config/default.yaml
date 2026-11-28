@@ -273,6 +273,9 @@ ports:
   # contributes modbus/DNP3/BACnet and friends — and the two are unioned, so an
   # entry written here survives whatever the API pushes.
   exclude_ports: []
+  # S5 / FTT-057: inventory intent forces true — historical opens ∪ top-N,
+  # never a silent 1–1024 widen. Legacy / assessment leave this false.
+  heuristic_union: false
 
 reporting:
   markdown_summary: true
@@ -403,6 +406,9 @@ service_probe:
     adaptive: true
     host_parallel: 8
     timeout_ms: 800
+    # S5: product JARM gate (paired with tls_posture.jarm). Inventory forces
+    # false; heavy intents / legacy assessment keep true.
+    jarm: true
     banner: true
     os_detect: true
     os_mode: sinfp         # the only engine; nmap|auto were removed (ADR 0002)
@@ -418,6 +424,9 @@ service_probe:
     # lists extra repositories (and the official one, when you pin it here);
     # a non-empty list must match the receipt in plugins_dir or the plugins
     # stay off for that run. A speed profile cannot override either field.
+    # Shipped on for legacy (no-intent) assessment jobs. Speed intents
+    # (inventory, inventory_services) overlay plugins: false; heavy intents
+    # (full, enrichment, …) overlay true — see ADR 0013 / FTT-056.
     plugins: true
     plugins_dir: ""
     plugin_sources: []
@@ -445,7 +454,11 @@ service_probe:
 tls_posture:
   enabled: true
   # Raw suite selection. Pinned Pulse 1.4.0 provides --tls-enum.
+  # Shipped on for legacy assessment. Speed intents force false (ADR 0013);
+  # inventory also forces JARM off and short timeouts (S5 / FTT-057).
   enumerate_ciphers: true
+  # S5: JARM gated with heavy intents / explicit overlay; shipped on for legacy.
+  jarm: true
   max_targets: 2000
   expiring_soon_days: 30
   hostname_mismatch: true

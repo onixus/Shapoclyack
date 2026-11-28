@@ -236,6 +236,8 @@ def start_scan(
     min_overlay_version: int = 1,
     verification_of: str | None = None,
     expected_admission_sha256: str | None = None,
+    _stage2_meta: dict[str, Any] | None = None,
+    _defer_dispatch: bool = False,
 ) -> JobInfo:
     return job_submission.start_scan(
         settings,
@@ -252,6 +254,8 @@ def start_scan(
         min_overlay_version=min_overlay_version,
         verification_of=verification_of,
         expected_admission_sha256=expected_admission_sha256,
+        _stage2_meta=_stage2_meta,
+        _defer_dispatch=_defer_dispatch,
     )
 
 

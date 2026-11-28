@@ -1883,6 +1883,23 @@ def build_parser() -> argparse.ArgumentParser:
     runs.add_argument("--archive", action="store_true", help="also gzip each run as the sensor does")
     runs.add_argument("--out", type=Path, default=None)
 
+    okr = sub.add_parser(
+        "okr-baseline",
+        help="throughput OKR estate baseline from stage_timings + Pulse L4/enrich split (FTT-055)",
+    )
+    okr.add_argument(
+        "root",
+        type=Path,
+        help="runs dir, or docs/benchmarks/throughput-okr-estate-baseline/fixtures",
+    )
+    okr.add_argument(
+        "--cohort",
+        choices=("inventory", "inventory_services", "enrichment", "full"),
+        default=None,
+        help="default cohort label when run metadata omits it",
+    )
+    okr.add_argument("--out", type=Path, default=None)
+
     derive = sub.add_parser("derive", help="merge result files and derive the model's coefficients")
     derive.add_argument("results", type=Path, nargs="+")
     derive.add_argument("--out", type=Path, default=None)
@@ -2181,6 +2198,11 @@ def main(argv: list[str] | None = None) -> int:
             {"environment_runs_dir": environment(), "runs_dir": measure_runs_dir(args.root, archive=args.archive)},
             args.out,
         )
+        return 0
+    if args.command == "okr-baseline":
+        from tests.fixtures import throughput_measure
+
+        _emit(throughput_measure.analyze_tree(args.root, default_cohort=args.cohort), args.out)
         return 0
     if args.command == "postgres-live":
         if not _require(args.postgres_url, "Postgres"):

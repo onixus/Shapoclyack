@@ -136,7 +136,7 @@ into these groups, and the aggregation that is correct differs:
 |---|---|---|
 | Per replica: this process's own state | HTTP, DB pool, process, sensor-upload queue, ClickHouse batch timings, `octo_nats_consumer_pending_timestamp_seconds`, the two `*_is_leader` | `sum()` for a total, `by (instance)` to find the odd replica |
 | Events, counted by whichever replica handled them | every `*_total` counter, job durations | `sum(rate(…))` / `sum(increase(…))` |
-| Cluster-wide, **read from the database at scrape time** — every replica reports the same number, at most one snapshot TTL apart | `octo_agents`, the heartbeat ages, `octo_agent_stale_threshold_seconds`, `octo_jobs_queued`, `octo_jobs_running`, `octo_endpoint_devices`, the three per-tenant series | `max()` — `sum()` multiplies by however many replicas the HPA runs |
+| Cluster-wide, **read from the database at scrape time** — every replica reports the same number, at most one snapshot TTL apart | `octo_agents`, the heartbeat ages, `octo_agent_stale_threshold_seconds`, `octo_jobs_queued`, `octo_jobs_running`, `octo_jobs_shard_queued`, `octo_jobs_stage2_queued`, `octo_endpoint_devices`, the three per-tenant series | `max()` — `sum()` multiplies by however many replicas the HPA runs |
 | Cluster-wide, **refreshed on a timer in every replica** — they agree to within one tick | `octo_nats_outbox_backlog` (outbox reconciler), `octo_run_publication_backlog` (publication reconciler), `octo_webhook_delivery_queue` (webhook dispatcher) | `max()` |
 | Read by each replica from the same durable | `octo_nats_consumer_pending` — a replica whose poller stopped keeps its last count, so filter by read age (see [NATS and the outbox](#nats-and-the-outbox)) | `max()` over the fresh readings |
 | Leader only; followers report 0 | `octo_ticket_sync_lag_seconds` | `max()` |
@@ -201,6 +201,8 @@ counted where they happen (use `sum()`).
 |---|---|---|---|
 | `octo_job_duration_seconds` | histogram, 30 s – 8 h buckets | `status` (`succeeded`, `failed`), `execution` (`local`, `agent`) | E |
 | `octo_jobs_queued`, `octo_jobs_running` | gauge, read from the jobs table at scrape time | — | C |
+| `octo_jobs_shard_queued` | gauge, queued jobs with `scan_options.shard_group_id` (KEDA executor scale signal, FTT-PULSE-2026-053) | — | C |
+| `octo_jobs_stage2_queued` | gauge, queued Stage2 enrichment jobs with `scan_options.stage2_group_id` (KEDA executor Path B scale signal, FTT-PULSE-2026-054 / FTT-PULSE-2026-058) | — | C |
 | `octo_job_lease_expired_total` | counter | `outcome` (`requeued`, `failed`) | E |
 | `octo_result_integrity_total` | counter | `check` (`schema`, `signature`), `outcome` (`ok`, `rejected`, `warned`, `verified`, `unsigned`, `unverifiable`) | E |
 | `octo_job_cancellations_total` | counter | `outcome` (`queued`, `confirmed`, `unconfirmed`, `late_results`) | E |

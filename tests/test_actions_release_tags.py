@@ -45,8 +45,15 @@ def test_publish_consumes_validated_tags_and_strict_enrichment():
     metadata = next(step for step in STEPS if step.get("id") == "meta")
     assert metadata["with"]["tags"].splitlines() == [
         "type=raw,value=${{ steps.release.outputs.tag }}",
-        "type=raw,value=latest,enable=${{ steps.release.outputs.stable == 'true' }}",
+        "type=raw,value=latest,enable=${{ steps.release.outputs.stable == 'true' && matrix.latest != false }}",
     ]
+    # screenshot-worker is the entry that sets latest: false. Without it the
+    # extra clause is dead and a stable dispatch would tag that image :latest.
+    worker = next(
+        row for row in WORKFLOW["jobs"]["build-and-push"]["strategy"]["matrix"]["include"]
+        if row["name"] == "screenshot-worker"
+    )
+    assert worker["latest"] is False
     build = next(step for step in STEPS if step.get("id") == "build")
     assert "ENRICHMENT_STRICT=1" in build["with"]["build-args"].splitlines()
     assert STEPS.index(GATE) < STEPS.index(build)

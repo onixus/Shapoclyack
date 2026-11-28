@@ -31,6 +31,23 @@ stage timings: pipeline_wall=…s stages_sum=…s top=[nuclei=…, ports=…, �
 Use this file before changing rates or concurrency. The usual ranking on
 web-heavy scopes is **nuclei ≫ ports / pulse ≫ discover**.
 
+### Estate throughput baseline (OKR Measure)
+
+For the 10 000 hosts/hour OKR, turn run directories into hosts/hour,
+`top_stages`, and Pulse **L4 vs enrichment** (FTT-PULSE-2026-055):
+
+```bash
+python3 scripts/throughput_okr_measure.py runs-dir "$OCTO_OUTPUT_DIR/runs" \
+  --cohort inventory --out /tmp/inventory-baseline.json
+python3 scripts/throughput_okr_model.py \
+  --calibration docs/benchmarks/throughput-okr-estate-baseline/calibration.json
+```
+
+Pulse `stats.elapsed_ms` is L4 wall; enrichment wall ≈ pulse stage
+`duration_sec − elapsed_ms/1000`. Completeness cites `stats.l4_complete` vs
+`stats.complete`. Fixture pack:
+[benchmarks/throughput-okr-estate-baseline](benchmarks/throughput-okr-estate-baseline/README.md).
+
 Load CI also records overall `duration_sec` and `peak_rss_mb` (see
 `tests/load/run.sh`). Peak RSS used to always report `0` because the monitor
 exited before the scanner container existed; that race is fixed.
@@ -44,12 +61,22 @@ Treat scan work as **intent**, not one default full pipeline. **Product control
 
 | Intent | Goal | Control plane applies |
 |---|---|---|
-| **inventory** | Alive hosts + open ports | `--skip-nse`, nuclei off, `top_ports: 100`; optional `delta` |
-| **vuln** | High-signal CVE/misconfig | Full probe; nuclei **critical+high** only |
-| **full** | Assessment-grade completeness | Default pipeline; nuclei critical/high/medium |
-| **delta** | Re-check known perimeter | Full pipeline + forced `--delta` |
+| **inventory** | Alive hosts + open ports | `--skip-nse`, nuclei off, `top_ports: 100` ∪ historical opens; plugins + JARM/tls-enum **off**; short Pulse connect timeouts ([ADR 0013](adr/0013-product-defaults-speed-intents.md), [ADR 0014](adr/0014-throughput-heuristics-s5.md)) |
+| **inventory_services** | Mid-tier banners/services | Pulse banners on; plugins / tls-enum / JARM / nuclei **off**; S3 chunk overlap (FTT-PULSE-2026-052, [ADR 0013](adr/0013-product-defaults-speed-intents.md)) |
+| **enrichment** | Stage2 assessment on known hosts | Pulse plugins + tls-enum + JARM + nuclei; queue fan-out (FTT-PULSE-2026-054) |
+| **vuln** | High-signal CVE/misconfig | Full probe; nuclei **critical+high** only; heavy Pulse; JARM/tls-enum **on** |
+| **full** | Assessment-grade completeness | Nuclei critical/high/medium; heavy Pulse; JARM/tls-enum **on** |
+| **delta** | Re-check known perimeter | Full pipeline + forced `--delta`; heavy Pulse; JARM/tls-enum **on** |
+
+Throughput levers: Pulse `service_probe.pulse.chunk_concurrency` /
+`enrich_concurrency`, `POST /api/jobs` `shard_count` for claimable partitions
+([ADR 0010](adr/0010-throughput-s1-s3-sharding.md)), and
+`stage2_enrichment=true` on Stage1 inventory jobs to fan out Stage2
+`enrichment` work after publish ([ADR 0012](adr/0012-stage2-enrichment-queue.md)).
 
 Legacy: omit `intent` and use `skip_nse` / `delta` flags (UI: “legacy — manual flags”).
+Legacy keeps shipped YAML defaults (`plugins: true`, `enumerate_ciphers: true`).
+Speed intents never inherit that assessment load ([ADR 0009](adr/0009-scan-throughput-okr.md)).
 
 ```http
 POST /api/jobs
@@ -57,19 +84,22 @@ POST /api/jobs
 ```
 
 Persisted as `scan_options.intent` (+ `intent_summary`). Local execution merges
-nuclei/top_ports into the job effective config. Agent execution delivers the
-validated `config_overlay.json` to sensors advertising `config_overlay.v1`;
-the current sensor also advertises v2 for targeted template IDs. Fleet
-capability checks keep jobs requiring an overlay from being claimed by an
-incompatible sensor ([API contract](api-and-rbac.md#scan-surface)).
+nuclei/top_ports/plugins/heuristics into the job effective config. Agent execution
+delivers the validated `config_overlay.json` to sensors advertising
+`config_overlay.v1+`; S3 overlap, product-default Pulse gates and S5 heuristic
+paths need **v4**. Fleet capability checks keep jobs requiring an overlay from being
+claimed by an incompatible sensor ([API contract](api-and-rbac.md#scan-surface)).
 
 ### Suggested schedule shape (same fleet)
 
 ```text
 hourly / 4h  → intent=inventory, delta=true
-daily        → intent=vuln
+             → (+ stage2_enrichment when assessment should follow)
+shift        → intent=inventory_services (mid-tier banners, plugins off)
+daily        → intent=vuln  (or Stage2 enrichment jobs from inventory)
 weekly       → intent=full
 on-demand    → intent=full or vuln
+Stage2       → intent=enrichment (after inventory publish; fan-out is S4)
 ```
 
 Same sensors, same packet budget, far less average wall-clock per day.

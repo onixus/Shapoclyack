@@ -927,6 +927,20 @@ def _cluster_families(snapshot: MetricsClusterSnapshot | None) -> list[Metric]:
         "Scan jobs claimed, running or being cancelled, read from the jobs table "
         "at scrape time. Cluster-wide: aggregate with max(), not sum().",
     )
+    shard_queued = GaugeMetricFamily(
+        "octo_jobs_shard_queued",
+        "Queued scan jobs that belong to a shard group "
+        "(scan_options.shard_group_id set), read from the jobs table at scrape "
+        "time. KEDA scales scanner-executor on this depth (FTT-PULSE-2026-053). "
+        "Cluster-wide: aggregate with max(), not sum().",
+    )
+    stage2_queued = GaugeMetricFamily(
+        "octo_jobs_stage2_queued",
+        "Queued Stage2 enrichment jobs "
+        "(scan_options.stage2_group_id set), read from the jobs table at scrape "
+        "time. Assessment fan-out after Stage1 inventory (FTT-PULSE-2026-054). "
+        "Cluster-wide: aggregate with max(), not sum().",
+    )
     devices = GaugeMetricFamily(
         "octo_endpoint_devices",
         "Endpoint devices by staleness (OCTO_ENDPOINT_STALE_HOURS), read at scrape "
@@ -934,7 +948,17 @@ def _cluster_families(snapshot: MetricsClusterSnapshot | None) -> list[Metric]:
         "with max(), not sum().",
         labels=["state"],
     )
-    families = [agents, ages, oldest, threshold, queued, running, devices]
+    families = [
+        agents,
+        ages,
+        oldest,
+        threshold,
+        queued,
+        running,
+        shard_queued,
+        stage2_queued,
+        devices,
+    ]
     if snapshot is None:
         return families
     # Not at module level, and not before there is a snapshot: describe()
@@ -959,6 +983,8 @@ def _cluster_families(snapshot: MetricsClusterSnapshot | None) -> list[Metric]:
     threshold.add_metric([], fleet.stale_seconds)
     queued.add_metric([], snapshot.jobs_queued)
     running.add_metric([], snapshot.jobs_running)
+    shard_queued.add_metric([], snapshot.jobs_shard_queued)
+    stage2_queued.add_metric([], snapshot.jobs_stage2_queued)
     if snapshot.endpoint_devices is not None:
         for state in ("active", "stale"):
             devices.add_metric([state], snapshot.endpoint_devices[state])

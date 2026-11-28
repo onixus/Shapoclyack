@@ -1,5 +1,14 @@
 import { translate, type Locale, type MsgKey } from "@/lib/i18n";
-const intents = ["inventory", "vuln", "full", "delta", "org_profile", "legacy"];
+const intents = [
+  "inventory",
+  "inventory_services",
+  "enrichment",
+  "vuln",
+  "full",
+  "delta",
+  "org_profile",
+  "legacy",
+];
 const modes = ["safe", "balanced", "fast", "test"];
 function label(locale: Locale, value: string, known: string[]): string {
   return locale === "en"

@@ -61,9 +61,11 @@ import subprocess
 import tempfile
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
+from threading import Event, Lock
 from typing import Any
 
 from . import distro_revision
@@ -354,6 +356,9 @@ def _is_os_raw_socket_failure(stderr: str) -> bool:
 #: ``complete`` / ``l4_complete`` are true only when every chunk that reported
 #: the key said so. ``cancelled`` is true when any chunk was cancelled.
 #: ``fatal_error`` keeps the first non-empty diagnostic (Pulse caps it at 512).
+#: ``elapsed_ms`` is L4 wall (GenDec sets it when the port scan finishes);
+#: throughput OKR Measure compares it to the timed ``pulse`` stage for the
+#: enrichment split (``tests.fixtures.throughput_measure``, FTT-055).
 _STATS_AND = ("complete", "l4_complete")
 _STATS_FATAL = "fatal_error"
 _STATS_FATAL_MAX = 512
@@ -433,6 +438,18 @@ def _port_spec(ports: list[int]) -> str:
     return ",".join(str(p) for p in ports)
 
 
+def _default_port_spec() -> str:
+    """S5: never fall back to a silent 1–1024 sweep when ports are empty.
+
+    Inventory / heuristic paths always pass an explicit list; this is only the
+    last-resort Pulse argv when a caller forgot ports. Curated top-100 matches
+    the inventory default (FTT-057).
+    """
+    from .top_tcp_ports import TOP_TCP_100
+
+    return _port_spec(list(TOP_TCP_100))
+
+
 # Requested feature contract; older candidate receipts did not request STARTTLS.
 _TLS_ENUMERATION_CONTRACT = "raw-starttls-v2"
 
@@ -458,6 +475,8 @@ def build_pulse_command(
     script_dir: str | None = None,
     probe_db: ProbeDbInfo | None | object = _RESOLVE,
     tls_enum: bool = False,
+    enrich_concurrency: int = 1,
+    jarm: bool = False,
 ) -> list[str]:
     # Pulse runs in a private temporary directory (``_probe_chunk``), so every
     # path it is given must mean the same from there: an output_dir that is
@@ -467,7 +486,7 @@ def build_pulse_command(
         "--targets-file",
         os.path.abspath(hosts_file),
         "-p",
-        _port_spec(ports) if ports else "1-1024",
+        _port_spec(ports) if ports else _default_port_spec(),
         "-c",
         str(max(1, concurrency)),
         "-t",
@@ -508,10 +527,17 @@ def build_pulse_command(
         cmd.append("--cve")
     if tls_enum:
         cmd.append("--tls-enum")
+    # JARM: product gate is recorded on the adapter; pinned Pulse fingerprints
+    # during TLS probing today and has no ``--jarm`` / ``--no-jarm`` switch, so
+    # we do not invent a CLI flag here (S5 / FTT-057 — GenDec only if required).
+    # ``jarm`` is accepted so callers and tests share one contract.
+    _ = jarm
     if cve_online:
         cmd.append("--cve-online")
     if syn:
         cmd += ["--syn", "--syn-retries", "1"]
+    if enrich_concurrency > 1:
+        cmd += ["--enrich-concurrency", str(max(1, min(64, int(enrich_concurrency))))]
     if checkpoint is not None:
         cmd += ["--checkpoint", os.path.abspath(checkpoint)]
     return cmd
@@ -1019,6 +1045,7 @@ def _run_pulse_probe(
     cve: bool = True,
     cve_online: bool = False,
     tls_enum: bool = False,
+    jarm: bool = False,
     syn: bool = False,
     max_hosts: int = 65536,
     timeout_seconds: int = 600,
@@ -1026,6 +1053,8 @@ def _run_pulse_probe(
     done_hosts: Iterable[str] | None = None,
     on_host_done: Callable[[str], None] | None = None,
     chunk_hosts: int = 64,
+    chunk_concurrency: int = 1,
+    enrich_concurrency: int = 1,
     report_primary: bool | None = None,
     retry_settle_seconds: int = 15,
     on_unresolved: Callable[[list[str]], None] | None = None,
@@ -1129,10 +1158,11 @@ def _run_pulse_probe(
                 raise ValueError("expected an object")
             previous_adapter = previous.get("adapter") or {}
             same_tls_contract = not tls_enum or previous_adapter.get("tls_enumeration_contract") == _TLS_ENUMERATION_CONTRACT
-            if bool(previous_adapter.get("tls_enum")) == tls_enum and same_tls_contract:
+            same_jarm = bool(previous_adapter.get("jarm")) == bool(jarm)
+            if bool(previous_adapter.get("tls_enum")) == tls_enum and same_tls_contract and same_jarm:
                 done, cached = retain_completed_payload(grouped, requested_done, previous)
             else:
-                logging.warning("pulse: TLS enumeration request contract changed; re-probing completed hosts")
+                logging.warning("pulse: TLS/JARM request contract changed; re-probing completed hosts")
             prior = ((previous.get("adapter") or {}).get("plugins") or {}) if done else {}
             if verified:
                 same = str(prior.get("digest") or "") == plugin_receipt["digest"]
@@ -1241,10 +1271,13 @@ def _run_pulse_probe(
         "completion": completion_manifest({host: grouped[host] for host in done}),
         "adapter": {
             "chunk_hosts": size,
+            "chunk_concurrency": max(1, min(8, int(chunk_concurrency))),
+            "enrich_concurrency": max(1, min(64, int(enrich_concurrency))),
             "cve": cve,
             "cve_online": cve_online,
             "tls_enum": tls_enum,
             "tls_enumeration_contract": _TLS_ENUMERATION_CONTRACT if tls_enum else None,
+            "jarm": bool(jarm),
             "ruleset": None,
             "pulse_version": None,
             "plugins": plugin_receipt,
@@ -1298,77 +1331,98 @@ def _run_pulse_probe(
 
     logging.info(
         "pulse_probe plan: %s unique input TCP endpoints, %s pending, "
-        "%s planned combinations in %s chunks",
+        "%s planned combinations in %s chunks (chunk_concurrency=%s)",
         diagnostics["input_unique_tcp_endpoints"],
         diagnostics["pending_unique_tcp_endpoints"],
         planned_endpoints,
         len(chunks),
+        max(1, min(8, int(chunk_concurrency))),
     )
 
-    for idx, chunk in enumerate(chunks):
-        host_chunk = list(chunk.hosts)
-        ports_list = list(chunk.ports)
-        probe_calls = 0
-        timed_out = False
+    workers = max(1, min(8, int(chunk_concurrency)))
+    # Overlapped chunks share one sensor PPS budget. Each subprocess gets a
+    # 1/N slice so chunk_concurrency=4 does not mean 4× --rate / -c.
+    chunk_rate = max(1, int(rate) // workers) if rate else rate
+    chunk_concurrency_cap = max(1, int(concurrency) // workers)
+    diag_lock = Lock()
+    # Shared with the worker threads. A raw-socket refusal flips it off under
+    # the lock, so a chunk that has not built its command yet — including one
+    # already submitted in this wave — skips the doomed ``--os`` attempt
+    # instead of only the waves that start afterwards.
+    os_state = {"effective": os_detect, "degraded": None}
+    # Set when a wave has already decided the run is a crash or timeout loop,
+    # so a sibling chunk still inside its retry does not start another probe.
+    stop_probe = Event()
 
-        def _probe(command: list[str]) -> tuple[dict[str, Any], int, str]:
-            nonlocal probe_calls, timed_out
-            if probe_calls:
+    def _probe_once(
+        *,
+        idx: int,
+        endpoint_count: int,
+        command: list[str],
+        state: dict[str, Any],
+    ) -> tuple[dict[str, Any], int, str]:
+        if state["probe_calls"]:
+            with diag_lock:
                 diagnostics["adapter_retry_calls"] += 1
-                diagnostics["adapter_retry_tcp_combinations"] += chunk.endpoint_count
-            probe_calls += 1
+                diagnostics["adapter_retry_tcp_combinations"] += endpoint_count
+        state["probe_calls"] += 1
+        with diag_lock:
             diagnostics["chunk_probe_calls"] += 1
-            # Plugins run after the scan, one endpoint at a time, so the process
-            # may outlive the scan; the allowance is capped (pulse_plugins).
-            budget = timeout_seconds + (plugin_budget_seconds(chunk.endpoint_count) if script_dir else 0)
-            try:
-                payload, code, err = _probe_chunk(command, timeout_seconds=budget, retries=retries, idx=idx)
-            except subprocess.TimeoutExpired:
-                # Not a crash: the process was healthy and slow (a stalled
-                # server under a plugin, a tar-pit). The chunk gets no success
-                # receipt, so it is probed again on --resume and nothing is
-                # credited to it; crash-loop accounting is for exits without JSON.
-                logging.warning(
-                    "pulse_probe chunk %s: pulse did not finish within %ss; its hosts stay unresolved", idx, budget
-                )
-                timed_out = True
-                return {}, -1, f"timed out after {budget}s"
-            timed_out = False
-            for line in fallback_lines(err):
+        budget = timeout_seconds + (plugin_budget_seconds(endpoint_count) if script_dir else 0)
+        try:
+            payload, code, err = _probe_chunk(command, timeout_seconds=budget, retries=retries, idx=idx)
+        except subprocess.TimeoutExpired:
+            logging.warning(
+                "pulse_probe chunk %s: pulse did not finish within %ss; its hosts stay unresolved",
+                idx,
+                budget,
+            )
+            state["timed_out"] = True
+            return {}, -1, f"timed out after {budget}s"
+        state["timed_out"] = False
+        for line in fallback_lines(err):
+            with diag_lock:
                 if line not in diagnostics["probe_db_fallback"]:
                     diagnostics["probe_db_fallback"].append(line)
                     logging.warning("pulse_probe: Pulse did not use our probe database: %s", line)
-            return payload, code, err
+        return payload, code, err
 
+    def _run_chunk_subprocess(idx: int, chunk: Any, with_os: bool) -> dict[str, Any]:
+        """Run Pulse for one planned chunk (may be called from a worker thread)."""
+        host_chunk = list(chunk.hosts)
+        ports_list = list(chunk.ports)
         key = chunk_key(host_chunk, ports_list, scan_mode, chunk_plugins)
         hosts_file = pulse_dir / f"chunk_{key}.hosts.txt"
         write_lines(hosts_file, host_chunk)
-
-        def _command(*, with_os: bool) -> list[str]:
-            return build_pulse_command(
-                bin_path=pulse_bin,
-                hosts_file=hosts_file,
-                ports=ports_list,
-                concurrency=concurrency,
-                rate=rate,
-                adaptive=adaptive,
-                host_parallel=host_parallel,
-                timeout_ms=timeout_ms,
-                banner=banner,
-                os_detect=with_os,
-                services_db=services_db,
-                script_dir=script_dir,
-                probe_db=probe_db,
-                cve=cve,
-                cve_online=cve_online,
-                tls_enum=tls_enum,
-                syn=syn,
-                checkpoint=None,
-                max_hosts=max(max_hosts, len(host_chunk) + 1),
-            )
-
-        cmd = _command(with_os=os_detect_effective)
-
+        with diag_lock:
+            # Overlapping chunks start together, so a refusal discovered
+            # mid-wave cannot reach a sibling that already built its command.
+            # Probe the first chunk of a wave with --os and the rest without
+            # it: one doomed attempt per wave, not one per chunk. A refusal
+            # still flips the flag, so later waves skip it entirely.
+            use_os = os_state["effective"] and with_os and idx % workers == 0
+        command = build_pulse_command(
+            bin_path=pulse_bin,
+            hosts_file=hosts_file,
+            ports=ports_list,
+            concurrency=chunk_concurrency_cap,
+            rate=chunk_rate,
+            adaptive=adaptive,
+            host_parallel=host_parallel,
+            timeout_ms=timeout_ms,
+            banner=banner,
+            os_detect=use_os,
+            services_db=services_db,
+            script_dir=script_dir,
+            probe_db=probe_db,
+            cve=cve,
+            cve_online=cve_online,
+            tls_enum=tls_enum,
+            syn=syn,
+            checkpoint=None,
+            max_hosts=max(max_hosts, len(host_chunk) + 1),
+            enrich_concurrency=enrich_concurrency,
+        )
         logging.info(
             "pulse_probe chunk %s/%s (%s): %s hosts, %s ports",
             idx + 1,
@@ -1377,52 +1431,78 @@ def _run_pulse_probe(
             len(host_chunk),
             len(ports_list),
         )
-        payload, returncode, stderr = _probe(cmd)
-
-        # pulse aborts the whole invocation -- not just OS detection -- when
-        # --os cannot open raw sockets (unprivileged host install, a pod
-        # without NET_RAW). Losing services, banners and CVEs over a missing
-        # OS guess is the wrong trade. Drop --os for the rest of the run and ask again now.
-        if (
+        if stop_probe.is_set():
+            raise PulseCrashLoopError(
+                f"pulse_probe chunk {idx}: aborted, the run already hit a crash or timeout loop"
+            )
+        state = {"probe_calls": 0, "timed_out": False}
+        payload, returncode, stderr = _probe_once(
+            idx=idx, endpoint_count=chunk.endpoint_count, command=command, state=state
+        )
+        os_raw_failed = (
             returncode != 0
             and not payload
-            and os_detect_effective
+            and use_os
             and _is_os_raw_socket_failure(stderr)
-        ):
-            os_detect_effective = False
-            # Keep pulse's own sentence, not anyhow's "Caused by:" tail.
-            os_detect_degraded = next(
-                (line.strip() for line in stderr.splitlines() if "raw socket" in line.lower()),
-                "raw sockets unavailable",
-            )[:200]
-            logging.warning(
-                "pulse_probe: OS detection needs raw sockets and this process has none "
-                "(%s); continuing without --os for the rest of the run -- services, "
-                "banners and CVEs still run. Grant cap_net_raw/cap_net_admin to the "
-                "pulse binary or the pod (docs/pulse-backend.md) to get OS guesses back.",
-                os_detect_degraded,
+        )
+        if os_raw_failed:
+            # Before the retry, and before any sibling in this wave builds
+            # its own command: the rest of the run does not ask for --os.
+            with diag_lock:
+                if os_state["effective"]:
+                    os_state["effective"] = False
+                    os_state["degraded"] = next(
+                        (
+                            line.strip()
+                            for line in stderr.splitlines()
+                            if "raw socket" in line.lower()
+                        ),
+                        "raw sockets unavailable",
+                    )[:200]
+        if os_raw_failed and not stop_probe.is_set():
+            command = build_pulse_command(
+                bin_path=pulse_bin,
+                hosts_file=hosts_file,
+                ports=ports_list,
+                concurrency=chunk_concurrency_cap,
+                rate=chunk_rate,
+                adaptive=adaptive,
+                host_parallel=host_parallel,
+                timeout_ms=timeout_ms,
+                banner=banner,
+                os_detect=False,
+                services_db=services_db,
+                script_dir=script_dir,
+                probe_db=probe_db,
+                cve=cve,
+                cve_online=cve_online,
+                tls_enum=tls_enum,
+                jarm=jarm,
+                syn=syn,
+                checkpoint=None,
+                max_hosts=max(max_hosts, len(host_chunk) + 1),
+                enrich_concurrency=enrich_concurrency,
             )
-            cmd = _command(with_os=False)
-            payload, returncode, stderr = _probe(cmd)
-
-        crashed = returncode != 0 and not payload and not timed_out
-        if crashed:
-            # A crash is not weather: re-run at once, no settle pause. The
-            # pause below exists for a saturated network path, which has
-            # nothing to do with exit 2 or a panic.
+            payload, returncode, stderr = _probe_once(
+                idx=idx, endpoint_count=chunk.endpoint_count, command=command, state=state
+            )
+        crashed = returncode != 0 and not payload and not state["timed_out"]
+        if crashed and not stop_probe.is_set():
             logging.warning(
                 "pulse_probe chunk %s: pulse exited %s without JSON (%s); re-probing now",
                 idx,
                 returncode,
                 stderr[:300] or "no stderr",
             )
-            payload, returncode, stderr = _probe(cmd)
-            crashed = returncode != 0 and not payload and not timed_out
-        elif not timed_out and not payload.get("open") and retry_settle_seconds:
-            # Every host here reached this stage because naabu proved a port
-            # open on it moments ago, so an all-closed chunk is a contradiction
-            # rather than a finding: the ports burst saturates the path and the
-            # probe lands before it recovers. Pause and ask once more.
+            payload, returncode, stderr = _probe_once(
+                idx=idx, endpoint_count=chunk.endpoint_count, command=command, state=state
+            )
+        elif (
+            not stop_probe.is_set()
+            and not state["timed_out"]
+            and not payload.get("open")
+            and retry_settle_seconds
+        ):
             logging.warning(
                 "pulse_probe chunk %s: 0 services across %s host(s) with known-open "
                 "ports; re-probing in %ss",
@@ -1431,14 +1511,49 @@ def _run_pulse_probe(
                 retry_settle_seconds,
             )
             time.sleep(retry_settle_seconds)
-            payload, returncode, stderr = _probe(cmd)
+            payload, returncode, stderr = _probe_once(
+                idx=idx, endpoint_count=chunk.endpoint_count, command=command, state=state
+            )
+        return {
+            "idx": idx,
+            "chunk": chunk,
+            "host_chunk": host_chunk,
+            "ports_list": ports_list,
+            "key": key,
+            "payload": payload,
+            "returncode": returncode,
+            "stderr": stderr,
+            "timed_out": state["timed_out"],
+            "probe_calls": state["probe_calls"],
+            "os_raw_failed": os_raw_failed,
+            "stderr_for_os": stderr,
+        }
 
-        # A settle retry can itself crash; classify the final attempt. A timeout
-        # is neither a crash nor a success: it leaves the counter where it is.
+    def _apply_chunk_breakers(result: dict[str, Any]) -> None:
+        """Update crash/timeout counters; raise once a consecutive ceiling trips."""
+        nonlocal consecutive_crashes, consecutive_timeouts, os_detect_effective, os_detect_degraded
+        if result["os_raw_failed"] and os_detect_effective:
+            os_detect_effective = False
+            os_detect_degraded = os_state["degraded"] or "raw sockets unavailable"
+            logging.warning(
+                "pulse_probe: OS detection needs raw sockets and this process has none "
+                "(%s); continuing without --os for the rest of the run -- services, "
+                "banners and CVEs still run. Grant cap_net_raw/cap_net_admin to the "
+                "pulse binary or the pod (docs/pulse-backend.md) to get OS guesses back.",
+                os_detect_degraded,
+            )
+
+        returncode = result["returncode"]
+        payload = result["payload"]
+        timed_out = result["timed_out"]
+        stderr = result["stderr"]
+        chunk = result["chunk"]
+        host_chunk = result["host_chunk"]
         crashed = returncode != 0 and not payload and not timed_out
         if crashed:
             consecutive_crashes += 1
             if consecutive_crashes >= MAX_CONSECUTIVE_CRASHED_CHUNKS:
+                stop_probe.set()
                 raise PulseCrashLoopError(
                     f"pulse exited {returncode} without JSON for "
                     f"{consecutive_crashes} chunks in a row; last stderr: "
@@ -1451,10 +1566,15 @@ def _run_pulse_probe(
         if timed_out:
             consecutive_timeouts += 1
             if consecutive_timeouts >= MAX_CONSECUTIVE_TIMED_OUT_CHUNKS:
+                stop_probe.set()
                 raise PulseTimeoutLoopError(
                     f"pulse did not finish within its timeout on {consecutive_timeouts} chunks in a row "
                     f"(process timeout {timeout_seconds}s"
-                    + (f" plus up to {plugin_budget_seconds(chunk.endpoint_count)}s for the plugins" if script_dir else "")
+                    + (
+                        f" plus up to {plugin_budget_seconds(chunk.endpoint_count)}s for the plugins"
+                        if script_dir
+                        else ""
+                    )
                     + f", {len(host_chunk)} host(s) per chunk). Raise runtime.nse_timeout_seconds, lower "
                     "service_probe.pulse.chunk_hosts, or turn the plugins off "
                     "(service_probe.pulse.plugins: false) if a server is stalling them; hosts finished "
@@ -1463,80 +1583,128 @@ def _run_pulse_probe(
         else:
             consecutive_timeouts = 0
 
+    for wave_start in range(0, len(chunks), workers):
+        if stop_probe.is_set():
+            break
+        wave = list(range(wave_start, min(wave_start + workers, len(chunks))))
+        if workers == 1:
+            wave_results = [_run_chunk_subprocess(wave[0], chunks[wave[0]], os_detect_effective)]
+            for result in wave_results:
+                _apply_chunk_breakers(result)
+        else:
+            with ThreadPoolExecutor(max_workers=len(wave)) as pool:
+                futs = {
+                    pool.submit(_run_chunk_subprocess, idx, chunks[idx], os_detect_effective): idx
+                    for idx in wave
+                }
+                wave_results = []
+                try:
+                    # Count breakers as soon as each future finishes so a wave
+                    # of crashers cannot finish all N before abort.
+                    for fut in as_completed(futs):
+                        result = fut.result()
+                        wave_results.append(result)
+                        _apply_chunk_breakers(result)
+                except Exception:
+                    stop_probe.set()
+                    for pending in futs:
+                        pending.cancel()
+                    raise
+            wave_results.sort(key=lambda item: item["idx"])
 
-        if script_dir:
-            for error in parse_plugin_errors(stderr):
-                logging.warning("pulse_probe chunk %s: plugin error: %s: %s", idx, error["plugin"], error["message"])
-                plugin_receipt["errors"].append(
-                    {**error, "chunk": key, "hosts": host_chunk, "ports": ports_list}
-                )
+        for result in wave_results:
+            idx = result["idx"]
+            host_chunk = result["host_chunk"]
+            ports_list = result["ports_list"]
+            key = result["key"]
+            payload = result["payload"]
+            returncode = result["returncode"]
+            stderr = result["stderr"]
+            timed_out = result["timed_out"]
+            probe_calls = result["probe_calls"]
 
-        resolved_hosts = completed_hosts({host: ports_list for host in host_chunk}, payload, returncode)
-        unresolved_hosts = [host for host in host_chunk if host not in resolved_hosts]
-        resolved = not unresolved_hosts
-        if unresolved_hosts and on_unresolved:
-            on_unresolved(unresolved_hosts)
-
-        if payload:
-            meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
-            # Rhai results are finding-shaped; native RDP facts are written only
-            # to the separate observation receipt above.
-            if meta.get("ruleset"):
-                rulesets.add(str(meta["ruleset"]))
-            if meta.get("version"):
-                pulse_versions.add(str(meta["version"]))
-            if isinstance(meta.get("coverage_complete"), bool):
-                reported = meta["coverage_complete"]
-                coverage_complete = reported if coverage_complete is None else coverage_complete and reported
-            schema = _report_schema(meta.get("schema"))
-            if schema and (schema in report_schemas or len(report_schemas) < REPORT_SCHEMAS_MAX):
-                report_schemas.add(schema)
-                if schema not in REPORT_SCHEMAS and schema not in warned_schemas:
-                    warned_schemas.add(schema)
+            if script_dir:
+                for error in parse_plugin_errors(stderr):
                     logging.warning(
-                        "pulse_probe: report schema %r is not one of %s; parsing it as %s",
-                        schema,
-                        ", ".join(REPORT_SCHEMAS),
-                        REPORT_SCHEMAS[-1],
+                        "pulse_probe chunk %s: plugin error: %s: %s",
+                        idx,
+                        error["plugin"],
+                        error["message"],
                     )
-            services, os_recs, cves = parse_pulse_json(
-                payload, plugin_shas=_shas(plugin_receipt) if script_dir else {}
-            )
-            all_services.extend(services)
-            all_os.extend(os_recs)
-            all_cves.extend(cves)
-            merged_raw["open"].extend(payload.get("open") or [])
-            merged_raw["os"].extend(payload.get("os") or [])
-            merged_raw["cves"].extend(payload.get("cves") or [])
-            merged_raw["findings"].extend(
-                payload.get("findings") or payload.get("cves") or []
-            )
-            merged_raw["tls"].extend(payload.get("tls") or [])
-            if isinstance(payload.get("stats"), dict):
-                _merge_stats(merged_raw["stats"], payload["stats"])
-                _note_scan_verdict(idx, payload["stats"])
-        # Every chunk is on the record, failed ones included -- an artifact
-        # that lists only the chunks that answered looks like a clean run.
-        merged_raw["chunks"].append(
-            {
-                "index": idx,
-                "key": key,
-                "hosts": host_chunk,
-                "ports": ports_list,
-                "returncode": returncode,
-                "timed_out": timed_out,
-                "resolved": resolved,
-                "unresolved_hosts": unresolved_hosts,
-                "probe_calls": probe_calls,
-            }
-        )
+                    plugin_receipt["errors"].append(
+                        {**error, "chunk": key, "hosts": host_chunk, "ports": ports_list}
+                    )
 
-        merged_raw["completion"]["hosts"].update(
-            completion_manifest({host: ports_list for host in resolved_hosts})["hosts"]
-        )
-        for host in host_chunk:
-            if host in resolved_hosts and on_host_done:
-                on_host_done(host)
+            resolved_hosts = completed_hosts(
+                {host: ports_list for host in host_chunk}, payload, returncode
+            )
+            unresolved_hosts = [host for host in host_chunk if host not in resolved_hosts]
+            resolved = not unresolved_hosts
+            if unresolved_hosts and on_unresolved:
+                on_unresolved(unresolved_hosts)
+
+            if payload:
+                meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+                # Rhai results are finding-shaped; native RDP facts are written only
+                # to the separate observation receipt above.
+                if meta.get("ruleset"):
+                    rulesets.add(str(meta["ruleset"]))
+                if meta.get("version"):
+                    pulse_versions.add(str(meta["version"]))
+                if isinstance(meta.get("coverage_complete"), bool):
+                    reported = meta["coverage_complete"]
+                    coverage_complete = (
+                        reported if coverage_complete is None else coverage_complete and reported
+                    )
+                schema = _report_schema(meta.get("schema"))
+                if schema and (schema in report_schemas or len(report_schemas) < REPORT_SCHEMAS_MAX):
+                    report_schemas.add(schema)
+                    if schema not in REPORT_SCHEMAS and schema not in warned_schemas:
+                        warned_schemas.add(schema)
+                        logging.warning(
+                            "pulse_probe: report schema %r is not one of %s; parsing it as %s",
+                            schema,
+                            ", ".join(REPORT_SCHEMAS),
+                            REPORT_SCHEMAS[-1],
+                        )
+                services, os_recs, cves = parse_pulse_json(
+                    payload, plugin_shas=_shas(plugin_receipt) if script_dir else {}
+                )
+                all_services.extend(services)
+                all_os.extend(os_recs)
+                all_cves.extend(cves)
+                merged_raw["open"].extend(payload.get("open") or [])
+                merged_raw["os"].extend(payload.get("os") or [])
+                merged_raw["cves"].extend(payload.get("cves") or [])
+                merged_raw["findings"].extend(
+                    payload.get("findings") or payload.get("cves") or []
+                )
+                merged_raw["tls"].extend(payload.get("tls") or [])
+                if isinstance(payload.get("stats"), dict):
+                    _merge_stats(merged_raw["stats"], payload["stats"])
+                    _note_scan_verdict(idx, payload["stats"])
+            # Every chunk is on the record, failed ones included -- an artifact
+            # that lists only the chunks that answered looks like a clean run.
+            merged_raw["chunks"].append(
+                {
+                    "index": idx,
+                    "key": key,
+                    "hosts": host_chunk,
+                    "ports": ports_list,
+                    "returncode": returncode,
+                    "timed_out": timed_out,
+                    "resolved": resolved,
+                    "unresolved_hosts": unresolved_hosts,
+                    "probe_calls": probe_calls,
+                }
+            )
+
+            merged_raw["completion"]["hosts"].update(
+                completion_manifest({host: ports_list for host in resolved_hosts})["hosts"]
+            )
+            for host in host_chunk:
+                if host in resolved_hosts and on_host_done:
+                    on_host_done(host)
 
     # Dedupe services by ip:port:proto
     seen: set[tuple[str, int, str]] = set()
@@ -1580,6 +1748,7 @@ def _run_pulse_probe(
         "cve_online": cve_online,
         "tls_enum": tls_enum,
         "tls_enumeration_contract": _TLS_ENUMERATION_CONTRACT if tls_enum else None,
+        "jarm": bool(jarm),
         # The oldest ruleset any chunk matched with: one binary has one, and
         # if two ever answered, the claim made for the run is the weaker one.
         "ruleset": min(rulesets, key=ruleset_order) if rulesets else None,
@@ -1587,6 +1756,8 @@ def _run_pulse_probe(
         "report_schemas": sorted(report_schemas),
         **({"coverage_complete": coverage_complete} if coverage_complete is not None else {}),
         "chunk_hosts": size,
+        "chunk_concurrency": max(1, min(8, int(chunk_concurrency))),
+        "enrich_concurrency": max(1, min(64, int(enrich_concurrency))),
         "plugins": plugin_receipt,
         **diagnostics,
     }

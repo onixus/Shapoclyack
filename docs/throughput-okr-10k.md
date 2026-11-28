@@ -98,8 +98,12 @@ enrichment and orchestration dominate.
 
 **CONDITIONAL CONFIRM** — required for reliable estate OKR.
 
-- Fan-out on create → N claimable shards; merge on completion.
-- Scale pods on **queued shard depth** (HPA/KEDA), not CPU.
+- Fan-out on create → N claimable shards; merge on completion
+  (FTT-052 / ADR 0010).
+- Scale pods on **queued shard depth** (HPA/KEDA), not CPU —
+  `octo_jobs_shard_queued` + `overlays/executor-keda` (FTT-053 / ADR 0011);
+  Stage2 enrichment depth `octo_jobs_stage2_queued` is an explicit Path B
+  trigger on the same overlay (FTT-058 / ADR 0015).
 - If one sensor full ≈ 400–800 hosts/h → need N ≈ 13–25 for assessment;
   inventory mid-tier ≈ 2–5 k/h/sensor → N ≈ 2–5.
 
@@ -115,11 +119,14 @@ intent `inventory_services` (banner on, plugins/tls-enum/nuclei off).
 
 - Stage1: discover + ports (+ optional light banner) → inventory SLO.
 - Stage2: open endpoints as claimable work → TLS/plugins/CVE/nuclei
-  pods scale under load (screenshot-worker pattern, ADR 0008).
+  pods scale under load (screenshot-worker pattern, ADR 0008;
+  KEDA on `octo_jobs_stage2_queued` — FTT-058 / ADR 0015).
 
 ### S5 — Heuristics (not ML-first)
 
-**CONFIRM heuristics; REJECT ML-first.**
+**CONFIRM heuristics; REJECT ML-first.** **Shipped** in
+[FTT-057](ftt-pulse-2026-057-heuristics-s5.md) /
+[ADR 0014](adr/0014-throughput-heuristics-s5.md).
 
 - Historical∪top-N ports, skip JARM/tls-enum unless risk/intent requires,
   shorten silence timeouts after RST evidence.
@@ -127,9 +134,11 @@ intent `inventory_services` (banner on, plugins/tls-enum/nuclei off).
 
 ### S6 — eBPF/XDP, masscan-class TX, in-pod SHM, WASM plugins
 
-**REJECT as OKR primary.** Pulse SYN already ~10 k+ pps class for
-Stage1; privilege and hardening cost dominate. Revisit only if Stage1
-PPS (not enrichment) remains the measured wall after S4–S5.
+**REJECT as OKR primary** — recorded in
+[ADR 0016](adr/0016-reject-s6-ebpf-masscan-okr.md) (FTT-059 acceptance pack).
+Pulse SYN already ~10 k+ pps class for Stage1; privilege and hardening cost
+dominate. Revisit only if Stage1 PPS (not enrichment) remains the measured
+wall after S4–S5.
 
 ---
 
@@ -165,14 +174,25 @@ policy. Numbers are models — validate with `stage_timings.json`.
 ## Recommended build order
 
 1. **Measure** a representative estate: `stage_timings.json` + Pulse
-   `stats.l4_complete` vs full complete.
+   `stats.l4_complete` vs full complete — **harness shipped** (FTT-055 / #685);
+   live calibration remains an **operator** action (stand `runs-dir` before production shard sizing).
 2. **Ship mid-tier intent + turn off default cipher-enum/plugins for
-   speed intents** (config/product, low risk).
-3. **GenDec `--enrich-concurrency`** (S1).
-4. **Adapter `pulse_chunk_concurrency`** (S3).
-5. **Job sharding + KEDA/HPA on queue depth** (S2) and/or **Stage2
-   enrichment jobs** (S4).
-6. Heuristics S5; park S6.
+   speed intents** — **shipped** (FTT-056 / ADR 0013 / #686).
+3. **GenDec `--enrich-concurrency`** (S1) — **shipped** (GenDec #56 / FTT-052).
+4. **Adapter `pulse_chunk_concurrency`** (S3) — **shipped** (#681 / FTT-052 /
+   ADR 0010).
+5. **Job sharding + KEDA/HPA on queue depth** (S2) — **shipped** (FTT-053 /
+   ADR 0011 / #682). **Stage2 enrichment jobs** (S4) — **shipped** (FTT-054 /
+   ADR 0012 / #684). **Stage2 KEDA Path B trigger** — **shipped** (FTT-058 /
+   ADR 0015 / #688).
+6. Heuristics S5 — **shipped** (FTT-057 / ADR 0014 / #687). **S6 Rejected**
+   as OKR primary ([ADR 0016](adr/0016-reject-s6-ebpf-masscan-okr.md) / FTT-059).
+7. **ADR acceptance pack** — **shipped** (FTT-059): ADRs 0009–0015 Accepted;
+   ADR 0016 Rejected; IB protocol in
+   [security-acceptance-throughput-okr.md](security-acceptance-throughput-okr.md).
+8. **Engineering closure** — FTT-060: no further code P0; open human actions in
+   [throughput-okr-closure-checklist.md](throughput-okr-closure-checklist.md)
+   (single rollup PR instead of the stacked train, Pulse image pin, live Measure, IB sign-off).
 
 ---
 
@@ -180,7 +200,40 @@ policy. Numbers are models — validate with `stage_timings.json`.
 
 ```bash
 python3 scripts/throughput_okr_model.py
+python3 scripts/throughput_okr_model.py \
+  --calibration docs/benchmarks/throughput-okr-estate-baseline/calibration.json
 ```
 
 Prints hosts/hour under the models above for default / balanced / fast
-and for enrichment serial vs parallel. It does not send packets.
+and for enrichment serial vs parallel, then (with `--calibration`) the
+Measure medians. It does not send packets.
+
+---
+
+## Measure harness
+
+```bash
+# Synthetic pack (CI / ADR citations)
+python3 scripts/throughput_okr_measure.py fixtures
+
+# Stand runs (read-only); cohort is an explicit label
+python3 scripts/throughput_okr_measure.py runs-dir "$OCTO_OUTPUT_DIR/runs" \
+  --cohort inventory_services --out /tmp/midtier.json
+
+# Same entry via scale_measure
+python3 -m tests.fixtures.scale_measure okr-baseline \
+  docs/benchmarks/throughput-okr-estate-baseline/fixtures
+```
+
+Per run the harness reports `hosts_per_hour`, `top_stages`, Pulse
+`l4_complete` / `complete`, and enrichment share
+(`1 − l4_wall / pulse_stage`). Cohort roll-ups feed
+`calibration.json` for the model below.
+
+| Fixture cohort | Median hosts/h | Notes |
+|---|---|---|
+| inventory | 5000 | Ports-only; Path A needs ≥2 sensors for OKR |
+| inventory_services | 4000 | Enrich share ~75% of Pulse stage |
+| enrichment | 200 | L4 complete even when full `complete` false |
+| full | 125 | Nuclei appears in `top_stages` |
+

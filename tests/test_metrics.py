@@ -23,6 +23,8 @@ def test_render_exposes_registered_metric_families():
         "octo_job_duration_seconds",
         "octo_jobs_queued",
         "octo_jobs_running",
+        "octo_jobs_shard_queued",
+        "octo_jobs_stage2_queued",
         "octo_nats_consumer_pending",
         "octo_ch_ingest_batch_duration_seconds",
         "octo_ch_ingest_messages_total",

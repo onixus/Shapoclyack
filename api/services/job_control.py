@@ -197,6 +197,13 @@ def claim_job(
     # verification re-scans that pin nuclei templates.
     capabilities = set(agent.capabilities or [])
     options = models.Job.scan_options
+    # as_string() of a missing key and of JSON null are both NULL. An empty
+    # object is not NULL, so a verification floor (config_overlay={}) is a
+    # real document and must be matched on the stored capability, not skipped.
+    overlay_present = or_(
+        options["config_overlay"].as_string().is_not(None),
+        options[config_override.OVERLAY_CAPABILITY_OPTION].as_string().is_not(None),
+    )
     overlay_needed = func.coalesce(
         options[config_override.OVERLAY_CAPABILITY_OPTION].as_string(),
         config_override.AGENT_CAPABILITY,
@@ -204,13 +211,13 @@ def claim_job(
     declared = sorted(capabilities)
     runnable = [
         or_(
-            options["config_overlay"].as_string().is_(None),
+            not_(overlay_present),
             overlay_needed.in_(declared),
         )
     ]
     blocked = [
         and_(
-            options["config_overlay"].as_string().is_not(None),
+            overlay_present,
             not_(overlay_needed.in_(declared)),
         )
     ]

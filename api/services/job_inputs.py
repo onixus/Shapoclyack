@@ -140,7 +140,11 @@ def write_policy_input(inputs_dir: Path, policy: dict[str, Any]) -> Path:
 
 
 def write_config_overlay_input(
-    settings: Settings, job_id: str, overlay: dict[str, Any]
+    settings: Settings,
+    job_id: str,
+    overlay: dict[str, Any],
+    *,
+    version: int | None = None,
 ) -> str:
     """Write the agent job's config overlay; return its path.
 
@@ -148,7 +152,7 @@ def write_config_overlay_input(
     a setting an executor would refuse fails this request rather than the
     scan, on a host the operator may not be able to read the log of.
     """
-    document = config_overlay.to_document(overlay)
+    document = config_overlay.to_document(overlay, version=version)
     inputs_dir = job_inputs_dir(settings, job_id)
     inputs_dir.mkdir(parents=True, exist_ok=True)
     path = inputs_dir / CONFIG_OVERLAY_INPUT

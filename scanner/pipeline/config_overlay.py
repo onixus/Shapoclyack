@@ -57,7 +57,11 @@ INPUT_NAME = "config_overlay.json"
 #: * v2: ``nuclei.template_ids``. A build that applies it also writes the
 #:   coverage evidence a verification closure is judged on (``nuclei.json``'s
 #:   ``coverage`` block, ``adapter.cve`` in ``pulse/raw.json``).
-OVERLAY_VERSION = 3
+#: * v3: ``nuclei.verification_targets``.
+#: * v4: Pulse mid-tier controls for speed/heavy intents (ADR 0013) and the
+#:   S3 overlap knobs, plus S5 heuristics (FTT-057 / ADR 0014): historical∪top-N,
+#:   JARM/tls-enum gates, shortened Pulse connect / settle timeouts.
+OVERLAY_VERSION = 4
 
 
 def capability(version: int) -> str:
@@ -124,12 +128,37 @@ _V1_PATHS: frozenset[str] = frozenset(
 
 #: Every version's settings. Each is a superset of the one before: an older
 #: document is always one a newer build applies.
+_V2_PATHS: frozenset[str] = _V1_PATHS | {"nuclei.template_ids", "reachability.enabled"}
+_V3_PATHS: frozenset[str] = _V2_PATHS | {"nuclei.verification_targets"}
+# Speed/heavy intent overlays (ADR 0013) plus S3 overlap knobs and S5
+# heuristic paths. Without chunk/enrich concurrency an intent that asks for
+# overlapping chunks is refused, or silently runs at the serial default.
+_V4_PULSE_LEAVES = (
+    "banner",
+    "plugins",
+    "cve",
+    "cve_online",
+    "chunk_concurrency",
+    "enrich_concurrency",
+    "jarm",
+    "timeout_ms",
+    "retry_settle_seconds",
+)
+_V4_PATHS: frozenset[str] = _V3_PATHS | {
+    *(f"service_probe.pulse.{leaf}" for leaf in _V4_PULSE_LEAVES),
+    *(f"profiles.{profile}.pulse.{leaf}" for profile in _PROFILES for leaf in _V4_PULSE_LEAVES),
+    "tls_posture.enumerate_ciphers",
+    "tls_posture.jarm",
+    "ports.heuristic_union",
+}
+
 PATHS_BY_VERSION: dict[int, frozenset[str]] = {
     1: _V1_PATHS,
     # Set by the platform only, for a verification re-scan
     # (api/services/vulnerabilities.py): never a console setting.
-    2: _V1_PATHS | {"nuclei.template_ids", "reachability.enabled"},
-    3: _V1_PATHS | {"nuclei.template_ids", "reachability.enabled", "nuclei.verification_targets"},
+    2: _V2_PATHS,
+    3: _V3_PATHS,
+    4: _V4_PATHS,
 }
 
 #: What this build accepts.
@@ -161,7 +190,12 @@ def required_version(config: dict[str, Any]) -> int:
 
     What the document is written at and what its job asks of a claimant, so a
     sensor that predates a setting is refused only the jobs that use it.
+    An empty document is v1: a higher floor is the caller's, not a path.
     """
+    if not isinstance(config, dict):
+        raise ConfigOverlayError("config overlay: 'config' must be an object")
+    if not config:
+        return 1
     check_config(config)
     paths = set(_flatten(config))
     return next(v for v in sorted(PATHS_BY_VERSION) if paths <= PATHS_BY_VERSION[v])
@@ -172,10 +206,22 @@ def required_capability(config: dict[str, Any]) -> str:
     return capability(required_version(config))
 
 
-def to_document(config: dict[str, Any]) -> dict[str, Any]:
+def to_document(config: dict[str, Any], *, version: int | None = None) -> dict[str, Any]:
     """The document the API writes. Checked here so a path the scanner would
-    refuse is refused where the job is created, not on the executor later."""
-    return {"overlay_version": required_version(config), "config": config}
+    refuse is refused where the job is created, not on the executor later.
+
+    ``version`` raises the written version above what the paths need. A
+    verification with an empty config still has to name its floor, or a
+    sensor that predates the coverage evidence takes the job.
+    """
+    needed = required_version(config)
+    written = needed if version is None else max(needed, int(version))
+    if written not in PATHS_BY_VERSION:
+        raise ConfigOverlayError(
+            f"config overlay version {written!r} is not one this build applies"
+        )
+    check_config(config, written)
+    return {"overlay_version": written, "config": config}
 
 
 def check_config(config: Any, version: int = OVERLAY_VERSION) -> dict[str, Any]:

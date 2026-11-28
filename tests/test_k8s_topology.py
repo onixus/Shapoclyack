@@ -406,3 +406,31 @@ def test_every_rendered_executor_keeps_its_signing_key_on_its_own_volume(target:
     assert path.startswith(mount["mountPath"].rstrip("/") + "/"), target
     assert pod["securityContext"]["fsGroup"] == 1000, target
     assert not any(v["name"] == "sensor-key" for v in pod.get("volumes") or []), "an emptyDir shadows the claim"
+
+
+def test_executor_keda_scaledobject_targets_the_executor_statefulset() -> None:
+    """FTT-PULSE-2026-053 / FTT-PULSE-2026-058: queue-depth ScaledObject must
+    sit in the executor namespace and scale the StatefulSet, never the API
+    Deployment. Stage2 enrichment depth is an explicit Path B trigger."""
+    target = "overlays/executor-keda"
+    scaled = _one(target, "ScaledObject", EXECUTOR)
+    assert scaled is not None, f"{target} renders no ScaledObject/{EXECUTOR}"
+    assert scaled["metadata"].get("namespace") == EXECUTOR_NS
+    ref = scaled["spec"]["scaleTargetRef"]
+    assert ref["kind"] == "StatefulSet"
+    assert ref["name"] == EXECUTOR
+    assert scaled["spec"]["maxReplicaCount"] <= 25
+    triggers = scaled["spec"]["triggers"]
+    metrics = {t["metadata"]["metricName"] for t in triggers}
+    assert metrics == {
+        "octo_jobs_shard_queued",
+        "octo_jobs_queued",
+        "octo_jobs_stage2_queued",
+    }
+    stage2 = next(
+        t for t in triggers if t["metadata"]["metricName"] == "octo_jobs_stage2_queued"
+    )
+    assert stage2["metadata"]["query"] == "max(octo_jobs_stage2_queued)"
+    assert stage2["metadata"]["threshold"] == "1"
+    # Must still render the executor itself (agents base).
+    assert _executor(target) is not None

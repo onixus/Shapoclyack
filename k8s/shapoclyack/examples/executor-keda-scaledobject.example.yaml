@@ -1,0 +1,73 @@
+# Hand-applied KEDA ScaledObject for the scanner-executor
+# (FTT-PULSE-2026-053 / ADR 0011 + FTT-PULSE-2026-058 / ADR 0015).
+#
+# Prefer the kustomize overlay when you already run overlays/agents:
+#   kubectl apply -k k8s/shapoclyack/overlays/executor-keda
+#
+# This file is the same ScaledObject for clusters that patch the executor
+# another way. Requires KEDA CRDs. Replace PROMETHEUS_URL, then:
+#
+#   kubectl apply -f k8s/shapoclyack/examples/executor-keda-scaledobject.example.yaml
+#
+# See docs/adr/0011-executor-queue-depth-autoscale.md,
+# docs/adr/0015-stage2-queue-depth-keda.md,
+# docs/ftt-pulse-2026-053-shard-queue-autoscale.md, and
+# docs/ftt-pulse-2026-058-stage2-queue-keda.md.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: shapoclyack-scanner-executor
+  namespace: network-scan-executor
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: scanner-executor
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: shapoclyack-scanner-executor
+  minReplicaCount: 1
+  maxReplicaCount: 25
+  pollingInterval: 15
+  cooldownPeriod: 300
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 900
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 120
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: 4
+              periodSeconds: 60
+            - type: Percent
+              value: 100
+              periodSeconds: 60
+          selectPolicy: Max
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: PROMETHEUS_URL
+        metricName: octo_jobs_shard_queued
+        query: max(octo_jobs_shard_queued)
+        threshold: "1"
+        activationThreshold: "1"
+    - type: prometheus
+      metadata:
+        serverAddress: PROMETHEUS_URL
+        metricName: octo_jobs_queued
+        query: max(octo_jobs_queued)
+        threshold: "1"
+        activationThreshold: "1"
+    - type: prometheus
+      metadata:
+        serverAddress: PROMETHEUS_URL
+        metricName: octo_jobs_stage2_queued
+        query: max(octo_jobs_stage2_queued)
+        threshold: "1"
+        activationThreshold: "1"

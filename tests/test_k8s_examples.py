@@ -323,6 +323,33 @@ def test_the_api_ingress_example_admits_the_executor_and_not_its_neighbours() ->
     assert not admits("default", EXECUTOR_LABELS)
 
 
+def test_the_backup_secret_example_has_the_keys_the_cronjobs_mount() -> None:
+    """base/backup CronJobs mount these Secrets and do not generate them. A
+    renamed key applies cleanly and then fails every night at the deadline."""
+    docs = _load(EXAMPLES / "backup-s3.secret.example.yaml")
+    by_name = {doc["metadata"]["name"]: doc for doc in docs}
+    assert set(by_name) == {"shapoclyack-backup", "shapoclyack-clickhouse-backup-s3"}
+
+    def mounted(cronjob: Path, secret: str) -> set[str]:
+        keys = set()
+        pod = _pod_template(_one(cronjob, "CronJob"))
+        for container in pod["spec"].get("initContainers", []) + pod["spec"]["containers"]:
+            for item in container.get("env", []):
+                ref = item.get("valueFrom", {}).get("secretKeyRef") or {}
+                if ref.get("name") == secret and not ref.get("optional"):
+                    keys.add(ref["key"])
+        return keys
+
+    for secret, cronjob in (
+        ("shapoclyack-backup", K8S / "base" / "backup" / "postgres-cronjob.yaml"),
+        ("shapoclyack-clickhouse-backup-s3", K8S / "base" / "backup" / "clickhouse-cronjob.yaml"),
+    ):
+        doc = by_name[secret]
+        assert doc["metadata"]["namespace"] == CONTROL_PLANE_NS
+        assert mounted(cronjob, secret) <= set(doc["stringData"])
+        assert doc["stringData"]["access_key_id"].startswith("REPLACE-ME")
+
+
 def test_the_mtls_api_patch_trusts_the_ingress_and_not_the_pod_network() -> None:
     """#309, review of #509: the patch used to trust ``10.244.0.0/16``, the
     whole pod CIDR — the scanner-executor and Prometheus, which may open 8080,

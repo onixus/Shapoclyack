@@ -151,14 +151,23 @@ def scan_failure_event(row: models.Job) -> dict[str, Any]:
     }
 
 
-def job_counts(session: Any) -> tuple[int, int]:
-    """``(queued, running)`` across every tenant, from the shared table.
+def job_counts(session: Any) -> tuple[int, int, int, int]:
+    """``(queued, running, shard_queued, stage2_queued)`` across every tenant.
 
     ``claimed`` (P1.3) counts as running: the job is out with a worker and no
     longer waiting, so folding it into the queue depth would read as a backlog
     that nothing is working on. ``cancelling`` (#360) counts as running for the
     same reason — the agent is still busy with it until it confirms — even
     though it is deliberately outside ``IN_FLIGHT``, which is the lease set.
+
+    ``shard_queued`` (FTT-PULSE-2026-053) is the subset of ``queued`` whose
+    ``scan_options`` carry ``shard_group_id`` — the depth KEDA uses for
+    estate-scale executor scale-out. Non-sharded queued jobs are still in
+    ``queued`` and remain a separate Prometheus trigger.
+
+    ``stage2_queued`` (FTT-PULSE-2026-054) is the subset of ``queued`` whose
+    ``scan_options`` carry ``stage2_group_id`` — Stage2 enrichment work
+    fanned out after Stage1 inventory.
     """
     counts = dict(
         session.execute(
@@ -168,7 +177,28 @@ def job_counts(session: Any) -> tuple[int, int]:
         ).all()
     )
     running = sum(counts.get(state, 0) for state in (*job_states.IN_FLIGHT, job_states.CANCELLING))
-    return counts.get(job_states.QUEUED, 0), running
+    queued = counts.get(job_states.QUEUED, 0)
+    shard_queued = int(
+        session.execute(
+            select(func.count())
+            .select_from(models.Job)
+            .where(
+                models.Job.status == job_states.QUEUED,
+                models.Job.scan_options["shard_group_id"].as_string().is_not(None),
+            )
+        ).scalar_one()
+    )
+    stage2_queued = int(
+        session.execute(
+            select(func.count())
+            .select_from(models.Job)
+            .where(
+                models.Job.status == job_states.QUEUED,
+                models.Job.scan_options["stage2_group_id"].as_string().is_not(None),
+            )
+        ).scalar_one()
+    )
+    return queued, running, shard_queued, stage2_queued
 
 
 def refresh_job_gauges(settings: Settings) -> None:

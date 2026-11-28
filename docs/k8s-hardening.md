@@ -112,7 +112,7 @@ root filesystem is read-only everywhere except where noted.
 | `CronJob/shapoclyack-clickhouse-backup` ([#333](https://github.com/onixus/Shapoclyack/issues/333)) | `network-scan` | 101:101 | `/tmp` (16Mi in memory: `clickhouse-client`'s `HOME`/`TMPDIR` and the script's `mktemp -d` for query output; the server itself uploads the backup, so nothing is staged here) | yes |
 | `CronJob/enrichment-refresh` (base/enrichment) | `network-scan` | 1000:1000 | `scanner/data` (PVC `enrichment-data`); `/tmp` (the geoip/asn/epss/kev fetchers download into `mktemp -d`) | yes |
 | `CronJob/enrichment-bundle-load` (base/enrichment-bundle, [#339](https://github.com/onixus/Shapoclyack/issues/339)) | `network-scan` | 1000:1000 | `scanner/data` (PVC `enrichment-data`: the bundle is staged and installed there, so the swap is a rename on one filesystem); `/tmp`; the inbox PVC is mounted read-only | yes |
-| `Deployment/shapoclyack-screenshot-worker` | `network-scan` | 1000:1000 | `/tmp` (emptyDir: the browser profile; the pod sets `HOME=/tmp`) | yes |
+
 | `StatefulSet/shapoclyack-scanner-executor` | `network-scan-executor` | 1000:1000 | `/var/lib/shapoclyack/sensor-key` (a 16Mi PVC per pod from `volumeClaimTemplates`, writable through `fsGroup`: the sensor's result-signing key, which must outlive the pod, #366); `scanner/output`, `scanner/state` (the run and its checkpoints); `/tmp` (the sensor's per-job workdir: target lists and the run archive before upload); `/home/octo` (nuclei, naabu and dnsx write `~/.config/<tool>/config.yaml` on every start and exit when they cannot — projectdiscovery/goflags) | **no** — see below |
 | `Job/network-scan`, `CronJob/network-scan-scheduled`, `Job/network-scan-resume` (base/local-scan only) | `network-scan` | 1000:1000 | as the executor, with `scanner/output`/`state` on the `scanner-data` PVC | **no** — see below |
 | `StatefulSet/shapoclyack-agent` (examples, a sensor in another cluster) | yours, not `network-scan` | 1000:1000 | as the executor | **no** — see below |
@@ -234,12 +234,18 @@ filesystem stays writable. Not for production.
 
 ## The screenshot worker
 
-`base/screenshot-worker/` is the only browser runtime. Playwright and Chromium
-ship in `ghcr.io/onixus/shapoclyack-screenshot-worker` and in no other image;
-the scanner, the API and the all-in-one image do not install them. Capture is
-unsupported without this Deployment: a scanner whose `SCREENSHOT_WORKER_URL`
-is empty or unanswered writes `skipped_reason: worker.unavailable` and no
-pixels.
+`base/screenshot-worker/` is the only browser runtime, and it is not part of
+the default apply — no overlay includes the component until its image is
+pinned, so it is not in the table above. When it is added, the pod is
+`Deployment/shapoclyack-screenshot-worker` in `network-scan`, uid 1000, and
+the only path it writes is `/tmp` (emptyDir: the browser profile; the pod
+sets `HOME=/tmp`). It meets `restricted`. Playwright and Chromium ship in
+`ghcr.io/onixus/shapoclyack-screenshot-worker` and in no other image; that
+image is published by `Jenkinsfile.publish` with `ONLY=screenshot-worker` and
+is never tagged `:latest`. Add the component to an overlay only after the
+Deployment image is pinned `name:tag@sha256`. Until then a scanner whose
+`SCREENSHOT_WORKER_URL` is unanswered writes `skipped_reason:
+worker.unavailable` and no pixels.
 
 The pod meets the restricted baseline in full. It drops every capability and
 adds none — no `NET_RAW`, no `NET_ADMIN`, no `SYS_ADMIN`. Chromium's own

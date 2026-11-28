@@ -13,34 +13,37 @@ import logging
 import sys
 import threading
 import uuid
-from pathlib import Path
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from agent.runtime.invocation import ScanInvocation
-
 from api.db import models
 from api.db.engine import get_session
 from api.schemas import JobInfo, StartScanRequest
 from api.services import agent_groups as agent_groups_service
 from api.services import config_override as config_override_service
-from api.services import job_inputs
-from api.services import job_states
-from api.services import job_store
-from api.services import local_scan_executor
+from api.services import (
+    job_control,
+    job_inputs,
+    job_sharding,
+    job_states,
+    job_store,
+    licensing,
+    local_scan_executor,
+    run_ids,
+    scan_admission,
+    scan_intents,
+    scan_surface,
+)
 from api.services import metrics as metrics_service
-from api.services import run_ids
+from api.services import tenants as tenants_service
 from api.services.artifact_store import keys as artifact_keys
 from api.services.artifact_store import workspace as artifact_workspace
-from api.services import licensing
-from api.services import scan_admission
-from api.services import scan_intents
-from api.services import scan_surface
-from api.services import tenants as tenants_service
 from api.services.licensing import LicenseExpired, LicenseMissing  # noqa: F401 — raised by assert
 from api.settings import Settings
 from scanner.pipeline import config_overlay
@@ -57,6 +60,8 @@ _IDEMPOTENCY_FIELDS = (
     "surface",
     "wordlist_id",
     "agent_group",
+    "shard_count",
+    "stage2_enrichment",
 )
 _IDEMPOTENCY_TARGET_FIELDS = (
     "ranges",
@@ -123,6 +128,31 @@ def note_start_replay() -> None:
     metrics_service.JOB_IDEMPOTENT_REPLAYS_TOTAL.labels(
         operation="start"
     ).inc()
+
+
+def _annotate_shard_siblings(
+    settings: Settings,
+    job_id: str,
+    sibling_ids: list[str],
+    *,
+    idempotency_digest_value: str | None = None,
+) -> None:
+    """Record the sibling set once every shard of the group exists.
+
+    ``idempotency_digest_value`` is the digest of the *operator's* request,
+    not of the narrowed child. A replay compares the key against that body;
+    a digest of one shard would 409 the retry that asked for the group.
+    """
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job_id)
+        if row is None:
+            return
+        options = dict(row.scan_options or {})
+        options["shard_job_ids"] = list(sibling_ids)
+        if idempotency_digest_value:
+            options["idempotency_digest"] = idempotency_digest_value
+        row.scan_options = options
+        session.commit()
 
 
 def find_by_idempotency_key(
@@ -227,8 +257,20 @@ def start_scan(
     min_overlay_version: int = 1,
     verification_of: str | None = None,
     expected_admission_sha256: str | None = None,
+    _shard_meta: dict[str, Any] | None = None,
+    _stage2_meta: dict[str, Any] | None = None,
+    _defer_dispatch: bool = False,
 ) -> JobInfo:
     """Admit, persist and dispatch one new scan job.
+
+    When ``request.shard_count`` is set (and ``_shard_meta`` is absent), the
+    request is admitted once and the *accepted* ranges and domains are
+    partitioned into claimable sibling jobs (FTT-PULSE-2026-052). The caller
+    receives the lowest shard; every sibling records ``shard_group_id`` and
+    ``shard_job_ids`` in ``scan_options``. A repeat of the same
+    ``Idempotency-Key`` raises ``IdempotentReplay`` of that shard rather than
+    queueing a second group. Shard 0 spends the quota and the queue slot;
+    its siblings are exempt, so one estate is one scan.
 
     ``widen_with_promoted`` is whether this scan carries the related domains
     the tenant's operators promoted (org_profile M4) on top of its own
@@ -273,10 +315,160 @@ def start_scan(
     if config_extra:
         # Before anything is admitted or written: a setting a sensor would
         # refuse is refused where the job is created, as the overlay is.
-        config_overlay.check_config(config_extra)
+        # Version is the one the paths need, not this build's newest: a
+        # verification extra is v1/v2 and must not be held to v4.
+        config_overlay.check_config(
+            config_extra, config_overlay.required_version(config_extra)
+        )
     # The saved console overrides, too (#548): a leftover Nmap setting is
     # refused here, for every way a scan starts, not by the sensor afterwards.
     config_override_service.assert_runnable(settings, config_extra)
+
+    # Horizontal scale: one estate → N claimable jobs (FTT-PULSE-2026-052).
+    # Cut the *admitted* lines, never the raw text: scope, promoted domains
+    # and the maintenance window are decided against the whole estate first,
+    # then the accepted set is split. A retry of the same key finds shard 0
+    # and replays it; it must not queue a second group.
+    if request.shard_count and _shard_meta is None:
+        if idempotency_key:
+            existing = find_by_idempotency_key(
+                settings,
+                tenant_id=(request.tenant_id or tenants_service.DEFAULT_TENANT_ID).strip(),
+                key=idempotency_key,
+                request=request,
+            )
+            if existing is not None:
+                raise IdempotentReplay(existing)
+        preview_id = uuid.uuid4().hex[:12]
+        execution = (
+            "agent" if settings.job_execution_mode == "agent" else "local"
+        )
+        # Local mode starts a scanner thread per job. Spawning N of them on
+        # the API pod (and being unable to cancel a running local job on
+        # partial failure) is not an estate-scale path — require agent mode.
+        job_sharding.require_agent_execution_for_shards(execution)
+        admission = scan_admission.admit_scan(
+            settings,
+            request,
+            username=username,
+            job_id=preview_id,
+            execution=execution,
+            quota_exempt=quota_exempt,
+            widen_with_promoted=widen_with_promoted,
+        )
+        if expected_admission_sha256 is not None and scan_admission.admission_digest(
+                admission, execution=execution) != expected_admission_sha256:
+            raise ValueError("Confirmed scan admission changed; prepare a new proposal")
+        parsed = admission.parsed_targets
+        admitted_ranges = list(parsed.ranges or []) if parsed else []
+        admitted_domains = list(parsed.domains or []) if parsed else []
+        # Promoted names ride with the estate, but each name belongs to one
+        # shard. Copying the whole list onto every child would scan them N
+        # times and could pull a name into a shard whose own targets never
+        # justified it.
+        admitted_domains.extend(admission.promoted_admitted)
+        partitions = job_sharding.partition_targets(
+            ranges="\n".join(admitted_ranges),
+            domains="\n".join(admitted_domains),
+            shard_count=request.shard_count,
+        )
+        group_id = uuid.uuid4().hex[:12]
+        parent_digest = (
+            idempotency_digest(request) if idempotency_key else None
+        )
+        created: list[JobInfo] = []
+        try:
+            for part in partitions:
+                child = request.model_copy(
+                    update={
+                        "ranges": part.ranges or None,
+                        "domains": part.domains or None,
+                        "shard_count": None,
+                        # The group's run id, if the operator named one, belongs
+                        # to shard 0. A shared run id would collide on the
+                        # local reservation and mix artifact trees.
+                        "run_id": request.run_id if part.shard_index == partitions[0].shard_index else None,
+                    }
+                )
+                is_primary = part.shard_index == partitions[0].shard_index
+                shard_meta: dict[str, Any] = {
+                    "shard_group_id": group_id,
+                    "shard_index": part.shard_index,
+                    "shard_count": part.shard_count,
+                    "shard_of": len(partitions),
+                }
+                # Persist the operator digest on insert so a concurrent retry
+                # of the same Idempotency-Key does not 409 against a child
+                # digest during the multi-insert window.
+                if is_primary and parent_digest:
+                    shard_meta["idempotency_digest"] = parent_digest
+                created.append(
+                    start_scan(
+                        settings,
+                        child,
+                        username=username,
+                        build_command=build_command,
+                        run_local_job=run_local_job,
+                        thread_factory=thread_factory,
+                        publish_offer=publish_offer,
+                        # One key covers the group and lives on the shard the
+                        # caller is handed, so a replay finds that job.
+                        idempotency_key=(
+                            idempotency_key if is_primary else None
+                        ),
+                        # Shard 0 spends the monthly scan and the queue slot.
+                        # Siblings are the same estate, not N more scans, and
+                        # must not trip the depth ceiling mid-group.
+                        quota_exempt=(
+                            quota_exempt or not is_primary
+                        ),
+                        # Already folded into the admitted lines above.
+                        widen_with_promoted=False,
+                        config_extra=config_extra,
+                        min_overlay_version=min_overlay_version,
+                        verification_of=verification_of,
+                        expected_admission_sha256=None,
+                        _shard_meta=shard_meta,
+                        # Persist the whole group before any NATS offer: a
+                        # mid-group failure must cancel queued siblings, not
+                        # leave sensors already claiming partial work.
+                        _defer_dispatch=True,
+                    )
+                )
+        except Exception:
+            # A sibling that already queued is not a scan anyone asked for
+            # on its own: the group did not finish. Cancel what landed,
+            # including after losing the idempotency race to a concurrent
+            # start of the same key.
+            for job in created:
+                try:
+                    job_control.cancel_job(
+                        settings, job.job_id, username=username
+                    )
+                except Exception:
+                    _log.warning(
+                        "Could not cancel shard %s after the group failed",
+                        job.job_id,
+                        exc_info=True,
+                    )
+            raise
+        sibling_ids = [job.job_id for job in created]
+        primary = created[0]
+        for job in created:
+            _annotate_shard_siblings(
+                settings,
+                job.job_id,
+                sibling_ids,
+            )
+        # Group is fully persisted and annotated — now wake sensors.
+        if settings.nats_url:
+            for job in created:
+                publish_offer(settings, job.job_id)
+        with get_session(settings.postgres_url) as session:
+            row = session.get(models.Job, primary.job_id)
+            if row is not None:
+                return job_store.to_info(row)
+        return primary
 
     job_id = uuid.uuid4().hex[:12]
     execution = (
@@ -317,8 +509,13 @@ def start_scan(
     agent_group = admission.agent_group
     parsed_targets = admission.parsed_targets
 
+    # A verification re-scan names intent=vuln so the pipeline still runs the
+    # vulnerability checks, but its overlay is the detector plan
+    # (``config_extra`` + ``min_overlay_version``), not the product heavy-Pulse
+    # defaults. Those would demand config_overlay.v4 and turn JARM/plugins on
+    # for a job that only re-checks one finding.
     resolved = scan_intents.resolve_scan_options(
-        intent=request.intent,
+        intent=None if verification_of else request.intent,
         mode=request.mode,
         delta=request.delta,
         skip_nse=request.skip_nse,
@@ -349,6 +546,11 @@ def start_scan(
         if execution == "agent"
         else None
     )
+    # agent_overlay returns None when there is nothing to merge. A
+    # verification floor above v1 still needs a document, or claim treats
+    # the job as a plain v1 one.
+    if execution == "agent" and overlay is None and min_overlay_version > 1:
+        overlay = {}
 
     # Admission already refused everything that can be refused, so what is
     # left here is file writing. Anything that escapes it is a half-written
@@ -365,9 +567,14 @@ def start_scan(
                 policy=policy_snapshot,
             )
         )
-        if overlay:
+        if overlay or min_overlay_version > 1:
             input_paths[job_inputs.CONFIG_OVERLAY_INPUT] = (
-                job_inputs.write_config_overlay_input(settings, job_id, overlay)
+                job_inputs.write_config_overlay_input(
+                    settings,
+                    job_id,
+                    overlay or {},
+                    version=min_overlay_version,
+                )
             )
         job_inputs.publish(settings, job_id)
     except Exception:
@@ -469,17 +676,25 @@ def start_scan(
             # What the executor was sent, for the job record and for the claim:
             # a job carrying one is only handed to an agent that applies it.
             # Never holds a secret — ``agent_overlay`` leaves SECRET_PATHS out.
-            **({"config_overlay": overlay} if overlay else {}),
+            # A verification with nothing to merge still carries an empty
+            # document when its floor is above v1. Claim refuses a job only
+            # when config_overlay is present; a bare capability would not
+            # keep a v1 sensor off a re-scan that must write coverage evidence.
+            **(
+                {"config_overlay": overlay or {}}
+                if overlay or min_overlay_version > 1
+                else {}
+            ),
             # And which overlay version that claimant has to apply: the
             # lowest that covers it, so a sensor that predates a setting is
             # refused only the jobs that use it (config_overlay.py).
             **(
                 {
                     config_override_service.OVERLAY_CAPABILITY_OPTION: config_overlay.capability(
-                        max(config_overlay.required_version(overlay), min_overlay_version)
+                        max(config_overlay.required_version(overlay or {}), min_overlay_version)
                     )
                 }
-                if overlay
+                if overlay or min_overlay_version > 1
                 else {}
             ),
             **({"verification_of": verification_of} if verification_of else {}),
@@ -506,6 +721,20 @@ def start_scan(
                 else {}
             ),
             **wordlist_options,
+            # Opt-in Stage2 fan-out after this job's run publishes
+            # (FTT-PULSE-2026-054). Stage2 children pass ``_stage2_meta`` and
+            # keep this false so they never recurse.
+            **(
+                {"stage2_enrichment": True}
+                if request.stage2_enrichment and not _stage2_meta
+                else {}
+            ),
+            # Shard meta last so a parent idempotency_digest on the primary
+            # overrides the narrowed-child digest computed above.
+            **(_shard_meta or {}),
+            # Stage2 meta after shard meta: server-only keys (``stage2_of``,
+            # ``stage2_group_id``, …) must win over any client-shaped overlap.
+            **(_stage2_meta or {}),
         },
         target_counts=target_counts,
         requested_by=username,
@@ -633,16 +862,17 @@ def start_scan(
             ", ".join(sorted(job_store.required_capabilities(row.scan_options))) or "-",
         )
 
-    if execution == "local":
-        thread = thread_factory(
-            target=run_local_job,
-            args=(settings, job_id, command),
-            name=f"octo-scan-{job_id}",
-            daemon=True,
-        )
-        local_scan_executor.register_thread(thread)
-        thread.start()
-    elif execution == "agent" and settings.nats_url:
-        publish_offer(settings, job_id)
+    if not _defer_dispatch:
+        if execution == "local":
+            thread = thread_factory(
+                target=run_local_job,
+                args=(settings, job_id, command),
+                name=f"octo-scan-{job_id}",
+                daemon=True,
+            )
+            local_scan_executor.register_thread(thread)
+            thread.start()
+        elif execution == "agent" and settings.nats_url:
+            publish_offer(settings, job_id)
 
     return info

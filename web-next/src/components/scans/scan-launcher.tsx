@@ -53,9 +53,27 @@ const NO_WORDLIST = "__none__";
 const ANY_AGENT_GROUP = "__any__";
 
 const INTENTS_BY_SURFACE: Record<"external" | "internal" | "all", Array<ScanIntent | "">> = {
-  external: ["inventory", "vuln", "full", "delta", "org_profile", ""],
-  internal: ["inventory", "vuln", "full", "delta", ""],
-  all: ["inventory", "vuln", "full", "delta", "org_profile", ""],
+  external: [
+    "inventory",
+    "inventory_services",
+    "enrichment",
+    "vuln",
+    "full",
+    "delta",
+    "org_profile",
+    "",
+  ],
+  internal: ["inventory", "inventory_services", "enrichment", "vuln", "full", "delta", ""],
+  all: [
+    "inventory",
+    "inventory_services",
+    "enrichment",
+    "vuln",
+    "full",
+    "delta",
+    "org_profile",
+    "",
+  ],
 };
 
 /** What a "fill from scope" button fills: both fields, or one of them. */

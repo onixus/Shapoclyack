@@ -81,6 +81,17 @@ def MATRIX = [
   [name: 'aio',          dockerfile: 'Dockerfile.allinone',   image: 'ghcr.io/onixus/shapoclyack-aio'],
 ]
 
+// Not in MATRIX. A normal release tags every MATRIX image :latest, and this
+// image must not get that tag: k8s manifests pin scanner/api/aio by TAG, and
+// a fourth :latest would make "latest" mean something installs do not run.
+// Publish it on its own (`ONLY=screenshot-worker`); it is tagged TAG only.
+def SCREENSHOT_WORKER = [
+  name: 'screenshot-worker',
+  dockerfile: 'Dockerfile.screenshot-worker',
+  image: 'ghcr.io/onixus/shapoclyack-screenshot-worker',
+  latest: false,
+]
+
 pipeline {
   agent any
 
@@ -103,7 +114,7 @@ pipeline {
     string(
       name: 'ONLY',
       defaultValue: '',
-      description: 'Собрать только эти образы, через запятую (scanner, api, aio). Пусто — все три.'
+      description: 'Собрать только эти образы, через запятую (scanner, api, aio, screenshot-worker). Пусто — scanner, api и aio. screenshot-worker в пустой список не входит и никогда не получает :latest.'
     )
   }
 
@@ -261,9 +272,16 @@ pipeline {
           }
           def version = params.TAG.replaceFirst(/^v/, '')
           def only = params.ONLY?.trim() ? params.ONLY.split(',').collect { it.trim() } : null
-          def selected = only ? MATRIX.findAll { only.contains(it.name) } : MATRIX
-          if (!selected) {
-            error("ONLY='${params.ONLY}' не совпал ни с одним образом матрицы")
+          def catalog = MATRIX + [SCREENSHOT_WORKER]
+          def selected
+          if (!only) {
+            selected = MATRIX
+          } else {
+            def unknown = only.findAll { name -> !catalog.any { it.name == name } }
+            if (unknown) {
+              error("ONLY='${params.ONLY}' содержит неизвестные образы: ${unknown.join(', ')}. Допустимо: ${catalog.collect { it.name }.join(', ')}")
+            }
+            selected = catalog.findAll { only.contains(it.name) }
           }
           def platforms = params.MULTIARCH ? 'linux/amd64,linux/arm64' : 'linux/arm64'
 
@@ -280,7 +298,9 @@ pipeline {
 
           for (m in selected) {
             def tags = ["${m.image}:${version}"]
-            if (env.IS_PRERELEASE != 'true') {
+            // screenshot-worker sets latest: false. The other images keep the
+            // release contract: a stable tag also moves :latest.
+            if (env.IS_PRERELEASE != 'true' && m.latest != false) {
               tags << "${m.image}:latest"
             }
             echo "=== ${m.name}: ${tags.join(', ')}"

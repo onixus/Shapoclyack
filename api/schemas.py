@@ -368,6 +368,17 @@ class StartScanRequest(BaseModel):
     # retry that changed only its priority is the same scan, and the queued
     # job's priority can be moved with ``PUT /api/jobs/{id}/priority``.
     priority: int = Field(default=0, ge=-100, le=100)
+    # Horizontal scale (FTT-PULSE-2026-052): split admitted ranges/domains into
+    # N claimable jobs. Omitted → one job. When set, the API creates one job
+    # per non-empty partition and returns shard 0; siblings share
+    # ``scan_options.shard_group_id``.
+    shard_count: int | None = Field(default=None, ge=2, le=64)
+    # Stage2 enrichment queue (FTT-PULSE-2026-054): after this Stage1 job's run
+    # publishes successfully, fan out claimable ``intent=enrichment`` jobs for
+    # hosts observed in ``open_ports.txt``. Default off — inventory stays the
+    # inventory SLO. Ignored (and refused by the enqueue guard) when the job
+    # itself is already a Stage2 child.
+    stage2_enrichment: bool = False
 
 
 class JobPriorityRequest(BaseModel):

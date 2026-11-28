@@ -1445,7 +1445,7 @@ def test_a_failed_verification_job_releases_only_its_own_findings(tmp_path):
 def _sensor(
     settings,
     tenant_id,
-    capabilities=("scan_policy", "config_overlay.v1", "config_overlay.v2"),
+    capabilities=("scan_policy", "config_overlay.v1", "config_overlay.v2", "config_overlay.v3", "config_overlay.v4"),
     group: str | None = None,
 ):
     """A live scanner sensor of the tenant declaring ``capabilities``, in ``group``."""
@@ -1584,6 +1584,8 @@ def test_a_verification_no_live_sensor_can_run_is_refused_not_parked(tmp_path):
     _agent_mode(settings, tenant_id, capabilities=("scan_policy", "config_overlay.v1"))
     _advance_to_fixing(settings, tenant_id, vuln["vuln_id"])
 
+    # Pinned templates need v2. The heavy Pulse overlay is not part of a
+    # verification re-scan, so a v1-only fleet is refused at v2, not v4.
     with pytest.raises(vulns.VerificationDispatchError, match="config_overlay.v2"):
         vulns.trigger_verification(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"], actor="alice")
 
@@ -1709,7 +1711,7 @@ def test_a_group_briefly_without_a_sensor_is_waited_for_not_rerouted(tmp_path, m
     agent_groups.create_group(settings, tenant_id=tenant_id, name="dmz")
     vuln = _tracked_from(settings, tenant_id, PULSE, agent="sensor-int", group="internal")
     _agent_mode(settings, tenant_id, group="internal")
-    _sensor(settings, tenant_id, capabilities=("scan_policy", "config_overlay.v1", "config_overlay.v2", "x"), group="dmz")
+    _sensor(settings, tenant_id, capabilities=("scan_policy", "config_overlay.v1", "config_overlay.v2", "config_overlay.v3", "config_overlay.v4", "x"), group="dmz")
     age = {
         "3m": timedelta(minutes=3),
         "59m": timedelta(minutes=59),
@@ -1767,7 +1769,7 @@ def test_a_group_of_agents_the_claim_refuses_is_no_sensor_for_a_verification(tmp
     agent = agents_service.register_agent(
         hostname="dmz-member",
         tenant_id=tenant_id,
-        capabilities=["scan_policy", "config_overlay.v1", "config_overlay.v2"],
+        capabilities=["scan_policy", "config_overlay.v1", "config_overlay.v2", "config_overlay.v3", "config_overlay.v4"],
         **{"version": "9.1", **member},
     )
     agent_groups.set_agent_group(settings, tenant_id=tenant_id, agent_id=agent.agent_id, name="dmz")
