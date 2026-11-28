@@ -691,7 +691,7 @@ def start_scan(
             **(
                 {
                     config_override_service.OVERLAY_CAPABILITY_OPTION: config_overlay.capability(
-                        max(config_overlay.required_version(overlay), min_overlay_version)
+                        max(config_overlay.required_version(overlay or {}), min_overlay_version)
                     )
                 }
                 if overlay or min_overlay_version > 1
