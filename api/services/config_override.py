@@ -459,7 +459,10 @@ def overlay_capability(scan_options: dict[str, Any] | None) -> str | None:
     agree on one stored answer.
     """
     options = scan_options or {}
-    if not options.get("config_overlay"):
+    # Present, including an empty object. A verification floor writes {} so
+    # claim still refuses a sensor below that floor; treating {} as absent
+    # hands the job to a v1 sensor.
+    if "config_overlay" not in options:
         return None
     return str(options.get(OVERLAY_CAPABILITY_OPTION) or AGENT_CAPABILITY)
 

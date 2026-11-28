@@ -315,7 +315,11 @@ def start_scan(
     if config_extra:
         # Before anything is admitted or written: a setting a sensor would
         # refuse is refused where the job is created, as the overlay is.
-        config_overlay.check_config(config_extra)
+        # Version is the one the paths need, not this build's newest: a
+        # verification extra is v1/v2 and must not be held to v4.
+        config_overlay.check_config(
+            config_extra, config_overlay.required_version(config_extra)
+        )
     # The saved console overrides, too (#548): a leftover Nmap setting is
     # refused here, for every way a scan starts, not by the sensor afterwards.
     config_override_service.assert_runnable(settings, config_extra)
