@@ -26,7 +26,7 @@
 # .github/workflows/docker-publish.yml drift apart (docs/release-contract.md).
 #
 # Format: <version> <platform> <sha256>   (# and blank lines ignored)
-v1.5.0  linux-amd64   ff18ea34559e15263bbe94d1ddcd227ac3f667611da55a31323b249ca8ad38c2
-v1.5.0  linux-arm64   245f44d7aa23eee605ab36012b3220371718adbef58c89341f934e42e9fcbaa6
-v1.5.0  darwin-amd64  35ed435fbcbea90954e35a0d43168ab17cbb9b83a31fcf9c60359b2336bec854
-v1.5.0  darwin-arm64  69bef7e637eb32ebc172b6c782d362a27ad8506a8509a7c8ccf76d2a6e484dc9
+v1.6.0  linux-amd64   804c54a3e75b105ec19e807efca1756fb0dfd904918085211d2c4ae39f8c92f7
+v1.6.0  linux-arm64   9183d2851510ec77c0b3efea50a46cd4ec24e05742e482358100573bf26a4c97
+v1.6.0  darwin-amd64  05485c5731fc5393c5a3e4ec69bca31428f3347d7f2d225b7f4eafa94c241bf3
+v1.6.0  darwin-arm64  2f9630d9ad9e0eb1378d9a27b460ee8893a4c03a0ecff327ba55ea8ba6a7caa5
